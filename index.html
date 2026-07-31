@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>battery-design · 3D pack designer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='9' width='22' height='14' rx='2' fill='%230B6E5F'/%3E%3Crect x='2' y='13' width='4' height='6' rx='1' fill='%230B6E5F'/%3E%3Crect x='10' y='12' width='4' height='8' fill='%23E3F0ED'/%3E%3Crect x='16' y='12' width='4' height='8' fill='%23E3F0ED'/%3E%3Crect x='22' y='12' width='3' height='8' fill='%23E3F0ED' opacity='.5'/%3E%3C/svg%3E">
+<style>
+:root{
+  --ground:#F4F6F5; --surface:#FCFCFB; --surface-2:#EEF1F0; --line:#DBE2E0;
+  --ink:#101615; --ink-2:#3A4644; --muted:#5F6D69;
+  --accent:#0B6E5F; --accent-ink:#FFFFFF; --accent-soft:#E3F0ED;
+  --missing:#B4441F; --missing-soft:#FBEAE3;
+  --ok:#2F6B3A; --ok-soft:#E4F0E6;
+  --warn:#8A6A0A; --warn-soft:#F7EFD6;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --r:6px;
+}
+@media (prefers-color-scheme:dark){
+  :root{--ground:#0F1413;--surface:#1A1A19;--surface-2:#222826;--line:#333B39;
+    --ink:#E8EDEB;--ink-2:#BFC9C6;--muted:#93A29E;--accent:#4FD1B5;--accent-ink:#08201C;
+    --accent-soft:#16302B;--missing:#F08A5F;--missing-soft:#3A211A;
+    --ok:#7CC48A;--ok-soft:#1E3323;--warn:#D9B44A;--warn-soft:#332B14;}
+}
+:root[data-theme="dark"]{--ground:#0F1413;--surface:#1A1A19;--surface-2:#222826;--line:#333B39;
+  --ink:#E8EDEB;--ink-2:#BFC9C6;--muted:#93A29E;--accent:#4FD1B5;--accent-ink:#08201C;
+  --accent-soft:#16302B;--missing:#F08A5F;--missing-soft:#3A211A;
+  --ok:#7CC48A;--ok-soft:#1E3323;--warn:#D9B44A;--warn-soft:#332B14;}
+:root[data-theme="light"]{--ground:#F4F6F5;--surface:#FCFCFB;--surface-2:#EEF1F0;--line:#DBE2E0;
+  --ink:#101615;--ink-2:#3A4644;--muted:#5F6D69;--accent:#0B6E5F;--accent-ink:#FFFFFF;
+  --accent-soft:#E3F0ED;--missing:#B4441F;--missing-soft:#FBEAE3;
+  --ok:#2F6B3A;--ok-soft:#E4F0E6;--warn:#8A6A0A;--warn-soft:#F7EFD6;}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
+  font-size:14px;line-height:1.45;display:flex;flex-direction:column}
+a{color:var(--accent)}
+button{font:inherit;color:inherit}
+
+header{display:flex;align-items:center;gap:14px;padding:10px 16px;
+  border-bottom:1px solid var(--line);background:var(--surface);flex-wrap:wrap}
+.brand{font-family:var(--mono);font-size:14px;letter-spacing:.02em}
+.brand b{color:var(--accent)}
+.hdr-stats{display:flex;gap:10px;font-family:var(--mono);font-size:12px;color:var(--ink-2);
+  flex-wrap:wrap}
+.hdr-stats span b{color:var(--ink)}
+.hdr-spacer{flex:1}
+.hdr-links{display:flex;gap:8px;align-items:center;font-size:12.5px}
+.btn{border:1px solid var(--line);background:var(--surface-2);border-radius:var(--r);
+  padding:5px 11px;cursor:pointer;font-size:12.5px}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+
+main{flex:1;display:grid;grid-template-columns:352px minmax(0,1fr) 296px;min-height:0}
+@media (max-width:1100px){main{grid-template-columns:320px minmax(0,1fr)}#statsPanel{display:none}
+  .stage-stats{display:block!important}}
+@media (max-width:760px){main{display:flex;flex-direction:column}
+  .panel{max-height:none!important}.stage{min-height:380px}}
+
+.panel{background:var(--surface);border-right:1px solid var(--line);overflow-y:auto;
+  min-height:0;max-height:calc(100vh - 49px)}
+#statsPanel{border-right:none;border-left:1px solid var(--line)}
+
+.tabs{display:flex;border-bottom:1px solid var(--line);position:sticky;top:0;
+  background:var(--surface);z-index:5}
+.tab{flex:1;padding:9px 4px;text-align:center;cursor:pointer;border:none;background:none;
+  font-size:12.5px;color:var(--muted);border-bottom:2px solid transparent;white-space:nowrap}
+.tab.active{color:var(--ink);border-bottom-color:var(--accent);font-weight:600}
+.tabpane{display:none;padding:14px}
+.tabpane.active{display:block}
+
+.sec{margin-bottom:18px}
+.sec h3{font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;
+  color:var(--muted);margin:0 0 8px;font-weight:600}
+label.f{display:block;font-size:12px;color:var(--ink-2);margin:8px 0 3px}
+select,input[type=number],input[type=text]{width:100%;padding:6px 8px;border:1px solid var(--line);
+  border-radius:var(--r);background:var(--ground);color:var(--ink);font:inherit;font-size:13px}
+input[type=range]{width:100%;accent-color:var(--accent)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
+.seg{display:flex;border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.seg button{flex:1;padding:6px 4px;border:none;background:var(--ground);cursor:pointer;
+  font-size:12.5px;color:var(--muted)}
+.seg button.active{background:var(--accent);color:var(--accent-ink);font-weight:600}
+.seg button:disabled{opacity:.35;cursor:default}
+.hint{font-size:11.5px;color:var(--muted);margin-top:3px}
+.stepper{display:flex;gap:6px;align-items:center}
+.stepper input{text-align:center}
+.stepper .btn{padding:5px 10px;font-family:var(--mono)}
+
+.chip{display:inline-block;padding:1px 7px;border-radius:10px;font-family:var(--mono);
+  font-size:10.5px;border:1px solid var(--line);background:var(--surface-2)}
+.chip.fail{background:var(--missing-soft);color:var(--missing);border-color:transparent}
+.chip.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.chip.pass{background:var(--ok-soft);color:var(--ok);border-color:transparent}
+.chip.info{color:var(--muted)}
+
+.preset-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+.preset{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);
+  padding:8px 4px;text-align:center;cursor:pointer;font-size:11px;color:var(--ink-2)}
+.preset .ico{font-size:18px;display:block;margin-bottom:2px}
+.preset.active{border-color:var(--accent);background:var(--accent-soft)}
+
+.card{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);
+  padding:10px;margin-bottom:8px}
+.card h4{margin:0 0 4px;font-size:13px;display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.card .m{font-family:var(--mono);font-size:11.5px;color:var(--ink-2)}
+.card ul{margin:6px 0 0;padding-left:16px;font-size:12px}
+.card li.warn{color:var(--warn)}
+.scorebar{height:4px;background:var(--surface-2);border-radius:2px;margin:6px 0}
+.scorebar i{display:block;height:100%;background:var(--accent);border-radius:2px}
+
+.finding{border-left:3px solid var(--line);padding:6px 10px;margin-bottom:8px;font-size:12.5px}
+.finding.fail{border-left-color:var(--missing)}
+.finding.warn{border-left-color:var(--warn)}
+.finding.pass{border-left-color:var(--ok)}
+.finding .t{font-weight:600;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+.finding .d{color:var(--ink-2);margin-top:2px}
+.finding .r{font-family:var(--mono);font-size:10.5px;color:var(--muted);margin-top:2px}
+
+.stage{position:relative;min-height:0;background:
+  radial-gradient(1200px 700px at 60% 20%, var(--surface) 0%, var(--ground) 70%)}
+#viewport{position:absolute;inset:0;display:none}
+#viewport canvas{width:100%!important;height:100%!important;display:block;outline:none}
+#viewport2d{position:absolute;inset:0;padding:6px}
+.stage-ui{position:absolute;left:12px;bottom:12px;right:12px;display:flex;gap:10px;
+  align-items:flex-end;pointer-events:none;flex-wrap:wrap}
+.stage-ui>*{pointer-events:auto}
+.glass{background:color-mix(in srgb, var(--surface) 86%, transparent);
+  border:1px solid var(--line);border-radius:var(--r);padding:8px 10px;backdrop-filter:blur(6px)}
+.glass .lbl{font-family:var(--mono);font-size:10px;text-transform:uppercase;
+  letter-spacing:.08em;color:var(--muted);display:block;margin-bottom:4px}
+.stage-stats{display:none;position:absolute;top:12px;right:12px;max-width:270px}
+
+.stat{display:flex;justify-content:space-between;gap:10px;padding:4px 0;
+  border-bottom:1px dashed var(--line);font-size:12.5px}
+.stat:last-child{border-bottom:none}
+.stat b{font-family:var(--mono);font-weight:600;text-align:right}
+.stat span{color:var(--muted)}
+.badge-row{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+
+.disclaimer{font-size:11.5px;color:var(--muted);border:1px dashed var(--line);
+  border-radius:var(--r);padding:8px 10px;margin-bottom:12px}
+.empty{color:var(--muted);font-size:12.5px;padding:8px 0}
+footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);
+  background:var(--surface)}
+</style>
+</head>
+<body>
+<header>
+  <span class="brand"><b>battery-design</b> · 3D pack designer</span>
+  <div class="hdr-stats" id="hdrStats"></div>
+  <div class="hdr-spacer"></div>
+  <div class="hdr-links">
+    <a href="https://github.com/morshedvarzandeh/battery-data" target="_blank" rel="noopener">cell data</a>
+    <button class="btn" id="btnExport">Export JSON</button>
+    <button class="btn" id="btnTheme" title="Toggle theme">◐</button>
+  </div>
+</header>
+
+<main>
+  <aside class="panel" id="leftPanel">
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="design">Design</button>
+      <button class="tab" data-tab="usage">Usage</button>
+      <button class="tab" data-tab="fit">Fit</button>
+      <button class="tab" data-tab="comp">Parts</button>
+      <button class="tab" data-tab="analysis">Analysis <span class="chip" id="stdBadge"></span></button>
+    </div>
+
+    <div class="tabpane active" id="pane-design">
+      <div class="sec">
+        <h3>Cell</h3>
+        <select id="selCell"></select>
+        <div class="hint" id="cellHint"></div>
+      </div>
+      <div class="sec">
+        <h3>Configuration</h3>
+        <div class="row2">
+          <div>
+            <label class="f">Series (S)</label>
+            <div class="stepper"><button class="btn" data-step="s:-1">−</button>
+              <input type="number" id="inS" min="1" max="300" value="13">
+              <button class="btn" data-step="s:1">+</button></div>
+          </div>
+          <div>
+            <label class="f">Parallel (P)</label>
+            <div class="stepper"><button class="btn" data-step="p:-1">−</button>
+              <input type="number" id="inP" min="1" max="200" value="4">
+              <button class="btn" data-step="p:1">+</button></div>
+          </div>
+        </div>
+        <div class="hint" id="cfgHint"></div>
+      </div>
+      <div class="sec">
+        <h3>Arrangement</h3>
+        <div class="seg" id="segArr">
+          <button data-arr="grid">Grid</button>
+          <button data-arr="hex">Hex (staggered)</button>
+          <button data-arr="stack">Stack</button>
+        </div>
+        <label class="f">Orientation</label>
+        <div class="seg" id="segOri"></div>
+        <div class="row2">
+          <div><label class="f">Cells per row <span class="hint" style="display:inline">(0 = auto)</span></label>
+            <input type="number" id="inNx" min="0" max="200" value="0"></div>
+          <div><label class="f">Layers</label>
+            <input type="number" id="inNz" min="1" max="6" value="1"></div>
+        </div>
+      </div>
+      <div class="sec">
+        <h3>Spacing &amp; enclosure</h3>
+        <label class="f">Cell spacing / spacer <b id="vSpacing" class="m"></b></label>
+        <input type="range" id="inSpacing" min="0" max="5" step="0.25" value="1">
+        <label class="f">Wall thickness <b id="vWall" class="m"></b></label>
+        <input type="range" id="inWall" min="0.5" max="6" step="0.5" value="2">
+        <label class="f">Busbar / BMS headroom <b id="vHead" class="m"></b></label>
+        <input type="range" id="inHead" min="0" max="40" step="1" value="8">
+      </div>
+    </div>
+
+    <div class="tabpane" id="pane-usage">
+      <div class="sec">
+        <h3>Application preset</h3>
+        <div class="preset-grid" id="presetGrid"></div>
+      </div>
+      <div class="sec">
+        <h3>Requirements</h3>
+        <div class="row2">
+          <div><label class="f">Voltage min (V)</label><input type="number" id="rqVlo" value="36"></div>
+          <div><label class="f">Voltage max (V)</label><input type="number" id="rqVhi" value="52"></div>
+        </div>
+        <label class="f">Energy (Wh)</label><input type="number" id="rqWh" value="500">
+        <div class="row2">
+          <div><label class="f">Continuous power (W)</label><input type="number" id="rqPc" value="500"></div>
+          <div><label class="f">Peak power (W)</label><input type="number" id="rqPp" value="1200"></div>
+        </div>
+        <div class="row2">
+          <div><label class="f">Charge rate (C)</label><input type="number" id="rqC" step="0.1" value="0.5"></div>
+          <div><label class="f">Max mass (kg)</label><input type="number" id="rqKg" value=""></div>
+        </div>
+        <label class="f">Max dimensions L×W×H (mm, blank = open)</label>
+        <div class="row3">
+          <input type="number" id="rqDx" placeholder="L"><input type="number" id="rqDy" placeholder="W">
+          <input type="number" id="rqDz" placeholder="H">
+        </div>
+        <div class="row2">
+          <div><label class="f">Temp min (°C)</label><input type="number" id="rqTlo" value="0"></div>
+          <div><label class="f">Temp max (°C)</label><input type="number" id="rqThi" value="40"></div>
+        </div>
+        <div class="row2">
+          <div><label class="f">Cycles / year</label><input type="number" id="rqCy" value="250"></div>
+          <div><label class="f">Target years</label><input type="number" id="rqYr" value="5"></div>
+        </div>
+        <button class="btn primary" id="btnSuggest" style="width:100%;margin-top:12px">Suggest designs</button>
+      </div>
+      <div class="sec"><h3>Suggestions</h3><div id="suggestions"><div class="empty">Pick a preset or fill the form, then hit “Suggest designs”.</div></div></div>
+    </div>
+
+    <div class="tabpane" id="pane-fit">
+      <div class="sec">
+        <h3>Target envelope (outer, mm)</h3>
+        <div class="row3">
+          <div><label class="f">L (x)</label><input type="number" id="fitX" placeholder="open"></div>
+          <div><label class="f">W (y)</label><input type="number" id="fitY" placeholder="open"></div>
+          <div><label class="f">H (z)</label><input type="number" id="fitZ" placeholder="open"></div>
+        </div>
+        <div class="hint">Leave blank to just minimize volume for the current cell and S·P.</div>
+        <button class="btn primary" id="btnFit" style="width:100%;margin-top:10px">Find best packings</button>
+      </div>
+      <div class="sec"><h3>Candidates</h3><div id="fitResults"><div class="empty">No search yet.</div></div></div>
+    </div>
+
+    <div class="tabpane" id="pane-comp">
+      <div class="hint" style="margin-bottom:10px">Market-representative component classes with example
+        suppliers — properties are class-typical, not one SKU. Pickers filter to the current cell shape.</div>
+      <div id="compPickers"></div>
+    </div>
+
+    <div class="tabpane" id="pane-analysis">
+      <div class="disclaimer" id="stdDisclaimer"></div>
+      <div class="sec"><h3>Mechanical</h3><div id="anMech"><div class="empty">—</div></div></div>
+      <div class="sec"><h3>Thermal</h3><div id="anTherm"><div class="empty">—</div></div></div>
+      <div class="sec"><h3>Electrical</h3><div id="anElec"><div class="empty">—</div></div></div>
+      <div class="sec"><h3>Safety &amp; standards</h3><div id="anSafe"></div><div id="findings"></div></div>
+      <div class="sec"><h3>Standards referenced</h3><div id="stdList" style="font-size:11.5px;color:var(--muted)"></div></div>
+    </div>
+  </aside>
+
+  <section class="stage">
+    <div id="viewport2d"></div>
+    <div id="viewport"></div>
+    <div class="glass stage-stats" id="stageStats"></div>
+    <div class="stage-ui">
+      <div class="glass">
+        <span class="lbl">View</span>
+        <div class="seg" id="segView" style="min-width:150px">
+          <button data-view="2d" class="active">2D layout</button>
+          <button data-view="3d">3D render</button>
+        </div>
+      </div>
+      <div class="glass">
+        <span class="lbl">Color</span>
+        <div class="seg" id="segColor" style="min-width:170px">
+          <button data-col="series" class="active">Series groups</button>
+          <button data-col="chemistry">Chemistry</button>
+        </div>
+      </div>
+      <div class="glass" id="glassExplode" style="flex:1;min-width:140px;max-width:240px;display:none">
+        <span class="lbl">Explode</span>
+        <input type="range" id="inExplode" min="0" max="1" step="0.01" value="0">
+      </div>
+      <div class="glass">
+        <span class="lbl">Show</span>
+        <label style="font-size:12px;margin-right:8px"><input type="checkbox" id="ckEnc" checked> enclosure</label>
+        <label style="font-size:12px"><input type="checkbox" id="ckWire" checked> series path</label>
+      </div>
+    </div>
+  </section>
+
+  <aside class="panel" id="statsPanel">
+    <div class="tabpane active" id="statsBody" style="display:block"></div>
+  </aside>
+</main>
+<footer>Figures are engineering estimates from nameplate data and class-typical component properties; DCIR is cells-only. Analysis and standards output is guidance, not certification.</footer>
+<script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>
