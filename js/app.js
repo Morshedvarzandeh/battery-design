@@ -6,6 +6,7 @@ import { CELLS, CHEMISTRIES, cellById } from './cells.js';
 import { PRESETS } from './presets.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
 import { optimizeSpace, suggestDesigns, maxFill } from './optimizer.js';
+import { layoutPackBay, polygonBounds } from './bay.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
 import { ANALYSIS_DISCLAIMER, analyze } from './engineering.js';
@@ -30,6 +31,9 @@ const state = {
   presetId: null,
   colorMode: 'series',
   sel: { ...DEFAULTS_BY_FORM.cylindrical }, // component ids per category
+  bayKind: 'box',          // box | round | lshape | stepped | poly
+  sketchPts: [],           // drawn polygon vertices, mm
+  appliedBay: null,        // bay object of the applied shaped fill, or null
 };
 
 // 2D-first: the dimensioned 2D layout is the working view; the WebGL viewer
@@ -222,13 +226,16 @@ function bindControls() {
     viewer?.setToggles({ wiring: $('ckWire').checked });
   };
 
+  $('segBay').querySelectorAll('button').forEach((b) => b.onclick = () => setBayKind(b.dataset.bay));
+  bindSketch();
   $('btnSuggest').onclick = runSuggest;
   $('btnFit').onclick = runFit;
   $('btnMaxFill').onclick = runMaxFill;
-  // Weight sliders re-rank live once a max-fill search has run.
-  for (const [id, lbl] of [['wEnergy', 'vWe'], ['wCost', 'vWc'], ['wMass', 'vWm']]) {
+  // Weight/allowance sliders re-rank live once a max-fill search has run.
+  for (const [id, lbl, suffix] of [['wEnergy', 'vWe', ''], ['wCost', 'vWc', ''], ['wMass', 'vWm', ''],
+    ['inInteg', 'vInteg', '%']]) {
     $(id).oninput = () => {
-      $(lbl).textContent = $(id).value;
+      $(lbl).textContent = $(id).value + suffix;
       if ($('fitResults').querySelector('.card')) runMaxFill();
     };
   }
@@ -263,6 +270,141 @@ function onCellChange() {
     initComponents();
   }
   syncInputs();
+}
+
+// ---------------------------------------------------------------------------
+// Bay shape (available space) — calculator-simple templates + a tiny sketcher
+// ---------------------------------------------------------------------------
+const BAY_FIELDS = {
+  round: [['bayD', 'Diameter (mm)', 600], ['bayZ1', 'Height (mm)', 120]],
+  lshape: [['bayLX', 'L (x, mm)', 800], ['bayLY', 'W (y, mm)', 600],
+    ['bayCutX', 'Cut x (mm)', 300], ['bayCutY', 'Cut y (mm)', 250], ['bayZ1', 'Height (mm)', 120]],
+  stepped: [['bayXA', 'Zone A length (mm)', 900], ['bayZA', 'Zone A height (mm)', 140],
+    ['bayXB', 'Zone B length (mm)', 600], ['bayZB', 'Zone B height (mm)', 260], ['bayY', 'Width (y, mm)', 1100]],
+  poly: [['bayZ1', 'Height (mm)', 120]],
+};
+
+function setBayKind(kind) {
+  state.bayKind = kind;
+  $('segBay').querySelectorAll('button').forEach((b) =>
+    b.classList.toggle('active', b.dataset.bay === kind));
+  $('bayBox').style.display = kind === 'box' ? 'block' : 'none';
+  const box = $('bayFields');
+  box.innerHTML = '';
+  for (const [id, label, dflt] of BAY_FIELDS[kind] || []) {
+    const d = document.createElement('div');
+    d.innerHTML = `<label class="f">${label}</label><input type="number" id="${id}" value="${dflt}">`;
+    box.appendChild(d);
+  }
+  $('sketch').style.display = kind === 'poly' ? 'block' : 'none';
+  if (kind === 'poly') {
+    $('bayHint').textContent = 'Click to add corners (grid = 50 mm). Click the first corner to close, drag a corner to move it, double-click a corner to delete it. The shape is your bay in plan view.';
+    drawSketch();
+  } else {
+    $('bayHint').textContent = 'Type the sizes — like a calculator. Walls, spacer gap, busbar headroom and the selected cooling system’s space are subtracted before packing.';
+  }
+}
+
+function readBay() {
+  const n = (id, dflt) => { const v = parseFloat($(id)?.value); return isFinite(v) && v > 0 ? v : dflt; };
+  switch (state.bayKind) {
+    case 'round': return { kind: 'round', d: n('bayD', 600), z: n('bayZ1', 120) };
+    case 'lshape': return {
+      kind: 'lshape', x: n('bayLX', 800), y: n('bayLY', 600),
+      cutX: n('bayCutX', 300), cutY: n('bayCutY', 250), z: n('bayZ1', 120),
+    };
+    case 'stepped': return {
+      kind: 'stepped', xA: n('bayXA', 900), zA: n('bayZA', 140),
+      xB: n('bayXB', 600), zB: n('bayZB', 260), y: n('bayY', 1100),
+    };
+    case 'poly':
+      return state.sketchPts.length >= 3
+        ? { kind: 'poly', points: state.sketchPts, z: n('bayZ1', 120) }
+        : null;
+    case 'box':
+    default: {
+      const x = parseFloat($('fitX').value), y = parseFloat($('fitY').value), z = parseFloat($('fitZ').value);
+      return [x, y, z].every((v) => isFinite(v) && v > 0) ? { kind: 'box', x, y, z } : null;
+    }
+  }
+}
+
+// Tiny polygon sketcher: fixed 1500 mm world width, 50 mm snap.
+const SKETCH_WORLD = 1500;
+let sketchDrag = null;
+function sketchScale() {
+  const c = $('sketch');
+  return (c.clientWidth || 300) / SKETCH_WORLD;
+}
+function drawSketch() {
+  const c = $('sketch');
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const wCss = c.clientWidth || 300, hCss = 230;
+  c.width = wCss * dpr; c.height = hCss * dpr;
+  const g = c.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, wCss, hCss);
+  const sc = sketchScale();
+  const css = (name, fb) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fb;
+  g.strokeStyle = css('--line', '#ddd'); g.lineWidth = 0.5;
+  for (let mm = 0; mm <= SKETCH_WORLD; mm += 100) {
+    g.beginPath(); g.moveTo(mm * sc, 0); g.lineTo(mm * sc, hCss); g.stroke();
+    g.beginPath(); g.moveTo(0, mm * sc); g.lineTo(wCss, mm * sc); g.stroke();
+  }
+  const pts = state.sketchPts;
+  if (!pts.length) {
+    g.fillStyle = css('--muted', '#888'); g.font = '12px system-ui';
+    g.fillText('click to sketch your bay outline (100 mm grid)', 12, 20);
+    return;
+  }
+  g.strokeStyle = css('--accent', '#0b6e5f'); g.lineWidth = 1.6;
+  g.beginPath();
+  pts.forEach(([x, y], i) => i ? g.lineTo(x * sc, y * sc) : g.moveTo(x * sc, y * sc));
+  if (pts.length >= 3) g.closePath();
+  g.stroke();
+  g.fillStyle = 'rgba(11,110,95,.08)'; if (pts.length >= 3) g.fill();
+  for (const [x, y] of pts) {
+    g.fillStyle = css('--accent', '#0b6e5f');
+    g.beginPath(); g.arc(x * sc, y * sc, 4, 0, Math.PI * 2); g.fill();
+  }
+  // Edge lengths.
+  g.fillStyle = css('--muted', '#888'); g.font = '10px ui-monospace, monospace';
+  for (let i = 0; i < pts.length - (pts.length >= 3 ? 0 : 1); i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const len = Math.hypot(b[0] - a[0], b[1] - a[1]);
+    g.fillText(`${Math.round(len)}`, ((a[0] + b[0]) / 2) * sc + 3, ((a[1] + b[1]) / 2) * sc - 3);
+  }
+}
+function bindSketch() {
+  const c = $('sketch');
+  const toMm = (e) => {
+    const r = c.getBoundingClientRect();
+    const sc = sketchScale();
+    const snap = (v) => Math.round(v / 50) * 50;
+    return [snap((e.clientX - r.left) / sc), snap((e.clientY - r.top) / sc)];
+  };
+  const hitIdx = (e) => {
+    const r = c.getBoundingClientRect();
+    const sc = sketchScale();
+    return state.sketchPts.findIndex(([x, y]) =>
+      Math.hypot(x * sc - (e.clientX - r.left), y * sc - (e.clientY - r.top)) < 9);
+  };
+  c.onpointerdown = (e) => {
+    const i = hitIdx(e);
+    if (i >= 0) { sketchDrag = i; c.setPointerCapture(e.pointerId); return; }
+    state.sketchPts.push(toMm(e));
+    drawSketch();
+  };
+  c.onpointermove = (e) => {
+    if (sketchDrag == null) return;
+    state.sketchPts[sketchDrag] = toMm(e);
+    drawSketch();
+  };
+  c.onpointerup = () => { sketchDrag = null; };
+  c.ondblclick = (e) => {
+    const i = hitIdx(e);
+    if (i >= 0) { state.sketchPts.splice(i, 1); drawSketch(); }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -377,12 +519,23 @@ function recompute() {
     underMm: cool.bottom, rowExtraMm: cool.rowGap,
     nx: state.nx, nz: state.nz,
   };
-  let layout = layoutPack(c, state.s, state.p, opts);
+  let layout = null;
+  let bayNote = '';
+  if (state.appliedBay) {
+    // A shaped fill was applied: place the cells inside the real bay outline.
+    layout = layoutPackBay(c, state.s, state.p, state.appliedBay, opts);
+    if (!layout) {
+      state.appliedBay = null; // S·P outgrew the bay — fall back to a free grid
+      bayNote = ' · exceeds bay capacity, showing free grid';
+    }
+  }
+  if (!layout) layout = layoutPack(c, state.s, state.p, opts);
   if (!layout) layout = layoutPack(c, state.s, state.p, { ...opts, nx: 0 });
   lastLayout = layout;
   lastSummary = summarize(c, state.s, state.p, layout);
-  $('cfgHint').textContent =
-    `${N} cells · ${layout.nx}×${layout.ny}${layout.nz > 1 ? `×${layout.nz}` : ''} ${layout.arrangement}`;
+  $('cfgHint').textContent = layout.bayZonesOut
+    ? `${N} cells in ${state.appliedBay.kind} bay · ${layout.arrangement}`
+    : `${N} cells · ${layout.nx}×${layout.ny}${layout.nz > 1 ? `×${layout.nz}` : ''} ${layout.arrangement}${bayNote}`;
 
   const chemCol = CHEMISTRIES[c.chemistry]?.color;
   viewer2d.setColorMode(state.colorMode, chemCol);
@@ -597,13 +750,16 @@ function applyCandidate(r) {
 // consume — then compare on cost.
 function runMaxFill() {
   const num = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
-  const t = [num('fitX'), num('fitY'), num('fitZ')];
   const box = $('fitResults');
-  if (!t.every((v) => v != null && v > 0)) {
-    box.innerHTML = '<div class="empty">Max fill needs all three envelope dimensions — enter the space your application offers (a preset on the Usage tab pre-fills it).</div>';
+  const bay = readBay();
+  if (!bay) {
+    box.innerHTML = state.bayKind === 'poly'
+      ? '<div class="empty">Sketch at least three corners of your bay first.</div>'
+      : '<div class="empty">Max fill needs the bay dimensions — enter the space your application offers (a preset on the Usage tab pre-fills the box).</div>';
     return;
   }
-  const envelope = { x: t[0], y: t[1], z: t[2] };
+  const shaped = bay.kind !== 'box';
+  const envelope = shaped ? null : { x: bay.x, y: bay.y, z: bay.z };
   const req = {
     vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
     contPowerW: num('rqPc'),
@@ -614,18 +770,23 @@ function runMaxFill() {
     },
   };
   const cool = coolingSpace();
+  const integrationPct = parseFloat($('inInteg').value) || 0;
   const results = maxFill(CELLS, envelope, req, {
     spacingMm: state.spacingMm, wallMm: state.wallMm,
     headroomMm: state.headroomMm, layerGapMm: state.layerGapMm,
-    coolingSpace: cool,
+    coolingSpace: cool, integrationPct, bay: shaped ? bay : null,
   });
   if (!results.length) {
     box.innerHTML = '<div class="empty">No cell in the library fits that envelope with the current walls, spacing and cooling reservation.</div>';
     return;
   }
   const w = results[0]?.weightsUsed;
-  box.innerHTML = `<div class="hint" style="margin-bottom:8px">Envelope ${f0(envelope.x)}×${f0(envelope.y)}×${f0(envelope.z)} mm ·
+  const bayLabel = shaped
+    ? `${bay.kind} bay`
+    : `${f0(bay.x)}×${f0(bay.y)}×${f0(bay.z)} mm`;
+  box.innerHTML = `<div class="hint" style="margin-bottom:8px">${esc(bayLabel)} ·
     ${req.vRange[0]}–${req.vRange[1]} V window · cooling reserve ${cool.bottom}/${cool.side}/${cool.rowGap} mm (bottom/side/row)
+    · integration ${f0(integrationPct)}%
     ${w ? `· weights E ${f0(w.energy * 100)}% / $ ${f0(w.cost * 100)}% / kg ${f0(w.mass * 100)}%` : ''}</div>`;
   results.forEach((r, i) => {
     const ch = CHEMISTRIES[r.cell.chemistry];
@@ -636,7 +797,8 @@ function runMaxFill() {
         <span class="chip" style="color:${ch?.color};border-color:${ch?.color}">${r.cell.chemistry}</span>
         ${r.pareto ? '<span class="chip pass">Pareto-optimal</span>' : '<span class="chip info">dominated</span>'}</h4>
       <div class="m">${r.s}S${r.p}P · ${f1(r.nominalV)} V · ${r.n}/${r.nMax} cells (${f0(r.utilization * 100)}% of fit) ·
-        ${fWh(r.energyWh)} · ${f1(r.massKg)} kg · ${r.grid.nx}×${r.grid.ny}${r.grid.nz > 1 ? `×${r.grid.nz}` : ''} ${r.opts.arrangement}
+        ${fWh(r.energyWh)} · ${f1(r.massKg)} kg ·
+        ${r.grid.nx != null ? `${r.grid.nx}×${r.grid.ny}${r.grid.nz > 1 ? `×${r.grid.nz}` : ''} ` : ''}${r.opts.arrangement}
         ${r.costUSD != null ? `· ~$${f0(r.costUSD)} (${f0(r.usdPerKWh)} $/kWh, cells only)` : ''}</div>
       <div class="scorebar"><i style="width:${clamp(r.score, 2, 100)}%"></i></div>
       ${r.warnings.length ? `<ul>${r.warnings.map((x) => `<li class="warn">${esc(x)}</li>`).join('')}</ul>` : ''}
@@ -644,6 +806,7 @@ function runMaxFill() {
     card.querySelector('button').onclick = () => {
       state.cellId = r.cell.id;
       state.s = r.s; state.p = r.p;
+      state.appliedBay = r.shaped ? r.bay : null;
       Object.assign(state, {
         arrangement: r.opts.arrangement, orientation: r.opts.orientation,
         nx: r.opts.nx, nz: r.opts.nz,

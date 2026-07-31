@@ -5,6 +5,7 @@
 
 import { electrical, gridDims, layoutPack, summarize, ARRANGEMENTS_BY_FORM } from './pack-engine.js';
 import { cellEnergyWh } from './cells.js';
+import { bayCapacity, scaleBayPlan } from './bay.js';
 
 const ORIENTATIONS_BY_FORM = {
   cylindrical: ['upright', 'lying'],
@@ -261,19 +262,44 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
   const wallMm = baseOpts.wallMm ?? 2;
   const layerGapMm = baseOpts.layerGapMm ?? 2;
   const cool = baseOpts.coolingSpace || { bottom: 0, side: 0, rowGap: 0 };
+  // Integration allowance: real packs lose plan area to module walls, crash
+  // structure, manifolds and wiring that this tool does not model. Validated
+  // against the Tesla Model 3 LR (4,416 real cells vs 6,956 geometric ideal
+  // in the same bay -> the OEM realizes ~64% of ideal, i.e. ~36% overhead).
+  // Applied to the plan (x, y); height is left alone.
+  const integ = Math.min(60, Math.max(0, baseOpts.integrationPct ?? 0)) / 100;
+  const planFactor = Math.sqrt(1 - integ);
+  // A non-rectangular bay (round, L-shape, stepped, drawn polygon) packs
+  // against the real outline; a plain box keeps the fast rectangular path.
+  const shaped = baseOpts.bay && baseOpts.bay.kind && baseOpts.bay.kind !== 'box';
+  const bayScaled = shaped ? scaleBayPlan(baseOpts.bay, planFactor) : null;
+  const env = envelope
+    ? { x: envelope.x * planFactor, y: envelope.y * planFactor, z: envelope.z }
+    : null;
   const out = [];
 
   for (const cell of cells) {
     const headroomMm = baseOpts.headroomMm ?? (cell.form === 'cylindrical' ? 8 : 15);
     let best = null;
-    for (const orientation of ORIENTATIONS_BY_FORM[cell.form]) {
-      for (const arrangement of ARRANGEMENTS_BY_FORM[cell.form]) {
-        if (arrangement === 'hex' && orientation === 'lying') continue;
-        const cand = maxGridInBox(cell, envelope, {
-          arrangement, orientation, spacingMm, wallMm, headroomMm, layerGapMm,
-          underMm: cool.bottom, sideMm: cool.side, rowExtraMm: cool.rowGap,
-        });
-        if (cand && (!best || cand.nMax > best.nMax)) best = cand;
+    if (shaped) {
+      const cap = bayCapacity(cell, bayScaled, {
+        spacingMm, layerGapMm, wallMm, headroomMm,
+        underMm: cool.bottom, rowExtraMm: cool.rowGap,
+      });
+      if (cap) {
+        best = { nMax: cap.count, nx: null, ny: null, nz: null,
+          arrangement: cap.arrangement, orientation: cap.orientation };
+      }
+    } else {
+      for (const orientation of ORIENTATIONS_BY_FORM[cell.form]) {
+        for (const arrangement of ARRANGEMENTS_BY_FORM[cell.form]) {
+          if (arrangement === 'hex' && orientation === 'lying') continue;
+          const cand = maxGridInBox(cell, env, {
+            arrangement, orientation, spacingMm, wallMm, headroomMm, layerGapMm,
+            underMm: cool.bottom, sideMm: cool.side, rowExtraMm: cool.rowGap,
+          });
+          if (cand && (!best || cand.nMax > best.nMax)) best = cand;
+        }
       }
     }
     if (!best || best.nMax < 1) continue;
@@ -309,12 +335,14 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
       massKg: (pick.n * cell.massG) / 1000, // cells only, comparable across candidates
       nominalV: pick.s * cell.nominalV,
       grid: { nx: best.nx, ny: best.ny, nz: best.nz },
+      shaped: !!shaped,
+      bay: shaped ? baseOpts.bay : null,
       warnings,
       opts: {
         arrangement: best.arrangement, orientation: best.orientation,
         spacingMm, wallMm, headroomMm, layerGapMm,
         underMm: cool.bottom, rowExtraMm: cool.rowGap,
-        nx: best.nx, nz: best.nz,
+        nx: best.nx ?? 0, nz: best.nz ?? 1,
       },
     });
   }

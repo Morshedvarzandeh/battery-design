@@ -475,6 +475,59 @@ export const CELLS = [
     sourceNote: 'High-power SCiB type. Capacity, 2.4 V nominal, 150 g and W63 x D14 x H97 dims all from the Toshiba catalog via contrib/cells/toshiba/scib-2-9ah.yaml. Toshiba publishes power (520 W out / 10 s) instead of current limits; the 10C continuous / ~35C pulse figures here are conservative estimates backed out of that power figure, and DCIR ~2.8 mOhm likewise. Voltage window assumed same as other SCiB types; cycle life is the Toshiba family claim; temperatures and price estimated.'
   },
 
+  {
+    id: 'tesla-2170-m3lr',
+    name: 'Tesla/Panasonic 2170 (Model 3 LR class)',
+    manufacturer: 'Panasonic (Tesla)',
+    model: '2170 automotive',
+    form: 'cylindrical',
+    formFactor: '21700',
+    chemistry: 'NCA',
+    dims: { d: 21.1, h: 70.2 },
+    massG: 68,
+    capacityAh: 4.8,
+    nominalV: 3.65,
+    vMax: 4.2,
+    vMin: 2.5,
+    maxContDischargeA: 15,
+    maxPulseDischargeA: null,
+    maxContChargeA: 7,
+    dcirMOhm: 20,
+    cycleLife: 1500,
+    tempDischargeC: [-20, 60],
+    tempChargeC: [0, 45],
+    priceUSD: 4,
+    dataQuality: 'estimate',
+    sourceNote: 'Automotive 2170 as used in the Model 3 Long Range (96s46p, 4416 cells, 78.1 kWh nominal => ~17.7 Wh/cell => ~4.8 Ah at 3.65 V). No public datasheet; capacity, currents, DCIR, cycle life and price are teardown/press-derived estimates. Added for validating the max-fill algorithm against real vehicle packs.'
+  },
+
+  // ── Prismatic LFP blade ──────────────────────────────────────────────────
+  {
+    id: 'byd-blade-lfp-150ah',
+    name: 'BYD Blade LFP (Atto 3 class)',
+    manufacturer: 'BYD (FinDreams)',
+    model: 'Blade EV cell',
+    form: 'prismatic',
+    formFactor: 'prismatic',
+    chemistry: 'LFP',
+    dims: { w: 960, t: 13.5, h: 90 },
+    massG: 2900,
+    capacityAh: 150,
+    nominalV: 3.2,
+    vMax: 3.65,
+    vMin: 2.5,
+    maxContDischargeA: 150,
+    maxPulseDischargeA: 450,
+    maxContChargeA: 150,
+    dcirMOhm: 0.6,
+    cycleLife: 3500,
+    tempDischargeC: [-20, 60],
+    tempChargeC: [0, 55],
+    priceUSD: 95,
+    dataQuality: 'estimate',
+    sourceNote: 'Cell-to-pack blade format, ~960 x 90 x 13.5 mm per press coverage of the Atto 3 (60.5 kWh gross at ~403 V nominal across 138 blades => ~150 Ah class). Mass from ~165 Wh/kg blade-level figures; currents (1C cont / 3C pulse), DCIR, cycle life and price are class estimates. Added for validating the max-fill algorithm against real vehicle packs.'
+  },
+
   // ── Pouch NMC ────────────────────────────────────────────────────────────
   {
     id: 'generic-nmc-pouch-10ah-hp',
