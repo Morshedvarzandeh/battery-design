@@ -124,15 +124,30 @@ export class PackViewer2D {
 
     // ── TOP VIEW (X·Y) ───────────────────────────────────────────────────
     const ox = topX, oy = topY;
-    label(ox, oy - 10, `TOP VIEW · X–Y · ${L.nx}×${L.ny}${L.nz > 1 ? `×${L.nz}` : ''} ${L.arrangement}`);
+    label(ox, oy - 10, `TOP VIEW · X–Y · ${L.nx != null
+      ? `${L.nx}×${L.ny}${L.nz > 1 ? `×${L.nz}` : ''} ` : ''}${L.arrangement}${L.bayZonesOut ? ' · shaped bay' : ''}`);
 
-    // Enclosure outline (outer), inner cavity dashed.
-    g.strokeStyle = ink; g.lineWidth = 1.5;
-    g.strokeRect(ox, oy, s(L.outer.x), s(L.outer.y));
-    g.strokeStyle = line; g.lineWidth = 1; g.setLineDash([4, 3]);
+    // Enclosure outline (outer): the real bay polygon when a shaped fill is
+    // applied, otherwise the rectangle; inner cavity dashed for rectangles.
     const wx = s(L.wallMm);
-    g.strokeRect(ox + wx, oy + wx, s(L.inner.x), s(L.inner.y));
-    g.setLineDash([]);
+    if (L.bayZonesOut) {
+      const bcx = ox + s(L.outer.x / 2), bcy = oy + s(L.outer.y / 2);
+      g.strokeStyle = ink; g.lineWidth = 1.5;
+      for (const zone of L.bayZonesOut) {
+        g.beginPath();
+        zone.poly.forEach(([px, py], i) => {
+          const cxp = bcx + s(px), cyp = bcy + s(py);
+          i ? g.lineTo(cxp, cyp) : g.moveTo(cxp, cyp);
+        });
+        g.closePath(); g.stroke();
+      }
+    } else {
+      g.strokeStyle = ink; g.lineWidth = 1.5;
+      g.strokeRect(ox, oy, s(L.outer.x), s(L.outer.y));
+      g.strokeStyle = line; g.lineWidth = 1; g.setLineDash([4, 3]);
+      g.strokeRect(ox + wx, oy + wx, s(L.inner.x), s(L.inner.y));
+      g.setLineDash([]);
+    }
 
     // Cells of layer 0, engine coords → canvas: x right, y DOWN (engineering
     // top view; +Y away from viewer). Positions are centered at 0.

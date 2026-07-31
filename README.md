@@ -51,6 +51,25 @@ project's provenance-first datasheet pipeline.
   IEC 62619 / 62133-2, UL family) perspectives, with the actual numbers in
   every finding.
 
+## Space-first design, validated against real cars
+
+The Fit tab works the way real projects do: the application fixes the
+available space, and the tool extracts the most from it. The bay does not
+have to be a rectangle — calculator-simple templates (box, round, L-shape,
+stepped two-height) take typed dimensions, and a **Draw** mode lets you
+sketch any plan outline on a 50 mm grid. The packer fills the true shape,
+subtracting walls, spacer gaps, busbar headroom and the space the selected
+cooling system consumes, then treats cell choice as a multi-objective
+optimization (energy in the space vs cost vs mass, adjustable weights,
+Pareto front flagged).
+
+The model is benchmarked against production packs
+(`tools/validate-vs-market.mjs`, runs in CI): with the calibrated 35%
+integration allowance it reconstructs the Tesla Model 3 LR pack to within
+1% (predicted 100S45P / 4,500 cells / 78.8 kWh vs the real 96S46P /
+4,416 / 78.1 kWh), and shows the blade-cell cell-to-pack effect (96% of
+geometric ideal vs ~64% for module-based packs).
+
 ## 2D-first workflow
 
 The default working view is a cheap, dimensioned 2D drawing — top view (X·Y)

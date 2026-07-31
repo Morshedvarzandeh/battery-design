@@ -21,3 +21,5 @@ jobs:
       - run: node tests/geometry-regressions.mjs
       - run: node tests/review-regressions.mjs
       - run: node tests/maxfill-regressions.mjs
+      - run: node tests/bay-regressions.mjs
+      - run: node tools/validate-vs-market.mjs

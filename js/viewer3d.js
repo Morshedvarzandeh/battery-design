@@ -156,16 +156,32 @@ export class PackViewer {
       this.packGroup.add(this._caps);
     }
 
-    // Enclosure.
+    // Enclosure: extruded bay outline for shaped fills, box otherwise.
     const enc = new THREE.Group();
-    const box = new THREE.BoxGeometry(L.outer.x, L.outer.z, L.outer.y);
-    const lines = new THREE.LineSegments(
-      new THREE.EdgesGeometry(box),
-      new THREE.LineBasicMaterial({ color: this._dark ? 0x93a29e : 0x5f6d69 })
-    );
-    const panel = new THREE.Mesh(box, new THREE.MeshBasicMaterial({
-      color: 0x4fd1b5, transparent: true, opacity: 0.05, depthWrite: false, side: THREE.DoubleSide,
-    }));
+    const lineMat = new THREE.LineBasicMaterial({ color: this._dark ? 0x93a29e : 0x5f6d69 });
+    let lines, panel;
+    if (L.bayZonesOut) {
+      lines = new THREE.Group();
+      for (const zone of L.bayZonesOut) {
+        const yBot = -L.outer.z / 2, yTop = -L.outer.z / 2 + zone.z;
+        for (const yy of [yBot, yTop]) {
+          const pts = zone.poly.map(([px, py]) => new THREE.Vector3(px, yy, py));
+          lines.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts), lineMat));
+        }
+        for (const [px, py] of zone.poly) {
+          lines.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+            new THREE.Vector3(px, yBot, py), new THREE.Vector3(px, yTop, py),
+          ]), lineMat));
+        }
+      }
+      panel = new THREE.Group(); // no translucent shell for shaped bays
+    } else {
+      const box = new THREE.BoxGeometry(L.outer.x, L.outer.z, L.outer.y);
+      lines = new THREE.LineSegments(new THREE.EdgesGeometry(box), lineMat);
+      panel = new THREE.Mesh(box, new THREE.MeshBasicMaterial({
+        color: 0x4fd1b5, transparent: true, opacity: 0.05, depthWrite: false, side: THREE.DoubleSide,
+      }));
+    }
     // Walls are symmetric; headroom raises the lid, reserved under-cell
     // space (cold plate) lowers the floor.
     const encCenterY = (L.headroomMm - (L.underMm || 0)) / 2;
@@ -177,8 +193,10 @@ export class PackViewer {
       steel: [0x8899aa, 0.08], 'plastic-v0': [0xd9a441, 0.08], potted: [0x8a7f66, 0.16],
     };
     const tint = HOUSING_TINT[this.compViz?.housing] || HOUSING_TINT['aluminum-sheet'];
-    panel.material.color.set(tint[0]);
-    panel.material.opacity = tint[1];
+    if (panel.material) {
+      panel.material.color.set(tint[0]);
+      panel.material.opacity = tint[1];
+    }
     // Pack-level vent nub on the lid.
     if (this.compViz?.vent) {
       const ventMesh = new THREE.Mesh(
