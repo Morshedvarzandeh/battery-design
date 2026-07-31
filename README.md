@@ -27,11 +27,32 @@ project's provenance-first datasheet pipeline.
 - **Fit box** — enumerate arrangements, orientations and layer counts to
   pack the current configuration into a target envelope, or just minimize
   volume.
-- **Standards** — a rule engine audits the design against UN 38.3 / IATA
-  transport thresholds, ECE R100 / ISO 6469-3 voltage classes, IEC 62619 /
-  IEC 62133-2 protection requirements, thermal-propagation spacing practice,
-  and a certification-path map by application. Findings carry the actual
-  numbers and the standard they derive from.
+- **Parts** — market-representative component catalogs per cell shape:
+  busbars/interconnects (nickel strip, laser-welded copper, stamped aluminium,
+  Tesla-style wire bonds, cell contact systems), cell spacers and holders
+  (incl. aerogel/mica propagation barriers and pouch compression foam), gas
+  vents (cell burst discs, PTFE breathers, PRVs, rupture panels), cooling
+  systems (forced air, side and bottom cold plates, Tesla-style between-cell
+  ribbon, immersion, PCM), thermal interface materials, and housings — each
+  with class-typical properties and example suppliers (representative, not
+  endorsements).
+- **Analysis — four perspectives** — every design is audited from the
+  Mechanical (component mass budget, compression, vibration, IP fit),
+  Thermal (I²R heat, cooling adequacy ΔT, TIM interface), Electrical
+  (busbar ampacity and loss, creepage/clearance per IEC 60664-1, isolation
+  and leakage) and Safety (venting, propagation barriers, flammability, plus
+  the full standards audit: UN 38.3 / IATA, ECE R100 / ISO 6469-3,
+  IEC 62619 / 62133-2, UL family) perspectives, with the actual numbers in
+  every finding.
+
+## 2D-first workflow
+
+The default working view is a cheap, dimensioned 2D drawing — top view (X·Y)
+with cell layout, pitch/gap and outer dimensions, plus a side elevation (Z)
+with layers and headroom. It redraws once per change with no WebGL and no
+animation loop, so iteration is instant even for hundred-cell packs. The 3D
+view is a **final render**: it is only instantiated when you press
+"3D render", and its render loop pauses whenever you switch back to 2D.
 
 ## Honesty rules
 
@@ -51,9 +72,12 @@ project's provenance-first datasheet pipeline.
 | `js/cells.js` | Cell library + chemistry data (self-contained, no imports) |
 | `js/presets.js` | Application usage presets |
 | `js/standards.js` | Standards rule engine over a computed design context |
+| `js/components.js` | Component & materials catalog with supplier examples |
+| `js/engineering.js` | Four-perspective analysis (mech/thermal/elec/safety) |
 | `js/pack-engine.js` | Pure electrical + layout math (Z-up, mm) |
 | `js/optimizer.js` | Requirement search + space fitting |
-| `js/viewer3d.js` | Three.js instanced rendering |
+| `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
+| `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |
 | `js/app.js` | UI state and wiring |
 
 The data modules are import-free so they can be consumed by tooling (node

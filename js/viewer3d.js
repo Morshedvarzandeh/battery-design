@@ -40,17 +40,30 @@ export class PackViewer {
     this.explodeF = 0;
     this.showEnclosure = true;
     this.showWiring = true;
+    // Component visualization: { cooling:'bottom'|'side'|'between'|null,
+    //   vent:boolean, housing:'aluminum-sheet'|'plastic-v0'|...|null }
+    this.compViz = null;
 
     this._ro = new ResizeObserver(() => this.resize());
     this._ro.observe(container);
     this.resize();
 
-    const loop = () => {
-      this._raf = requestAnimationFrame(loop);
+    this._loop = () => {
+      this._raf = requestAnimationFrame(this._loop);
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
     };
-    loop();
+    this._loop();
+  }
+
+  // The render loop only runs while the 3D view is on screen — 2D is the
+  // default working view, 3D is the (costlier) final render.
+  pause() {
+    if (this._raf != null) { cancelAnimationFrame(this._raf); this._raf = null; }
+  }
+
+  resume() {
+    if (this._raf == null) this._loop();
   }
 
   setTheme(dark) {
@@ -87,11 +100,17 @@ export class PackViewer {
     if (this._wire) this._wire.visible = this.showWiring && this.explodeF < 0.05;
   }
 
-  setPack(layout, chemColor) {
+  setPack(layout, chemColor, compViz) {
     this.layout = layout;
     if (chemColor) this.chemColor = chemColor;
+    if (compViz !== undefined) this.compViz = compViz;
     this._rebuild();
     if (layout) this._frame();
+  }
+
+  setComponents(compViz) {
+    this.compViz = compViz;
+    if (this.layout) this._rebuild();
   }
 
   _clearPack() {
@@ -104,7 +123,7 @@ export class PackViewer {
       if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => m.dispose());
     });
     this.packGroup.clear();
-    this._cells = this._caps = this._wire = this._encGroup = this._encLines = null;
+    this._cells = this._caps = this._wire = this._encGroup = this._encLines = this._compGroup = null;
   }
 
   _rebuild() {
@@ -150,9 +169,27 @@ export class PackViewer {
     const encCenterY = L.headroomMm / 2; // walls symmetric; headroom raises the lid
     enc.position.set(0, encCenterY, 0);
     enc.add(lines, panel);
+    // Housing material tints the translucent shell.
+    const HOUSING_TINT = {
+      'aluminum-sheet': [0x4fd1b5, 0.05], 'aluminum-extrusion': [0x4fd1b5, 0.06],
+      steel: [0x8899aa, 0.08], 'plastic-v0': [0xd9a441, 0.08], potted: [0x8a7f66, 0.16],
+    };
+    const tint = HOUSING_TINT[this.compViz?.housing] || HOUSING_TINT['aluminum-sheet'];
+    panel.material.color.set(tint[0]);
+    panel.material.opacity = tint[1];
+    // Pack-level vent nub on the lid.
+    if (this.compViz?.vent) {
+      const ventMesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(5, 6, 3.2, 20),
+        new THREE.MeshStandardMaterial({ color: 0x30363a, metalness: 0.4, roughness: 0.6 })
+      );
+      ventMesh.position.set(L.outer.x / 2 - 14, L.outer.z / 2 + 1.6, L.outer.y / 2 - 14);
+      enc.add(ventMesh);
+    }
     this._encLines = lines;
     this._encGroup = enc;
     this.packGroup.add(enc);
+    this._buildCooling();
 
     // Series wiring hint: a line through the cells in electrical order at
     // cap height.
@@ -179,6 +216,43 @@ export class PackViewer {
     this.setToggles({});
   }
 
+  // Cooling hardware: bottom / side cold plates, or Tesla-style between-row
+  // ribbons (thin conductive walls in the row gaps).
+  _buildCooling() {
+    const L = this.layout;
+    const viz = this.compViz?.cooling;
+    if (!viz) return;
+    const g = new THREE.Group();
+    const plateMat = new THREE.MeshStandardMaterial({
+      color: 0x3f7fd0, metalness: 0.75, roughness: 0.35,
+    });
+    const bottomY = -(L.inner.z / 2);
+    if (viz === 'bottom') {
+      const plate = new THREE.Mesh(new THREE.BoxGeometry(L.inner.x, 4, L.inner.y), plateMat);
+      plate.position.set(0, bottomY - 2.5, 0);
+      g.add(plate);
+    } else if (viz === 'side') {
+      for (const sx of [-1, 1]) {
+        const plate = new THREE.Mesh(new THREE.BoxGeometry(4, L.inner.z, L.inner.y), plateMat);
+        plate.position.set(sx * (L.inner.x / 2 + 2.5), 0, 0);
+        g.add(plate);
+      }
+    } else if (viz === 'between') {
+      // Wall at the midpoint between each pair of adjacent rows.
+      const rows = [...new Set(L.positions.filter((p) => p.layer === 0)
+        .map((p) => Math.round(p.y * 10) / 10))].sort((a, b) => a - b);
+      const t = Math.min(2, Math.max(0.8, L.spacingMm * 0.8));
+      const h = L.inner.z - 1; // spans all layers
+      for (let i = 1; i < rows.length; i++) {
+        const wall = new THREE.Mesh(new THREE.BoxGeometry(L.inner.x - 1, h, t), plateMat);
+        wall.position.set(0, 0, (rows[i - 1] + rows[i]) / 2);
+        g.add(wall);
+      }
+    }
+    this._compGroup = g;
+    this.packGroup.add(g);
+  }
+
   _placeInstances() {
     const L = this.layout;
     const m = new THREE.Matrix4();
@@ -201,9 +275,10 @@ export class PackViewer {
     }
     this._cells.instanceMatrix.needsUpdate = true;
     if (this._caps) this._caps.instanceMatrix.needsUpdate = true;
-    // Wiring + enclosure only make sense assembled.
+    // Wiring, enclosure and cooling hardware only make sense assembled.
     if (this._wire) this._wire.visible = this.showWiring && f < 0.05;
     if (this._encGroup) this._encGroup.visible = this.showEnclosure && f < 0.05;
+    if (this._compGroup) this._compGroup.visible = f < 0.05;
   }
 
   _colorInstances() {

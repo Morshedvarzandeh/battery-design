@@ -7,7 +7,10 @@ import { PRESETS } from './presets.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
 import { optimizeSpace, suggestDesigns } from './optimizer.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
+import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
+import { ANALYSIS_DISCLAIMER, analyze } from './engineering.js';
 import { PackViewer } from './viewer3d.js';
+import { PackViewer2D } from './viewer2d.js';
 
 const $ = (id) => document.getElementById(id);
 const MAX_CELLS = 10000;
@@ -26,12 +29,32 @@ const state = {
   nx: 0, nz: 1,
   presetId: null,
   colorMode: 'series',
+  sel: { ...DEFAULTS_BY_FORM.cylindrical }, // component ids per category
 };
 
-let viewer = null;
+// 2D-first: the dimensioned 2D layout is the working view; the WebGL viewer
+// is only instantiated when the user asks for a 3D render, and its loop is
+// paused whenever 2D is showing.
+let viewer2d = null;
+let viewer = null;        // PackViewer (3D), lazy
+let viewMode = '2d';
+let pack3dDirty = true;
 let lastFindings = [];
 let lastSummary = null;
 let lastLayout = null;
+let lastAnalysis = null;
+let lastForm = 'cylindrical';
+
+const selComponents = () => Object.fromEntries(
+  COMPONENT_CATEGORIES.map(({ key }) => [key, componentById(key, state.sel[key]) || null]));
+const compViz = () => {
+  const s = selComponents();
+  return {
+    cooling: s.cooling?.viz ?? null,
+    vent: s.vent?.level === 'pack',
+    housing: s.housing?.material ?? null,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Formatting
@@ -49,12 +72,41 @@ function init() {
   initCellSelect();
   initPresets();
   restoreHash();
+  initComponents();
   bindControls();
-  viewer = new PackViewer($('viewport'));
-  viewer.setTheme(document.documentElement.dataset.theme === 'dark' ||
-    (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches));
+  viewer2d = new PackViewer2D($('viewport2d'));
   syncInputs();
   recompute();
+}
+
+function isDark() {
+  return document.documentElement.dataset.theme === 'dark' ||
+    (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+}
+
+function setViewMode(mode) {
+  viewMode = mode;
+  $('viewport').style.display = mode === '3d' ? 'block' : 'none';
+  $('viewport2d').style.display = mode === '2d' ? 'block' : 'none';
+  $('glassExplode').style.display = mode === '3d' ? 'block' : 'none';
+  $('segView').querySelectorAll('button').forEach((b) =>
+    b.classList.toggle('active', b.dataset.view === mode));
+  if (mode === '3d') {
+    if (!viewer) {
+      viewer = new PackViewer($('viewport'));
+      viewer.setTheme(isDark());
+    }
+    viewer.resume();
+    viewer.resize();
+    if (pack3dDirty && lastLayout) {
+      viewer.setPack(lastLayout, CHEMISTRIES[cell().chemistry]?.color, compViz());
+      viewer.setColorMode(state.colorMode, CHEMISTRIES[cell().chemistry]?.color);
+      pack3dDirty = false;
+    }
+  } else {
+    viewer?.pause();
+    viewer2d.draw();
+  }
 }
 
 function initCellSelect() {
@@ -134,10 +186,13 @@ function bindControls() {
     if (b.disabled) return;
     state.arrangement = b.dataset.arr; syncInputs(); recompute();
   });
+  $('segView').querySelectorAll('button').forEach((b) => b.onclick = () => setViewMode(b.dataset.view));
   $('segColor').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.colorMode = b.dataset.col;
     $('segColor').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    viewer.setColorMode(state.colorMode, CHEMISTRIES[cell().chemistry]?.color);
+    const chemCol = CHEMISTRIES[cell().chemistry]?.color;
+    viewer2d.setColorMode(state.colorMode, chemCol);
+    viewer?.setColorMode(state.colorMode, chemCol);
   });
 
   const slider = (id, key, label, unit) => {
@@ -151,9 +206,12 @@ function bindControls() {
   slider('inWall', 'wallMm', 'vWall', 'mm');
   slider('inHead', 'headroomMm', 'vHead', 'mm');
 
-  $('inExplode').oninput = () => viewer.setExploded(parseFloat($('inExplode').value));
-  $('ckEnc').onchange = () => viewer.setToggles({ enclosure: $('ckEnc').checked });
-  $('ckWire').onchange = () => viewer.setToggles({ wiring: $('ckWire').checked });
+  $('inExplode').oninput = () => viewer?.setExploded(parseFloat($('inExplode').value));
+  $('ckEnc').onchange = () => viewer?.setToggles({ enclosure: $('ckEnc').checked });
+  $('ckWire').onchange = () => {
+    viewer2d.setToggles({ wiring: $('ckWire').checked });
+    viewer?.setToggles({ wiring: $('ckWire').checked });
+  };
 
   $('btnSuggest').onclick = runSuggest;
   $('btnFit').onclick = runFit;
@@ -181,7 +239,59 @@ function onCellChange() {
   }
   const oris = ORIENTATIONS_BY_FORM[c.form].map(([k]) => k);
   if (!oris.includes(state.orientation)) state.orientation = 'upright';
+  // A new cell shape gets that shape's default component set.
+  if (c.form !== lastForm) {
+    state.sel = { ...DEFAULTS_BY_FORM[c.form] };
+    lastForm = c.form;
+    initComponents();
+  }
   syncInputs();
+}
+
+// ---------------------------------------------------------------------------
+// Components tab
+// ---------------------------------------------------------------------------
+function initComponents() {
+  const box = $('compPickers');
+  box.innerHTML = '';
+  const form = cell().form;
+  for (const { key, name } of COMPONENT_CATEGORIES) {
+    const options = componentsFor(key, form);
+    if (state.sel[key] && !options.some((o) => o.id === state.sel[key])) {
+      state.sel[key] = DEFAULTS_BY_FORM[form][key] ?? options[0]?.id ?? null;
+    }
+    const sec = document.createElement('div');
+    sec.className = 'sec';
+    sec.innerHTML = `<h3>${esc(name)}</h3><select data-cat="${key}"></select><div class="hint"></div>`;
+    const sel = sec.querySelector('select');
+    for (const o of options) {
+      const opt = document.createElement('option');
+      opt.value = o.id;
+      opt.textContent = o.name;
+      sel.appendChild(opt);
+    }
+    if (state.sel[key]) sel.value = state.sel[key];
+    const hint = sec.querySelector('.hint');
+    const showHint = () => {
+      const o = componentById(key, sel.value);
+      hint.innerHTML = o
+        ? `${esc(o.notes)}<br><span style="opacity:.75">e.g. ${esc((o.suppliers || []).join(', '))}</span>`
+        : '';
+    };
+    showHint();
+    sel.onchange = () => {
+      state.sel[key] = sel.value;
+      showHint();
+      const o = componentById(key, sel.value);
+      // A spacer that fixes the cell gap drives the spacing slider.
+      if (key === 'spacer' && o && o.providesGapMm != null) {
+        state.spacingMm = o.providesGapMm;
+        syncInputs();
+      }
+      recompute();
+    };
+    box.appendChild(sec);
+  }
 }
 
 function syncInputs() {
@@ -227,15 +337,17 @@ function recompute() {
     // Invalidate every derived surface so nothing keeps describing the
     // previous configuration (stats, 3D, findings, export).
     $('cfgHint').textContent = `${N.toLocaleString()} cells — above the ${MAX_CELLS.toLocaleString()}-cell render cap; reduce S or P.`;
-    lastLayout = null; lastSummary = null; lastFindings = [];
+    lastLayout = null; lastSummary = null; lastFindings = []; lastAnalysis = null;
     const emptyMsg = '<div class="empty">Over the cell cap — no pack computed.</div>';
     $('hdrStats').innerHTML = '';
     $('statsBody').innerHTML = emptyMsg;
     $('stageStats').innerHTML = emptyMsg;
     $('findings').innerHTML = emptyMsg;
+    for (const id of ['anMech', 'anTherm', 'anElec', 'anSafe']) $(id).innerHTML = emptyMsg;
     const badge = $('stdBadge'); badge.textContent = '—'; badge.className = 'chip';
     $('btnExport').disabled = true;
-    viewer.setPack(null);
+    viewer2d.setPack(null);
+    viewer?.setPack(null);
     saveHash();
     return;
   }
@@ -253,10 +365,18 @@ function recompute() {
   $('cfgHint').textContent =
     `${N} cells · ${layout.nx}×${layout.ny}${layout.nz > 1 ? `×${layout.nz}` : ''} ${layout.arrangement}`;
 
-  viewer.setPack(layout, CHEMISTRIES[c.chemistry]?.color);
-  viewer.setColorMode(state.colorMode, CHEMISTRIES[c.chemistry]?.color);
+  const chemCol = CHEMISTRIES[c.chemistry]?.color;
+  viewer2d.setColorMode(state.colorMode, chemCol);
+  viewer2d.setPack(layout, { chemColor: chemCol, compViz: compViz() });
+  if (viewer && viewMode === '3d') {
+    viewer.setPack(layout, chemCol, compViz());
+    viewer.setColorMode(state.colorMode, chemCol);
+    pack3dDirty = false;
+  } else {
+    pack3dDirty = true; // pushed lazily when the user switches to 3D
+  }
+  runAnalysis();
   renderStats();
-  runStandards();
   saveHash();
 }
 
@@ -285,6 +405,15 @@ function renderStats() {
     ['Energy density', `${f0(S.whPerKg)} Wh/kg · ${f0(S.whPerL)} Wh/L`],
     ['Packing efficiency', `${f0(S.packingEfficiency * 100)}%`],
   ];
+  const T = lastAnalysis?.totals;
+  if (T) {
+    rows.push(['sec', 'Components & thermal']);
+    if (T.packMassWithComponentsKg != null) rows.push(['Mass w/ components', `${f1(T.packMassWithComponentsKg)} kg`]);
+    if (T.componentMassKg?.total != null) rows.push(['Component mass', `${f1(T.componentMassKg.total)} kg`]);
+    if (T.heatContW != null) rows.push(['Heat @ cont. load', `${f1(T.heatContW)} W`]);
+    if (T.tempRiseContC != null) rows.push(['Est. temp rise', `${f1(T.tempRiseContC)} °C`]);
+    if (T.creepageReqMm != null) rows.push(['Creepage req. (~)', `${f1(T.creepageReqMm)} mm`]);
+  }
   const html = rows.map(([k, v]) =>
     k === 'sec'
       ? `<h3 style="font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 0 4px">${v}</h3>`
@@ -311,34 +440,67 @@ function currentUsage() {
   };
 }
 
-function runStandards() {
+function runAnalysis() {
   const S = lastSummary, c = cell();
-  const ctx = {
-    cell: c, s: state.s, p: state.p,
-    pack: {
-      nominalV: S.nominalV, vMax: S.vMax, vMin: S.vMin,
-      capacityAh: S.capacityAh, energyWh: S.energyWh, massKg: S.massKg,
-      cellCount: S.cellCount, maxContCurrentA: S.maxContCurrentA,
-      maxContPowerW: S.maxContPowerW, dcirMOhm: S.dcirMOhm,
-      dims: S.dims, volumeL: S.volumeL,
-    },
-    layout: { spacingMm: state.spacingMm, arrangement: state.arrangement, wallMm: state.wallMm },
-    usage: currentUsage(),
+  const pack = {
+    nominalV: S.nominalV, vMax: S.vMax, vMin: S.vMin,
+    capacityAh: S.capacityAh, energyWh: S.energyWh, massKg: S.massKg,
+    massCellsKg: S.massCellsKg,
+    cellCount: S.cellCount, maxContCurrentA: S.maxContCurrentA,
+    maxContPowerW: S.maxContPowerW, dcirMOhm: S.dcirMOhm,
+    dims: S.dims, volumeL: S.volumeL,
   };
-  lastFindings = runChecks(ctx);
-  const nFail = lastFindings.filter((x) => x.severity === 'fail').length;
-  const nWarn = lastFindings.filter((x) => x.severity === 'warn').length;
+  const usage = currentUsage();
+  const stdCtx = {
+    cell: c, s: state.s, p: state.p, pack,
+    layout: { spacingMm: state.spacingMm, arrangement: state.arrangement, wallMm: state.wallMm },
+    usage,
+  };
+  lastFindings = runChecks(stdCtx);
+
+  try {
+    lastAnalysis = analyze({
+      cell: c, s: state.s, p: state.p, pack,
+      layout: {
+        arrangement: state.arrangement, orientation: state.orientation,
+        spacingMm: state.spacingMm, wallMm: state.wallMm,
+        inner: lastLayout.inner, outer: lastLayout.outer,
+        nx: lastLayout.nx, ny: lastLayout.ny, nz: lastLayout.nz,
+      },
+      usage,
+      selection: selComponents(),
+    });
+  } catch (e) {
+    console.error('analysis failed', e);
+    lastAnalysis = null;
+  }
+
+  const perspectives = lastAnalysis?.perspectives || {};
+  const engFindings = ['mechanical', 'thermal', 'electrical', 'safety']
+    .flatMap((k) => perspectives[k] || []);
+  const all = [...engFindings, ...lastFindings];
+  const nFail = all.filter((x) => x.severity === 'fail').length;
+  const nWarn = all.filter((x) => x.severity === 'warn').length;
   const badge = $('stdBadge');
   badge.textContent = nFail ? `${nFail}!` : (nWarn ? `${nWarn}` : '✓');
   badge.className = `chip ${nFail ? 'fail' : (nWarn ? 'warn' : 'pass')}`;
 
-  $('stdDisclaimer').textContent = DISCLAIMER;
-  $('findings').innerHTML = lastFindings.map((x) => `
+  $('stdDisclaimer').textContent = `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`;
+  const findingHtml = (x) => `
     <div class="finding ${x.severity}">
       <div class="t"><span class="chip ${x.severity}">${x.severity}</span> ${esc(x.title)}</div>
       <div class="d">${esc(x.detail)}</div>
-      <div class="r">${esc(x.ref)} · ${esc(x.category)}</div>
-    </div>`).join('');
+      <div class="r">${esc(x.ref || 'engineering practice')}${x.category ? ' · ' + esc(x.category) : ''}</div>
+    </div>`;
+  const renderPane = (id, list) => {
+    $(id).innerHTML = list?.length ? list.map(findingHtml).join('')
+      : '<div class="empty">Nothing to report.</div>';
+  };
+  renderPane('anMech', perspectives.mechanical);
+  renderPane('anTherm', perspectives.thermal);
+  renderPane('anElec', perspectives.electrical);
+  renderPane('anSafe', perspectives.safety);
+  $('findings').innerHTML = lastFindings.map(findingHtml).join('');
   $('stdList').innerHTML = STANDARDS_INFO.map((s) =>
     `<div style="margin-bottom:4px"><b>${esc(s.code)}</b> — ${esc(s.title)}</div>`).join('');
 }
@@ -457,9 +619,11 @@ function exportJSON() {
       spacingMm: state.spacingMm, wallMm: state.wallMm, headroomMm: state.headroomMm,
       grid: lastLayout ? { nx: lastLayout.nx, ny: lastLayout.ny, nz: lastLayout.nz } : null,
     },
+    components: selComponents(),
     summary: lastSummary,
+    analysis: lastAnalysis,
     standardsFindings: lastFindings,
-    disclaimer: DISCLAIMER,
+    disclaimer: `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`,
   };
   const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
@@ -473,6 +637,7 @@ function saveHash() {
   const h = {
     c: state.cellId, s: state.s, p: state.p, a: state.arrangement, o: state.orientation,
     g: state.spacingMm, w: state.wallMm, hd: state.headroomMm, nx: state.nx, nz: state.nz,
+    sel: state.sel,
   };
   history.replaceState(null, '', `#${encodeURIComponent(JSON.stringify(h))}`);
 }
@@ -492,6 +657,8 @@ function restoreHash() {
     if (h.hd != null) state.headroomMm = h.hd;
     if (h.nx != null) state.nx = h.nx;
     if (h.nz != null) state.nz = h.nz;
+    if (h.sel && typeof h.sel === 'object') state.sel = { ...state.sel, ...h.sel };
+    lastForm = (cellById(state.cellId) || CELLS[0]).form;
     onCellChange();
   } catch { /* stale hash — ignore */ }
 }
@@ -506,7 +673,8 @@ function toggleTheme() {
   const next = cur === 'dark' ? 'light' : 'dark';
   document.documentElement.dataset.theme = next;
   localStorage.setItem('bd-theme', next);
-  viewer.setTheme(next === 'dark');
+  viewer2d.setTheme();
+  viewer?.setTheme(next === 'dark');
 }
 
 init();

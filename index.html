@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>battery-data · pack designer</title>
+<title>battery-design · 3D pack designer</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='9' width='22' height='14' rx='2' fill='%230B6E5F'/%3E%3Crect x='2' y='13' width='4' height='6' rx='1' fill='%230B6E5F'/%3E%3Crect x='10' y='12' width='4' height='8' fill='%23E3F0ED'/%3E%3Crect x='16' y='12' width='4' height='8' fill='%23E3F0ED'/%3E%3Crect x='22' y='12' width='3' height='8' fill='%23E3F0ED' opacity='.5'/%3E%3C/svg%3E">
 <style>
 :root{
@@ -122,8 +122,9 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 
 .stage{position:relative;min-height:0;background:
   radial-gradient(1200px 700px at 60% 20%, var(--surface) 0%, var(--ground) 70%)}
-#viewport{position:absolute;inset:0}
+#viewport{position:absolute;inset:0;display:none}
 #viewport canvas{width:100%!important;height:100%!important;display:block;outline:none}
+#viewport2d{position:absolute;inset:0;padding:6px}
 .stage-ui{position:absolute;left:12px;bottom:12px;right:12px;display:flex;gap:10px;
   align-items:flex-end;pointer-events:none;flex-wrap:wrap}
 .stage-ui>*{pointer-events:auto}
@@ -149,7 +150,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
 </head>
 <body>
 <header>
-  <span class="brand"><b>battery-data</b> · pack designer</span>
+  <span class="brand"><b>battery-design</b> · 3D pack designer</span>
   <div class="hdr-stats" id="hdrStats"></div>
   <div class="hdr-spacer"></div>
   <div class="hdr-links">
@@ -163,9 +164,10 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
   <aside class="panel" id="leftPanel">
     <div class="tabs" id="tabs">
       <button class="tab active" data-tab="design">Design</button>
-      <button class="tab" data-tab="usage">From usage</button>
-      <button class="tab" data-tab="fit">Fit box</button>
-      <button class="tab" data-tab="standards">Standards <span class="chip" id="stdBadge"></span></button>
+      <button class="tab" data-tab="usage">Usage</button>
+      <button class="tab" data-tab="fit">Fit</button>
+      <button class="tab" data-tab="comp">Parts</button>
+      <button class="tab" data-tab="analysis">Analysis <span class="chip" id="stdBadge"></span></button>
     </div>
 
     <div class="tabpane active" id="pane-design">
@@ -271,17 +273,34 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       <div class="sec"><h3>Candidates</h3><div id="fitResults"><div class="empty">No search yet.</div></div></div>
     </div>
 
-    <div class="tabpane" id="pane-standards">
+    <div class="tabpane" id="pane-comp">
+      <div class="hint" style="margin-bottom:10px">Market-representative component classes with example
+        suppliers — properties are class-typical, not one SKU. Pickers filter to the current cell shape.</div>
+      <div id="compPickers"></div>
+    </div>
+
+    <div class="tabpane" id="pane-analysis">
       <div class="disclaimer" id="stdDisclaimer"></div>
-      <div id="findings"></div>
+      <div class="sec"><h3>Mechanical</h3><div id="anMech"><div class="empty">—</div></div></div>
+      <div class="sec"><h3>Thermal</h3><div id="anTherm"><div class="empty">—</div></div></div>
+      <div class="sec"><h3>Electrical</h3><div id="anElec"><div class="empty">—</div></div></div>
+      <div class="sec"><h3>Safety &amp; standards</h3><div id="anSafe"></div><div id="findings"></div></div>
       <div class="sec"><h3>Standards referenced</h3><div id="stdList" style="font-size:11.5px;color:var(--muted)"></div></div>
     </div>
   </aside>
 
   <section class="stage">
+    <div id="viewport2d"></div>
     <div id="viewport"></div>
     <div class="glass stage-stats" id="stageStats"></div>
     <div class="stage-ui">
+      <div class="glass">
+        <span class="lbl">View</span>
+        <div class="seg" id="segView" style="min-width:150px">
+          <button data-view="2d" class="active">2D layout</button>
+          <button data-view="3d">3D render</button>
+        </div>
+      </div>
       <div class="glass">
         <span class="lbl">Color</span>
         <div class="seg" id="segColor" style="min-width:170px">
@@ -289,7 +308,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           <button data-col="chemistry">Chemistry</button>
         </div>
       </div>
-      <div class="glass" style="flex:1;min-width:150px;max-width:260px">
+      <div class="glass" id="glassExplode" style="flex:1;min-width:140px;max-width:240px;display:none">
         <span class="lbl">Explode</span>
         <input type="range" id="inExplode" min="0" max="1" step="0.01" value="0">
       </div>
@@ -305,7 +324,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
     <div class="tabpane active" id="statsBody" style="display:block"></div>
   </aside>
 </main>
-<footer>Figures are engineering estimates from nameplate data — mass adds 8% for interconnects plus an aluminium-wall estimate; DCIR is cells-only. Standards output is guidance, not certification.</footer>
+<footer>Figures are engineering estimates from nameplate data and class-typical component properties; DCIR is cells-only. Analysis and standards output is guidance, not certification.</footer>
 <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
 <script type="module" src="./js/app.js"></script>
 </body>
