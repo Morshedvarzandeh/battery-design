@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # The integration gate: every cell, component and preset in the
+      # database must satisfy the data contracts, and the engine math must
+      # pass its regression suites, before a change can merge.
+      - run: node tools/validate.mjs
+      - run: node tests/sanity.mjs
+      - run: node tests/geometry-regressions.mjs
+      - run: node tests/review-regressions.mjs
