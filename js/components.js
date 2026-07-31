@@ -366,6 +366,7 @@ export const COMPONENTS = {
       massKgPerM2: null,
       needsPump: false,
       viz: null,
+      spaceMm: { bottom: 0, side: 0, rowGap: 0 },
     },
     {
       id: 'forced-air',
@@ -380,6 +381,7 @@ export const COMPONENTS = {
       massKgPerM2: null,
       needsPump: false,
       viz: null,
+      spaceMm: { bottom: 0, side: 0, rowGap: 1 },
     },
     {
       id: 'bottom-cold-plate',
@@ -394,6 +396,7 @@ export const COMPONENTS = {
       massKgPerM2: 8,
       needsPump: true,
       viz: 'bottom',
+      spaceMm: { bottom: 10, side: 0, rowGap: 0 },
     },
     {
       id: 'side-cold-plates',
@@ -408,6 +411,7 @@ export const COMPONENTS = {
       massKgPerM2: 6,
       needsPump: true,
       viz: 'side',
+      spaceMm: { bottom: 0, side: 8, rowGap: 0 },
     },
     {
       id: 'serpentine-ribbon',
@@ -422,6 +426,7 @@ export const COMPONENTS = {
       massKgPerM2: 2.5,
       needsPump: true,
       viz: 'between',
+      spaceMm: { bottom: 0, side: 0, rowGap: 2 },
     },
     {
       id: 'pouch-fin-plates',
@@ -436,6 +441,7 @@ export const COMPONENTS = {
       massKgPerM2: 2.7,
       needsPump: true,
       viz: 'between',
+      spaceMm: { bottom: 0, side: 0, rowGap: 1.5 },
     },
     {
       id: 'dielectric-immersion',
@@ -450,6 +456,7 @@ export const COMPONENTS = {
       massKgPerM2: null,
       needsPump: true,
       viz: null,
+      spaceMm: { bottom: 5, side: 3, rowGap: 1 },
     },
     {
       id: 'pcm-graphite',
@@ -464,6 +471,7 @@ export const COMPONENTS = {
       massKgPerM2: null,
       needsPump: false,
       viz: 'between',
+      spaceMm: { bottom: 0, side: 0, rowGap: 3 },
     },
   ],
 

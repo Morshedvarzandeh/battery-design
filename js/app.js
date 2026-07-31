@@ -5,7 +5,7 @@
 import { CELLS, CHEMISTRIES, cellById } from './cells.js';
 import { PRESETS } from './presets.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
-import { optimizeSpace, suggestDesigns } from './optimizer.js';
+import { optimizeSpace, suggestDesigns, maxFill } from './optimizer.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
 import { ANALYSIS_DISCLAIMER, analyze } from './engineering.js';
@@ -55,6 +55,8 @@ const compViz = () => {
     housing: s.housing?.material ?? null,
   };
 };
+// Space the selected cooling system consumes inside the envelope.
+const coolingSpace = () => selComponents().cooling?.spaceMm || { bottom: 0, side: 0, rowGap: 0 };
 
 // ---------------------------------------------------------------------------
 // Formatting
@@ -159,6 +161,13 @@ function applyPreset(pr) {
   $('rqThi').value = pr.envTempC[1];
   $('rqCy').value = pr.cyclesPerYear;
   $('rqYr').value = pr.targetYears;
+  // The real-world flow: the application defines the available bay, so the
+  // preset also seeds the Fit tab's envelope for max-fill.
+  if (pr.maxDimsMm) {
+    $('fitX').value = pr.maxDimsMm.x;
+    $('fitY').value = pr.maxDimsMm.y;
+    $('fitZ').value = pr.maxDimsMm.z;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +224,14 @@ function bindControls() {
 
   $('btnSuggest').onclick = runSuggest;
   $('btnFit').onclick = runFit;
+  $('btnMaxFill').onclick = runMaxFill;
+  // Weight sliders re-rank live once a max-fill search has run.
+  for (const [id, lbl] of [['wEnergy', 'vWe'], ['wCost', 'vWc'], ['wMass', 'vWm']]) {
+    $(id).oninput = () => {
+      $(lbl).textContent = $(id).value;
+      if ($('fitResults').querySelector('.card')) runMaxFill();
+    };
+  }
   $('btnExport').onclick = exportJSON;
   $('btnTheme').onclick = toggleTheme;
 }
@@ -352,10 +369,12 @@ function recompute() {
     return;
   }
   $('btnExport').disabled = false;
+  const cool = coolingSpace();
   const opts = {
     arrangement: state.arrangement, orientation: state.orientation,
     spacingMm: state.spacingMm, wallMm: state.wallMm,
     headroomMm: state.headroomMm, layerGapMm: state.layerGapMm,
+    underMm: cool.bottom, rowExtraMm: cool.rowGap,
     nx: state.nx, nz: state.nz,
   };
   let layout = layoutPack(c, state.s, state.p, opts);
@@ -573,13 +592,80 @@ function applyCandidate(r) {
 // ---------------------------------------------------------------------------
 // Fit box
 // ---------------------------------------------------------------------------
+// The real-world flow: the bay is fixed; find the cell and S×P that pack the
+// most energy into it — accounting for the space the selected components
+// consume — then compare on cost.
+function runMaxFill() {
+  const num = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
+  const t = [num('fitX'), num('fitY'), num('fitZ')];
+  const box = $('fitResults');
+  if (!t.every((v) => v != null && v > 0)) {
+    box.innerHTML = '<div class="empty">Max fill needs all three envelope dimensions — enter the space your application offers (a preset on the Usage tab pre-fills it).</div>';
+    return;
+  }
+  const envelope = { x: t[0], y: t[1], z: t[2] };
+  const req = {
+    vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
+    contPowerW: num('rqPc'),
+    weights: {
+      energy: parseFloat($('wEnergy').value),
+      cost: parseFloat($('wCost').value),
+      mass: parseFloat($('wMass').value),
+    },
+  };
+  const cool = coolingSpace();
+  const results = maxFill(CELLS, envelope, req, {
+    spacingMm: state.spacingMm, wallMm: state.wallMm,
+    headroomMm: state.headroomMm, layerGapMm: state.layerGapMm,
+    coolingSpace: cool,
+  });
+  if (!results.length) {
+    box.innerHTML = '<div class="empty">No cell in the library fits that envelope with the current walls, spacing and cooling reservation.</div>';
+    return;
+  }
+  const w = results[0]?.weightsUsed;
+  box.innerHTML = `<div class="hint" style="margin-bottom:8px">Envelope ${f0(envelope.x)}×${f0(envelope.y)}×${f0(envelope.z)} mm ·
+    ${req.vRange[0]}–${req.vRange[1]} V window · cooling reserve ${cool.bottom}/${cool.side}/${cool.rowGap} mm (bottom/side/row)
+    ${w ? `· weights E ${f0(w.energy * 100)}% / $ ${f0(w.cost * 100)}% / kg ${f0(w.mass * 100)}%` : ''}</div>`;
+  results.forEach((r, i) => {
+    const ch = CHEMISTRIES[r.cell.chemistry];
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.innerHTML = `
+      <h4>#${i + 1} ${esc(r.cell.name)}
+        <span class="chip" style="color:${ch?.color};border-color:${ch?.color}">${r.cell.chemistry}</span>
+        ${r.pareto ? '<span class="chip pass">Pareto-optimal</span>' : '<span class="chip info">dominated</span>'}</h4>
+      <div class="m">${r.s}S${r.p}P · ${f1(r.nominalV)} V · ${r.n}/${r.nMax} cells (${f0(r.utilization * 100)}% of fit) ·
+        ${fWh(r.energyWh)} · ${f1(r.massKg)} kg · ${r.grid.nx}×${r.grid.ny}${r.grid.nz > 1 ? `×${r.grid.nz}` : ''} ${r.opts.arrangement}
+        ${r.costUSD != null ? `· ~$${f0(r.costUSD)} (${f0(r.usdPerKWh)} $/kWh, cells only)` : ''}</div>
+      <div class="scorebar"><i style="width:${clamp(r.score, 2, 100)}%"></i></div>
+      ${r.warnings.length ? `<ul>${r.warnings.map((x) => `<li class="warn">${esc(x)}</li>`).join('')}</ul>` : ''}
+      <button class="btn primary" style="margin-top:8px">Apply this fill</button>`;
+    card.querySelector('button').onclick = () => {
+      state.cellId = r.cell.id;
+      state.s = r.s; state.p = r.p;
+      Object.assign(state, {
+        arrangement: r.opts.arrangement, orientation: r.opts.orientation,
+        nx: r.opts.nx, nz: r.opts.nz,
+      });
+      onCellChange();
+      syncInputs();
+      recompute();
+      document.querySelector('[data-tab="design"]').click();
+    };
+    box.appendChild(card);
+  });
+}
+
 function runFit() {
   const num = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
   const t = [num('fitX'), num('fitY'), num('fitZ')];
   const target = t.every((v) => v != null) ? { x: t[0], y: t[1], z: t[2] } : null;
+  const cool = coolingSpace();
   const baseOpts = {
     spacingMm: state.spacingMm, wallMm: state.wallMm,
     headroomMm: state.headroomMm, layerGapMm: state.layerGapMm,
+    underMm: cool.bottom, rowExtraMm: cool.rowGap,
   };
   const cands = optimizeSpace(cell(), state.s, state.p, baseOpts, target, 8);
   const box = $('fitResults');

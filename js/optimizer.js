@@ -25,6 +25,8 @@ export function optimizeSpace(cell, s, p, baseOpts = {}, target = null, topK = 6
   const layerGapMm = baseOpts.layerGapMm ?? 2;
   const wallMm = baseOpts.wallMm ?? 2;
   const headroomMm = baseOpts.headroomMm ?? (cell.form === 'cylindrical' ? 8 : 15);
+  const underMm = baseOpts.underMm ?? 0;
+  const rowExtraMm = baseOpts.rowExtraMm ?? 0;
   const out = [];
   const maxNz = Math.min(6, N);
   for (const orientation of ORIENTATIONS_BY_FORM[cell.form]) {
@@ -35,12 +37,12 @@ export function optimizeSpace(cell, s, p, baseOpts = {}, target = null, topK = 6
         const perLayer = Math.ceil(N / nz);
         const maxNx = Math.min(perLayer, 200);
         for (let nx = 1; nx <= maxNx; nx++) {
-          const g = gridDims(cell, N, nx, nz, arrangement, spacingMm, layerGapMm, orientation);
+          const g = gridDims(cell, N, nx, nz, arrangement, spacingMm, layerGapMm, orientation, rowExtraMm);
           if (!g) continue;
           const outer = {
             x: g.innerX + 2 * wallMm,
             y: g.innerY + 2 * wallMm,
-            z: g.innerZ + 2 * wallMm + headroomMm,
+            z: g.innerZ + 2 * wallMm + headroomMm + underMm,
           };
           const fitsDirect = !target
             || (outer.x <= target.x && outer.y <= target.y && outer.z <= target.z);
@@ -50,7 +52,7 @@ export function optimizeSpace(cell, s, p, baseOpts = {}, target = null, topK = 6
           out.push({
             nx, ny: g.ny, nz, arrangement, orientation,
             outer, volumeL, fits: fitsDirect || fitsRotated, fitsRotated,
-            opts: { arrangement, orientation, spacingMm, layerGapMm, wallMm, headroomMm, nx, nz },
+            opts: { arrangement, orientation, spacingMm, layerGapMm, wallMm, headroomMm, underMm, rowExtraMm, nx, nz },
           });
         }
       }
@@ -237,4 +239,154 @@ function buildCandidate(cell, s, req) {
 
 function fmt(v) {
   return v >= 100 ? Math.round(v).toString() : (Math.round(v * 10) / 10).toString();
+}
+
+// ---------------------------------------------------------------------------
+// Max fill — the real-world flow: the application fixes the available space,
+// the algorithm packs the maximum number of cells into it (after subtracting
+// the space the selected supplier components consume) and treats the choice
+// as a MULTI-OBJECTIVE optimization: maximize energy in the space, minimize
+// cost, minimize mass. Candidates are scored with user weights and the
+// Pareto-optimal (non-dominated) ones are flagged, so the trade-off surface
+// stays visible instead of being collapsed silently.
+// ---------------------------------------------------------------------------
+// envelope: {x, y, z} outer mm.
+// req: { vRange:[lo,hi], contPowerW|null, energyWh|null (minimum useful),
+//        weights: {energy, cost, mass} — relative priorities, any scale }
+// baseOpts: { spacingMm, wallMm, headroomMm, layerGapMm,
+//             coolingSpace: {bottom, side, rowGap} }  — from the selected parts.
+
+export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
+  const spacingMm = baseOpts.spacingMm ?? 1;
+  const wallMm = baseOpts.wallMm ?? 2;
+  const layerGapMm = baseOpts.layerGapMm ?? 2;
+  const cool = baseOpts.coolingSpace || { bottom: 0, side: 0, rowGap: 0 };
+  const out = [];
+
+  for (const cell of cells) {
+    const headroomMm = baseOpts.headroomMm ?? (cell.form === 'cylindrical' ? 8 : 15);
+    let best = null;
+    for (const orientation of ORIENTATIONS_BY_FORM[cell.form]) {
+      for (const arrangement of ARRANGEMENTS_BY_FORM[cell.form]) {
+        if (arrangement === 'hex' && orientation === 'lying') continue;
+        const cand = maxGridInBox(cell, envelope, {
+          arrangement, orientation, spacingMm, wallMm, headroomMm, layerGapMm,
+          underMm: cool.bottom, sideMm: cool.side, rowExtraMm: cool.rowGap,
+        });
+        if (cand && (!best || cand.nMax > best.nMax)) best = cand;
+      }
+    }
+    if (!best || best.nMax < 1) continue;
+
+    // Best S×P split inside the voltage window: use as many of the fitted
+    // cells as possible; ties go to the higher voltage (thinner busbars).
+    const [vLo, vHi] = req.vRange || [1, 1000];
+    const sMin = Math.max(1, Math.ceil(vLo / cell.nominalV));
+    const sMax = Math.max(sMin, Math.floor(vHi / cell.nominalV) || sMin);
+    let pick = null;
+    for (let s = sMin; s <= sMax; s++) {
+      const p = Math.floor(best.nMax / s);
+      if (p < 1) continue;
+      const n = s * p;
+      if (!pick || n > pick.n || (n === pick.n && s > pick.s)) pick = { s, p, n };
+    }
+    if (!pick) continue;
+    if (pick.s * cell.nominalV < vLo - 1e-9) continue; // can't reach the window
+
+    const energyWh = pick.n * cell.nominalV * cell.capacityAh;
+    if (req.energyWh && energyWh < req.energyWh) continue; // below the application's minimum
+    const costUSD = cell.priceUSD != null ? cell.priceUSD * pick.n : null;
+    const warnings = [];
+    if (req.contPowerW) {
+      const maxP = pick.s * cell.nominalV * pick.p * cell.maxContDischargeA;
+      if (maxP < req.contPowerW) warnings.push(`Continuous power capability ${fmt(maxP)} W < required ${fmt(req.contPowerW)} W`);
+    }
+    out.push({
+      cell, s: pick.s, p: pick.p, n: pick.n, nMax: best.nMax,
+      utilization: pick.n / best.nMax,
+      energyWh, costUSD,
+      usdPerKWh: costUSD != null && energyWh > 0 ? costUSD / (energyWh / 1000) : null,
+      massKg: (pick.n * cell.massG) / 1000, // cells only, comparable across candidates
+      nominalV: pick.s * cell.nominalV,
+      grid: { nx: best.nx, ny: best.ny, nz: best.nz },
+      warnings,
+      opts: {
+        arrangement: best.arrangement, orientation: best.orientation,
+        spacingMm, wallMm, headroomMm, layerGapMm,
+        underMm: cool.bottom, rowExtraMm: cool.rowGap,
+        nx: best.nx, nz: best.nz,
+      },
+    });
+  }
+  scoreMultiObjective(out, req.weights);
+  out.sort((a, b) => b.score - a.score);
+  return out.slice(0, topK);
+}
+
+// Weighted-sum scalarization over normalized objectives, plus Pareto-front
+// flagging over (energy up, cost down, mass down). Weights are relative
+// priorities on any scale; when no candidate has a price, the cost weight is
+// folded into energy rather than silently skewing the ranking.
+function scoreMultiObjective(cands, weights) {
+  if (!cands.length) return;
+  let { energy: wE = 0.5, cost: wC = 0.3, mass: wM = 0.2 } = weights || {};
+  const havePrices = cands.some((c) => c.costUSD != null);
+  if (!havePrices) { wE += wC; wC = 0; }
+  const sum = wE + wC + wM || 1;
+  wE /= sum; wC /= sum; wM /= sum;
+
+  const eMax = Math.max(...cands.map((c) => c.energyWh));
+  const costs = cands.filter((c) => c.costUSD != null).map((c) => c.costUSD);
+  const cMax = costs.length ? Math.max(...costs) : 1;
+  const mMax = Math.max(...cands.map((c) => c.massKg));
+
+  for (const c of cands) {
+    const badEnergy = eMax > 0 ? 1 - c.energyWh / eMax : 0;
+    // Unknown price gets the field's midpoint rather than a free ride.
+    const badCost = cMax > 0 ? (c.costUSD != null ? c.costUSD / cMax : 0.5) : 0;
+    const badMass = mMax > 0 ? c.massKg / mMax : 0;
+    c.score = Math.round((1 - (wE * badEnergy + wC * badCost + wM * badMass)) * 1000) / 10;
+    c.weightsUsed = { energy: wE, cost: wC, mass: wM };
+  }
+  for (const c of cands) {
+    c.pareto = !cands.some((o) => o !== c &&
+      o.energyWh >= c.energyWh &&
+      (o.costUSD ?? Infinity) <= (c.costUSD ?? Infinity) &&
+      o.massKg <= c.massKg &&
+      (o.energyWh > c.energyWh || (o.costUSD ?? Infinity) < (c.costUSD ?? Infinity) || o.massKg < c.massKg));
+  }
+}
+
+// Maximum nx*ny*nz of one cell that fits the envelope after subtracting
+// walls, busbar headroom and the cooling system's reserved space. Verified
+// against gridDims so the fill and the layout engine can never disagree.
+function maxGridInBox(cell, env, o) {
+  const od = { // mirror pack-engine's orientation footprints
+    cylindrical: o.orientation === 'lying'
+      ? { fx: cell.dims.d, fy: cell.dims.h, fz: cell.dims.d, hexOk: false }
+      : { fx: cell.dims.d, fy: cell.dims.d, fz: cell.dims.h, hexOk: true },
+    prismatic: { fx: cell.dims.w, fy: cell.dims.t, fz: cell.dims.h, hexOk: false },
+    pouch: o.orientation === 'flat'
+      ? { fx: cell.dims.w, fy: cell.dims.h, fz: cell.dims.t, hexOk: false }
+      : { fx: cell.dims.w, fy: cell.dims.t, fz: cell.dims.h, hexOk: false },
+  }[cell.form];
+  const usableX = env.x - 2 * o.wallMm - 2 * o.sideMm;
+  const usableY = env.y - 2 * o.wallMm;
+  const usableZ = env.z - 2 * o.wallMm - o.headroomMm - o.underMm;
+  if (usableX < od.fx || usableY < od.fy || usableZ < od.fz) return null;
+
+  const hex = o.arrangement === 'hex' && od.hexOk;
+  const pitchX = od.fx + o.spacingMm;
+  const rowPitch = (hex ? pitchX * (Math.sqrt(3) / 2) : od.fy + o.spacingMm) + o.rowExtraMm;
+  const ny = 1 + Math.floor((usableY - od.fy) / rowPitch);
+  // Hex staggering costs pitch/2 of width whenever there is more than one row.
+  const xBudget = usableX - od.fx - (hex && ny > 1 ? pitchX / 2 : 0);
+  const nx = 1 + Math.floor(Math.max(0, xBudget) / pitchX);
+  const nz = 1 + Math.floor((usableZ - od.fz) / (od.fz + o.layerGapMm));
+  const nMax = nx * ny * nz;
+  if (nMax < 1) return null;
+  // Consistency check with the layout engine (must never overflow).
+  const g = gridDims(cell, nMax, nx, nz, o.arrangement, o.spacingMm, o.layerGapMm, o.orientation, o.rowExtraMm);
+  if (!g || g.innerX > usableX + 1e-6 || g.innerY > usableY + 1e-6 || g.innerZ > usableZ + 1e-6) return null;
+  return { nx, ny, nz, nMax, arrangement: o.arrangement, orientation: o.orientation };
 }
