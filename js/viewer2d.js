@@ -206,8 +206,9 @@ export class PackViewer2D {
     label(sideX, sideY - 10, 'SIDE · Z');
     g.strokeStyle = ink; g.lineWidth = 1.5;
     g.strokeRect(sideX, sideY, s(L.outer.z), s(L.outer.y));
-    // Cells region per layer: stack along Z from the bottom wall.
-    const zBase = sideX + s(L.wallMm);
+    // Cells region per layer: stack along Z from the bottom wall, above any
+    // reserved under-cell space (bottom cold plate).
+    const zBase = sideX + s(L.wallMm + (L.underMm || 0));
     const pitchZ = fp.fz + L.layerGapMm;
     for (let iz = 0; iz < L.nz; iz++) {
       g.fillStyle = this.colorMode === 'chemistry' ? this.chemColor : accent;

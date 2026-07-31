@@ -86,6 +86,11 @@ console.log(`components.js — ${Object.values(COMPONENTS).flat().length} compon
           w('htcWm2K must be [lo,hi]');
         }
         if (o.viz != null && !['bottom', 'side', 'between'].includes(o.viz)) w(`viz ${o.viz} unknown to the viewers`);
+        // The max-fill algorithm reserves this space before packing cells.
+        const sp = o.spaceMm;
+        if (!sp || !['bottom', 'side', 'rowGap'].every((k) => typeof sp[k] === 'number' && sp[k] >= 0)) {
+          w('spaceMm must be { bottom, side, rowGap } with numbers ≥ 0');
+        }
       }
       if (cat === 'tim' && !(Array.isArray(o.thicknessMm) && o.thicknessMm.length === 2)) w('thicknessMm must be [lo,hi]');
       if (cat === 'vent' && !['cell', 'pack'].includes(o.level)) w('vent level must be cell|pack');

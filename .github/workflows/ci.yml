@@ -20,3 +20,4 @@ jobs:
       - run: node tests/sanity.mjs
       - run: node tests/geometry-regressions.mjs
       - run: node tests/review-regressions.mjs
+      - run: node tests/maxfill-regressions.mjs

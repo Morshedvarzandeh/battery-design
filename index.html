@@ -261,16 +261,30 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
 
     <div class="tabpane" id="pane-fit">
       <div class="sec">
-        <h3>Target envelope (outer, mm)</h3>
+        <h3>Available space (outer, mm)</h3>
         <div class="row3">
           <div><label class="f">L (x)</label><input type="number" id="fitX" placeholder="open"></div>
           <div><label class="f">W (y)</label><input type="number" id="fitY" placeholder="open"></div>
           <div><label class="f">H (z)</label><input type="number" id="fitZ" placeholder="open"></div>
         </div>
-        <div class="hint">Leave blank to just minimize volume for the current cell and S·P.</div>
-        <button class="btn primary" id="btnFit" style="width:100%;margin-top:10px">Find best packings</button>
+        <div class="hint">A Usage-tab preset pre-fills the typical bay for that application. Walls,
+          spacer gap, busbar headroom and the selected cooling system's space are subtracted
+          before packing.</div>
+        <label class="f" style="margin-top:12px">Objective weights</label>
+        <div class="row3">
+          <div><label class="f">Energy / fill <b id="vWe" class="m">5</b></label>
+            <input type="range" id="wEnergy" min="0" max="10" step="1" value="5"></div>
+          <div><label class="f">Cost <b id="vWc" class="m">3</b></label>
+            <input type="range" id="wCost" min="0" max="10" step="1" value="3"></div>
+          <div><label class="f">Weight <b id="vWm" class="m">2</b></label>
+            <input type="range" id="wMass" min="0" max="10" step="1" value="2"></div>
+        </div>
+        <div class="hint">Relative priorities for the multi-objective score. Pareto-optimal designs
+          (no other candidate is better on every objective) are marked regardless of weights.</div>
+        <button class="btn primary" id="btnMaxFill" style="width:100%;margin-top:10px">Max fill — optimize space · cost · weight</button>
+        <button class="btn" id="btnFit" style="width:100%;margin-top:6px">Repack current S·P (min volume / fit check)</button>
       </div>
-      <div class="sec"><h3>Candidates</h3><div id="fitResults"><div class="empty">No search yet.</div></div></div>
+      <div class="sec"><h3>Results</h3><div id="fitResults"><div class="empty">No search yet.</div></div></div>
     </div>
 
     <div class="tabpane" id="pane-comp">

@@ -79,8 +79,9 @@ function orientedDims(cell, orientation) {
 }
 
 // Analytical dimensions of an nx * ny * nz arrangement. ny is derived from N.
-// Returns null for impossible combinations.
-export function gridDims(cell, N, nx, nz, arrangement, spacingMm, layerGapMm, orientation) {
+// rowExtraMm is additional space reserved between rows (e.g. a between-cell
+// cooling ribbon or fin plate). Returns null for impossible combinations.
+export function gridDims(cell, N, nx, nz, arrangement, spacingMm, layerGapMm, orientation, rowExtraMm = 0) {
   if (nx < 1 || nz < 1) return null;
   const perLayer = Math.ceil(N / nz);
   if (perLayer < 1) return null;
@@ -92,12 +93,12 @@ export function gridDims(cell, N, nx, nz, arrangement, spacingMm, layerGapMm, or
   let innerX, innerY;
   if (arrangement === 'hex' && od.hexOk) {
     const pitch = od.fx + gap;
-    const rowPitch = pitch * (Math.sqrt(3) / 2);
+    const rowPitch = pitch * (Math.sqrt(3) / 2) + rowExtraMm;
     innerX = (nx - 1) * pitch + od.fx + (ny > 1 ? pitch / 2 : 0);
     innerY = (ny - 1) * rowPitch + od.fy;
   } else {
     innerX = nx * od.fx + (nx - 1) * gap;
-    innerY = ny * od.fy + (ny - 1) * gap;
+    innerY = ny * od.fy + (ny - 1) * (gap + rowExtraMm);
   }
   const innerZ = nz * od.fz + (nz - 1) * layerGapMm;
   return { nx, ny, nz, innerX, innerY, innerZ, perLayer, od };
@@ -125,6 +126,8 @@ export function autoNx(cell, N, nz, arrangement, spacingMm, orientation) {
 //   layerGapMm   gap between stacked layers (holder plates)
 //   wallMm       enclosure wall thickness (all sides)
 //   headroomMm   extra height above cells for busbars/BMS
+//   underMm      space reserved under the cells (e.g. bottom cold plate)
+//   rowExtraMm   extra space between rows (between-cell cooling)
 //   nx           cells per row; 0 = auto
 //   nz           layers
 // }
@@ -136,19 +139,21 @@ export function layoutPack(cell, s, p, opts = {}) {
   const layerGapMm = opts.layerGapMm ?? 2;
   const wallMm = opts.wallMm ?? 2;
   const headroomMm = opts.headroomMm ?? (cell.form === 'cylindrical' ? 8 : 15);
+  const underMm = opts.underMm ?? 0;
+  const rowExtraMm = opts.rowExtraMm ?? 0;
   let nz = Math.max(1, Math.min(opts.nz || 1, N));
   while (nz > 1 && (nz - 1) * Math.ceil(N / nz) >= N) nz--; // drop empty top layers
   const nx = (opts.nx && opts.nx > 0)
     ? Math.min(opts.nx, Math.ceil(N / nz))
     : autoNx(cell, N, nz, arrangement, spacingMm, orientation);
 
-  const g = gridDims(cell, N, nx, nz, arrangement, spacingMm, layerGapMm, orientation);
+  const g = gridDims(cell, N, nx, nz, arrangement, spacingMm, layerGapMm, orientation, rowExtraMm);
   if (!g) return null;
   const { od } = g;
   const gap = spacingMm;
   const hexActive = arrangement === 'hex' && od.hexOk;
   const pitchX = od.fx + gap;
-  const pitchY = hexActive ? pitchX * (Math.sqrt(3) / 2) : od.fy + gap;
+  const pitchY = (hexActive ? pitchX * (Math.sqrt(3) / 2) : od.fy + gap) + rowExtraMm;
   const pitchZ = od.fz + layerGapMm;
 
   // Serpentine placement: layer by layer, row by row, alternating row
@@ -184,7 +189,7 @@ export function layoutPack(cell, s, p, opts = {}) {
   const outer = {
     x: g.innerX + 2 * wallMm,
     y: g.innerY + 2 * wallMm,
-    z: g.innerZ + 2 * wallMm + headroomMm,
+    z: g.innerZ + 2 * wallMm + headroomMm + underMm,
   };
   const innerVolL = (g.innerX * g.innerY * g.innerZ) / 1e6;
   const cellVolL = N * singleCellVolumeL(cell);
@@ -192,7 +197,7 @@ export function layoutPack(cell, s, p, opts = {}) {
   return {
     cell, s, p, N,
     arrangement, orientation,
-    spacingMm, layerGapMm, wallMm, headroomMm,
+    spacingMm, layerGapMm, wallMm, headroomMm, underMm, rowExtraMm,
     nx: g.nx, ny: g.ny, nz: g.nz,
     positions,
     cellFootprint: { fx: od.fx, fy: od.fy, fz: od.fz, round: od.round, axis: od.axis },

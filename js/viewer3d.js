@@ -166,7 +166,9 @@ export class PackViewer {
     const panel = new THREE.Mesh(box, new THREE.MeshBasicMaterial({
       color: 0x4fd1b5, transparent: true, opacity: 0.05, depthWrite: false, side: THREE.DoubleSide,
     }));
-    const encCenterY = L.headroomMm / 2; // walls symmetric; headroom raises the lid
+    // Walls are symmetric; headroom raises the lid, reserved under-cell
+    // space (cold plate) lowers the floor.
+    const encCenterY = (L.headroomMm - (L.underMm || 0)) / 2;
     enc.position.set(0, encCenterY, 0);
     enc.add(lines, panel);
     // Housing material tints the translucent shell.
@@ -208,7 +210,7 @@ export class PackViewer {
     this._grid.material.color.set(this._dark ? 0x38423f : 0xc4cdca);
     this._grid.material.transparent = true;
     this._grid.material.opacity = 0.6;
-    this._grid.position.y = -(L.outer.z / 2) - L.headroomMm / 2 - 1;
+    this._grid.position.y = -(L.inner.z / 2) - (L.underMm || 0) - L.wallMm - 2;
     this.packGroup.add(this._grid);
 
     this._placeInstances();
