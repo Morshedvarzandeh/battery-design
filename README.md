@@ -1,9 +1,15 @@
 # battery-design
 
+**Live app: <https://morshedvarzandeh.github.io/battery-design/>**
+
 A 3D battery pack designer that runs entirely in the browser — a static page
-with no build step and no server. Open `index.html` from any static file
-server (or enable GitHub Pages on this repo and it just works); Three.js is
-vendored, so it also works offline.
+with no build step and no server (deployed by GitHub Pages on every merge to
+`main`; Three.js is vendored, so it also works offline).
+
+Want to add a cell or component you found on the market? See
+[CONTRIBUTING.md](CONTRIBUTING.md) — new entries integrate into the pickers,
+optimizer, analysis and views automatically once they pass the CI data gate
+(`tools/validate.mjs` + `tests/`).
 
 Cell data is curated from public datasheets, several extracted via the
 companion [battery-data](https://github.com/morshedvarzandeh/battery-data)
