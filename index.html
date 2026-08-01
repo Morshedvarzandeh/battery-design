@@ -342,7 +342,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       <button class="tab active" data-tab="design">Design</button>
       <button class="tab" data-tab="usage">Usage</button>
       <button class="tab" data-tab="fit">Fit</button>
-      <button class="tab" data-tab="comp">Parts</button>
+      <button class="tab" data-tab="comp">Components</button>
       <button class="tab" data-tab="analysis">Analysis <span class="chip" id="stdBadge"></span></button>
       <button class="tab" data-tab="results">Results</button>
     </div>
@@ -457,6 +457,9 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           </div>
         </div>
         <div id="bayFields"></div>
+        <input type="file" id="bayFile" accept=".dxf,.svg,.csv,.txt,.json" style="display:none">
+        <button class="btn" id="btnBayUpload" style="width:100%;margin-top:8px">📁 Upload outline from CAD — DXF · SVG · CSV · JSON</button>
+        <div class="hint" id="bayFileInfo"></div>
         <canvas id="sketch" height="230" style="display:none;border:1px solid var(--line);border-radius:var(--r);margin-top:8px;width:100%;touch-action:none;background:var(--ground)"></canvas>
         <div class="hint" id="bayHint">A Usage-tab preset pre-fills the typical bay for that application. Walls,
           spacer gap, busbar headroom and the selected cooling system's space are subtracted

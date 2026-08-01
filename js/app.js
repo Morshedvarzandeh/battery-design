@@ -14,6 +14,7 @@ import {
   loadMyCells, saveMyCells, normalizeCustomCell, validateCustomCell, buildMailto,
 } from './mycells.js';
 import { sensitivityAnalysis, priceFlipThreshold } from './sensitivity.js';
+import { parseOutline } from './bay-import.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
@@ -272,6 +273,25 @@ function bindControls() {
 
   $('segBay').querySelectorAll('button').forEach((b) => b.onclick = () => setBayKind(b.dataset.bay));
   bindSketch();
+  // CAD outline upload: stop the double work — read the bay straight from
+  // the engineer's existing drawing.
+  $('btnBayUpload').onclick = () => $('bayFile').click();
+  $('bayFile').onchange = async () => {
+    const file = $('bayFile').files[0];
+    if (!file) return;
+    try {
+      const res = parseOutline(file.name, await file.text());
+      setBayKind('poly');
+      state.sketchPts = res.points;
+      drawSketch();
+      $('bayFileInfo').innerHTML = `✓ ${esc(file.name)} (${esc(res.source)}): ${res.vertexCount} points, ` +
+        `${f0(res.bbox.x)} × ${f0(res.bbox.y)} mm — check the size looks right (units are read as mm), ` +
+        `set the height below, then run Max fill.`;
+    } catch (e) {
+      $('bayFileInfo').innerHTML = `<span style="color:var(--missing)">✗ ${esc(e.message)}</span>`;
+    }
+    $('bayFile').value = '';
+  };
   $('btnSuggest').onclick = runSuggest;
   $('btnFit').onclick = runFit;
   $('btnMaxFill').onclick = runMaxFill;
@@ -390,7 +410,7 @@ function wizardStep2() {
 
 function wizardStep3() {
   $('wzTitle').textContent = 'Pick your design';
-  $('wzSub').textContent = 'Best three for your space, balanced for energy, lifetime cost and weight. Tap one — you can fine-tune everything afterwards.';
+  $('wzSub').textContent = 'Best three for your space, balanced for energy, lifetime cost and weight. Tap one — then choose cooling plates, cell spacers, thermal interface materials and suppliers under “Components”.';
   $('wzBack').style.visibility = 'visible';
   $('wzBack').onclick = wizardStep2;
   const num = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
@@ -455,7 +475,7 @@ const FLOW_STEPS = [
   { tab: 'usage', num: '1', label: 'Application & duty' },
   { tab: 'fit', num: '2', label: 'Space & boundaries → scenarios' },
   { tab: 'design', num: '3', label: 'Chosen design' },
-  { tab: 'comp', num: '4', label: 'Parts & suppliers' },
+  { tab: 'comp', num: '4', label: 'Components & suppliers' },
   { tab: 'analysis', num: '5', label: 'Engineering audit' },
   { tab: 'results', num: '6', label: 'Report' },
 ];
@@ -724,12 +744,18 @@ function readBay() {
   }
 }
 
-// Tiny polygon sketcher: fixed 1500 mm world width, 50 mm snap.
-const SKETCH_WORLD = 1500;
+// Tiny polygon sketcher: adaptive world width (grows to fit imported CAD
+// outlines), 50 mm snap for hand drawing.
 let sketchDrag = null;
+function sketchWorld() {
+  const pts = state.sketchPts;
+  if (!pts.length) return 1500;
+  const span = Math.max(...pts.map((p) => p[0]), ...pts.map((p) => p[1]));
+  return Math.max(1500, span * 1.15);
+}
 function sketchScale() {
   const c = $('sketch');
-  return (c.clientWidth || 300) / SKETCH_WORLD;
+  return (c.clientWidth || 300) / sketchWorld();
 }
 function drawSketch() {
   const c = $('sketch');
@@ -741,8 +767,10 @@ function drawSketch() {
   g.clearRect(0, 0, wCss, hCss);
   const sc = sketchScale();
   const css = (name, fb) => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fb;
+  const world = sketchWorld();
+  const gridStep = world > 4000 ? 500 : 100;
   g.strokeStyle = css('--line', '#ddd'); g.lineWidth = 0.5;
-  for (let mm = 0; mm <= SKETCH_WORLD; mm += 100) {
+  for (let mm = 0; mm <= world; mm += gridStep) {
     g.beginPath(); g.moveTo(mm * sc, 0); g.lineTo(mm * sc, hCss); g.stroke();
     g.beginPath(); g.moveTo(0, mm * sc); g.lineTo(wCss, mm * sc); g.stroke();
   }
