@@ -88,6 +88,24 @@ export function buildReportHTML(R) {
     ${esc(R.date)} · battery-design (morshedvarzandeh.github.io/battery-design) ·
     application: ${esc(R.application)}</div>
 
+  <h2 style="${h2}">How this design was produced</h2>
+  <ol style="font-size:12px;margin:4px 0 0 18px;padding:0;line-height:1.7">
+    <li><b>Application &amp; duty</b> — the customer's use case sets the voltage window, power,
+      duty (cycles/year) and service-life target.</li>
+    <li><b>Space &amp; boundaries</b> — the available bay (box, round, L-shape, stepped or drawn
+      outline) is fixed; walls, spacer gaps, busbar headroom, cooling-system space and an
+      integration allowance (validated against production EV packs) are reserved.</li>
+    <li><b>Scenario generation</b> — every library cell is packed to its maximum in that space
+      and the best series×parallel split inside the voltage window is selected.</li>
+    <li><b>Multi-objective selection</b> — scenarios are scored on energy-in-space, cost
+      (lifetime TCO or upfront) and weight with customer-set priorities; Pareto-optimal
+      trade-offs are flagged and the choice is stress-tested for sensitivity and robustness.</li>
+    <li><b>Engineering verification</b> — the chosen design is audited from the mechanical,
+      thermal, electrical and safety perspectives against public standards.</li>
+    <li><b>Documentation</b> — this report: economics, CO2, sensitivity, patent landscape,
+      components and audit findings.</li>
+  </ol>
+
   <h2 style="${h2}">Pack</h2>
   ${table([
     row('Cell', esc(R.cell.name) + ` (${esc(R.cell.chemistry)}, ${esc(R.cell.form)})`),

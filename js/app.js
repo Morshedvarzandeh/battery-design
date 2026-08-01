@@ -201,7 +201,9 @@ function bindControls() {
     document.querySelectorAll('.tabpane').forEach((p) =>
       p.classList.toggle('active', p.id === `pane-${t.dataset.tab}`));
     if (t.dataset.tab === 'results') renderResults();
+    updateFlowBar(t.dataset.tab);
   });
+  buildFlowBar();
   bindCellModal();
   bindResults();
 
@@ -442,6 +444,44 @@ function wizardStep3() {
     };
     body.appendChild(el);
   });
+}
+
+// ---------------------------------------------------------------------------
+// The system workflow, made visible — the same order a pack project runs in
+// the market: the customer's application and boundaries come FIRST, the
+// design is derived from them.
+// ---------------------------------------------------------------------------
+const FLOW_STEPS = [
+  { tab: 'usage', num: '1', label: 'Application & duty' },
+  { tab: 'fit', num: '2', label: 'Space & boundaries → scenarios' },
+  { tab: 'design', num: '3', label: 'Chosen design' },
+  { tab: 'comp', num: '4', label: 'Parts & suppliers' },
+  { tab: 'analysis', num: '5', label: 'Engineering audit' },
+  { tab: 'results', num: '6', label: 'Report' },
+];
+
+function buildFlowBar() {
+  const bar = $('flowBar');
+  FLOW_STEPS.forEach((st, i) => {
+    if (i) {
+      const a = document.createElement('span');
+      a.className = 'farrow';
+      a.textContent = '→';
+      bar.appendChild(a);
+    }
+    const b = document.createElement('button');
+    b.className = 'fstep';
+    b.dataset.tab = st.tab;
+    b.innerHTML = `<b>${st.num}</b>${esc(st.label)}`;
+    b.onclick = () => document.querySelector(`#tabs .tab[data-tab="${st.tab}"]`)?.click();
+    bar.appendChild(b);
+  });
+  updateFlowBar('design');
+}
+
+function updateFlowBar(tab) {
+  $('flowBar').querySelectorAll('.fstep').forEach((b) =>
+    b.classList.toggle('active', b.dataset.tab === tab));
 }
 
 // ---------------------------------------------------------------------------

@@ -51,6 +51,24 @@ project's provenance-first datasheet pipeline.
   IEC 62619 / 62133-2, UL family) perspectives, with the actual numbers in
   every finding.
 
+## The system workflow
+
+The tool follows the same order a pack project runs in the market: the
+customer's application and boundaries come first, and the design is derived
+from them — never the other way around. The workflow bar in the app shows
+where you are at every step.
+
+```mermaid
+flowchart LR
+  A["1 · Application & duty\nvoltage window · power\ncycles/year · years"] --> B["2 · Space & boundaries\nbay shape (box/round/L/stepped/drawn)\nwalls · spacers · cooling space\nintegration allowance"]
+  B --> C["3 · Scenario generation\nmax-fill every cell\nbest S×P in the window"]
+  C --> D["4 · Multi-objective selection\nenergy · TCO/upfront cost · weight\nPareto front · sensitivity · robustness"]
+  D --> E["5 · Engineering verification\nmechanical · thermal · electrical · safety\nstandards audit"]
+  E --> F["6 · Report\neconomics · CO2 payback\npatent landscape · PDF/Word"]
+  P["Private customer cells\n(device-only, emailed 1:1)"] -.-> C
+  G["Public databases\ncells · components · presets · patents\n(CI-gated contributions)"] -.-> C
+```
+
 ## Space-first design, validated against real cars
 
 The Fit tab works the way real projects do: the application fixes the
