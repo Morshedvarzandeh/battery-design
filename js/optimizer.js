@@ -212,7 +212,7 @@ function buildCandidate(cell, s, req) {
   const best = space[0];
   if (!best) return null;
   if (req.maxDimsMm && !best.fits) {
-    warnings.push('Does not fit the size envelope in any orientation tried');
+    warnings.push('Closest layout is larger than the size envelope in every orientation tried — needs more room or a split into more than one pack');
     penalty += 2;
   }
   const layout = layoutPack(cell, s, p, best.opts);
@@ -349,7 +349,11 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
     if (pick.s * cell.nominalV < vLo - 1e-9) continue; // can't reach the window
 
     const energyWh = pick.n * cell.nominalV * cell.capacityAh;
-    if (req.energyWh && energyWh < req.energyWh) continue; // below the application's minimum
+    // A candidate below the requested energy is NOT discarded: the market
+    // cannot fit itself to us, so when the target is out of reach the tool
+    // must still present the closest possible solution — with the shortfall
+    // stated — instead of a dead end.
+    const meetsEnergy = !req.energyWh || energyWh >= req.energyWh;
     const costUSD = cell.priceUSD != null ? cell.priceUSD * pick.n : null;
     const tco = costModel(cell, pick.n, energyWh,
       { cyclesPerYear: req.cyclesPerYear, targetYears: req.targetYears });
@@ -367,6 +371,9 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
       cell, s: pick.s, p: pick.p, n: pick.n, nMax: best.nMax,
       utilization: pick.n / best.nMax,
       energyWh, costUSD, tco,
+      meetsEnergy,
+      targetEnergyWh: req.energyWh ?? null,
+      energyCoverage: req.energyWh ? energyWh / req.energyWh : null,
       usdPerKWh: costUSD != null && energyWh > 0 ? costUSD / (energyWh / 1000) : null,
       massKg: (pick.n * cell.massG) / 1000, // cells only, comparable across candidates
       nominalV: pick.s * cell.nominalV,
@@ -383,7 +390,11 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
     });
   }
   scoreMultiObjective(out, req.weights, req.costBasis);
-  out.sort((a, b) => b.score - a.score);
+  // Designs that reach the requested energy rank ahead of the closest-
+  // possible ones; within each group the multi-objective score decides.
+  out.sort((a, b) => (a.meetsEnergy === b.meetsEnergy)
+    ? b.score - a.score
+    : (a.meetsEnergy ? -1 : 1));
   return out.slice(0, topK);
 }
 

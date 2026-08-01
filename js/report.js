@@ -118,6 +118,33 @@ export function buildReportHTML(R) {
     row('Energy density', `${f0(S.whPerKg)} Wh/kg · ${f0(S.whPerL)} Wh/L`),
   ])}
 
+  ${R.architecture ? (() => {
+    const A = R.architecture, P = A.partition, B = A.bms, PR = A.precharge, K = A.contactors, RES = A.resistance;
+    return `
+  <h2 style="${h2}">Electrical architecture</h2>
+  ${R.archPng ? `<img src="${R.archPng}" style="width:100%;max-width:640px;border:1px solid #ddd" alt="architecture diagram">` : ''}
+  ${table([
+    row('Structure', P.virtual
+      ? 'cell-to-pack — one virtual group, no physical module tier'
+      : `${P.nModules} modules of ${P.sMod}S${P.pMod}P — ${f1(P.moduleVoltageMaxV)} V max, ${f1(P.moduleEnergyWh / 1000)} kWh, ${f1(P.moduleMassCellsKg)} kg cells per module`),
+    ...(A.system && A.system.racks > 1 ? [row('System scale', `the ${f1(A.system.targetWh / 1000)} kWh target needs <b>${A.system.racks} packs (racks)</b> of this design in parallel strings — this report models ONE pack; each rack keeps its own contactors, fuse and BMS string`)] : []),
+    row('Voltage class', `${esc(A.voltageClass.label)} — <span style="font-weight:normal">${esc(A.voltageClass.note)}</span>`),
+    row('BMS', `${esc(B.topologyInfo?.name || B.topology)} · ${B.afeTotal}× AFE IC (${B.channelsPerIc} ch) · ${B.senseWiresTotal} sense wires · ${B.tempSensors} temperature sensors (1 per ${B.cellsPerTempSensor} cells)`),
+    ...(PR ? [
+      row('Precharge', `${f1(PR.rOhm)} Ω resistor · DC link within ${PR.closeGapV} V in ${PR.timeToCloseS} s (τ = ${f2(PR.tauS)} s) · ${f0(PR.energyPerEventJ)} J and ${f1(PR.avgPowerDuringEventW)} W average per event · sized for ${PR.prechargesPerHour}/h`),
+      row('Switching sequence', PR.sequence.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')),
+    ] : []),
+    row('Contactors', `2 mains + 1 precharge · rated ≥${f0(K.ratingA)} A continuous · ~${f0(K.massEachG)} g each (mass fit is weak — budgeting only)`),
+    row('Fuse', `≈${f0(K.fuse.ratingA)} A (2× continuous) · <span style="font-weight:normal">${esc(K.fuse.rules[1])} ${esc(K.fuse.rules[2])}</span>`),
+    row('Isolation', A.isolation
+      ? `≥${f0(A.isolation.floorKOhm)} kΩ floor at ${A.isolation.ohmsPerVolt} Ω/V per ${esc(A.isolation.standardLabel)} — <span style="font-weight:normal">${esc(A.isolation.oemPracticeNote)}</span>`
+      : 'not required — the pack stays at or below the 60 V DC boundary'),
+    row('DC-DC converter', `${f1(A.dcdc.inputRangeV[0])}–${f1(A.dcdc.inputRangeV[1])} V input → ${A.dcdc.lvBusV} V auxiliary bus — <span style="font-weight:normal">${esc(A.dcdc.sizingNote)}</span>`),
+    ...(RES.totalMOhm != null ? [row('Pack resistance', `~${f1(RES.totalMOhm)} mΩ (cells ${f1(RES.cellsMOhm)} mΩ + interconnect ${f0(RES.interconnectMOhm)} mΩ) · ~${f1(RES.droopVAtCont)} V droop, ~${f0(RES.lossWAtCont)} W loss at max continuous`)] : []),
+  ])}
+  <div style="font-size:11px;color:#666;margin-top:4px">${[...(P.notes || []), ...(B.notes || []), A.dcdc.chargingNote, K.lvNote, A.isolation?.groundingNote].filter(Boolean).map(esc).join(' ')}</div>`;
+  })() : ''}
+
   ${R.loadProfile ? `
   <h2 style="${h2}">Load profile — ${esc(R.loadProfile.name)}</h2>
   <img src="${R.loadProfile.chartPng}" style="width:100%;max-width:640px;border:1px solid #ddd" alt="load profile">

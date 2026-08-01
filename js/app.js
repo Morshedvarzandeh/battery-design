@@ -17,6 +17,7 @@ import {
   LOAD_PROFILES, profileForApp, profileById, profileStats, profileChecks, parseProfileCSV,
 } from './loadprofiles.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
+import { buildArchitecture, modulePartition, systemPlan } from './architecture.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
 import { ANALYSIS_DISCLAIMER, analyze } from './engineering.js';
@@ -46,6 +47,8 @@ const state = {
   appliedBay: null,        // bay object of the applied shaped fill, or null
   profileId: null,         // active load profile id, 'custom', or null
   profileScaleW: null,     // absolute W the profile's peak (=1.0) maps to
+  archTopology: 'auto',    // BMS topology choice ('auto' applies the scale rule)
+  archIso: 'ece-r100',     // governing isolation standard — explicit, never averaged
 };
 let customProfile = null;  // uploaded profile (session only)
 
@@ -60,6 +63,7 @@ let lastFindings = [];
 let lastSummary = null;
 let lastLayout = null;
 let lastAnalysis = null;
+let lastArch = null;      // architecture (modules, BMS, HV chain) of the pack
 let lastForm = 'cylindrical';
 let lastFillResults = null; // most recent max-fill ranking, for robustness
 
@@ -425,6 +429,21 @@ function bindControls() {
     $('segCost').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
     if ($('fitResults').querySelector('.card')) runMaxFill();
   });
+  // Architecture controls: topology and isolation standard are explicit
+  // choices; the numeric assumptions live behind the details block.
+  $('segTopo').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    state.archTopology = b.dataset.topo;
+    $('segTopo').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    runArchitecture();
+  });
+  $('segIso').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    state.archIso = b.dataset.iso;
+    $('segIso').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    runArchitecture();
+  });
+  for (const id of ['archCh', 'archCap', 'archTpre', 'archRep', 'archTs']) {
+    $(id).onchange = runArchitecture;
+  }
   $('btnExport').onclick = exportJSON;
   $('btnTheme').onclick = toggleTheme;
 }
@@ -523,6 +542,7 @@ function wizardStep3() {
     { x: num('fitX'), y: num('fitY'), z: num('fitZ') },
     {
       vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
+      energyWh: (num('rqWh') ?? 0) > 0 ? num('rqWh') : null,
       contPowerW: num('rqPc'),
       cyclesPerYear: num('rqCy'), targetYears: num('rqYr'),
       costBasis: 'tco',
@@ -535,7 +555,7 @@ function wizardStep3() {
     }, 3);
   const body = $('wzBody');
   if (!results.length) {
-    body.innerHTML = '<div class="empty">Nothing fits that space — go back and make it a little bigger.</div>';
+    body.innerHTML = '<div class="empty">That space is smaller than any single cell in the library — the closest possible solution starts with a few more millimetres. Go back and add a little room.</div>';
     return;
   }
   lastFillResults = results;
@@ -543,6 +563,9 @@ function wizardStep3() {
   results.forEach((r, i) => {
     const why = [
       i === 0 ? 'Best overall balance' : (r.pareto ? 'A different trade-off — nothing beats it on all counts' : 'Runner-up'),
+      r.targetEnergyWh && !r.meetsEnergy
+        ? `the most possible in your space — ${f0(r.energyCoverage * 100)}% of the ${fWh(r.targetEnergyWh)} target`
+        : null,
       r.tco?.tcoUSD != null
         ? `~$${f0(r.tco.tcoUSD)} over ${f0(parseFloat($('rqYr').value) || 0)} years${r.tco.replacements > 1 ? ` (${r.tco.replacements} packs)` : ''}`
         : (r.costUSD != null ? `~$${f0(r.costUSD)} upfront` : ''),
@@ -745,6 +768,13 @@ function currentReportData() {
     })(),
     patents: matchPatents({ cell: c, cellCount: lastSummary.cellCount, selection: selComponents() }),
     patentsDisclaimer: PATENTS_DISCLAIMER,
+    architecture: lastArch,
+    archPng: (() => {
+      if (!lastArch) return null;
+      const off = document.createElement('canvas');
+      drawArchDiagram(off, lastArch, lastSummary, true);
+      return off.toDataURL('image/png');
+    })(),
     loadProfile: (() => {
       const prof = currentProfile();
       if (!prof || !state.profileScaleW) return null;
@@ -1003,8 +1033,9 @@ function recompute() {
     // Invalidate every derived surface so nothing keeps describing the
     // previous configuration (stats, 3D, findings, export).
     $('cfgHint').textContent = `${N.toLocaleString()} cells — above the ${MAX_CELLS.toLocaleString()}-cell render cap; reduce S or P.`;
-    lastLayout = null; lastSummary = null; lastFindings = []; lastAnalysis = null;
+    lastLayout = null; lastSummary = null; lastFindings = []; lastAnalysis = null; lastArch = null;
     const emptyMsg = '<div class="empty">Over the cell cap — no pack computed.</div>';
+    $('archBody').innerHTML = emptyMsg;
     $('hdrStats').innerHTML = '';
     $('statsBody').innerHTML = emptyMsg;
     $('stageStats').innerHTML = emptyMsg;
@@ -1198,6 +1229,159 @@ function runAnalysis() {
   $('findings').innerHTML = lastFindings.map(findingHtml).join('');
   $('stdList').innerHTML = STANDARDS_INFO.map((s) =>
     `<div style="margin-bottom:4px"><b>${esc(s.code)}</b> — ${esc(s.title)}</div>`).join('');
+  runArchitecture();
+}
+
+// ---------------------------------------------------------------------------
+// Architecture — modules, BMS topology and the HV chain (contactors,
+// precharge, fuse, DC-DC, isolation). Math in js/architecture.js.
+// ---------------------------------------------------------------------------
+function archOptions() {
+  const n = (id, dflt) => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : dflt; };
+  const target = parseFloat($('rqWh').value);
+  return {
+    topology: state.archTopology,
+    isolationStandard: state.archIso,
+    channelsPerIc: clamp(Math.round(n('archCh', 16)), 2, 25),
+    linkCapUF: n('archCap', 500),
+    prechargeTimeS: n('archTpre', 0.5),
+    prechargesPerHour: n('archRep', 4),
+    cellsPerTempSensor: Math.max(1, Math.round(n('archTs', 6))),
+    targetEnergyWh: isFinite(target) && target > 0 ? target : null,
+  };
+}
+
+function runArchitecture() {
+  if (!lastSummary) return;
+  try {
+    lastArch = buildArchitecture({
+      cell: cell(), s: state.s, p: state.p, summary: lastSummary, options: archOptions(),
+    });
+  } catch (e) {
+    console.error('architecture failed', e);
+    lastArch = null;
+  }
+  renderArchitecture();
+}
+
+function renderArchitecture() {
+  const box = $('archBody');
+  const A = lastArch;
+  if (!A) { box.innerHTML = '<div class="empty">—</div>'; return; }
+  const P = A.partition, B = A.bms, PR = A.precharge, K = A.contactors, R = A.resistance;
+  const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
+  const note = (t) => `<div class="hint">${esc(t)}</div>`;
+  const rows = [];
+  rows.push(stat('Structure', P.virtual
+    ? `cell-to-pack — one virtual group (no physical module tier)`
+    : `${P.nModules} modules of ${P.sMod}S${P.pMod}P`));
+  if (!P.virtual) {
+    rows.push(stat('Per module', `${f1(P.moduleVoltageMaxV)} V max · ${fWh(P.moduleEnergyWh)} · ${f1(P.moduleMassCellsKg)} kg cells · ${P.senseWiresPerModule} sense wires`));
+  }
+  if (A.system && A.system.racks > 1) {
+    rows.push(stat('System scale', `your ${fWh(A.system.targetWh)} target needs ${A.system.racks} packs (racks) of this design in parallel — this tool models ONE pack; each rack keeps its own contactors, fuse and BMS string`));
+  }
+  rows.push(stat('Voltage class', `${esc(A.voltageClass.label)}`));
+  rows.push(stat('BMS', `${esc(B.topologyInfo?.name || B.topology)} · ${B.afeTotal}× AFE (${B.channelsPerIc} ch) · ${B.senseWiresTotal} sense wires · ${B.tempSensors} temp sensors (1:${B.cellsPerTempSensor})`));
+  if (PR) {
+    rows.push(stat('Precharge', `${f1(PR.rOhm)} Ω · within ${PR.closeGapV} V in ${PR.timeToCloseS} s · ${f0(PR.energyPerEventJ)} J/event · avg ${f1(PR.avgPowerDuringEventW)} W during event`));
+    rows.push(stat('Sequence', PR.sequence.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')));
+  }
+  rows.push(stat('Contactors', `2 mains + 1 precharge · rated ≥${f0(K.ratingA)} A cont. · ~${f0(K.massEachG)} g each (weak fit — budgeting only)`));
+  rows.push(stat('Fuse', `≈${f0(K.fuse.ratingA)} A (2× continuous) · operate ≤50% of melting curve · break ≥1.15× worst short`));
+  rows.push(stat('Isolation', A.isolation
+    ? `≥${f0(A.isolation.floorKOhm)} kΩ floor at ${A.isolation.ohmsPerVolt} Ω/V (${esc(A.isolation.standardLabel)}) — OEM practice >1.5 MΩ`
+    : 'not required — pack stays at or below the 60 V DC boundary'));
+  rows.push(stat('DC-DC', `${f1(A.dcdc.inputRangeV[0])}–${f1(A.dcdc.inputRangeV[1])} V in → ${A.dcdc.lvBusV} V aux`));
+  if (R.totalMOhm != null) {
+    rows.push(stat('Pack resistance', `~${f1(R.totalMOhm)} mΩ (cells ${f1(R.cellsMOhm)} + interconnect ${f0(R.interconnectMOhm)}) · droop ~${f1(R.droopVAtCont)} V, loss ~${f0(R.lossWAtCont)} W at max cont.`));
+  }
+  const notes = [
+    ...(P.notes || []), ...(B.notes || []), ...(PR?.notes || []),
+    A.dcdc.sizingNote, A.dcdc.chargingNote, K.lvNote,
+    A.isolation?.groundingNote,
+  ].filter(Boolean);
+  box.innerHTML = rows.join('') + notes.map(note).join('');
+  drawArchDiagram($('archCanvas'), A, lastSummary);
+}
+
+// One-line diagram of the HV chain: pack (with its modules) → fuse → main
+// and precharge contactors → DC link → load, plus BMS and DC-DC. Doubles as
+// the report figure via the forExport PNG path (same pattern as the load
+// profile chart).
+function drawArchDiagram(canvas, A, S, forExport = false) {
+  // Fixed 640×250 logical drawing; the on-screen canvas is scaled down by
+  // its CSS width, the report PNG uses it at full size.
+  const dpr = forExport ? 2 : Math.min(window.devicePixelRatio || 1, 2);
+  const W = 640, H = 250;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = (n, fb) => forExport ? fb :
+    (getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fb);
+  const ink = css('--ink', '#1a1a1a'), mut = css('--muted', '#666'), acc = css('--accent', '#0b6e5f');
+  g.fillStyle = forExport ? '#ffffff' : css('--ground', '#f4f6f5');
+  g.fillRect(0, 0, W, H);
+  g.font = '10px ui-monospace, monospace';
+  g.lineWidth = 1.2;
+  const boxAt = (x, y, w, h, label, sub) => {
+    g.strokeStyle = acc; g.strokeRect(x, y, w, h);
+    g.fillStyle = ink;
+    g.fillText(label, x + 4, y + 13);
+    if (sub) { g.fillStyle = mut; g.fillText(sub, x + 4, y + 25); }
+  };
+  const line = (x1, y1, x2, y2) => {
+    g.strokeStyle = mut; g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+  };
+  const P = A.partition;
+  // Pack with module slots (or one dashed virtual group).
+  boxAt(10, 40, 140, 170, `${S.s}S${S.p}P`, `${Math.round(S.nominalV)} V`);
+  const slots = P.virtual ? 1 : Math.min(P.nModules, 6);
+  const slotH = 130 / slots;
+  for (let i = 0; i < slots; i++) {
+    g.strokeStyle = acc;
+    if (P.virtual) g.setLineDash([4, 3]);
+    g.strokeRect(18, 70 + i * slotH + 2, 124, slotH - 4);
+    g.setLineDash([]);
+  }
+  g.fillStyle = mut;
+  g.fillText(P.virtual ? 'cell-to-pack (virtual)' : `${P.nModules}× ${P.sMod}S${P.pMod}P${P.nModules > slots ? ` (${slots} shown)` : ''}`, 20, 66);
+  // Positive bus: pack → fuse → K+ (with precharge branch) → link → load.
+  line(150, 70, 180, 70);
+  boxAt(180, 55, 70, 30, 'Fuse', `${Math.round(A.contactors.fuse.ratingA ?? 0)} A`);
+  line(250, 70, 285, 70);
+  boxAt(285, 55, 75, 30, 'K+ main', null);
+  // Precharge branch over K+.
+  line(267, 70, 267, 25); line(267, 25, 285, 25);
+  boxAt(285, 12, 55, 26, 'K pre', null);
+  line(340, 25, 352, 25);
+  // Resistor zigzag.
+  g.strokeStyle = mut; g.beginPath(); g.moveTo(352, 25);
+  for (let i = 0; i < 6; i++) g.lineTo(356 + i * 7, 25 + (i % 2 ? 7 : -7));
+  g.lineTo(400, 25); g.stroke();
+  g.fillStyle = mut;
+  if (A.precharge) g.fillText(`${(Math.round(A.precharge.rOhm * 10) / 10)} Ω`, 350, 48);
+  line(400, 25, 412, 25); line(412, 25, 412, 70);
+  line(360, 70, 470, 70);
+  // DC link capacitor between the buses.
+  line(440, 70, 440, 100); line(430, 100, 450, 100); line(430, 106, 450, 106); line(440, 106, 440, 190);
+  g.fillStyle = mut; g.fillText(`${Math.round(A.precharge?.linkCapUF ?? 0)} µF`, 452, 106);
+  // Load.
+  boxAt(490, 55, 140, 150, 'Inverter / load', null);
+  line(470, 70, 490, 70);
+  // Negative bus: pack → K− → load.
+  line(150, 190, 285, 190);
+  boxAt(285, 175, 75, 30, 'K− main', null);
+  line(360, 190, 490, 190);
+  // DC-DC to LV aux.
+  line(420, 190, 420, 215);
+  boxAt(380, 215, 100, 28, 'DC-DC', `${A.dcdc.lvBusV} V aux`);
+  // BMS under the pack.
+  boxAt(10, 218, 140, 28, `BMS ${A.bms.topology}`, `${A.bms.afeTotal}× AFE`);
+  line(80, 210, 80, 218);
+  // Closing order.
+  g.fillStyle = mut;
+  g.fillText('close: K− → K pre → K+ (link within ~10 V) → open K pre', 180, 245);
 }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (ch) =>
@@ -1224,7 +1408,7 @@ function runSuggest() {
   const results = suggestDesigns(req, allCells());
   const box = $('suggestions');
   if (!results.length) {
-    box.innerHTML = '<div class="empty">Nothing feasible in the library for those numbers — widen the voltage window or relax constraints.</div>';
+    box.innerHTML = '<div class="empty">No library cell lands near those numbers yet — the closest possible solutions open up if you widen the voltage window or relax a constraint, then run again.</div>';
     return;
   }
   box.innerHTML = '';
@@ -1285,6 +1469,7 @@ function runMaxFill() {
   const envelope = shaped ? null : { x: bay.x, y: bay.y, z: bay.z };
   const req = {
     vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
+    energyWh: (num('rqWh') ?? 0) > 0 ? num('rqWh') : null,
     contPowerW: num('rqPc'),
     cyclesPerYear: num('rqCy'), targetYears: num('rqYr'),
     costBasis: $('segCost').querySelector('.active')?.dataset.cost || 'tco',
@@ -1302,7 +1487,7 @@ function runMaxFill() {
     coolingSpace: cool, integrationPct, bay: shaped ? bay : null,
   });
   if (!results.length) {
-    box.innerHTML = '<div class="empty">No cell in the library fits that envelope with the current walls, spacing and cooling reservation.</div>';
+    box.innerHTML = '<div class="empty">Even the smallest library cell doesn\'t fit that space yet — the closest possible solution needs a few more millimetres, thinner walls, or a smaller cooling reservation. Loosen one of those and run again.</div>';
     return;
   }
   lastFillResults = results;
@@ -1318,13 +1503,23 @@ function runMaxFill() {
     const ch = CHEMISTRIES[r.cell.chemistry];
     const card = document.createElement('div');
     card.className = 'card';
+    // Module structure per candidate, and — when the space can't reach the
+    // requested energy — the closest-possible framing with the way to scale
+    // up (more bays/racks), never a bare "impossible".
+    const part = modulePartition(r.s, r.p, r.cell);
+    const plan = r.targetEnergyWh && !r.meetsEnergy ? systemPlan(r.targetEnergyWh, r.energyWh) : null;
     card.innerHTML = `
       <h4>#${i + 1} ${esc(r.cell.name)}
         <span class="chip" style="color:${ch?.color};border-color:${ch?.color}">${r.cell.chemistry}</span>
-        ${r.pareto ? '<span class="chip pass">Pareto-optimal</span>' : '<span class="chip info">dominated</span>'}</h4>
+        ${r.pareto ? '<span class="chip pass">Pareto-optimal</span>' : '<span class="chip info">dominated</span>'}
+        ${r.targetEnergyWh ? (r.meetsEnergy ? '<span class="chip pass">meets target</span>' : '<span class="chip warn">closest possible</span>') : ''}</h4>
       <div class="m">${r.s}S${r.p}P · ${f1(r.nominalV)} V · ${r.n}/${r.nMax} cells (${f0(r.utilization * 100)}% of fit) ·
         ${fWh(r.energyWh)} · ${f1(r.massKg)} kg ·
         ${r.grid.nx != null ? `${r.grid.nx}×${r.grid.ny}${r.grid.nz > 1 ? `×${r.grid.nz}` : ''} ` : ''}${r.opts.arrangement}</div>
+      <div class="m" style="margin-top:2px">Architecture: ${part.virtual
+        ? 'cell-to-pack — one virtual group'
+        : `${part.nModules} modules of ${part.sMod}S${part.pMod}P (${f1(part.moduleVoltageMaxV)} V max each)`}</div>
+      ${plan ? `<div class="m" style="margin-top:2px;color:#b4441f">The most possible in this space: ${f0(r.energyCoverage * 100)}% of your ${fWh(r.targetEnergyWh)} target.${plan.racks > 1 ? ` ${plan.racks} bays of this design in parallel would cover it.` : ''}</div>` : ''}
       ${r.costUSD != null ? `<div class="m" style="margin-top:2px">Upfront ~$${f0(r.costUSD)} (${f0(r.usdPerKWh)} $/kWh cap.)
         ${r.tco?.usdPerKWhDelivered != null ? ` · <b>${(Math.round(r.tco.usdPerKWhDelivered * 100) / 100).toFixed(2)} $/kWh delivered</b> over ${f0(r.cell.cycleLife)} cycles` : ''}
         ${r.tco?.tcoUSD != null ? ` · TCO ~$${f0(r.tco.tcoUSD)}${r.tco.replacements > 1 ? ` (${r.tco.replacements}× packs)` : ''}${r.tco.serviceYears != null ? ` · ~${f1(r.tco.serviceYears)} y/pack` : ''}` : ''}</div>` : ''}
@@ -1399,6 +1594,7 @@ function exportJSON() {
     components: selComponents(),
     summary: lastSummary,
     analysis: lastAnalysis,
+    architecture: lastArch,
     standardsFindings: lastFindings,
     disclaimer: `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`,
   };
