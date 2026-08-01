@@ -82,7 +82,7 @@ export const PRESETS = [
     energyWh: [5000, 30000], typicalEnergyWh: 10000,
     contPowerW: 5000, peakPowerW: 10000,
     maxMassKg: null,
-    maxDimsMm: null,
+    maxDimsMm: { x: 760, y: 610, z: 155 }, // wall-cabinet class (Powerwall-size); HV container strings differ
     chargeRateC: 0.5,
     envTempC: [0, 40],
     cyclesPerYear: 300, targetYears: 10,

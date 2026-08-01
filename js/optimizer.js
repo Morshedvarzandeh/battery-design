@@ -243,6 +243,35 @@ function fmt(v) {
 }
 
 // ---------------------------------------------------------------------------
+// Cost model — upfront is only half the truth. Cycle life turns a cheap cell
+// into an expensive one: what matters over the product's life is the cost of
+// every kWh the pack will actually DELIVER, and how many replacement packs
+// the application's duty needs. First-order model: datasheet cycles-to-80%
+// at an assumed DoD, no calendar aging, no discounting, no electricity or
+// efficiency costs — a comparison metric, not a finance document.
+// ---------------------------------------------------------------------------
+export const TCO_DOD = 0.8; // assumed usable depth of discharge per cycle
+
+export function costModel(cell, n, energyWh, usage) {
+  const upfrontUSD = cell.priceUSD != null ? cell.priceUSD * n : null;
+  const usdPerKWhCap = upfrontUSD != null && energyWh > 0 ? upfrontUSD / (energyWh / 1000) : null;
+  const cycleLife = cell.cycleLife ?? null;
+  const throughputKWh = cycleLife != null ? (cycleLife * energyWh * TCO_DOD) / 1000 : null;
+  const usdPerKWhDelivered = upfrontUSD != null && throughputKWh > 0
+    ? upfrontUSD / throughputKWh : null;
+  let replacements = null, tcoUSD = null, serviceYears = null;
+  const cpy = usage?.cyclesPerYear, yrs = usage?.targetYears;
+  if (cycleLife != null && cpy > 0) {
+    serviceYears = cycleLife / cpy;
+    if (yrs > 0) {
+      replacements = Math.max(1, Math.ceil((cpy * yrs) / cycleLife));
+      if (upfrontUSD != null) tcoUSD = upfrontUSD * replacements;
+    }
+  }
+  return { upfrontUSD, usdPerKWhCap, throughputKWh, usdPerKWhDelivered, replacements, tcoUSD, serviceYears };
+}
+
+// ---------------------------------------------------------------------------
 // Max fill — the real-world flow: the application fixes the available space,
 // the algorithm packs the maximum number of cells into it (after subtracting
 // the space the selected supplier components consume) and treats the choice
@@ -322,7 +351,14 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
     const energyWh = pick.n * cell.nominalV * cell.capacityAh;
     if (req.energyWh && energyWh < req.energyWh) continue; // below the application's minimum
     const costUSD = cell.priceUSD != null ? cell.priceUSD * pick.n : null;
+    const tco = costModel(cell, pick.n, energyWh,
+      { cyclesPerYear: req.cyclesPerYear, targetYears: req.targetYears });
     const warnings = [];
+    if (req.costBasis === 'tco' && tco.tcoUSD == null && costUSD != null) {
+      warnings.push(cell.cycleLife == null
+        ? 'No cycle-life rating — TCO unknown, scored on the field midpoint'
+        : 'Set cycles/year and target years on the Usage tab for full TCO');
+    }
     if (req.contPowerW) {
       const maxP = pick.s * cell.nominalV * pick.p * cell.maxContDischargeA;
       if (maxP < req.contPowerW) warnings.push(`Continuous power capability ${fmt(maxP)} W < required ${fmt(req.contPowerW)} W`);
@@ -330,7 +366,7 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
     out.push({
       cell, s: pick.s, p: pick.p, n: pick.n, nMax: best.nMax,
       utilization: pick.n / best.nMax,
-      energyWh, costUSD,
+      energyWh, costUSD, tco,
       usdPerKWh: costUSD != null && energyWh > 0 ? costUSD / (energyWh / 1000) : null,
       massKg: (pick.n * cell.massG) / 1000, // cells only, comparable across candidates
       nominalV: pick.s * cell.nominalV,
@@ -346,7 +382,7 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
       },
     });
   }
-  scoreMultiObjective(out, req.weights);
+  scoreMultiObjective(out, req.weights, req.costBasis);
   out.sort((a, b) => b.score - a.score);
   return out.slice(0, topK);
 }
@@ -355,33 +391,49 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
 // flagging over (energy up, cost down, mass down). Weights are relative
 // priorities on any scale; when no candidate has a price, the cost weight is
 // folded into energy rather than silently skewing the ranking.
-function scoreMultiObjective(cands, weights) {
+// costBasis selects which cost the objective and the Pareto test use:
+//   'upfront' — purchase price of the cells
+//   'tco'     — TCO over the target years (with replacements) when known,
+//               else $/kWh delivered over cycle life, else upfront.
+function scoreMultiObjective(cands, weights, costBasis = 'upfront') {
   if (!cands.length) return;
+  const costOf = (c) => {
+    if (costBasis === 'tco') {
+      if (c.tco?.tcoUSD != null) return c.tco.tcoUSD;
+      // Fall back to lifetime-normalized cost scaled to the field so cells
+      // without duty data still compare on cycle economics.
+      if (c.tco?.usdPerKWhDelivered != null) return c.tco.usdPerKWhDelivered * 1000;
+      return c.costUSD; // may be null → midpoint below
+    }
+    return c.costUSD;
+  };
   let { energy: wE = 0.5, cost: wC = 0.3, mass: wM = 0.2 } = weights || {};
-  const havePrices = cands.some((c) => c.costUSD != null);
+  const havePrices = cands.some((c) => costOf(c) != null);
   if (!havePrices) { wE += wC; wC = 0; }
   const sum = wE + wC + wM || 1;
   wE /= sum; wC /= sum; wM /= sum;
 
   const eMax = Math.max(...cands.map((c) => c.energyWh));
-  const costs = cands.filter((c) => c.costUSD != null).map((c) => c.costUSD);
+  const costs = cands.map(costOf).filter((v) => v != null);
   const cMax = costs.length ? Math.max(...costs) : 1;
   const mMax = Math.max(...cands.map((c) => c.massKg));
 
   for (const c of cands) {
     const badEnergy = eMax > 0 ? 1 - c.energyWh / eMax : 0;
-    // Unknown price gets the field's midpoint rather than a free ride.
-    const badCost = cMax > 0 ? (c.costUSD != null ? c.costUSD / cMax : 0.5) : 0;
+    const cv = costOf(c);
+    // Unknown cost gets the field's midpoint rather than a free ride.
+    const badCost = cMax > 0 ? (cv != null ? cv / cMax : 0.5) : 0;
     const badMass = mMax > 0 ? c.massKg / mMax : 0;
     c.score = Math.round((1 - (wE * badEnergy + wC * badCost + wM * badMass)) * 1000) / 10;
     c.weightsUsed = { energy: wE, cost: wC, mass: wM };
+    c.costBasisUsed = costBasis;
   }
   for (const c of cands) {
     c.pareto = !cands.some((o) => o !== c &&
       o.energyWh >= c.energyWh &&
-      (o.costUSD ?? Infinity) <= (c.costUSD ?? Infinity) &&
+      (costOf(o) ?? Infinity) <= (costOf(c) ?? Infinity) &&
       o.massKg <= c.massKg &&
-      (o.energyWh > c.energyWh || (o.costUSD ?? Infinity) < (c.costUSD ?? Infinity) || o.massKg < c.massKg));
+      (o.energyWh > c.energyWh || (costOf(o) ?? Infinity) < (costOf(c) ?? Infinity) || o.massKg < c.massKg));
   }
 }
 

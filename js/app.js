@@ -5,7 +5,7 @@
 import { CELLS, CHEMISTRIES, cellById } from './cells.js';
 import { PRESETS } from './presets.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
-import { optimizeSpace, suggestDesigns, maxFill } from './optimizer.js';
+import { optimizeSpace, suggestDesigns, maxFill, costModel } from './optimizer.js';
 import { layoutPackBay, polygonBounds } from './bay.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
@@ -83,6 +83,9 @@ function init() {
   viewer2d = new PackViewer2D($('viewport2d'));
   syncInputs();
   recompute();
+  $('btnWizard').onclick = showWizard;
+  $('wzSkip').onclick = () => hideWizard(true);
+  if (!localStorage.getItem('bd-wizard-done')) showWizard();
 }
 
 function isDark() {
@@ -239,6 +242,10 @@ function bindControls() {
       if ($('fitResults').querySelector('.card')) runMaxFill();
     };
   }
+  $('segCost').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    $('segCost').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    if ($('fitResults').querySelector('.card')) runMaxFill();
+  });
   $('btnExport').onclick = exportJSON;
   $('btnTheme').onclick = toggleTheme;
 }
@@ -270,6 +277,113 @@ function onCellChange() {
     initComponents();
   }
   syncInputs();
+}
+
+// ---------------------------------------------------------------------------
+// Guided start — iPhone-style: one decision per screen, everything
+// pre-filled, the customer never has to think about the machinery.
+// ---------------------------------------------------------------------------
+let wzPreset = null;
+
+function showWizard() { $('wizard').style.display = 'flex'; wizardStep1(); }
+function hideWizard(done) {
+  $('wizard').style.display = 'none';
+  if (done) localStorage.setItem('bd-wizard-done', '1');
+}
+
+function wizardStep1() {
+  $('wzTitle').textContent = 'What are you building?';
+  $('wzSub').textContent = 'Pick the closest — every number after this is pre-filled and adjustable later.';
+  $('wzBack').style.visibility = 'hidden';
+  const body = $('wzBody');
+  body.innerHTML = '<div class="wz-grid"></div>';
+  const grid = body.querySelector('.wz-grid');
+  for (const pr of PRESETS) {
+    const b = document.createElement('button');
+    b.className = 'wz-opt';
+    b.innerHTML = `<span class="ico">${pr.icon}</span>${esc(pr.name)}`;
+    b.onclick = () => { wzPreset = pr; applyPreset(pr); wizardStep2(); };
+    grid.appendChild(b);
+  }
+}
+
+function wizardStep2() {
+  const d = wzPreset?.maxDimsMm || { x: 400, y: 300, z: 120 };
+  $('wzTitle').textContent = 'How much space do you have?';
+  $('wzSub').textContent = 'Typical for your application is already filled in — change anything, in millimetres.';
+  $('wzBack').style.visibility = 'visible';
+  $('wzBack').onclick = wizardStep1;
+  $('wzBody').innerHTML = `
+    <div class="wz-dims">
+      <div><label>Length</label><input type="number" id="wzX" value="${d.x}"></div>
+      <div><label>Width</label><input type="number" id="wzY" value="${d.y}"></div>
+      <div><label>Height</label><input type="number" id="wzZ" value="${d.z}"></div>
+    </div>
+    <div class="hint">Space isn’t a box? Round, L-shape, stepped and free drawing live on the Fit tab —
+      <a id="wzShapes" style="cursor:pointer">open it</a>.</div>
+    <button class="btn primary wz-big" id="wzGo">Show my designs →</button>`;
+  $('wzShapes').onclick = () => { hideWizard(true); document.querySelector('[data-tab="fit"]').click(); };
+  $('wzGo').onclick = () => {
+    $('fitX').value = $('wzX').value; $('fitY').value = $('wzY').value; $('fitZ').value = $('wzZ').value;
+    wizardStep3();
+  };
+}
+
+function wizardStep3() {
+  $('wzTitle').textContent = 'Pick your design';
+  $('wzSub').textContent = 'Best three for your space, balanced for energy, lifetime cost and weight. Tap one — you can fine-tune everything afterwards.';
+  $('wzBack').style.visibility = 'visible';
+  $('wzBack').onclick = wizardStep2;
+  const num = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
+  const results = maxFill(CELLS,
+    { x: num('fitX'), y: num('fitY'), z: num('fitZ') },
+    {
+      vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
+      contPowerW: num('rqPc'),
+      cyclesPerYear: num('rqCy'), targetYears: num('rqYr'),
+      costBasis: 'tco',
+      weights: { energy: 5, cost: 3, mass: 2 },
+    },
+    {
+      spacingMm: state.spacingMm, wallMm: state.wallMm,
+      headroomMm: state.headroomMm, layerGapMm: state.layerGapMm,
+      coolingSpace: coolingSpace(), integrationPct: 35,
+    }, 3);
+  const body = $('wzBody');
+  if (!results.length) {
+    body.innerHTML = '<div class="empty">Nothing fits that space — go back and make it a little bigger.</div>';
+    return;
+  }
+  body.innerHTML = '';
+  results.forEach((r, i) => {
+    const why = [
+      i === 0 ? 'Best overall balance' : (r.pareto ? 'A different trade-off — nothing beats it on all counts' : 'Runner-up'),
+      r.tco?.tcoUSD != null
+        ? `~$${f0(r.tco.tcoUSD)} over ${f0(parseFloat($('rqYr').value) || 0)} years${r.tco.replacements > 1 ? ` (${r.tco.replacements} packs)` : ''}`
+        : (r.costUSD != null ? `~$${f0(r.costUSD)} upfront` : ''),
+    ].filter(Boolean).join(' · ');
+    const el = document.createElement('div');
+    el.className = 'wz-pick';
+    el.innerHTML = `
+      <div class="big">${fWh(r.energyWh)} · ${f1(r.massKg)} kg</div>
+      <div>${esc(r.cell.name)} — ${r.s}S${r.p}P, ${r.n} cells</div>
+      <div class="why">${esc(why)}</div>`;
+    el.onclick = () => {
+      state.cellId = r.cell.id;
+      state.s = r.s; state.p = r.p;
+      state.appliedBay = r.shaped ? r.bay : null;
+      Object.assign(state, {
+        arrangement: r.opts.arrangement, orientation: r.opts.orientation,
+        nx: r.opts.nx, nz: r.opts.nz,
+      });
+      onCellChange();
+      syncInputs();
+      recompute();
+      hideWizard(true);
+      document.querySelector('[data-tab="design"]').click();
+    };
+    body.appendChild(el);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -586,6 +700,22 @@ function renderStats() {
     if (T.tempRiseContC != null) rows.push(['Est. temp rise', `${f1(T.tempRiseContC)} °C`]);
     if (T.creepageReqMm != null) rows.push(['Creepage req. (~)', `${f1(T.creepageReqMm)} mm`]);
   }
+  {
+    const nv = (id) => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : null; };
+    const cm = costModel(c, S.cellCount, S.energyWh,
+      { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr') });
+    if (cm.upfrontUSD != null || cm.usdPerKWhDelivered != null) {
+      rows.push(['sec', 'Cost (cells, estimate)']);
+      if (cm.upfrontUSD != null) rows.push(['Upfront', `~$${f0(cm.upfrontUSD)} · ${f0(cm.usdPerKWhCap)} $/kWh`]);
+      if (cm.usdPerKWhDelivered != null) {
+        rows.push(['Per kWh delivered', `${(Math.round(cm.usdPerKWhDelivered * 100) / 100).toFixed(2)} $ (${f0(c.cycleLife)} cyc)`]);
+      }
+      if (cm.serviceYears != null) rows.push(['Service life', `~${f1(cm.serviceYears)} y at duty`]);
+      if (cm.tcoUSD != null) {
+        rows.push(['TCO over target', `~$${f0(cm.tcoUSD)}${cm.replacements > 1 ? ` (${cm.replacements}× packs)` : ''}`]);
+      }
+    }
+  }
   const html = rows.map(([k, v]) =>
     k === 'sec'
       ? `<h3 style="font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 0 4px">${v}</h3>`
@@ -763,6 +893,8 @@ function runMaxFill() {
   const req = {
     vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
     contPowerW: num('rqPc'),
+    cyclesPerYear: num('rqCy'), targetYears: num('rqYr'),
+    costBasis: $('segCost').querySelector('.active')?.dataset.cost || 'tco',
     weights: {
       energy: parseFloat($('wEnergy').value),
       cost: parseFloat($('wCost').value),
@@ -798,8 +930,10 @@ function runMaxFill() {
         ${r.pareto ? '<span class="chip pass">Pareto-optimal</span>' : '<span class="chip info">dominated</span>'}</h4>
       <div class="m">${r.s}S${r.p}P · ${f1(r.nominalV)} V · ${r.n}/${r.nMax} cells (${f0(r.utilization * 100)}% of fit) ·
         ${fWh(r.energyWh)} · ${f1(r.massKg)} kg ·
-        ${r.grid.nx != null ? `${r.grid.nx}×${r.grid.ny}${r.grid.nz > 1 ? `×${r.grid.nz}` : ''} ` : ''}${r.opts.arrangement}
-        ${r.costUSD != null ? `· ~$${f0(r.costUSD)} (${f0(r.usdPerKWh)} $/kWh, cells only)` : ''}</div>
+        ${r.grid.nx != null ? `${r.grid.nx}×${r.grid.ny}${r.grid.nz > 1 ? `×${r.grid.nz}` : ''} ` : ''}${r.opts.arrangement}</div>
+      ${r.costUSD != null ? `<div class="m" style="margin-top:2px">Upfront ~$${f0(r.costUSD)} (${f0(r.usdPerKWh)} $/kWh cap.)
+        ${r.tco?.usdPerKWhDelivered != null ? ` · <b>${(Math.round(r.tco.usdPerKWhDelivered * 100) / 100).toFixed(2)} $/kWh delivered</b> over ${f0(r.cell.cycleLife)} cycles` : ''}
+        ${r.tco?.tcoUSD != null ? ` · TCO ~$${f0(r.tco.tcoUSD)}${r.tco.replacements > 1 ? ` (${r.tco.replacements}× packs)` : ''}${r.tco.serviceYears != null ? ` · ~${f1(r.tco.serviceYears)} y/pack` : ''}` : ''}</div>` : ''}
       <div class="scorebar"><i style="width:${clamp(r.score, 2, 100)}%"></i></div>
       ${r.warnings.length ? `<ul>${r.warnings.map((x) => `<li class="warn">${esc(x)}</li>`).join('')}</ul>` : ''}
       <button class="btn primary" style="margin-top:8px">Apply this fill</button>`;
