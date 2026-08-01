@@ -136,6 +136,7 @@ export function buildReportHTML(R) {
     row('BMS', `${esc(B.topologyInfo?.name || B.topology)} · ${B.afeTotal}× AFE IC (${B.channelsPerIc} ch) · ${B.senseWiresTotal} sense wires · ${B.tempSensors} temperature sensors (1 per ${B.cellsPerTempSensor} cells)`),
     ...(A.comms ? [row('Communication', `${esc(A.comms.primary)}${A.comms.alternates?.length ? ` — <span style="font-weight:normal">alternates: ${esc(A.comms.alternates.join('; '))}</span>` : ''}<br><span style="font-weight:normal">${esc(A.comms.note)}</span>`)] : []),
     ...(A.welding ? [row('Cell joining / welding', `${esc(A.welding.primary)} — <span style="font-weight:normal">alternates: ${esc(A.welding.alternates.join('; '))}. ${esc(A.welding.cautions.join(' '))} (Joining review: Lee, Kim, Hu, Cai &amp; Abell, ASME MSEC2010-34168.)</span>`)] : []),
+    ...(A.supervisor ? [row('Supervisory layer', `${esc(A.supervisor.name)} — <span style="font-weight:normal">${esc(A.supervisor.role)} The control hierarchy is cell → module (slave AFE) → BMS master → supervisor.</span>`)] : []),
     ...(PR ? [
       row('Precharge', `${f1(PR.rOhm)} Ω resistor · DC link within ${PR.closeGapV} V in ${PR.timeToCloseS} s (τ = ${f2(PR.tauS)} s) · ${f0(PR.energyPerEventJ)} J and ${f1(PR.avgPowerDuringEventW)} W average per event · sized for ${PR.prechargesPerHour}/h`),
       row('Switching sequence', PR.sequence.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')),
@@ -150,6 +151,24 @@ export function buildReportHTML(R) {
   ])}
   <div style="font-size:11px;color:#666;margin-top:4px">${[...(P.notes || []), ...(B.notes || []), A.dcdc.chargingNote, K.lvNote, A.isolation?.groundingNote].filter(Boolean).map(esc).join(' ')}</div>`;
   })() : ''}
+
+  ${R.thermal ? `
+  <h2 style="${h2}">Thermal management system</h2>
+  ${R.thermPng ? `<img src="${R.thermPng}" style="width:100%;max-width:640px;border:1px solid #ddd" alt="thermal loop diagram">` : ''}
+  ${table([
+    row('Loop', `${esc(R.thermal.loop.name)} — <span style="font-weight:normal">${esc(R.thermal.loop.when)}</span>`),
+    row('Heat to move', `~${f1(R.thermal.heatContW)} W at continuous load · design ambient ${R.thermal.ambientC[0]}…${R.thermal.ambientC[1]} °C`),
+    ...(R.thermal.flowLpm != null ? [row('Coolant flow (first-order)', `~${f1(R.thermal.flowLpm)} L/min at ΔT ${R.thermal.coolant.dTdesignK} K, 50/50 water-glycol (ṁ = Q/(c_p·ΔT))`)] : []),
+    ...(R.thermal.chillerKW != null ? [row('Chiller / higher system', `~${f1(R.thermal.chillerKW)} kW battery-side duty → ~${f1(R.thermal.compressorKW)} kW compressor load on the vehicle AC / plant HVAC (COP ~${R.thermal.chillerCOP}) — the refrigerant side is OWNED by the higher system`)] : []),
+    row('Heater', R.thermal.heaterNeeded
+      ? `required — design ambient falls below the ${R.thermal.chargeFloorC} °C charge floor`
+      : 'not required in the design climate window'),
+    row('Control', R.thermal.control
+      ? `${esc(R.thermal.control.name)} — drives ${esc(R.thermal.control.drives.join(', '))}. <span style="font-weight:normal">${esc(R.thermal.control.note)}</span>`
+      : 'none — passive system'),
+    ...(R.thermal.loop.components.length ? [row('Loop components', `<span style="font-weight:normal">${R.thermal.loop.components.map(esc).join('<br>')}</span>`)] : []),
+  ])}
+  <div style="font-size:11px;color:#666;margin-top:4px">${R.thermal.notes.map(esc).join(' ')}</div>` : ''}
 
   ${R.loadProfile ? `
   <h2 style="${h2}">Load profile — ${esc(R.loadProfile.name)}</h2>

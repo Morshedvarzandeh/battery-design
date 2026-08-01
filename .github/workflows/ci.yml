@@ -32,4 +32,5 @@ jobs:
       - run: node tests/season-regressions.mjs
       - run: node tests/market-regressions.mjs
       - run: node tests/integration-regressions.mjs
+      - run: node tests/btms-regressions.mjs
       - run: node tools/validate-vs-market.mjs

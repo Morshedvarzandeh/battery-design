@@ -325,6 +325,17 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
   </div>
 </div>
 
+<div id="diagModal" style="display:none;position:fixed;inset:0;z-index:70;background:color-mix(in srgb, var(--ground) 80%, transparent);align-items:center;justify-content:center">
+  <div style="background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:14px;max-width:min(980px,96vw)">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+      <b id="diagTitle" style="flex:1;font-size:13.5px"></b>
+      <button class="btn" id="diagClose">✕ Close</button>
+    </div>
+    <canvas id="diagZoom" style="width:min(920px,92vw);background:#fff;border:1px solid var(--line);border-radius:6px"></canvas>
+    <div class="hint">The same drawing at reading size — the PDF/Word report carries both figures like this.</div>
+  </div>
+</div>
+
 <div id="trainCard" style="display:none;position:fixed;right:16px;bottom:16px;z-index:60;width:min(380px,calc(100vw - 32px));
   background:var(--surface);border:1px solid var(--accent);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.18);padding:14px">
   <div style="display:flex;align-items:baseline;gap:8px">
@@ -359,6 +370,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       <button class="tab" data-tab="fit">Fit</button>
       <button class="tab" data-tab="comp">Components</button>
       <button class="tab" data-tab="analysis">Analysis <span class="chip" id="stdBadge"></span></button>
+      <button class="tab" data-tab="therm">Thermal</button>
       <button class="tab" data-tab="eu">Rules</button>
       <button class="tab" data-tab="results">Results</button>
     </div>
@@ -585,9 +597,10 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         <div class="hint">How this pack is built up and switched: cells → modules (or cell-to-pack) →
           pack → parallel racks for big systems, plus the BMS topology, precharge, contactors,
           fuse, DC-DC and isolation the customer needs around the cells.</div>
-        <canvas id="archCanvas" height="250" style="width:100%;border:1px solid var(--line);border-radius:var(--r);margin:8px 0;background:var(--ground)"></canvas>
-        <label class="f">Inside the BMS — layer 2</label>
-        <canvas id="archBmsCanvas" height="250" style="width:100%;border:1px solid var(--line);border-radius:var(--r);margin:4px 0 8px;background:var(--ground)"></canvas>
+        <label class="f">System — pack, HV chain &amp; supervisory layer <span style="color:var(--muted)">(tap to enlarge)</span></label>
+        <canvas id="archCanvas" height="280" style="width:100%;cursor:zoom-in;border:1px solid var(--line);border-radius:var(--r);margin:4px 0 8px;background:var(--ground)"></canvas>
+        <label class="f">Inside the BMS — layer 2 <span style="color:var(--muted)">(tap to enlarge)</span></label>
+        <canvas id="archBmsCanvas" height="280" style="width:100%;cursor:zoom-in;border:1px solid var(--line);border-radius:var(--r);margin:4px 0 8px;background:var(--ground)"></canvas>
         <label class="f">BMS topology</label>
         <div class="seg" id="segTopo">
           <button data-topo="auto" class="active">Auto</button>
@@ -622,6 +635,25 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       </div>
       <div class="sec"><h3>Safety &amp; standards</h3><div id="anSafe"></div><div id="findings"></div></div>
       <div class="sec"><h3>Standards referenced</h3><div id="stdList" style="font-size:11.5px;color:var(--muted)"></div></div>
+    </div>
+
+    <div class="tabpane" id="pane-therm">
+      <div class="hint" style="margin-bottom:10px">The SYSTEM behind the cold plate: the loop (pump, radiator,
+        refrigerant chiller / heat exchanger, valves, heater), the BTMS control unit that runs it, and what
+        it costs the higher system. Derived from your selected cooling component, the pack's heat at
+        continuous load and the climate window.</div>
+      <div class="sec">
+        <h3>Thermal management system</h3>
+        <div class="seg" id="segLoop">
+          <button data-loop="auto" class="active">Auto</button>
+          <button data-loop="forced-air">Air</button>
+          <button data-loop="liquid">Liquid</button>
+          <button data-loop="liquid-chiller">+Chiller</button>
+        </div>
+        <label class="f" style="margin-top:8px">Loop &amp; control <span style="color:var(--muted)">(tap to enlarge)</span></label>
+        <canvas id="thermCanvas" height="280" style="width:100%;cursor:zoom-in;border:1px solid var(--line);border-radius:var(--r);margin:4px 0 8px;background:var(--ground)"></canvas>
+        <div id="thermBody"><div class="empty">—</div></div>
+      </div>
     </div>
 
     <div class="tabpane" id="pane-eu">

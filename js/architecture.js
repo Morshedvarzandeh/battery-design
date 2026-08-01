@@ -482,6 +482,85 @@ export function commsForApp(appId) {
 }
 
 // ---------------------------------------------------------------------------
+// The supervisory layer ABOVE the BMS — the control hierarchy is cell →
+// module (slave AFE) → BMS master → SUPERVISOR, and the supervisor is a
+// different machine per application: an EMS dispatches a storage plant, a
+// VCU coordinates a vehicle, a fleet controller runs the AGVs, a host SoC
+// owns a gadget. The BMS protects the battery; the supervisor decides what
+// the battery is asked to do.
+// ---------------------------------------------------------------------------
+export const SUPERVISORS_BY_APP = {
+  ev: {
+    name: 'VCU (vehicle control unit)',
+    role: 'Coordinates torque, regen blending, charging and thermal preconditioning; the BMS publishes limits (SoP), the VCU stays inside them.',
+  },
+  ebus: {
+    name: 'VCU + fleet/depot telematics',
+    role: 'Vehicle control plus depot charging management — the depot EMS schedules which bus charges when; the BMS only enforces limits.',
+  },
+  ebike: {
+    name: 'Drive unit controller',
+    role: 'The motor drive unit is the system master (Bosch/Shimano pattern); the battery reports capacity and limits to it.',
+  },
+  escooter: {
+    name: 'Controller + fleet IoT board',
+    role: 'The motor controller runs the ride; shared fleets add an IoT board for remote lock, telemetry and geofencing.',
+  },
+  'solar-ess': {
+    name: 'EMS (energy management system)',
+    role: 'Dispatches charge/discharge against tariffs, solar forecast and grid codes via the hybrid inverter; the BMS enforces the battery envelope.',
+  },
+  ups: {
+    name: 'UPS / rectifier controller',
+    role: 'Owns the transfer logic and float strategy; the battery string reports health and takes the load on mains failure.',
+  },
+  rv: {
+    name: 'Power hub / inverter-charger controller',
+    role: 'Prioritizes alternator, solar and shore sources and sheds loads; the battery publishes its state on the house network.',
+  },
+  marine: {
+    name: 'PMS (power management system)',
+    role: 'Vessel-level source and load management under class rules; battery banks are one source among generators and shore power.',
+  },
+  robot: {
+    name: 'Robot / fleet controller',
+    role: 'Schedules missions and opportunity charging across the fleet (PLC/WMS level); each truck\'s BMS guards its own pack.',
+  },
+  humanoid: {
+    name: 'Robot main computer',
+    role: 'The locomotion/planning computer budgets power per task; the battery node reports state over the robot bus.',
+  },
+  drone: {
+    name: 'Flight controller',
+    role: 'Enforces return-to-home and landing thresholds from the smart battery\'s reported state.',
+  },
+  powertool: {
+    name: 'Tool MCU',
+    role: 'A minimal controller reads pack ID/temperature and cuts on stall; there is no higher layer.',
+  },
+  powerstation: {
+    name: 'Device MCU + phone app',
+    role: 'Owns the inverter, input priorities and the user interface; the pack gauge feeds it.',
+  },
+  robovac: {
+    name: 'Host SoC (navigation computer)',
+    role: 'Decides when to return to dock from the gauge\'s reported state; charging is dock-controlled.',
+  },
+  wearable: {
+    name: 'Host SoC / PMIC',
+    role: 'The power-management IC and SoC budget every milliwatt; the fuel gauge is their sensor, not a controller.',
+  },
+  default: {
+    name: 'Supervisory controller (EMS / ECU / host)',
+    role: 'Every deployed pack answers to a system controller above the BMS — name it early; its bus and update rate shape the BMS interface.',
+  },
+};
+
+export function supervisorForApp(appId) {
+  return SUPERVISORS_BY_APP[appId] || SUPERVISORS_BY_APP.default;
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator — everything the customer needs to see the architecture of
 // one design, in one object.
 // ---------------------------------------------------------------------------
@@ -541,7 +620,8 @@ export function buildArchitecture({ cell, s, p, summary, options = {} }) {
   }
   const comms = commsForApp(options.appId);
   const welding = weldingForCell(cell);
-  return { partition, voltageClass: vc, bms, precharge, contactors, isolation, dcdc, resistance, system, comms, welding };
+  const supervisor = supervisorForApp(options.appId);
+  return { partition, voltageClass: vc, bms, precharge, contactors, isolation, dcdc, resistance, system, comms, welding, supervisor };
 }
 
 const round2 = (v) => Math.round(v * 100) / 100;

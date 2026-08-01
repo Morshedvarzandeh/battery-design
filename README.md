@@ -99,6 +99,21 @@ project's provenance-first datasheet pipeline.
   series size (S_mod) is selectable from the divisors of S, so a
   mechanically-fixed 30S module at 16-channel AFEs correctly carries TWO
   slave ICs — the electronics adapt to the mechanics, never the reverse.
+  Both diagrams (and the thermal loop) open at reading size on a tap.
+- **The full control hierarchy** — cell → module (slave AFE) → BMS master →
+  **supervisory layer**: the machine above the BMS is named per application
+  (EMS for storage, VCU/ECU for vehicles, PMS for vessels, fleet controller
+  for AGVs, host SoC for gadgets) in the diagrams, the panel and the
+  report; the integration suite requires an explicit supervisor for every
+  application.
+- **Thermal management system tab** — the SYSTEM behind the cold plate: the
+  loop (pump, radiator, refrigerant chiller / heat exchanger, valves,
+  heater branch for winter charging) selected by heat load, climate and
+  the chosen cooling hardware (override first-class, like BMS topology);
+  first-order coolant flow from ṁ = Q/(c_p·ΔT); the chiller's compressor
+  cost charged honestly to the HIGHER system (vehicle AC / plant HVAC that
+  owns the refrigerant side); and the **BTMS ECU** as the third control
+  unit — the BMS protects, the BTMS moves heat, the supervisor decides.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,
@@ -217,6 +232,7 @@ is copied into the repository.
 | `js/seasons.js` | Climate/season ambient bands + per-season system-temperature outlook |
 | `js/eurules.js` | EU Battery Regulation 2023/1542 timeline + applicability checks |
 | `js/markets.js` | Release checklist per application class × market + chemistry-market gates |
+| `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |

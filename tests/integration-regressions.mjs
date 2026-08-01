@@ -11,6 +11,7 @@ import { profileForApp, profilesForApp } from '../js/loadprofiles.js';
 import { MARKETS, releaseChecklist, appClassOf, CLASS_OF_APP } from '../js/markets.js';
 import {
   COMMS_BY_APP, commsForApp, buildArchitecture, modulePartition, bmsArchitecture,
+  SUPERVISORS_BY_APP, supervisorForApp,
 } from '../js/architecture.js';
 import { STANDARDS_INFO, STANDARD_CLASSES, standardsForClass } from '../js/standards.js';
 import { INDOOR_APPS } from '../js/seasons.js';
@@ -31,6 +32,10 @@ for (const pr of PRESETS) {
   ok(profilesForApp(pr.id)[0]?.id === def.id, `${pr.id}: recommendation list starts with its default`);
   // Its own communication entry — not the generic fallback.
   ok(COMMS_BY_APP[pr.id] != null, `${pr.id}: has an explicit comms mapping`);
+  // Its own supervisory layer (EMS / VCU / host…) — never the fallback.
+  ok(SUPERVISORS_BY_APP[pr.id] != null, `${pr.id}: has an explicit supervisor mapping`);
+  ok(SUPERVISORS_BY_APP[pr.id]?.name && SUPERVISORS_BY_APP[pr.id]?.role?.length > 30,
+    `${pr.id}: supervisor names the machine and explains its role`);
   // A release checklist in every market, transport gate always present.
   for (const m of MARKETS) {
     const cl = releaseChecklist({ market: m.id, application: pr.id, chemistry: pr.preferredChemistries[0] });
@@ -140,6 +145,13 @@ for (const pr of PRESETS) {
   ok(A.precharge === null && A.isolation === null, '1S wearable: no HV chain');
   ok(A.partition.virtual && A.partition.nModules === 1, '1S wearable: one virtual group');
   ok(/fuel gauge/i.test(A.comms.primary), 'wearable comms: fuel gauge, not a vehicle bus');
+  // The supervisory layer follows the application: SoC for a gadget, EMS
+  // for storage, VCU for a vehicle — and rides through the orchestrator.
+  ok(/SoC|PMIC/i.test(A.supervisor.name), 'wearable supervisor: host SoC/PMIC');
+  ok(/EMS/.test(supervisorForApp('solar-ess').name), 'storage supervisor: EMS');
+  ok(/VCU/.test(supervisorForApp('ev').name), 'vehicle supervisor: VCU');
+  ok(/PMS/.test(supervisorForApp('marine').name), 'marine supervisor: PMS');
+  ok(supervisorForApp('never-heard-of-it').name.length > 0, 'unknown app falls back honestly');
   // The day profile belongs to it and ends the day on the dock.
   const prof = profileForApp('wearable');
   ok(prof?.id === 'wearable-day' && prof.p.some((v) => v < 0), 'wearable day profile with dock charging');

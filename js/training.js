@@ -66,6 +66,10 @@ export const TRAINING_TRACKS = {
         text: 'Modules (divisor enumeration of S), BMS topology (the diagram changes with your choice), precharge sizing, fuse, DC-DC, the isolation standard (they conflict — you pick), the application\'s communication bus (J1939 / CAN / CANopen / Modbus) and the welding process per cell format. Its findings sit in the Electrical audit, not a silo.',
       },
       {
+        tab: 'therm', title: '6b · The thermal SYSTEM, not just the plate',
+        text: 'The cold plate is the tip of a loop: pump, radiator, a refrigerant chiller when you must cool below ambient (owned by the vehicle AC / plant HVAC), a heater branch for winter charging — all run by the BTMS ECU, the third control unit: the BMS protects, the BTMS moves heat, the supervisor decides. The Thermal tab sizes the flow (ṁ = Q/(c_p·ΔT)) and the compressor cost.',
+      },
+      {
         tab: 'eu', title: '7 · Release rules before release',
         text: 'The Rules tab holds the market release checklist per application (pick EU / US / China / International) — including chemistry-market rules like China\'s e-bus exclusion of NMC — and the EU 2023/1542 timeline with what applies to THIS design.',
       },
