@@ -325,6 +325,136 @@ export function packResistanceModel({ s, p, cellDcirMOhm, interconnectMOhm = 20,
 }
 
 // ---------------------------------------------------------------------------
+// Cell joining / welding — each cell format takes a DIFFERENT process, and
+// showing the wrong one designs the wrong factory. Per the automotive
+// joining review (Lee, Kim, Hu, Cai & Abell, ASME MSEC2010-34168) and the
+// brief §4.3: aluminium and copper tabs resist resistance welding (high
+// conductivity, dissimilar melting points Al 660 / Cu 1080 / Ni 1450 °C);
+// ultrasonic (≥20 kHz, solid-state, <3 mm stack) is the pouch-tab champion;
+// laser is the non-contact choice for cases, interconnects and busbars —
+// with penetration controlled so the nugget never reaches the electrolyte.
+// ---------------------------------------------------------------------------
+export const WELDING_BY_FORM = {
+  cylindrical: {
+    primary: 'Resistance spot weld — nickel strip/tab onto can and cap',
+    alternates: [
+      'Projection weld (focused current — thicker tabs, repeatable nuggets)',
+      'Laser weld collector plates to the can rim',
+      'Ultrasonic Al wire bond (Tesla-style; each bond doubles as a per-cell fuse)',
+    ],
+    cautions: [
+      'Nickel strip welds well; aluminium/copper busbars need nickel plating, projection joints or a different process.',
+      'Slotted busbars force the weld current through the joint instead of shunting around it.',
+    ],
+  },
+  prismatic: {
+    primary: 'Laser weld — busbar (typically Al) onto the terminal',
+    alternates: ['Bolted terminals / mechanical fastening (serviceable, higher contact resistance)'],
+    cautions: [
+      'Millisecond non-contact heating — penetration must be controlled so the weld nugget never reaches the case interior.',
+      'Dissimilar Al–Cu terminal pairs need process care (660 vs 1080 °C melting points).',
+    ],
+  },
+  pouch: {
+    primary: 'Ultrasonic weld — the thin Al/Cu tab stack (≥20 kHz solid-state bond)',
+    alternates: ['Laser or resistance weld with tab adapters'],
+    cautions: [
+      'The champion for dissimilar multi-layer thin foils: low temperature, no filler; joint stack limited to <3 mm and soft materials.',
+    ],
+  },
+};
+
+export function weldingForCell(cell) {
+  return WELDING_BY_FORM[cell.form] || null;
+}
+
+// ---------------------------------------------------------------------------
+// Communication — different applications speak different buses, and the
+// BMS must speak the right one: SAE J1939 on heavy trucks and lift trucks,
+// CAN/CAN FD with UDS diagnostics on automotive, CANopen on industrial
+// AGVs, Modbus/SunSpec on stationary storage, NMEA 2000 on boats. These
+// are public standard names and class practice; the bit rate and node IDs
+// come from the vehicle/plant integration (the sources give no CAN bit
+// rate — that is the integrator's number, not the pack's).
+// ---------------------------------------------------------------------------
+export const COMMS_BY_APP = {
+  ev: {
+    primary: 'CAN 2.0B / CAN FD (ISO 11898) + UDS diagnostics (ISO 14229)',
+    alternates: ['SAE J1939 for heavy/commercial vehicles', 'ISO 15118 / DIN 70121 to the DC charger'],
+    note: 'Automotive BMS report on the vehicle CAN and expose diagnostics (incl. live SoH for the EU battery passport) over UDS; heavy trucks and buses use the J1939 flavor instead.',
+  },
+  robot: {
+    primary: 'CANopen (CiA 301, battery profile CiA 418)',
+    alternates: ['SAE J1939 (lift trucks / heavy platforms)', 'EtherCAT (high-rate robotics)'],
+    note: 'Industrial AGVs/AMRs standardize on CANopen; counterbalance lift trucks inherit the J1939 truck bus from their diesel ancestors.',
+  },
+  humanoid: {
+    primary: 'CAN FD battery node on the robot bus',
+    alternates: ['EtherCAT (joint/actuator bus)'],
+    note: 'Humanoids run a high-rate joint bus; the battery reports as a CAN/CAN FD node beside it.',
+  },
+  robovac: {
+    primary: 'SMBus / I²C smart-battery (SBS 1.1 gauge)',
+    alternates: ['proprietary UART'],
+    note: 'Consumer robots use a smart-battery gauge link, not a vehicle bus.',
+  },
+  marine: {
+    primary: 'NMEA 2000 (J1939-based)',
+    alternates: ['CAN (Victron VE.Can class)', 'Modbus to shore/inverter gear'],
+    note: 'Boat networks are NMEA 2000; house-bank BMS often bridge to the inverter/charger vendor bus as well.',
+  },
+  rv: {
+    primary: 'RV-C or CAN (J1939-derived)',
+    alternates: ['Victron VE.Can class', 'Modbus'],
+    note: 'RV house systems use RV-C in North America and vendor CAN elsewhere; inverter/solar controllers usually add a Modbus or vendor-CAN link.',
+  },
+  'solar-ess': {
+    primary: 'Modbus RTU/TCP (SunSpec profile)',
+    alternates: ['inverter-vendor CAN (SMA / Victron / BYD-style)', 'IEC 61850 at grid scale'],
+    note: 'Stationary storage talks to the hybrid inverter — SunSpec Modbus is the interop baseline; every inverter brand also has its own CAN dialect.',
+  },
+  ups: {
+    primary: 'Modbus RTU/TCP',
+    alternates: ['SNMP via the UPS controller', 'CAN'],
+    note: 'Telecom/UPS cabinets are monitored over Modbus or SNMP; the battery string reports into the rectifier controller.',
+  },
+  powerstation: {
+    primary: 'Proprietary UART/BLE app link',
+    alternates: ['SMBus internally'],
+    note: 'Suitcase power boxes expose a phone app; internally the pack is a smart-battery gauge.',
+  },
+  ebike: {
+    primary: 'Drive-system CAN (Bosch/Shimano-class) or UART',
+    alternates: ['proprietary BMS UART (DIY/hobby)'],
+    note: 'Branded drive systems pair battery and motor over their own CAN; open systems use simple UART BMS links.',
+  },
+  escooter: {
+    primary: 'UART/proprietary BMS link',
+    alternates: ['CAN on fleet scooters (IoT board)'],
+    note: 'Shared-fleet scooters add a CAN/IoT board for telemetry; consumer ones stay on UART.',
+  },
+  drone: {
+    primary: 'SMBus smart-battery (DJI-class)',
+    alternates: ['UART telemetry to the flight controller'],
+    note: 'Smart flight batteries authenticate and report over SMBus; the flight controller enforces the limits.',
+  },
+  powertool: {
+    primary: 'Proprietary 1-Wire/serial pack link',
+    alternates: [],
+    note: 'Tool packs use a minimal vendor link for temperature/ID — there is no open standard here.',
+  },
+  default: {
+    primary: 'CAN (the dominant industrial choice)',
+    alternates: ['SAE J1939 (heavy vehicles)', 'CANopen (industrial machines)', 'Modbus (stationary plant)'],
+    note: 'Pick the bus your integration already speaks — the pack adapts to the vehicle/plant network, not the other way around.',
+  },
+};
+
+export function commsForApp(appId) {
+  return COMMS_BY_APP[appId] || COMMS_BY_APP.default;
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator — everything the customer needs to see the architecture of
 // one design, in one object.
 // ---------------------------------------------------------------------------
@@ -358,8 +488,26 @@ export function buildArchitecture({ cell, s, p, summary, options = {} }) {
     interconnectMOhm: options.interconnectMOhm,
     contA: summary.maxContCurrentA,
   });
-  const system = systemPlan(options.targetEnergyWh, summary.energyWh);
-  return { partition, voltageClass: vc, bms, precharge, contactors, isolation, dcdc, resistance, system };
+  // The stack/rack count: derived from the energy target by default, but a
+  // customer whose plant layout already fixes it (BESS container, ship bus,
+  // articulated bus) can set it directly — that is a legitimate input, not
+  // something to re-derive against their will.
+  let system;
+  const n = Math.round(options.racksOverride);
+  if (n >= 1) {
+    const totalWh = n * summary.energyWh;
+    system = {
+      racks: n, targetWh: options.targetEnergyWh ?? null,
+      totalWh, perPackWh: summary.energyWh,
+      coveragePct: options.targetEnergyWh ? Math.min(100, (totalWh / options.targetEnergyWh) * 100) : null,
+      overridden: true,
+    };
+  } else {
+    system = systemPlan(options.targetEnergyWh, summary.energyWh);
+  }
+  const comms = commsForApp(options.appId);
+  const welding = weldingForCell(cell);
+  return { partition, voltageClass: vc, bms, precharge, contactors, isolation, dcdc, resistance, system, comms, welding };
 }
 
 const round2 = (v) => Math.round(v * 100) / 100;

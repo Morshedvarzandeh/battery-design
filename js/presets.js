@@ -127,10 +127,10 @@ export const PRESETS = [
       'thermal management. Annual cycles are full-cycle equivalents.'
   },
   {
-    id: 'robot', name: 'Robot / AGV', icon: '🤖',
-    desc: 'Warehouse AGV/AMR with opportunity charging',
-    systemV: [24, 48], typicalV: 48,
-    energyWh: [500, 5000], typicalEnergyWh: 2000,
+    id: 'robot', name: 'AGV / lift truck', icon: '🏗️',
+    desc: 'Warehouse AGV/AMR or electric lift truck, opportunity charging',
+    systemV: [24, 80], typicalV: 48,         // AGVs 24-48 V; lift trucks 48/80 V
+    energyWh: [500, 20000], typicalEnergyWh: 2000,
     contPowerW: 1000, peakPowerW: 3000,
     maxMassKg: 30,
     maxDimsMm: { x: 400, y: 300, z: 200 },  // estimate: chassis battery bay
@@ -141,7 +141,42 @@ export const PRESETS = [
     notes: 'Opportunity charging at pick stations means many shallow cycles per day ' +
       'and 2C+ charge acceptance: LTO tolerates 4C+ charge and 15000+ cycles, ' +
       'LFP is the cheaper choice where a 1-2C charge and ~4000 cycles suffice. ' +
-      'Indoor duty keeps the thermal window benign.'
+      'Lift trucks run the same duty at 48/80 V with 10-20 kWh packs, where the ' +
+      'battery often doubles as counterweight — mass is a feature, not a cost.'
+  },
+  {
+    id: 'humanoid', name: 'Humanoid robot', icon: '🦾',
+    desc: 'Bipedal robot torso pack, joints + compute',
+    systemV: [44, 60], typicalV: 50.4,       // 14S NMC class
+    energyWh: [500, 3000], typicalEnergyWh: 2000,
+    contPowerW: 500, peakPowerW: 3000,
+    maxMassKg: 12,
+    maxDimsMm: { x: 300, y: 200, z: 120 },  // estimate: torso cavity
+    chargeRateC: 1,
+    envTempC: [0, 40],
+    cyclesPerYear: 300, targetYears: 5,
+    preferredChemistries: ['NMC', 'NCA'],
+    notes: 'Class-estimates anchored to announced 2.0-2.3 kWh / ~52 V torso packs ' +
+      '(Optimus class). Walking averages a few hundred watts but joint actuators ' +
+      'spike to kilowatts, and every kilogram of pack raises the balance load — ' +
+      'high energy density NMC/NCA wins over LFP here.'
+  },
+  {
+    id: 'robovac', name: 'Robot vacuum', icon: '🧹',
+    desc: 'Household cleaning robot, dock-charged',
+    systemV: [14.4, 21.6], typicalV: 14.4,   // 4S Li-ion class
+    energyWh: [50, 250], typicalEnergyWh: 100,
+    contPowerW: 40, peakPowerW: 120,
+    maxMassKg: 1,
+    maxDimsMm: { x: 150, y: 100, z: 45 },   // estimate: chassis compartment
+    chargeRateC: 0.5,
+    envTempC: [10, 35],
+    cyclesPerYear: 300, targetYears: 4,
+    preferredChemistries: ['NMC', 'LFP'],
+    notes: 'Near-daily full runs to the dock make cycle count, not power, the ' +
+      'design driver: a 100 Wh 4S pack at 40 W suction runs ~2 h. Indoor-only ' +
+      'duty keeps the thermal window benign; the 45 mm height forces 18650 or ' +
+      'pouch layouts.'
   },
   {
     id: 'ups', name: 'UPS / telecom', icon: '🔌',

@@ -127,9 +127,13 @@ export function buildReportHTML(R) {
     row('Structure', P.virtual
       ? 'cell-to-pack — one virtual group, no physical module tier'
       : `${P.nModules} modules of ${P.sMod}S${P.pMod}P — ${f1(P.moduleVoltageMaxV)} V max, ${f1(P.moduleEnergyWh / 1000)} kWh, ${f1(P.moduleMassCellsKg)} kg cells per module`),
-    ...(A.system && A.system.racks > 1 ? [row('System scale', `the ${f1(A.system.targetWh / 1000)} kWh target needs <b>${A.system.racks} packs (racks)</b> of this design in parallel strings — this report models ONE pack; each rack keeps its own contactors, fuse and BMS string`)] : []),
+    ...(A.system && (A.system.racks > 1 || A.system.overridden) ? [row('System scale', A.system.overridden
+      ? `<b>${A.system.racks} stacks set by the customer</b> — ${f1(A.system.totalWh / 1000)} kWh total${A.system.targetWh ? ` (${f0(A.system.coveragePct)}% of the ${f1(A.system.targetWh / 1000)} kWh target)` : ''}; this report models ONE stack, each with its own contactors, fuse and BMS string`
+      : `the ${f1(A.system.targetWh / 1000)} kWh target needs <b>${A.system.racks} packs (racks)</b> of this design in parallel strings — this report models ONE pack; each rack keeps its own contactors, fuse and BMS string`)] : []),
     row('Voltage class', `${esc(A.voltageClass.label)} — <span style="font-weight:normal">${esc(A.voltageClass.note)}</span>`),
     row('BMS', `${esc(B.topologyInfo?.name || B.topology)} · ${B.afeTotal}× AFE IC (${B.channelsPerIc} ch) · ${B.senseWiresTotal} sense wires · ${B.tempSensors} temperature sensors (1 per ${B.cellsPerTempSensor} cells)`),
+    ...(A.comms ? [row('Communication', `${esc(A.comms.primary)}${A.comms.alternates?.length ? ` — <span style="font-weight:normal">alternates: ${esc(A.comms.alternates.join('; '))}</span>` : ''}<br><span style="font-weight:normal">${esc(A.comms.note)}</span>`)] : []),
+    ...(A.welding ? [row('Cell joining / welding', `${esc(A.welding.primary)} — <span style="font-weight:normal">alternates: ${esc(A.welding.alternates.join('; '))}. ${esc(A.welding.cautions.join(' '))} (Joining review: Lee, Kim, Hu, Cai &amp; Abell, ASME MSEC2010-34168.)</span>`)] : []),
     ...(PR ? [
       row('Precharge', `${f1(PR.rOhm)} Ω resistor · DC link within ${PR.closeGapV} V in ${PR.timeToCloseS} s (τ = ${f2(PR.tauS)} s) · ${f0(PR.energyPerEventJ)} J and ${f1(PR.avgPowerDuringEventW)} W average per event · sized for ${PR.prechargesPerHour}/h`),
       row('Switching sequence', PR.sequence.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')),
@@ -163,7 +167,7 @@ export function buildReportHTML(R) {
   <h2 style="${h2}">Economical analysis (cells, class-estimate prices)</h2>
   ${table([
     row('Upfront cost', C.upfrontUSD != null ? `$${f0(C.upfrontUSD)} · ${f0(C.usdPerKWhCap)} $/kWh capacity` : 'no price data'),
-    row('Lifetime energy throughput', C.throughputKWh != null ? `${f0(C.throughputKWh)} kWh (${f0(R.cell.cycleLife)} cycles at 80% DoD)` : 'no cycle-life rating'),
+    row('Lifetime energy throughput', C.throughputKWh != null ? `${f0(C.throughputKWh)} kWh (${f0(R.cell.cycleLife)} cycles at ${f0((R.usage.dod ?? 0.8) * 100)}% DoD)` : 'no cycle-life rating'),
     row('Cost per kWh delivered', C.usdPerKWhDelivered != null ? `$${f2(C.usdPerKWhDelivered)}` : '—'),
     row('Service life at duty', C.serviceYears != null ? `~${f1(C.serviceYears)} years (${f0(R.usage.cyclesPerYear)} cycles/year)` : '—'),
     row(`Total cost of ownership (${f0(R.usage.targetYears)} y)`,

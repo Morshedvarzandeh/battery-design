@@ -59,7 +59,25 @@ project's provenance-first datasheet pipeline.
   main+ closing sequence), contactors and fuse rules of thumb, DC-DC
   auxiliary supply, and the isolation floor with the governing standard as
   an explicit choice (the sources conflict at 500 vs 100 Ω/V — never
-  averaged). Rendered as a one-line diagram that also embeds in the report.
+  averaged). Rendered as a one-line diagram (the BMS graphic follows the
+  chosen topology) that also embeds in the report. The architecture also
+  names the communication bus each application expects (SAE J1939 for heavy
+  trucks and lift trucks, CAN/CAN FD + UDS for automotive, CANopen for
+  AGVs, Modbus/SunSpec for stationary storage, NMEA 2000 marine) and the
+  cell-joining process per format (resistance spot for cylindrical cans,
+  laser for prismatic terminals, ultrasonic for pouch tab stacks — per the
+  ASME MSEC2010-34168 joining review), and its findings are folded into the
+  Electrical audit pane rather than kept in a silo.
+- **Environment & seasons** — the system temperature is not one number:
+  climate presets (temperate / cold / hot / indoor) carry per-season ambient
+  bands, fill the design temperature window (design case = all year), and a
+  season view shows the estimated system temperature (ambient high + the
+  pack's own heat rise) with heater/charge-inhibit and cooling-margin flags.
+- **EU rules tab** — Regulation (EU) 2023/1542 staged timeline (carbon
+  declarations, battery passport with LIVE SoH over UDS, recycled-content
+  minimums, recovery targets vs recycling efficiency kept strictly apart)
+  plus "what applies to THIS design" checks from the pack's energy,
+  application and chemistry. Guidance, not legal advice.
 - **Closest-possible framing** — when a target is out of reach in the given
   space, the tool never answers "infeasible": it presents the most possible
   solution close to the need, states the shortfall, and says how many
@@ -167,7 +185,9 @@ is copied into the repository.
 | `js/engineering.js` | Four-perspective analysis (mech/thermal/elec/safety) |
 | `js/pack-engine.js` | Pure electrical + layout math (Z-up, mm) |
 | `js/optimizer.js` | Requirement search + space fitting |
-| `js/architecture.js` | Module partition, BMS topology, precharge/contactors/fuse/isolation |
+| `js/architecture.js` | Module partition, BMS topology, precharge/contactors/fuse/isolation, comms, welding |
+| `js/seasons.js` | Climate/season ambient bands + per-season system-temperature outlook |
+| `js/eurules.js` | EU Battery Regulation 2023/1542 timeline + applicability checks |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |
 | `js/app.js` | UI state and wiring |
