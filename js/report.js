@@ -124,6 +124,44 @@ export function buildReportHTML(R) {
       : '—'),
   ])}
 
+  ${R.sensitivity?.rows?.length ? `
+  <h2 style="${h2}">Cost sensitivity — if a battery parameter changes ±${f0(R.sensitivity.deltaPct)}%</h2>
+  <table style="border-collapse:collapse;width:100%">
+    <tr>
+      <td style="${th}">Parameter</td>
+      <td style="${td};color:#666">−${f0(R.sensitivity.deltaPct)}%</td>
+      <td style="${td};color:#666">base</td>
+      <td style="${td};color:#666">+${f0(R.sensitivity.deltaPct)}%</td>
+      <td style="${td};color:#666">max swing</td>
+    </tr>
+    ${R.sensitivity.rows.map((r) => {
+      const fm = (v) => R.sensitivity.basis === 'perKWh' ? `$${f2(v / 1000)}/kWh` : `$${f0(v)}`;
+      const repl = (n) => n != null && n !== R.sensitivity.baseReplacements ? ` <span style="color:#b4441f">(${n} packs)</span>` : '';
+      return `<tr><td style="${th}">${esc(r.label)}</td>
+        <td style="${td}">${fm(r.lo)}${repl(r.loReplacements)}</td>
+        <td style="${td}"><b>${fm(r.base)}</b></td>
+        <td style="${td}">${fm(r.hi)}${repl(r.hiReplacements)}</td>
+        <td style="${td}"><b>${fm(r.swing)}</b></td></tr>`;
+    }).join('')}
+  </table>
+  <div style="font-size:11px;color:#666;margin-top:4px">Basis: ${R.sensitivity.basis === 'tco'
+    ? 'total cost of ownership over the target years (replacement-pack jumps highlighted)'
+    : R.sensitivity.basis === 'perKWh' ? 'cost per kWh delivered' : 'upfront cost'} — one parameter varied at a time.</div>
+  ${R.robustness ? `<div style="font-size:12px;margin-top:8px"><b>Decision robustness:</b> ${
+    R.robustness.alreadyCheaper
+      ? `the runner-up (${esc(R.robustness.runnerUp)}) is already equal or cheaper on this basis — the ranking is driven by the other objectives.`
+      : `the chosen battery stays the cheaper option until its cost rises by more than <b>${f1(R.robustness.pct)}%</b>; beyond that, ${esc(R.robustness.runnerUp)} wins.`
+  }</div>` : ''}` : ''}
+
+  ${R.patents?.length ? `
+  <h2 style="${h2}">Patent &amp; technology landscape for this design</h2>
+  ${table(R.patents.map((p) => row(
+    `${esc(p.holder)} · ${esc(p.era)}`,
+    `${esc(p.title)} <span style="font-weight:normal">(${esc(p.example)}) — ${esc(p.designNote)}</span>
+     <span style="font-weight:normal">${p.links.map((u, i) =>
+      `<a href="${esc(u)}">${i === 0 ? 'Google Patents' : 'new this year'}</a>`).join(' · ')}</span>`)))}
+  <div style="font-size:11px;color:#666;margin-top:4px">${esc(R.patentsDisclaimer || '')}</div>` : ''}
+
   <h2 style="${h2}">Selected components</h2>
   ${table(Object.entries(R.selection).filter(([, v]) => v).map(([k, v]) =>
     row(k[0].toUpperCase() + k.slice(1), `${esc(v.name)}${v.suppliers?.length ? ` <span style="color:#666">(e.g. ${esc(v.suppliers.join(', '))})</span>` : ''}`)))}
