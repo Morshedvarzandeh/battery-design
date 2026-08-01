@@ -181,6 +181,24 @@ export const PRESETS = [
       'high energy density NMC/NCA wins over LFP here.'
   },
   {
+    id: 'wearable', name: 'Wearable gadget', icon: '⌚',
+    desc: 'Smartwatch / band / earbud case / AR glasses, 1S LiPo',
+    systemV: [3.0, 4.4], typicalV: 3.7,      // single-cell "LiPo" systems
+    energyWh: [0.2, 5], typicalEnergyWh: 1.1,
+    contPowerW: 0.05, peakPowerW: 1.5,
+    maxMassKg: 0.02,
+    maxDimsMm: { x: 40, y: 35, z: 8 },      // estimate: watch-body battery cavity
+    chargeRateC: 0.5,
+    envTempC: [0, 45],
+    cyclesPerYear: 350, targetYears: 3,
+    preferredChemistries: ['LCO', 'NMC'],
+    notes: 'The wearable market runs on single-cell "LiPo" pouches (LCO-family, ' +
+      'named by their T-W-H code: 401020 = 4 x 10 x 20 mm) with a fuel gauge ' +
+      'and daily dock charging. Energy density and the millimetre envelope are ' +
+      'everything; power is milliwatts with short radio/GPS/haptic bursts. ' +
+      'Near-daily full cycles make the ~300-500 cycle rating the service life.'
+  },
+  {
     id: 'robovac', name: 'Robot vacuum', icon: '🧹',
     desc: 'Household cleaning robot, dock-charged',
     systemV: [14.4, 21.6], typicalV: 14.4,   // 4S Li-ion class

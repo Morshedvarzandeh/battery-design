@@ -354,6 +354,14 @@ function applyPreset(pr) {
     $('fitY').value = pr.maxDimsMm.y;
     $('fitZ').value = pr.maxDimsMm.z;
   }
+  // Integration: reserves must scale with the application. A wearable's
+  // battery cavity has ~1 mm of structure, not the 2 mm walls + 8 mm
+  // busbar headroom of a vehicle pack — those defaults would eat the whole
+  // bay. Tiny applications (a few Wh) get watch-scale reserves.
+  if (pr.typicalEnergyWh <= 10) {
+    state.wallMm = 1; state.headroomMm = 2; state.spacingMm = 0.5;
+    syncInputs();
+  }
   // Integration: an indoor machine never sees a Nordic winter — picking an
   // indoor application selects the conditioned climate; picking an outdoor
   // one leaves an explicitly-chosen outdoor climate alone.

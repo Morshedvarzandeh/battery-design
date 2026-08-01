@@ -420,6 +420,11 @@ export const COMMS_BY_APP = {
     alternates: ['proprietary UART'],
     note: 'Consumer robots use a smart-battery gauge link, not a vehicle bus.',
   },
+  wearable: {
+    primary: 'I²C fuel gauge to the 1S PMIC',
+    alternates: ['BLE to the phone via the SoC'],
+    note: 'A wearable has no battery bus: a fuel-gauge IC reports over I²C to the power-management IC, and the SoC relays state over BLE. Protection is a 1S protection IC, not a BMS board.',
+  },
   marine: {
     primary: 'NMEA 2000 (J1939-based)',
     alternates: ['CAN (Victron VE.Can class)', 'Modbus to shore/inverter gear'],
