@@ -7,6 +7,10 @@ import { PRESETS } from './presets.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
 import { optimizeSpace, suggestDesigns, maxFill, costModel } from './optimizer.js';
 import { layoutPackBay, polygonBounds } from './bay.js';
+import { co2Model, GRID_FACTORS, buildReportHTML, buildWordDocument } from './report.js';
+import {
+  loadMyCells, saveMyCells, normalizeCustomCell, validateCustomCell, buildMailto,
+} from './mycells.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
 import { ANALYSIS_DISCLAIMER, analyze } from './engineering.js';
@@ -120,11 +124,11 @@ function setViewMode(mode) {
 
 function initCellSelect() {
   const sel = $('selCell');
-  const byForm = {};
-  for (const c of CELLS) (byForm[c.form] ||= []).push(c);
-  for (const [form, cells] of Object.entries(byForm)) {
+  sel.innerHTML = '';
+  const addGroup = (label, cells) => {
+    if (!cells.length) return;
     const og = document.createElement('optgroup');
-    og.label = form[0].toUpperCase() + form.slice(1);
+    og.label = label;
     for (const c of cells) {
       const o = document.createElement('option');
       o.value = c.id;
@@ -132,8 +136,14 @@ function initCellSelect() {
       og.appendChild(o);
     }
     sel.appendChild(og);
+  };
+  addGroup('My cells (this device only)', myCells);
+  const byForm = {};
+  for (const c of CELLS) (byForm[c.form] ||= []).push(c);
+  for (const [form, cells] of Object.entries(byForm)) {
+    addGroup(form[0].toUpperCase() + form.slice(1), cells);
   }
-  if (!cellById(state.cellId)) state.cellId = CELLS[0].id;
+  if (!cellFind(state.cellId)) state.cellId = CELLS[0].id;
   sel.value = state.cellId;
 }
 
@@ -185,7 +195,10 @@ function bindControls() {
     document.querySelectorAll('#tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
     document.querySelectorAll('.tabpane').forEach((p) =>
       p.classList.toggle('active', p.id === `pane-${t.dataset.tab}`));
+    if (t.dataset.tab === 'results') renderResults();
   });
+  bindCellModal();
+  bindResults();
 
   $('selCell').onchange = () => { state.cellId = $('selCell').value; onCellChange(); recompute(); };
   $('inS').onchange = $('inP').onchange = () => { readNumbers(); recompute(); };
@@ -261,7 +274,12 @@ function readNumbers() {
   $('inNx').value = state.nx; $('inNz').value = state.nz;
 }
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
-const cell = () => cellById(state.cellId) || CELLS[0];
+// Customer-private cells (this device only) sit in front of the public
+// library everywhere cells are searched or listed.
+let myCells = loadMyCells();
+const allCells = () => [...myCells, ...CELLS];
+const cellFind = (id) => myCells.find((c) => c.id === id) || cellById(id) || null;
+const cell = () => cellFind(state.cellId) || CELLS[0];
 
 function onCellChange() {
   const c = cell();
@@ -335,7 +353,7 @@ function wizardStep3() {
   $('wzBack').style.visibility = 'visible';
   $('wzBack').onclick = wizardStep2;
   const num = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
-  const results = maxFill(CELLS,
+  const results = maxFill(allCells(),
     { x: num('fitX'), y: num('fitY'), z: num('fitZ') },
     {
       vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
@@ -384,6 +402,142 @@ function wizardStep3() {
     };
     body.appendChild(el);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Customer cells — private, this device only (see js/mycells.js)
+// ---------------------------------------------------------------------------
+function bindCellModal() {
+  $('btnAddCell').onclick = () => {
+    $('ccForm').style.display = 'block';
+    $('ccDone').style.display = 'none';
+    $('ccErrs').textContent = '';
+    $('cellModal').style.display = 'flex';
+  };
+  $('ccClose').onclick = () => { $('cellModal').style.display = 'none'; };
+  $('ccForm2').onchange = () => {
+    const cyl = $('ccForm2').value === 'cylindrical';
+    $('ccDimsCyl').style.display = cyl ? 'grid' : 'none';
+    $('ccDimsBox').style.display = cyl ? 'none' : 'grid';
+  };
+  $('ccSave').onclick = () => {
+    const form = $('ccForm2').value;
+    const raw = {
+      manufacturer: $('ccMfr').value, model: $('ccModel').value,
+      form, chemistry: $('ccChem').value,
+      d: $('ccD').value, h: form === 'cylindrical' ? $('ccH').value : $('ccH2').value,
+      w: $('ccW').value, t: $('ccT').value,
+      capacityAh: $('ccAh').value, massG: $('ccG').value, cycleLife: $('ccCyc').value,
+      nominalV: $('ccVn').value, vMax: $('ccVx').value, vMin: $('ccVm').value,
+      maxContDischargeA: $('ccId').value, maxContChargeA: $('ccIc').value,
+      priceUSD: $('ccPr').value,
+    };
+    const errs = validateCustomCell(raw);
+    if (errs.length) { $('ccErrs').innerHTML = errs.map(esc).join('<br>'); return; }
+    const cellRec = normalizeCustomCell(raw);
+    myCells = [cellRec, ...myCells.filter((c) => c.id !== cellRec.id)];
+    saveMyCells(myCells);
+    initCellSelect();
+    state.cellId = cellRec.id;
+    onCellChange();
+    syncInputs();
+    recompute();
+    $('ccForm').style.display = 'none';
+    $('ccDone').style.display = 'block';
+    $('ccMail').href = buildMailto(cellRec);
+    $('ccJson').onclick = () => {
+      const blob = new Blob([JSON.stringify(cellRec, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = `${cellRec.id}.json`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    };
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Results tab — economical + CO2 analysis, PDF and Word export
+// ---------------------------------------------------------------------------
+function bindResults() {
+  const sel = $('selGrid');
+  for (const gf of GRID_FACTORS) {
+    const o = document.createElement('option');
+    o.value = gf.id;
+    o.textContent = gf.g != null ? `${gf.label} (${gf.g} g/kWh)` : gf.label;
+    sel.appendChild(o);
+  }
+  sel.onchange = () => {
+    $('inGridG').style.display = sel.value === 'custom' ? 'block' : 'none';
+    renderResults();
+  };
+  $('inGridG').oninput = renderResults;
+  $('btnPdf').onclick = () => {
+    $('printArea').innerHTML = currentReportHTML();
+    document.body.classList.add('printing');
+    const done = () => { document.body.classList.remove('printing'); window.removeEventListener('afterprint', done); };
+    window.addEventListener('afterprint', done);
+    window.print();
+  };
+  $('btnWord').onclick = () => {
+    const doc = buildWordDocument(currentReportHTML(), 'Battery pack design report');
+    const blob = new Blob(['﻿' + doc], { type: 'application/msword' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `pack-report-${cell().id}-${state.s}s${state.p}p.doc`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+}
+
+function currentGridFactor() {
+  const id = $('selGrid').value || 'world';
+  const gf = GRID_FACTORS.find((g) => g.id === id) || GRID_FACTORS[0];
+  if (gf.id === 'custom') {
+    const v = parseFloat($('inGridG').value);
+    return { label: 'Custom source', g: isFinite(v) && v > 0 ? v : 440 };
+  }
+  return gf;
+}
+
+function currentReportData() {
+  const c = cell();
+  const nv = (id) => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : null; };
+  const usage = { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr') };
+  const gf = currentGridFactor();
+  const costM = costModel(c, lastSummary.cellCount, lastSummary.energyWh, usage);
+  const co2M = co2Model({
+    cell: c, energyWh: lastSummary.energyWh,
+    cyclesPerYear: usage.cyclesPerYear, targetYears: usage.targetYears,
+    gridGPerKWh: gf.g,
+  });
+  const engFindings = lastAnalysis
+    ? ['mechanical', 'thermal', 'electrical', 'safety'].flatMap((k) => lastAnalysis.perspectives[k] || [])
+    : [];
+  return {
+    date: new Date().toISOString().slice(0, 10),
+    application: state.presetId || 'custom',
+    cell: c,
+    summary: lastSummary,
+    massWithComponentsKg: lastAnalysis?.totals?.packMassWithComponentsKg ?? null,
+    bayLabel: state.appliedBay ? `${state.appliedBay.kind} bay` : 'box',
+    cost: costM,
+    co2: co2M,
+    gridLabel: gf.label,
+    usage,
+    selection: selComponents(),
+    findings: [...engFindings, ...lastFindings],
+    disclaimer: `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`,
+  };
+}
+
+function currentReportHTML() {
+  return buildReportHTML(currentReportData());
+}
+
+function renderResults() {
+  if (!lastSummary) return;
+  $('reportView').innerHTML = currentReportHTML();
 }
 
 // ---------------------------------------------------------------------------
@@ -831,7 +985,7 @@ function runSuggest() {
     preferredChemistries: preset?.preferredChemistries || [],
     cyclesPerYear: num('rqCy'), targetYears: num('rqYr'),
   };
-  const results = suggestDesigns(req, CELLS);
+  const results = suggestDesigns(req, allCells());
   const box = $('suggestions');
   if (!results.length) {
     box.innerHTML = '<div class="empty">Nothing feasible in the library for those numbers — widen the voltage window or relax constraints.</div>';
@@ -906,7 +1060,7 @@ function runMaxFill() {
   };
   const cool = coolingSpace();
   const integrationPct = parseFloat($('inInteg').value) || 0;
-  const results = maxFill(CELLS, envelope, req, {
+  const results = maxFill(allCells(), envelope, req, {
     spacingMm: state.spacingMm, wallMm: state.wallMm,
     headroomMm: state.headroomMm, layerGapMm: state.layerGapMm,
     coolingSpace: cool, integrationPct, bay: shaped ? bay : null,
@@ -1033,7 +1187,7 @@ function restoreHash() {
     const raw = location.hash.slice(1);
     if (!raw) return;
     const h = JSON.parse(decodeURIComponent(raw));
-    if (h.c && cellById(h.c)) state.cellId = h.c;
+    if (h.c && cellFind(h.c)) state.cellId = h.c;
     if (h.s) state.s = clamp(h.s, 1, 300);
     if (h.p) state.p = clamp(h.p, 1, 200);
     if (h.a) state.arrangement = h.a;
