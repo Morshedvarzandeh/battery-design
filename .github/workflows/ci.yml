@@ -26,4 +26,5 @@ jobs:
       - run: node tests/report-regressions.mjs
       - run: node tests/sensitivity-regressions.mjs
       - run: node tests/bay-import-regressions.mjs
+      - run: node tests/loadprofile-regressions.mjs
       - run: node tools/validate-vs-market.mjs

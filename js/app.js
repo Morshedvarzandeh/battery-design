@@ -13,6 +13,9 @@ import {
 } from './mycells.js';
 import { sensitivityAnalysis, priceFlipThreshold } from './sensitivity.js';
 import { parseOutline } from './bay-import.js';
+import {
+  LOAD_PROFILES, profileForApp, profileById, profileStats, profileChecks, parseProfileCSV,
+} from './loadprofiles.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
@@ -41,7 +44,10 @@ const state = {
   bayKind: 'box',          // box | round | lshape | stepped | poly
   sketchPts: [],           // drawn polygon vertices, mm
   appliedBay: null,        // bay object of the applied shaped fill, or null
+  profileId: null,         // active load profile id, 'custom', or null
+  profileScaleW: null,     // absolute W the profile's peak (=1.0) maps to
 };
+let customProfile = null;  // uploaded profile (session only)
 
 // 2D-first: the dimensioned 2D layout is the working view; the WebGL viewer
 // is only instantiated when the user asks for a 3D render, and its loop is
@@ -85,6 +91,7 @@ function init() {
   initTheme();
   initCellSelect();
   initPresets();
+  initProfiles();
   restoreHash();
   initComponents();
   bindControls();
@@ -189,6 +196,140 @@ function applyPreset(pr) {
     $('fitY').value = pr.maxDimsMm.y;
     $('fitZ').value = pr.maxDimsMm.z;
   }
+  // Each application carries its OWN characteristic load shape (a UPS is not
+  // a scaled e-bike); selecting the application selects the profile and
+  // derives the power requirements from it (RMS -> continuous, peak -> peak).
+  const prof = profileForApp(pr.id);
+  if (prof) {
+    state.profileId = prof.id;
+    state.profileScaleW = pr.peakPowerW;
+    $('selProfile').value = prof.id;
+    applyProfileToRequirements();
+  }
+  renderProfile();
+}
+
+// ---------------------------------------------------------------------------
+// Load profiles
+// ---------------------------------------------------------------------------
+function currentProfile() {
+  if (state.profileId === 'custom') return customProfile;
+  return state.profileId ? profileById(state.profileId) : null;
+}
+
+function initProfiles() {
+  const sel = $('selProfile');
+  const opt = (v, label) => {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = label;
+    sel.appendChild(o);
+  };
+  opt('', 'None — type the power numbers below');
+  for (const pr of LOAD_PROFILES) opt(pr.id, pr.name);
+  opt('upload', 'Custom — upload CSV (time_s, power_W)…');
+  sel.onchange = () => {
+    if (sel.value === 'upload') { $('profileFile').click(); return; }
+    state.profileId = sel.value || null;
+    if (state.profileId) {
+      state.profileScaleW = customScaleOr(parseFloat($('rqPp').value) || 1000);
+      applyProfileToRequirements();
+    }
+    renderProfile();
+  };
+  $('profileFile').onchange = async () => {
+    const file = $('profileFile').files[0];
+    if (!file) return;
+    try {
+      customProfile = parseProfileCSV(await file.text());
+      state.profileId = 'custom';
+      state.profileScaleW = customProfile.uploadedPeakW;
+      const sel2 = $('selProfile');
+      if (![...sel2.options].some((o) => o.value === 'custom')) {
+        const o = document.createElement('option');
+        o.value = 'custom'; o.textContent = customProfile.name;
+        sel2.insertBefore(o, sel2.querySelector('option[value="upload"]'));
+      }
+      sel2.value = 'custom';
+      applyProfileToRequirements();
+    } catch (e) {
+      $('profileStatsLine').innerHTML = `<span style="color:var(--missing)">✗ ${esc(e.message)}</span>`;
+    }
+    $('profileFile').value = '';
+    renderProfile();
+  };
+  $('btnProfileApply').onclick = () => { applyProfileToRequirements(); renderProfile(); };
+}
+
+const customScaleOr = (fallback) =>
+  state.profileId === 'custom' && customProfile ? customProfile.uploadedPeakW : fallback;
+
+// The profile drives the scalar requirements: RMS (heating-equivalent) sets
+// the continuous power, the true peak sets the peak power.
+function applyProfileToRequirements() {
+  const prof = currentProfile();
+  if (!prof || !state.profileScaleW) return;
+  const st = profileStats(prof, state.profileScaleW);
+  $('rqPc').value = Math.round(st.rmsW);
+  $('rqPp').value = Math.round(st.peakW);
+  recompute();
+}
+
+function renderProfile() {
+  const prof = currentProfile();
+  const canvas = $('profileChart');
+  const line = $('profileStatsLine');
+  $('btnProfileApply').style.display = prof ? 'block' : 'none';
+  canvas.style.display = prof ? 'block' : 'none';
+  if (!prof) { line.textContent = ''; return; }
+  const scale = state.profileScaleW || 1000;
+  const st = profileStats(prof, scale);
+  drawProfileChart(canvas, prof, scale);
+  const dur = st.durationS >= 3600 ? `${f1(st.durationS / 3600)} h` : `${f0(st.durationS)} s`;
+  line.innerHTML = `${esc(prof.note)}<br><b>${dur}</b> pass · peak <b>${f0(st.peakW)} W</b> ·
+    RMS <b>${f0(st.rmsW)} W</b> · mean <b>${f0(st.meanW)} W</b> ·
+    ${st.crestFactor ? `crest ${f1(st.crestFactor)}× · ` : ''}energy/pass <b>${f0(st.energyPerPassWh)} Wh</b>
+    ${st.regenWh > 0.5 ? ` · regen ${f0(st.regenWh)} Wh` : ''}`;
+}
+
+function drawProfileChart(canvas, prof, scaleW, forExport = false) {
+  const dpr = forExport ? 2 : Math.min(window.devicePixelRatio || 1, 2);
+  const W = forExport ? 640 : (canvas.clientWidth || 300);
+  const H = forExport ? 150 : 110;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = (n, fb) => forExport ? fb :
+    (getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fb);
+  g.fillStyle = forExport ? '#ffffff' : css('--ground', '#f4f6f5');
+  g.fillRect(0, 0, W, H);
+  const vals = prof.p;
+  const maxAbs = Math.max(...vals.map(Math.abs), 1e-9);
+  const pad = 6;
+  const zeroY = vals.some((v) => v < 0) ? H * 0.62 : H - pad;
+  const yOf = (v) => zeroY - (v / maxAbs) * (zeroY - pad);
+  const xOf = (i) => pad + (i / (vals.length - 1)) * (W - 2 * pad);
+  // zero line
+  g.strokeStyle = css('--line', '#ccc'); g.lineWidth = 1;
+  g.beginPath(); g.moveTo(pad, zeroY); g.lineTo(W - pad, zeroY); g.stroke();
+  // filled discharge (teal) and charge (amber) areas
+  const drawArea = (sign, color) => {
+    g.fillStyle = color; g.globalAlpha = 0.25;
+    g.beginPath(); g.moveTo(xOf(0), zeroY);
+    vals.forEach((v, i) => g.lineTo(xOf(i), yOf(sign === 1 ? Math.max(0, v) : Math.min(0, v))));
+    g.lineTo(xOf(vals.length - 1), zeroY); g.closePath(); g.fill();
+    g.globalAlpha = 1;
+  };
+  drawArea(1, '#0b6e5f');
+  if (vals.some((v) => v < 0)) drawArea(-1, '#b4441f');
+  // trace
+  g.strokeStyle = css('--accent', '#0b6e5f'); g.lineWidth = 1.5;
+  g.beginPath();
+  vals.forEach((v, i) => i ? g.lineTo(xOf(i), yOf(v)) : g.moveTo(xOf(i), yOf(v)));
+  g.stroke();
+  // peak label
+  g.fillStyle = css('--muted', '#666'); g.font = '10px ui-monospace, monospace';
+  g.fillText(`peak ${Math.round(scaleW)} W`, pad + 2, 12);
+  if (vals.some((v) => v < 0)) g.fillText('below line = charging/regen', pad + 2, H - 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -604,6 +745,19 @@ function currentReportData() {
     })(),
     patents: matchPatents({ cell: c, cellCount: lastSummary.cellCount, selection: selComponents() }),
     patentsDisclaimer: PATENTS_DISCLAIMER,
+    loadProfile: (() => {
+      const prof = currentProfile();
+      if (!prof || !state.profileScaleW) return null;
+      const chk = profileChecks(prof, state.profileScaleW, {
+        nominalV: lastSummary.nominalV, energyWh: lastSummary.energyWh,
+        maxContCurrentA: lastSummary.maxContCurrentA,
+        maxPulseCurrentA: lastSummary.maxPulseCurrentA,
+        maxChargeCurrentA: lastSummary.maxChargeCurrentA,
+      }, c);
+      const off = document.createElement('canvas');
+      drawProfileChart(off, prof, state.profileScaleW, true);
+      return { name: prof.name, note: prof.note, stats: chk.stats, findings: chk.findings, chartPng: off.toDataURL('image/png') };
+    })(),
     disclaimer: `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`,
   };
 }
