@@ -225,6 +225,22 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
 .cmptbl .num{text-align:right;font-variant-numeric:tabular-nums}
 .cmptbl .win{font-weight:700;color:var(--accent)}
 .cmpname{display:block;max-width:190px;overflow:hidden;text-overflow:ellipsis}
+/* Cell comparison radar. Axes are scored against fixed market ranges, not
+   against the selection, so a small polygon means genuinely small. */
+#radarCanvas{width:100%;display:block}
+.rdrlegend{display:flex;flex-wrap:wrap;gap:10px;margin:4px 0 2px;font-size:11.5px}
+.rdrlegend span.k{display:inline-flex;align-items:center;gap:5px;color:var(--ink-2)}
+.rdrkey{width:9px;height:9px;border-radius:2px;display:inline-block;margin-right:5px;
+  vertical-align:middle}
+.rdrgaps{font-size:11px;color:var(--missing);margin:2px 0 6px;line-height:1.5}
+#radarTable{overflow-x:auto;margin-top:6px}
+.rdrtbl{border-collapse:collapse;font-size:11.5px;min-width:100%;white-space:nowrap}
+.rdrtbl th,.rdrtbl td{padding:3px 6px;border-bottom:1px solid var(--line);text-align:left}
+.rdrtbl th:first-child,.rdrtbl td:first-child{position:sticky;left:0;background:var(--surface);
+  padding-right:10px}
+.rdrtbl .num{text-align:right;font-variant-numeric:tabular-nums}
+.rdrtbl .unk{color:var(--muted);font-style:italic}
+.rdru{color:var(--muted);font-size:10px}
 </style>
 </head>
 <body>
@@ -479,6 +495,18 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
     </div>
 
     <div class="tabpane" id="pane-results">
+      <div class="sec">
+        <h3>Cell comparison</h3>
+        <div id="radarWrap">
+          <div class="empty" id="radarEmpty">Tick two or more cells under
+            <b>Design → Browse and compare cells</b> to see how their compromises differ.</div>
+          <canvas id="radarCanvas" hidden></canvas>
+          <div id="radarLegend" class="rdrlegend"></div>
+          <div id="radarGaps" class="rdrgaps"></div>
+          <div class="tblwrap" id="radarTable"></div>
+          <div class="hint" id="radarNote"></div>
+        </div>
+      </div>
       <div class="sec">
         <h3>CO₂ — what the delivered energy displaces</h3>
         <select id="selGrid"></select>

@@ -4,6 +4,7 @@
 
 import { CELLS, CHEMISTRIES, cellById, provenance } from './cells.js';
 import { CellPicker } from './cell-picker.js';
+import { drawRadar, radarTable, missingNotes, SERIES } from './radar.js';
 import { PRESETS } from './presets.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
 import { optimizeSpace, suggestDesigns, maxFill, costModel } from './optimizer.js';
@@ -571,8 +572,42 @@ function currentReportHTML() {
 }
 
 function renderResults() {
+  renderRadar();
   if (!lastSummary) return;
   $('reportView').innerHTML = currentReportHTML();
+}
+
+// The radar reads the picker's ticks, so "compare these" means the same thing
+// in both tabs rather than each keeping its own idea of the selection.
+function renderRadar() {
+  const canvas = $('radarCanvas');
+  if (!canvas) return;
+  const ids = picker ? [...picker.selected] : [];
+  const cells = ids.map(cellFind).filter(Boolean).slice(0, SERIES.length);
+  const enough = cells.length >= 2;
+  $('radarEmpty').hidden = enough;
+  canvas.hidden = !enough;
+  $('radarLegend').innerHTML = '';
+  $('radarGaps').textContent = '';
+  $('radarTable').innerHTML = '';
+  $('radarNote').textContent = '';
+  if (!enough) return;
+
+  drawRadar(canvas, cells, { height: 400 });
+  $('radarLegend').innerHTML = cells.map((c, i) =>
+    `<span class="k"><span class="rdrkey" style="background:${SERIES[i]}"></span>${c.name}</span>`
+  ).join('');
+  const gaps = missingNotes(cells);
+  $('radarGaps').textContent = gaps.length
+    ? `Skipped, not scored as zero — ${gaps.join(' · ')}` : '';
+  $('radarTable').innerHTML = radarTable(cells);
+  $('radarNote').textContent =
+    'Each axis is scored against a fixed market range, not against the cells on '
+    + 'screen, so a small shape means genuinely small rather than merely smaller '
+    + 'than its neighbour. Value points outward when $/kWh is LOW. Thermal safety '
+    + 'is a chemistry-class figure, not a measurement of this cell. Read the '
+    + 'numbers below for the values themselves — a radar shows the shape of a '
+    + 'compromise, and its enclosed area depends on the order of the axes.';
 }
 
 // ---------------------------------------------------------------------------
