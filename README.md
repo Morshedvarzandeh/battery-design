@@ -94,6 +94,13 @@ view is a **final render**: it is only instantiated when you press
   wall falls between the probes; the packer placed such cells before this was
   fixed. Rectangles test corner containment plus wall-edge intersection,
   circles test distance to every edge.
+- The comparison radar scores each axis against a FIXED market range, not
+  against the cells on screen. Set-relative scaling puts one cell on the rim
+  and the other at the centre whatever the values are, which can say "these
+  differ" but never "both are good". And an unpublished figure is skipped with
+  a dashed span, never plotted at zero — several cells have no cycle-life
+  number, and drawing them at the centre would be indistinguishable from a
+  cell measured at zero cycles.
 - Power is sized at the MINIMUM pack voltage. A constant-power load draws its
   highest current at the bottom of the discharge, so sizing at nominal
   under-sizes by vNom/vMin — about 1.44x for NMC.
@@ -121,6 +128,7 @@ is copied into the repository.
 |---|---|
 | `js/cells.js` | Cell library + chemistry data (self-contained, no imports) |
 | `js/cell-picker.js` | Filter the cell field, then compare survivors as the pack being designed |
+| `js/radar.js` | Seven-axis comparison radar, scored against fixed market ranges |
 | `js/presets.js` | Application usage presets |
 | `js/standards.js` | Standards rule engine over a computed design context |
 | `js/components.js` | Component & materials catalog with supplier examples |
