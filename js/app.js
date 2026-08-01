@@ -13,6 +13,8 @@ import { co2Model, GRID_FACTORS, buildReportHTML, buildWordDocument } from './re
 import {
   loadMyCells, saveMyCells, normalizeCustomCell, validateCustomCell, buildMailto,
 } from './mycells.js';
+import { sensitivityAnalysis, priceFlipThreshold } from './sensitivity.js';
+import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
 import { ANALYSIS_DISCLAIMER, analyze } from './engineering.js';
@@ -54,6 +56,7 @@ let lastSummary = null;
 let lastLayout = null;
 let lastAnalysis = null;
 let lastForm = 'cylindrical';
+let lastFillResults = null; // most recent max-fill ranking, for robustness
 
 const selComponents = () => Object.fromEntries(
   COMPONENT_CATEGORIES.map(({ key }) => [key, componentById(key, state.sel[key]) || null]));
@@ -408,6 +411,7 @@ function wizardStep3() {
     body.innerHTML = '<div class="empty">Nothing fits that space — go back and make it a little bigger.</div>';
     return;
   }
+  lastFillResults = results;
   body.innerHTML = '';
   results.forEach((r, i) => {
     const why = [
@@ -563,6 +567,19 @@ function currentReportData() {
     usage,
     selection: selComponents(),
     findings: [...engFindings, ...lastFindings],
+    sensitivity: sensitivityAnalysis({
+      cell: c, n: lastSummary.cellCount, energyWh: lastSummary.energyWh, usage,
+    }, 20),
+    robustness: (() => {
+      if (!lastFillResults || lastFillResults.length < 2) return null;
+      const [w, r] = lastFillResults;
+      if (w.cell.id !== c.id) return null; // report is not about the fill winner
+      const basis = w.costBasisUsed === 'tco' && w.tco?.tcoUSD != null ? 'tco' : 'upfront';
+      const fl = priceFlipThreshold(w, r, basis);
+      return fl ? { ...fl, runnerUp: r.cell.name } : null;
+    })(),
+    patents: matchPatents({ cell: c, cellCount: lastSummary.cellCount, selection: selComponents() }),
+    patentsDisclaimer: PATENTS_DISCLAIMER,
     disclaimer: `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`,
   };
 }
@@ -1133,6 +1150,7 @@ function runMaxFill() {
     box.innerHTML = '<div class="empty">No cell in the library fits that envelope with the current walls, spacing and cooling reservation.</div>';
     return;
   }
+  lastFillResults = results;
   const w = results[0]?.weightsUsed;
   const bayLabel = shaped
     ? `${bay.kind} bay`
