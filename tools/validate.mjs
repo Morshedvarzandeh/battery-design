@@ -39,7 +39,23 @@ console.log(`cells.js — ${CELLS.length} cells`);
     for (const k of ['tempDischargeC', 'tempChargeC']) {
       if (!Array.isArray(c[k]) || c[k].length !== 2 || c[k][0] >= c[k][1]) w(`${k} must be [min,max]`);
     }
-    if (!['datasheet', 'estimate'].includes(c.dataQuality)) w('dataQuality must be datasheet|estimate');
+    const BASES = ['contrib', 'external_datasheet', 'teardown', 'trade_press',
+                   'composite', 'recalled'];
+    if (!BASES.includes(c.basis)) w(`basis must be one of ${BASES.join('|')}`);
+    // basis 'contrib' asserts a document in the battery-data repo backs this
+    // record. Unchecked it is decoration, so at minimum the two fields have to
+    // agree and the uid has to look like a product uid over there.
+    if ((c.basis === 'contrib') !== !!c.contribUid) {
+      w("basis 'contrib' and contribUid must agree — one names the other");
+    }
+    if (c.contribUid && !/^[a-z_]+\/[a-z0-9-]+\/[a-z0-9._-]+$/.test(c.contribUid)) {
+      w(`contribUid ${c.contribUid} is not a battery-data product uid`);
+    }
+    if (!Array.isArray(c.inferredFields)) {
+      w('inferredFields must be an array — [] if nothing was inferred, ["ALL"] if everything was');
+    } else if (c.basis === 'contrib' && c.inferredFields.includes('ALL')) {
+      w("basis 'contrib' with inferredFields ['ALL'] — if everything is inferred, the document is not the basis");
+    }
     if (!c.sourceNote) w('sourceNote is required — say where the numbers came from');
     const whKg = (c.nominalV * c.capacityAh) / (c.massG / 1000);
     if (!(whKg > 25 && whKg < 400)) w(`implausible ${whKg.toFixed(0)} Wh/kg`);

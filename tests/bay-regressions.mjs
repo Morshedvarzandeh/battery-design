@@ -105,5 +105,22 @@ const o = { spacingMm: 1, layerGapMm: 2, wallMm: 2, headroomMm: 8, underMm: 0, r
   }
 }
 
+// A wall that passes between the sample points. rectFits used to probe four
+// corners and four edge midpoints; with a 40 mm cell those sit at x = -20, 0,
+// +20, so a 10 mm slot at x = 5..15 is invisible to every probe and the packer
+// placed cells the wall runs straight through. The test is exact now.
+{
+  const slotCell = { form: 'prismatic', dims: { w: 40, t: 40, h: 100 } };
+  const poly = [[-100,-100],[100,-100],[100,100],[15,100],[15,-25],[5,-25],[5,100],[-100,100]];
+  const r = packZone(slotCell, { poly, z: 200 },
+    { spacingMm: 0, wallMm: 0, headroomMm: 0, layerGapMm: 2,
+      orientation: 'upright', arrangement: 'grid' });
+  const straddling = (r.positions || []).filter(
+    (p) => p.x + 20 > 5 && p.x - 20 < 15 && p.y > -25);
+  ok(straddling.length === 0,
+     `no cell straddles the slot (found ${straddling.length})`);
+  ok((r.positions || []).length > 0, 'the clear side of the bay is still filled');
+}
+
 console.log(fails === 0 ? 'BAY REGRESSIONS PASSED' : `${fails} FAILURES`);
 process.exit(fails ? 1 : 0);
