@@ -3,6 +3,7 @@
 // standards.js; all the rendering in viewer3d.js.
 
 import { CELLS, CHEMISTRIES, cellById, provenance } from './cells.js';
+import { CellPicker } from './cell-picker.js';
 import { PRESETS } from './presets.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
 import { optimizeSpace, suggestDesigns, maxFill, costModel } from './optimizer.js';
@@ -201,6 +202,27 @@ function bindControls() {
   bindResults();
 
   $('selCell').onchange = () => { state.cellId = $('selCell').value; onCellChange(); recompute(); };
+
+  // The dropdown stays for anyone who knows the part they want. The picker is
+  // for everyone else: filter the field down, then compare the survivors as
+  // the pack actually being designed.
+  picker = new CellPicker(
+    () => ({ s: state.s, p: state.p, opts: layoutOpts(coolingSpace()) }),
+    (id) => {
+      state.cellId = id;
+      $('selCell').value = id;
+      onCellChange();
+      recompute();
+      picker.render(id);
+    },
+    () => myCells);
+  $('btnBrowse').onclick = () => {
+    const panel = $('cellPicker');
+    panel.hidden = !panel.hidden;
+    $('btnBrowse').textContent = panel.hidden
+      ? 'Browse and compare cells' : 'Hide the cell list';
+    if (!panel.hidden) picker.render(state.cellId);
+  };
   $('inS').onchange = $('inP').onchange = () => { readNumbers(); recompute(); };
   document.querySelectorAll('[data-step]').forEach((b) => b.onclick = () => {
     const [k, d] = b.dataset.step.split(':');
@@ -276,6 +298,19 @@ function readNumbers() {
 const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
 // Customer-private cells (this device only) sit in front of the public
 // library everywhere cells are searched or listed.
+// One place that turns the current UI state into engine options, so the
+// design tab and the cell comparison cannot drift apart.
+function layoutOpts(cool) {
+  return {
+    arrangement: state.arrangement, orientation: state.orientation,
+    spacingMm: state.spacingMm, wallMm: state.wallMm,
+    headroomMm: state.headroomMm, layerGapMm: state.layerGapMm,
+    underMm: cool.bottom, rowExtraMm: cool.rowGap,
+    nx: state.nx, nz: state.nz,
+  };
+}
+
+let picker = null;
 let myCells = loadMyCells();
 const allCells = () => [...myCells, ...CELLS];
 const cellFind = (id) => myCells.find((c) => c.id === id) || cellById(id) || null;
@@ -783,13 +818,7 @@ function recompute() {
   }
   $('btnExport').disabled = false;
   const cool = coolingSpace();
-  const opts = {
-    arrangement: state.arrangement, orientation: state.orientation,
-    spacingMm: state.spacingMm, wallMm: state.wallMm,
-    headroomMm: state.headroomMm, layerGapMm: state.layerGapMm,
-    underMm: cool.bottom, rowExtraMm: cool.rowGap,
-    nx: state.nx, nz: state.nz,
-  };
+  const opts = layoutOpts(cool);
   let layout = null;
   let bayNote = '';
   if (state.appliedBay) {
