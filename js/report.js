@@ -166,9 +166,19 @@ export function buildReportHTML(R) {
     row('Control', R.thermal.control
       ? `${esc(R.thermal.control.name)} — drives ${esc(R.thermal.control.drives.join(', '))}. <span style="font-weight:normal">${esc(R.thermal.control.note)}</span>`
       : 'none — passive system'),
-    ...(R.thermal.loop.components.length ? [row('Loop components', `<span style="font-weight:normal">${R.thermal.loop.components.map(esc).join('<br>')}</span>`)] : []),
+    ...(R.thermal.coolantSide?.length ? [row('Coolant loop', `<span style="font-weight:normal">${R.thermal.coolantSide.map(esc).join('<br>')}</span>`)] : []),
+    ...(R.thermal.refrigerantSide?.length ? [row('Refrigerant side (higher system)', `<span style="font-weight:normal">${R.thermal.refrigerantSide.map(esc).join('<br>')}</span>`)] : []),
+    ...(R.thermal.airSide?.length ? [row('Air side', `<span style="font-weight:normal">${R.thermal.airSide.map(esc).join('<br>')}</span>`)] : []),
   ])}
   <div style="font-size:11px;color:#666;margin-top:4px">${R.thermal.notes.map(esc).join(' ')}</div>` : ''}
+
+  ${R.sensors?.groups?.length ? `
+  <h2 style="${h2}">Sensor plan — by level</h2>
+  ${R.sensors.groups.map((gr) => `
+    <div style="font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#666;margin:10px 0 2px">${esc(gr.level)}</div>
+    ${table(gr.sensors.map((sn) => row(`${sn.count != null ? `${sn.count}× ` : ''}${sn.name}`,
+      `<span style="font-weight:normal">${esc(sn.note)}</span>`)))}`).join('')}
+  <div style="font-size:11px;color:#666;margin-top:4px">${R.sensors.notes.map(esc).join(' ')}</div>` : ''}
 
   ${R.loadProfile ? `
   <h2 style="${h2}">Load profile — ${esc(R.loadProfile.name)}</h2>

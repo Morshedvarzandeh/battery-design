@@ -79,6 +79,39 @@ const cell = cellById('samsung-inr21700-50e'); // charge floor 0 °C
   ok(/EMS/.test(supervisorForApp('solar-ess').name), 'the supervisor above the BTMS is real');
 }
 
+// --- suggested parts per side, named from the customer's own selection ------
+{
+  const bottomPlate = { name: 'Aluminium bottom cold plate (brazed channels)', needsPump: true, kind: 'cold-plate', viz: 'bottom', htcWm2K: [400, 1200] };
+  const T = buildThermalSystem({ heatContW: 1500, ambientC: [0, 25], cooling: bottomPlate, cell });
+  ok(T.coolantSide[0].includes('Bottom cold plate') && T.coolantSide[0].includes(bottomPlate.name),
+    'coolant side leads with the customer\'s own plate, named verbatim');
+  ok(T.coolantSide.some((x) => /pump/i.test(x)) && T.coolantSide.some((x) => /control valve/i.test(x)),
+    'pump and control valve suggested');
+  ok(T.refrigerantSide === null && T.airSide === null, 'radiator loop: no refrigerant/air side listed');
+  ok(T.plateShort === 'bottom cold plate', 'diagram label matches the placement');
+  const sidePlate = { ...bottomPlate, name: 'Side cold plates', viz: 'side' };
+  ok(buildThermalSystem({ heatContW: 1500, ambientC: [0, 25], cooling: sidePlate, cell }).plateShort === 'side cold plates',
+    'side plates named as side plates');
+  const chill = buildThermalSystem({ heatContW: 5000, ambientC: [10, 40], cooling: bottomPlate, cell });
+  ok(chill.refrigerantSide.some((x) => /expansion valve/i.test(x)) &&
+     chill.refrigerantSide.some((x) => /HIGHER SYSTEM/.test(x)),
+    'refrigerant side: EXV + higher-system compressor');
+  const air = buildThermalSystem({ heatContW: 200, ambientC: [10, 30], cell });
+  ok(air.airSide?.length > 0 && air.coolantSide === null, 'forced air: air side only');
+}
+
+// --- ram-air applications: real heat, free airflow, nothing to buy ----------
+{
+  const T = buildThermalSystem({ heatContW: 150, ambientC: [-10, 40], cell, appId: 'drone' });
+  ok(T.loopId === 'forced-air' && T.ramAir === true, 'drone at 150 W: air-cooled by prop wash');
+  ok(T.control === null, 'ram air: no BTMS ECU');
+  ok(T.airSide.some((x) => /prop wash/.test(x)), 'ram-air hardware honesty (nothing to buy)');
+  ok(buildThermalSystem({ heatContW: 150, ambientC: [-10, 40], cell, appId: 'ups' }).ramAir === false,
+    'stationary systems never get the ram-air shortcut');
+  ok(buildThermalSystem({ heatContW: 5000, ambientC: [10, 40], cell, appId: 'drone' }).ramAir === false,
+    'kW-class heat escalates past ram air even for a drone');
+}
+
 // --- data sanity ------------------------------------------------------------
 ok(LOOP_TYPES.length === 4 && LOOP_TYPES.every((l) => l.id && l.name && l.when), 'loop table complete');
 ok(loopById('liquid') && loopById('nope') === null, 'loop lookup');

@@ -78,7 +78,12 @@ export const CHILLER_COP = 2.5; // battery-chiller class estimate — stated, no
 // cell: for the charge-temperature floor (heater decision).
 // override: 'auto' | loop id — like BMS topology, the choice is an input.
 // ---------------------------------------------------------------------------
-export function buildThermalSystem({ heatContW, ambientC, cooling, cell, override }) {
+// Applications cooled by their own motion: the airflow is free (prop wash,
+// riding wind) — there are no fans, no ducting hardware and no BTMS ECU,
+// even though the heat is genuinely carried away by air.
+const RAM_AIR_APPS = new Set(['drone', 'ebike', 'escooter']);
+
+export function buildThermalSystem({ heatContW, ambientC, cooling, cell, override, appId }) {
   const heat = Math.max(0, heatContW ?? 0);
   const [lo, hi] = ambientC || [0, 40];
   const notes = [];
@@ -104,6 +109,10 @@ export function buildThermalSystem({ heatContW, ambientC, cooling, cell, overrid
     notes.push(`The selected cooling hardware (${cooling?.name}) implies at least a ${hwFloor} system — the override is shown, but the hardware disagrees.`);
   }
   const loop = loopById(loopId) || LOOP_TYPES[0];
+  const ramAir = loopId === 'forced-air' && RAM_AIR_APPS.has(appId);
+  if (ramAir) {
+    notes.push('This application is cooled by its own motion (ram air / prop wash) — the heat is real and air carries it, but there are no fans, no ducting and no thermal control unit to buy.');
+  }
 
   // First-order coolant flow (brief §6.3): ṁ = Q/(c_p·ΔT), shown only for
   // liquid loops. L/min = kW / (cp · ρ · ΔT) · 60.
@@ -122,8 +131,9 @@ export function buildThermalSystem({ heatContW, ambientC, cooling, cell, overrid
     notes.push(`Design ambient reaches ${lo} °C but charging is rated from ${chargeFloorC} °C — the loop needs a heater branch (PTC/film) or a charge inhibit with preconditioning time.`);
   }
 
-  // The BTMS control unit exists only for ACTIVE systems.
-  const control = loop.activeControl ? {
+  // The BTMS control unit exists only for ACTIVE systems — ram-air
+  // applications have nothing to control.
+  const control = loop.activeControl && !ramAir ? {
     name: 'BTMS ECU (thermal control unit)',
     drives: loopId === 'forced-air'
       ? ['fan speed (PWM)']
@@ -141,12 +151,42 @@ export function buildThermalSystem({ heatContW, ambientC, cooling, cell, overrid
   if (loopId === 'liquid-chiller') {
     notes.push('The compressor and condenser belong to the HIGHER system (vehicle AC loop / plant HVAC) — the battery couples into it at the chiller plate, and the compressor power is a load on that system\'s budget.');
   }
+
+  // The suggested parts, per SIDE, using the customer's OWN cold-plate
+  // selection (bottom vs side vs between-row) so the naming never drifts
+  // between the Components tab and the loop — same words, same part.
+  const PLACEMENT = { bottom: 'bottom cold plate', side: 'side cold plates', between: 'between-row cooling ribbon' };
+  const plateShort = cooling?.viz && PLACEMENT[cooling.viz] ? PLACEMENT[cooling.viz] : 'cold plate / ribbon';
+  const isLiquid = loopId === 'liquid' || loopId === 'liquid-chiller';
+  const coolantSide = isLiquid ? [
+    cooling?.viz && PLACEMENT[cooling.viz]
+      ? `${PLACEMENT[cooling.viz].charAt(0).toUpperCase() + PLACEMENT[cooling.viz].slice(1)} — your selection: ${cooling.name}`
+      : 'Cold plate — pick bottom / side / between-row on the Components tab',
+    'Electric coolant pump (PWM/LIN controlled)',
+    '3-way control valve (radiator / bypass / heater routing)',
+    'Radiator + fan (rejects to ambient)',
+    'Expansion tank + level sensor',
+    ...(heaterNeeded ? ['PTC/film heater branch (cold-weather charging)'] : []),
+  ] : null;
+  const refrigerantSide = loopId === 'liquid-chiller' ? [
+    'Chiller plate heat exchanger (coolant ↔ refrigerant interface)',
+    'Electronic expansion valve (EXV) on the refrigerant side',
+    'Compressor + condenser — OWNED BY THE HIGHER SYSTEM (vehicle AC / plant HVAC)',
+  ] : null;
+  const airSide = loopId === 'forced-air' ? (ramAir ? [
+    'No loop hardware — ram air / prop wash provides the airflow; thermal mass rides through hover and stops',
+  ] : [
+    'Fan(s) with PWM control and tach feedback',
+    'Inlet filter + ducting through the pack',
+  ]) : null;
+
   return {
-    loopId, loop, auto, overridden: !!(override && override !== 'auto'),
+    loopId, loop, auto, ramAir, overridden: !!(override && override !== 'auto'),
     heatContW: heat, ambientC: [lo, hi],
     flowLpm, chillerKW, compressorKW,
     coolant: COOLANT, chillerCOP: CHILLER_COP,
     heaterNeeded, chargeFloorC,
+    plateShort, coolantSide, refrigerantSide, airSide,
     control, notes,
   };
 }

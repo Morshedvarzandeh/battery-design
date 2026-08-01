@@ -114,6 +114,18 @@ project's provenance-first datasheet pipeline.
   cost charged honestly to the HIGHER system (vehicle AC / plant HVAC that
   owns the refrigerant side); and the **BTMS ECU** as the third control
   unit — the BMS protects, the BTMS moves heat, the supervisor decides.
+- **Sensors tab** — the sensor plan by level: cell (voltage sense taps —
+  carried by the CCS foil when a cell contact system is selected, discrete
+  harness otherwise; NTC budget with the 1:3 observability bound), module
+  (slave AFEs, per-module minimum), system (pack current, pack voltage on
+  BOTH sides of the contactors for weld detection, isolation monitor and
+  HVIL above 60 V, thermal-runaway/vent-gas detection where scale and
+  chemistry warrant it), and the cooling loop (coolant in/out, flow, level,
+  refrigerant P/T at the chiller, heater guard) read by the BTMS. Omission
+  is the feature: a wearable lists no coolant sensors, a drone no runaway
+  detector — absent groups are genuinely absent. Ram-air applications
+  (drones, e-bikes) are recognized: real heat, free airflow, no fans, no
+  BTMS, nothing to instrument.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,
@@ -233,6 +245,7 @@ is copied into the repository.
 | `js/eurules.js` | EU Battery Regulation 2023/1542 timeline + applicability checks |
 | `js/markets.js` | Release checklist per application class × market + chemistry-market gates |
 | `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
+| `js/sensors.js` | Sensor plan by level (cell/module/system/cooling), omission-first |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |

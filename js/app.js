@@ -22,6 +22,7 @@ import {
 import { climateById, climateSpan, seasonalOutlook, INDOOR_APPS } from './seasons.js';
 import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
 import { buildThermalSystem } from './btms.js';
+import { buildSensorPlan } from './sensors.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
@@ -391,6 +392,14 @@ function applyPreset(pr) {
     state.wallMm = 1; state.headroomMm = 2; state.spacingMm = 0.5;
     syncInputs();
   }
+  // Integration: portable-class machines (wearables, drones, tools, robot
+  // vacuums, power boxes) are air-cooled by default — the cell form's
+  // default liquid plate would drag a phantom coolant loop into the
+  // Thermal and Sensors views. The customer can still pick any cooling.
+  if (appClassOf(pr.id) === 'portable') {
+    state.sel.cooling = 'passive-air';
+    initComponents();
+  }
   // Integration: an indoor machine never sees a Nordic winter — picking an
   // indoor application selects the conditioned climate; picking an outdoor
   // one leaves an explicitly-chosen outdoor climate alone.
@@ -584,6 +593,7 @@ function bindControls() {
     if (t.dataset.tab === 'results') renderResults();
     if (t.dataset.tab === 'eu') renderEu();
     if (t.dataset.tab === 'therm') renderThermal();
+    if (t.dataset.tab === 'sensors') renderSensors();
     updateFlowBar(t.dataset.tab);
   });
   buildFlowBar();
@@ -782,9 +792,12 @@ function onCellChange() {
   }
   const oris = ORIENTATIONS_BY_FORM[c.form].map(([k]) => k);
   if (!oris.includes(state.orientation)) state.orientation = 'upright';
-  // A new cell shape gets that shape's default component set.
+  // A new cell shape gets that shape's default component set — but the
+  // APPLICATION rule survives the swap: portable-class machines stay
+  // air-cooled regardless of which form's defaults just loaded.
   if (c.form !== lastForm) {
     state.sel = { ...DEFAULTS_BY_FORM[c.form] };
+    if (appClassOf(state.presetId) === 'portable') state.sel.cooling = 'passive-air';
     lastForm = c.form;
     initComponents();
   }
@@ -1097,6 +1110,7 @@ function currentReportData() {
       drawThermalLoop(off, lastTherm, true);
       return off.toDataURL('image/png');
     })(),
+    sensors: lastSensors,
     loadProfile: (() => {
       const prof = currentProfile();
       if (!prof || !state.profileScaleW) return null;
@@ -1442,8 +1456,31 @@ function recompute() {
   renderStats();
   renderCompLegend();
   renderThermal();
+  renderSensors();
   if (document.querySelector('#pane-eu.active')) renderEu();
   saveHash();
+}
+
+// ---------------------------------------------------------------------------
+// Sensors — the plan by level (cell / module / system / cooling loop).
+// Model in js/sensors.js; absent groups are genuinely absent.
+// ---------------------------------------------------------------------------
+let lastSensors = null;
+
+function renderSensors() {
+  const box = $('sensorBody');
+  if (!box) return;
+  if (!lastSummary || !lastArch) { box.innerHTML = '<div class="empty">—</div>'; lastSensors = null; return; }
+  lastSensors = buildSensorPlan({
+    cell: cell(), s: state.s, p: state.p, summary: lastSummary,
+    partition: lastArch.partition, bms: lastArch.bms,
+    therm: lastTherm, selection: selComponents(),
+  });
+  const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
+  box.innerHTML = lastSensors.groups.map((gr) => `
+    <h3 style="font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 0 4px">${esc(gr.level)}</h3>
+    ${gr.sensors.map((sn) => stat(`${sn.count != null ? `${sn.count}× ` : ''}${sn.name}`, `<span style="font-weight:normal">${esc(sn.note)}</span>`)).join('')}`).join('') +
+    lastSensors.notes.map((n) => `<div class="hint">${esc(n)}</div>`).join('');
 }
 
 // ---------------------------------------------------------------------------
@@ -1460,6 +1497,7 @@ function renderThermal() {
     cooling: selComponents().cooling,
     cell: cell(),
     override: state.loopOverride,
+    appId: state.presetId,
   });
   const T = lastTherm;
   const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
@@ -1477,10 +1515,16 @@ function renderThermal() {
     : 'not required in this climate window'));
   rows.push(stat('Control', T.control
     ? `${esc(T.control.name)} — drives ${esc(T.control.drives.join(', '))}`
-    : 'none — passive system, no moving parts'));
-  const comps = T.loop.components.length
-    ? `<div class="hint" style="margin-top:6px"><b>Loop components:</b><br>${T.loop.components.map(esc).join('<br>')}</div>`
+    : T.ramAir ? 'none — ram air / prop wash does the work, nothing to control'
+      : 'none — passive system, no moving parts'));
+  // Suggested parts by SIDE, with the customer's own cold-plate selection
+  // named verbatim — never a generic word where a chosen part exists.
+  const side = (label, list) => list?.length
+    ? `<div class="hint" style="margin-top:6px"><b>${esc(label)}:</b><br>${list.map(esc).join('<br>')}</div>`
     : '';
+  const comps = side('Coolant loop', T.coolantSide)
+    + side('Refrigerant side — higher system', T.refrigerantSide)
+    + side('Air side', T.airSide);
   const control = T.control
     ? `<div class="hint">${esc(T.control.inputs)}. ${esc(T.control.note)}</div>` : '';
   box.innerHTML = rows.join('') + comps + control +
@@ -1520,7 +1564,7 @@ function drawThermalLoop(canvas, T, forExport = false) {
     g.setLineDash([]);
   };
   boxAt(10, 80, 120, 80, 'Pack', T.loopId === 'passive-air' ? 'natural convection'
-    : T.loopId === 'forced-air' ? 'air ducts' : 'cold plate / ribbon');
+    : T.loopId === 'forced-air' ? 'air ducts' : T.plateShort);
   if (T.loopId === 'passive-air') {
     g.fillStyle = mut;
     g.fillText('≈ ≈ ≈  no moving parts, no control unit', 150, 125);
@@ -1528,6 +1572,11 @@ function drawThermalLoop(canvas, T, forExport = false) {
   }
   if (T.loopId === 'forced-air') {
     line(130, 120, 180, 120);
+    if (T.ramAir) {
+      g.fillStyle = mut;
+      g.fillText('≋ ram air / prop wash — no fans, no ducting, no BTMS', 185, 124);
+      return;
+    }
     boxAt(180, 95, 90, 50, 'Fan(s)', 'PWM');
     line(270, 120, 330, 120);
     g.fillStyle = mut; g.fillText('→ ambient exhaust', 335, 124);
