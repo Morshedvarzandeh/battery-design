@@ -19,13 +19,13 @@ import {
   LOAD_PROFILES, profileForApp, profilesForApp, profileById, profileStats, profileChecks,
   parseProfileCSV,
 } from './loadprofiles.js';
-import { climateById, climateSpan, seasonalOutlook } from './seasons.js';
+import { climateById, climateSpan, seasonalOutlook, INDOOR_APPS } from './seasons.js';
 import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
-import { releaseChecklist } from './markets.js';
+import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
-import { buildArchitecture, modulePartition, systemPlan } from './architecture.js';
-import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
+import { buildArchitecture, modulePartition, systemPlan, divisors } from './architecture.js';
+import { DISCLAIMER, STANDARDS_INFO, standardsForClass, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
 import { ANALYSIS_DISCLAIMER, analyze } from './engineering.js';
 import { PackViewer } from './viewer3d.js';
@@ -354,6 +354,15 @@ function applyPreset(pr) {
     $('fitY').value = pr.maxDimsMm.y;
     $('fitZ').value = pr.maxDimsMm.z;
   }
+  // Integration: an indoor machine never sees a Nordic winter — picking an
+  // indoor application selects the conditioned climate; picking an outdoor
+  // one leaves an explicitly-chosen outdoor climate alone.
+  if (INDOOR_APPS.has(pr.id)) {
+    state.climateId = 'indoor';
+  } else if (state.climateId === 'indoor') {
+    state.climateId = 'temperate';
+  }
+  $('selClimate').value = state.climateId;
   // Each application carries its OWN characteristic load shape (a truck-like
   // van is not a rooftop solar plant), plus a short list of alternates the
   // customer can switch between — the dropdown regroups per application.
@@ -656,7 +665,7 @@ function bindControls() {
   });
   // Architecture assumptions and the advanced duty inputs feed the
   // Electrical pane and the cost model, so a change re-runs the full audit.
-  for (const id of ['archCh', 'archCap', 'archTpre', 'archRep', 'archTs', 'rqRacks', 'rqDod']) {
+  for (const id of ['archCh', 'archCap', 'archTpre', 'archRep', 'archTs', 'archSmod', 'rqRacks', 'rqDod']) {
     $(id).onchange = recompute;
   }
   // Climate & season: the picker fills the env-temp window; the design case
@@ -1035,6 +1044,12 @@ function currentReportData() {
       if (!lastArch) return null;
       const off = document.createElement('canvas');
       drawArchDiagram(off, lastArch, lastSummary, true);
+      return off.toDataURL('image/png');
+    })(),
+    bmsPng: (() => {
+      if (!lastArch) return null;
+      const off = document.createElement('canvas');
+      drawBmsInternals(off, lastArch, true);
       return off.toDataURL('image/png');
     })(),
     loadProfile: (() => {
@@ -1528,8 +1543,16 @@ function runAnalysis() {
   renderPane('anElec', [...(perspectives.electrical || []), ...lastArchFindings]);
   renderPane('anSafe', perspectives.safety);
   $('findings').innerHTML = lastFindings.map(findingHtml).join('');
-  $('stdList').innerHTML = STANDARDS_INFO.map((s) =>
-    `<div style="margin-bottom:4px"><b>${esc(s.code)}</b> — ${esc(s.title)}</div>`).join('');
+  // Integration: the reference list follows the application — a vacuum
+  // robot never advertises ECE R100; transport/insulation basics always
+  // stay. No application picked yet -> full list with a nudge.
+  const appCls = appClassOf(state.presetId);
+  const stds = appCls ? standardsForClass(appCls) : STANDARDS_INFO;
+  $('stdList').innerHTML = (appCls
+    ? `<div class="hint" style="margin-bottom:6px">Filtered to your application class (${esc(appCls)}) — transport and insulation basics always apply.</div>`
+    : '<div class="hint" style="margin-bottom:6px">Pick an application on the Usage tab to narrow this list to what applies to you.</div>')
+    + stds.map((s) =>
+      `<div style="margin-bottom:4px"><b>${esc(s.code)}</b> — ${esc(s.title)}</div>`).join('');
   renderSeasonTable();
 }
 
@@ -1588,10 +1611,16 @@ function archElectricalFindings() {
 function archOptions() {
   const n = (id, dflt) => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : dflt; };
   const target = parseFloat($('rqWh').value);
+  // Clamp AFE channels to the real 14–25-class silicon range and REFLECT
+  // it back, so the field never displays a value the math silently ignored.
+  const ch = clamp(Math.round(n('archCh', 16)), 2, 25);
+  if ($('archCh').value !== String(ch)) $('archCh').value = ch;
+  const smodRaw = $('archSmod').value;
   return {
     topology: state.archTopology,
     isolationStandard: state.archIso,
-    channelsPerIc: clamp(Math.round(n('archCh', 16)), 2, 25),
+    sModOverride: smodRaw && smodRaw !== 'auto' ? parseInt(smodRaw, 10) : null,
+    channelsPerIc: ch,
     linkCapUF: n('archCap', 500),
     prechargeTimeS: n('archTpre', 0.5),
     prechargesPerHour: n('archRep', 4),
@@ -1644,6 +1673,8 @@ function renderArchitecture() {
   if (PR) {
     rows.push(stat('Precharge', `${f1(PR.rOhm)} Ω · within ${PR.closeGapV} V in ${PR.timeToCloseS} s · ${f0(PR.energyPerEventJ)} J/event · avg ${f1(PR.avgPowerDuringEventW)} W during event`));
     rows.push(stat('Sequence', PR.sequence.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')));
+  } else {
+    rows.push(stat('Disconnect', 'solid-state (MOSFET) disconnect typical at ≤60 V DC — the HV precharge chain is omitted for this pack'));
   }
   rows.push(stat('Contactors', `2 mains + 1 precharge · rated ≥${f0(K.ratingA)} A cont. · ~${f0(K.massEachG)} g each (weak fit — budgeting only)`));
   rows.push(stat('Fuse', `≈${f0(K.fuse.ratingA)} A (2× continuous) · operate ≤50% of melting curve · break ≥1.15× worst short`));
@@ -1664,8 +1695,99 @@ function renderArchitecture() {
     ...(A.welding ? [...A.welding.cautions,
       'Joining guidance per Lee, Kim, Hu, Cai & Abell — Joining Technologies for Automotive Li-Ion Battery Manufacturing (ASME MSEC2010-34168).'] : []),
   ].filter(Boolean);
+  // Module-size selector tracks the current S: 'auto' plus every divisor,
+  // keeping the user's pick when it still divides.
+  const smodSel = $('archSmod');
+  if (smodSel.dataset.s !== String(state.s)) {
+    const cur = smodSel.value || 'auto';
+    smodSel.innerHTML = '';
+    const optEl = (v, label) => {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = label;
+      smodSel.appendChild(o);
+    };
+    optEl('auto', 'auto — one AFE per module');
+    for (const d of divisors(state.s).filter((x) => x >= 2)) optEl(String(d), `${d}S per module`);
+    smodSel.dataset.s = String(state.s);
+    smodSel.value = [...smodSel.options].some((o) => o.value === cur) ? cur : 'auto';
+  }
   box.innerHTML = rows.join('') + notes.map(note).join('');
   drawArchDiagram($('archCanvas'), A, lastSummary);
+  drawBmsInternals($('archBmsCanvas'), A);
+}
+
+// Layer 2 — inside the BMS: the master's real contents and every slave
+// AFE IC (a 30S module at 16-channel AFEs correctly shows TWO slave ICs),
+// linked per the chosen topology. Same forExport PNG path as the other
+// figures, so the report carries it too.
+function drawBmsInternals(canvas, A, forExport = false) {
+  const dpr = forExport ? 2 : Math.min(window.devicePixelRatio || 1, 2);
+  const W = 640, H = 250;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = (n, fb) => forExport ? fb :
+    (getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fb);
+  const ink = css('--ink', '#1a1a1a'), mut = css('--muted', '#666'), acc = css('--accent', '#0b6e5f');
+  g.fillStyle = forExport ? '#ffffff' : css('--ground', '#f4f6f5');
+  g.fillRect(0, 0, W, H);
+  g.font = '10px ui-monospace, monospace';
+  g.lineWidth = 1.2;
+  const B = A.bms, P = A.partition;
+  // Master block with its real internals.
+  g.strokeStyle = acc; g.strokeRect(10, 14, 220, 210);
+  g.fillStyle = ink; g.fillText('BMS MASTER', 18, 28);
+  const sub = (y, label) => {
+    g.strokeStyle = mut; g.strokeRect(18, y, 204, 26);
+    g.fillStyle = ink; g.fillText(label, 24, y + 16);
+  };
+  const commShort = (A.comms?.primary || 'CAN').split('(')[0].trim().slice(0, 26);
+  sub(36, 'MCU — SoC/SoH estimation, limits');
+  sub(66, `${commShort} interface`);
+  sub(96, 'Isolated supply + isoSPI/comm isolation');
+  sub(126, A.precharge ? 'Contactor + precharge drivers' : 'Solid-state disconnect driver');
+  sub(156, 'Pack current sense (shunt / Hall)');
+  sub(186, `Isolation monitor${A.isolation ? '' : ' (not required ≤60 V)'}`);
+  // Slave/AFE field: one box per IC, grouped by module.
+  const total = B.afeTotal;
+  const shown = Math.min(total, 12);
+  const cols = Math.min(4, Math.max(1, Math.ceil(shown / 3)));
+  const rowsN = Math.ceil(shown / cols);
+  const bw = Math.min(90, (380 - 10 * cols) / cols);
+  const bh = Math.min(52, (190 - 8 * rowsN) / rowsN);
+  const boxXY = (i) => [250 + (i % cols) * (bw + 10), 30 + Math.floor(i / cols) * (bh + 8)];
+  for (let i = 0; i < shown; i++) {
+    const [x, y] = boxXY(i);
+    g.strokeStyle = acc; g.strokeRect(x, y, bw, bh);
+    g.fillStyle = ink; g.fillText(`AFE ${i + 1} · ${B.channelsPerIc}ch`, x + 4, y + 13);
+    g.fillStyle = mut;
+    if (bh >= 34) g.fillText('sense+balance', x + 4, y + 26);
+    if (bh >= 48) g.fillText(`module ${Math.floor(i / Math.max(1, B.afePerModule)) + 1}`, x + 4, y + 39);
+  }
+  // Links per topology.
+  g.strokeStyle = mut;
+  if (B.topology === 'wireless') {
+    g.fillStyle = mut;
+    for (let i = 0; i < shown; i++) { const [x, y] = boxXY(i); g.fillText(')))', x + bw - 20, y + 13); }
+    g.fillText('))) RF link — no harness', 250, 240);
+  } else if (B.topology === 'centralized') {
+    for (let i = 0; i < shown; i++) {
+      const [x, y] = boxXY(i);
+      g.beginPath(); g.moveTo(230, 110); g.lineTo(x, y + bh / 2); g.stroke();
+    }
+    g.fillStyle = mut; g.fillText('parallel sense harness to one controller', 250, 240);
+  } else {
+    let px = 230, py = 110;
+    for (let i = 0; i < shown; i++) {
+      const [x, y] = boxXY(i);
+      g.beginPath(); g.moveTo(px, py); g.lineTo(x, y + bh / 2); g.stroke();
+      px = x + bw; py = y + bh / 2;
+    }
+    g.fillStyle = mut; g.fillText(`isoSPI daisy chain — ${total} node${total > 1 ? 's' : ''} (≤62)`, 250, 240);
+  }
+  g.fillStyle = mut;
+  if (total > shown) g.fillText(`${shown} of ${total} AFE ICs shown`, 480, 24);
+  g.fillText(`${B.senseWiresTotal} sense wires · ${B.tempSensors} temp sensors (1:${B.cellsPerTempSensor})`, 10, 240);
 }
 
 // One-line diagram of the HV chain: pack (with its modules) → fuse → main
@@ -1709,26 +1831,29 @@ function drawArchDiagram(canvas, A, S, forExport = false) {
   }
   g.fillStyle = mut;
   g.fillText(P.virtual ? 'cell-to-pack (virtual)' : `${P.nModules}× ${P.sMod}S${P.pMod}P${P.nModules > slots ? ` (${slots} shown)` : ''}`, 20, 66);
-  // Positive bus: pack → fuse → K+ (with precharge branch) → link → load.
+  // Positive bus: pack → fuse → K+ (precharge branch only where one
+  // exists — LV packs correctly show the plain solid-state path).
   line(150, 70, 180, 70);
   boxAt(180, 55, 70, 30, 'Fuse', `${Math.round(A.contactors.fuse.ratingA ?? 0)} A`);
   line(250, 70, 285, 70);
-  boxAt(285, 55, 75, 30, 'K+ main', null);
-  // Precharge branch over K+.
-  line(267, 70, 267, 25); line(267, 25, 285, 25);
-  boxAt(285, 12, 55, 26, 'K pre', null);
-  line(340, 25, 352, 25);
-  // Resistor zigzag.
-  g.strokeStyle = mut; g.beginPath(); g.moveTo(352, 25);
-  for (let i = 0; i < 6; i++) g.lineTo(356 + i * 7, 25 + (i % 2 ? 7 : -7));
-  g.lineTo(400, 25); g.stroke();
-  g.fillStyle = mut;
-  if (A.precharge) g.fillText(`${(Math.round(A.precharge.rOhm * 10) / 10)} Ω`, 350, 48);
-  line(400, 25, 412, 25); line(412, 25, 412, 70);
+  boxAt(285, 55, 75, 30, A.precharge ? 'K+ main' : 'Disconnect', A.precharge ? null : 'solid-state');
+  if (A.precharge) {
+    // Precharge branch over K+.
+    line(267, 70, 267, 25); line(267, 25, 285, 25);
+    boxAt(285, 12, 55, 26, 'K pre', null);
+    line(340, 25, 352, 25);
+    // Resistor zigzag.
+    g.strokeStyle = mut; g.beginPath(); g.moveTo(352, 25);
+    for (let i = 0; i < 6; i++) g.lineTo(356 + i * 7, 25 + (i % 2 ? 7 : -7));
+    g.lineTo(400, 25); g.stroke();
+    g.fillStyle = mut;
+    g.fillText(`${(Math.round(A.precharge.rOhm * 10) / 10)} Ω`, 350, 48);
+    line(400, 25, 412, 25); line(412, 25, 412, 70);
+  }
   line(360, 70, 470, 70);
   // DC link capacitor between the buses.
   line(440, 70, 440, 100); line(430, 100, 450, 100); line(430, 106, 450, 106); line(440, 106, 440, 190);
-  g.fillStyle = mut; g.fillText(`${Math.round(A.precharge?.linkCapUF ?? 0)} µF`, 452, 106);
+  if (A.precharge) { g.fillStyle = mut; g.fillText(`${Math.round(A.precharge.linkCapUF)} µF`, 452, 106); }
   // Load.
   boxAt(490, 55, 140, 150, 'Inverter / load', null);
   line(470, 70, 490, 70);
@@ -1768,9 +1893,11 @@ function drawArchDiagram(canvas, A, S, forExport = false) {
       g.fillStyle = mut; g.fillText(`daisy chain (${A.bms.daisyNodes} nodes)`, 112, 235);
     }
   }
-  // Closing order.
-  g.fillStyle = mut;
-  g.fillText('close: K− → K pre → K+ (link within ~10 V) → open K pre', 180, 245);
+  // Closing order (only meaningful where a precharge chain exists).
+  if (A.precharge) {
+    g.fillStyle = mut;
+    g.fillText('close: K− → K pre → K+ (link within ~10 V) → open K pre', 180, 245);
+  }
 }
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (ch) =>
@@ -1903,11 +2030,17 @@ function runMaxFill() {
     // up (more bays/racks), never a bare "impossible".
     const part = modulePartition(r.s, r.p, r.cell);
     const plan = r.targetEnergyWh && !r.meetsEnergy ? systemPlan(r.targetEnergyWh, r.energyWh) : null;
+    // Integration: when an application is active, chemistry outside its
+    // preferred set is visibly marked — still offered, never hidden.
+    const preset = PRESETS.find((x) => x.id === state.presetId);
+    const offPref = preset?.preferredChemistries?.length
+      && !preset.preferredChemistries.includes(r.cell.chemistry);
     card.innerHTML = `
       <h4>#${i + 1} ${esc(r.cell.name)}
         <span class="chip" style="color:${ch?.color};border-color:${ch?.color}">${r.cell.chemistry}</span>
         ${r.pareto ? '<span class="chip pass">Pareto-optimal</span>' : '<span class="chip info">dominated</span>'}
-        ${r.targetEnergyWh ? (r.meetsEnergy ? '<span class="chip pass">meets target</span>' : '<span class="chip warn">closest possible</span>') : ''}</h4>
+        ${r.targetEnergyWh ? (r.meetsEnergy ? '<span class="chip pass">meets target</span>' : '<span class="chip warn">closest possible</span>') : ''}
+        ${offPref ? `<span class="chip warn">off-preference for ${esc(preset.name)}</span>` : ''}</h4>
       <div class="m">${r.s}S${r.p}P · ${f1(r.nominalV)} V · ${r.n}/${r.nMax} cells (${f0(r.utilization * 100)}% of fit) ·
         ${fWh(r.energyWh)} · ${f1(r.massKg)} kg ·
         ${r.grid.nx != null ? `${r.grid.nx}×${r.grid.ny}${r.grid.nz > 1 ? `×${r.grid.nz}` : ''} ` : ''}${r.opts.arrangement}</div>

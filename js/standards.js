@@ -14,6 +14,42 @@ export const DISCLAIMER =
   'current edition of each standard and the cell manufacturer’s ' +
   'specification before building, charging or transporting a battery pack.';
 
+// Which application classes each reference belongs to (classes as defined
+// in markets.js: vehicle, lmt, stationary, marine, industrial, portable;
+// 'all' = transport/insulation/handling basics that apply everywhere).
+// The Analysis reference list FILTERS by the active application, so a
+// vacuum robot never advertises ECE R100 — integration, not decoration.
+// The integration test suite fails if a STANDARDS_INFO entry is added
+// without a classification here.
+export const STANDARD_CLASSES = {
+  un383: ['all'],
+  'iata-dgr': ['all'],
+  'adr-sp188': ['all'],
+  'ece-r100': ['vehicle'],
+  'iso6469-3': ['vehicle'],
+  iec62619: ['stationary', 'industrial', 'marine', 'auxiliary'],
+  'iec62133-2': ['portable', 'lmt'],
+  ul2580: ['vehicle', 'industrial'],
+  ul2271: ['lmt'],
+  ul2272: ['lmt'],
+  'en50604-1': ['lmt'],
+  en15194: ['lmt'],
+  ul1973: ['stationary', 'industrial', 'auxiliary'],
+  ul9540: ['stationary'],
+  ul9540a: ['stationary'],
+  ul2743: ['portable'],
+  'iec60664-1': ['all'],
+  'abyc-e13': ['marine'],
+  'niosh-lift': ['all'],
+};
+
+export function standardsForClass(cls) {
+  return STANDARDS_INFO.filter((s) => {
+    const c = STANDARD_CLASSES[s.id] || ['all'];
+    return c.includes('all') || (cls != null && c.includes(cls));
+  });
+}
+
 export const STANDARDS_INFO = [
   {
     id: 'un383',

@@ -11,6 +11,11 @@
 
 export const SEASONS = ['winter', 'spring', 'summer', 'autumn'];
 
+// Applications that live indoors: picking one selects the conditioned
+// climate automatically — a vacuum robot never sees a Nordic winter, and
+// showing it one would be exactly the incoherence this tool avoids.
+export const INDOOR_APPS = new Set(['robovac', 'robot', 'humanoid', 'ups', 'solar-ess']);
+
 export const CLIMATES = [
   {
     id: 'temperate', name: 'Temperate (central EU / US midlatitude)',
