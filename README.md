@@ -50,6 +50,20 @@ project's provenance-first datasheet pipeline.
   the full standards audit: UN 38.3 / IATA, ECE R100 / ISO 6469-3,
   IEC 62619 / 62133-2, UL family) perspectives, with the actual numbers in
   every finding.
+- **Architecture** — how the pack is built up and switched: the module
+  hierarchy (divisor enumeration of S, with cell-to-pack as a first-class
+  path and parallel racks for MWh-scale systems — the tool models one pack
+  and says how many you need), BMS topology (centralized / master-slave
+  daisy chain / wireless, AFE IC and sense-wire counts, temperature-sensor
+  ratio exposed), precharge sizing (τ = RC, ½CV², the main− → precharge →
+  main+ closing sequence), contactors and fuse rules of thumb, DC-DC
+  auxiliary supply, and the isolation floor with the governing standard as
+  an explicit choice (the sources conflict at 500 vs 100 Ω/V — never
+  averaged). Rendered as a one-line diagram that also embeds in the report.
+- **Closest-possible framing** — when a target is out of reach in the given
+  space, the tool never answers "infeasible": it presents the most possible
+  solution close to the need, states the shortfall, and says how many
+  bays/racks of the design would cover the target.
 
 ## The system workflow
 
@@ -153,6 +167,7 @@ is copied into the repository.
 | `js/engineering.js` | Four-perspective analysis (mech/thermal/elec/safety) |
 | `js/pack-engine.js` | Pure electrical + layout math (Z-up, mm) |
 | `js/optimizer.js` | Requirement search + space fitting |
+| `js/architecture.js` | Module partition, BMS topology, precharge/contactors/fuse/isolation |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |
 | `js/app.js` | UI state and wiring |
