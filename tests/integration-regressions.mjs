@@ -117,6 +117,34 @@ for (const pr of PRESETS) {
   ok(cbms.afeTotal === 2, `centralized 30S @16ch -> 2 AFEs (got ${cbms.afeTotal})`);
 }
 
+// --- wearable gadgets: 1S LiPo end-to-end -----------------------------------
+{
+  const lipo = cellById('lipo-602030-300mah');
+  ok(lipo && lipo.chemistry === 'LCO' && lipo.form === 'pouch', 'wearable LiPo cell exists (LCO pouch)');
+  ok(/lipo/i.test(lipo.formFactor), 'named as the market names it — LiPo');
+  // The watch bay with watch-scale reserves actually yields designs, the
+  // winners are 1S (single-cell systems), and LiPo cells surface.
+  const { maxFill } = await import('../js/optimizer.js');
+  const res = maxFill(CELLS, { x: 40, y: 35, z: 8 },
+    { vRange: [3.0, 4.4], weights: { energy: 5, cost: 3, mass: 2 } },
+    { spacingMm: 0.5, wallMm: 1, headroomMm: 2, layerGapMm: 1, coolingSpace: { bottom: 0, side: 0, rowGap: 0 } }, 8);
+  ok(res.length > 0, 'the watch bay yields designs');
+  ok(res.every((r) => r.s === 1), 'wearable window forces 1S — single-cell systems');
+  ok(res.some((r) => /^lipo-/.test(r.cell.id)), 'LiPo cells surface in the wearable bay');
+  // The 1S LiPo architecture is coherent: LV, no precharge, gauge comms.
+  const summary = {
+    cellCount: 1, nominalV: lipo.nominalV, vMax: lipo.vMax, vMin: lipo.vMin,
+    energyWh: lipo.nominalV * lipo.capacityAh, maxContCurrentA: lipo.maxContDischargeA,
+  };
+  const A = buildArchitecture({ cell: lipo, s: 1, p: 1, summary, options: { appId: 'wearable' } });
+  ok(A.precharge === null && A.isolation === null, '1S wearable: no HV chain');
+  ok(A.partition.virtual && A.partition.nModules === 1, '1S wearable: one virtual group');
+  ok(/fuel gauge/i.test(A.comms.primary), 'wearable comms: fuel gauge, not a vehicle bus');
+  // The day profile belongs to it and ends the day on the dock.
+  const prof = profileForApp('wearable');
+  ok(prof?.id === 'wearable-day' && prof.p.some((v) => v < 0), 'wearable day profile with dock charging');
+}
+
 // --- off-preference detection data is consistent ----------------------------
 {
   // Every cell chemistry that max-fill can surface exists in CHEMISTRIES, so

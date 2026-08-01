@@ -18,7 +18,8 @@ project's provenance-first datasheet pipeline.
 ## What it does
 
 - **Design** — pick a cell (cylindrical 18650/21700/26650/32700/4680,
-  prismatic LFP/LTO, NMC pouches, Na-ion), set series × parallel, choose grid
+  prismatic LFP/LTO, NMC pouches, wearable LiPo pouches 401020/602030/802540,
+  Na-ion), set series × parallel, choose grid
   or staggered-hex packing for cylinders and stacking for prismatic/pouch,
   and adjust cell spacers, wall thickness and busbar headroom. The 3D view
   colors cells by series group (following the actual serpentine welding

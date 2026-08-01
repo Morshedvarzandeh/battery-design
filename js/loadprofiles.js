@@ -183,6 +183,18 @@ export const LOAD_PROFILES = [
     ],
   },
   {
+    id: 'wearable-day',
+    name: 'Wearable gadget day (milliwatt base, burst peaks, dock charge)',
+    appIds: ['wearable'],
+    dtS: 3600,
+    note: '24 h at 1 h steps: milliwatt sensor/display base, a GPS workout hour and an evening burst hour at full radio+haptics power, overnight dock CHARGING (negative). One pass = one day on the wrist.',
+    p: [
+      -0.50, -0.50, 0.03, 0.03, 0.03, 0.03, 0.05, 0.70, 0.10, 0.05,
+      0.05, 0.08, 0.06, 0.05, 0.05, 0.06, 0.05, 0.08, 0.30, 1.00,
+      0.10, 0.05, 0.04, 0.03,
+    ],
+  },
+  {
     id: 'robovac-clean',
     name: 'Robot vacuum run (steady suction, dock recharge)',
     appIds: ['robovac'],

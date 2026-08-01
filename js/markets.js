@@ -26,6 +26,7 @@ export const CLASS_OF_APP = {
   marine: 'marine',
   robot: 'industrial', humanoid: 'industrial',
   drone: 'portable', powertool: 'portable', powerstation: 'portable', robovac: 'portable',
+  wearable: 'portable',
 };
 
 // The single source of "what kind of thing is this application" — every
