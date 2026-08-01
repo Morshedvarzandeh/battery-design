@@ -1,7 +1,8 @@
 // Regressions for the review findings.
 import { cellById } from '../js/cells.js';
 import { layoutPack, gridDims, summarize } from '../js/pack-engine.js';
-import { optimizeSpace } from '../js/optimizer.js';
+import { optimizeSpace, suggestDesigns } from '../js/optimizer.js';
+import { CELLS } from '../js/cells.js';
 import { runChecks } from '../js/standards.js';
 let fails = 0;
 const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
@@ -56,6 +57,28 @@ ctx.usage.envTempC = [5, 30];
 const texts = f2.map(f => f.detail + f.ref).join(' ');
 ok(/Section IB/.test(texts), 'PI 965 Section IB wording present');
 ok(!/simplified Section II \/ SP 188 route/.test(texts), 'old Section II cell wording gone');
+
+// Continuous power must be deliverable at the BOTTOM of the voltage window,
+// not just at nominal. Sizing at nominal under-sizes by vNom/vMin -- about
+// 1.44x on NMC -- and produced top-ranked designs that overload in the last
+// third of the discharge while reporting healthy headroom.
+{
+  const cases = [
+    { vRange: [44, 52], energyWh: 500,  contPowerW: 1500, peakPowerW: 3000,  preferredChemistries: [] },
+    { vRange: [22, 30], energyWh: 200,  contPowerW: 2000, peakPowerW: 4000,  preferredChemistries: [] },
+    { vRange: [70, 90], energyWh: 1000, contPowerW: 8000, peakPowerW: 16000, preferredChemistries: [] },
+    { vRange: [11, 14], energyWh: 150,  contPowerW: 1200, peakPowerW: 2400,  preferredChemistries: [] },
+  ];
+  for (const req of cases) {
+    for (const cand of suggestDesigns(req, CELLS, 4)) {
+      const S = cand.summary;
+      const needA = req.contPowerW / S.vMin;
+      ok(needA <= S.maxContCurrentA + 1e-9,
+         `${cand.cell.id} ${cand.s}S${cand.p}P holds ${req.contPowerW} W at vMin `
+         + `(needs ${needA.toFixed(0)} A, rated ${S.maxContCurrentA.toFixed(0)} A)`);
+    }
+  }
+}
 
 console.log(fails === 0 ? 'REVIEW-FIX REGRESSIONS PASSED' : `${fails} FAILURES`);
 process.exit(fails ? 1 : 0);

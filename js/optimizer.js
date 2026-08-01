@@ -172,15 +172,23 @@ function buildCandidate(cell, s, req) {
   }
 
   // Parallel count from the binding constraint.
+  //
+  // Power sizing uses the MINIMUM pack voltage, not the nominal. A load that
+  // wants constant watts draws its highest current at the bottom of the
+  // discharge, and that is exactly where a pack sized at nominal runs out:
+  // the ratio is vNom/vMin, about 1.44x for NMC and 1.28x for LFP. Sizing at
+  // nominal yields designs that meet their rating on paper and overload in
+  // the last third of every cycle.
   const cellWh = cellEnergyWh(cell);
+  const vWorst = s * cell.vMin;
   const pE = req.energyWh ? Math.ceil(req.energyWh / (s * cellWh)) : 1;
-  const pI = req.contPowerW ? Math.ceil(req.contPowerW / nominalV / cell.maxContDischargeA) : 1;
+  const pI = req.contPowerW ? Math.ceil(req.contPowerW / vWorst / cell.maxContDischargeA) : 1;
   const pulseA = cell.maxPulseDischargeA ?? cell.maxContDischargeA;
-  const pPk = req.peakPowerW ? Math.ceil(req.peakPowerW / nominalV / pulseA) : 1;
+  const pPk = req.peakPowerW ? Math.ceil(req.peakPowerW / vWorst / pulseA) : 1;
   const p = Math.max(1, pE, pI, pPk);
   if (p === pE && req.energyWh) reasons.push('Sized by energy requirement');
-  else if (p === pI && req.contPowerW && pI > pE) reasons.push('Sized by continuous power (energy alone would need fewer cells)');
-  else if (p === pPk && req.peakPowerW && pPk > Math.max(pE, pI)) reasons.push('Sized by peak power');
+  else if (p === pI && req.contPowerW && pI > pE) reasons.push('Sized by continuous power at minimum pack voltage');
+  else if (p === pPk && req.peakPowerW && pPk > Math.max(pE, pI)) reasons.push('Sized by peak power at minimum pack voltage');
 
   if (s * p > 5000) return null; // absurd designs out
 
@@ -223,12 +231,14 @@ function buildCandidate(cell, s, req) {
     penalty += 2;
   }
 
-  // Margin narration.
+  // Margin narration, quoted at the worst case rather than the flattering one.
   if (req.contPowerW) {
-    const util = req.contPowerW / summary.maxContPowerW;
-    if (util <= 0.7) reasons.push(`${Math.round((1 - util) * 100)}% continuous-current headroom`);
-    else if (util <= 1) warnings.push(`Only ${Math.round((1 - util) * 100)}% continuous-current headroom`);
-    else warnings.push('Continuous power exceeds pack rating');
+    const util = req.contPowerW / summary.maxContPowerAtVMinW;
+    const pct = Math.round((1 - util) * 100);
+    if (util <= 0.7) reasons.push(`${pct}% continuous-current headroom at minimum voltage`);
+    else if (util <= 1) warnings.push(`Only ${pct}% continuous-current headroom at minimum voltage`);
+    else warnings.push(`Continuous power exceeds the pack rating by `
+      + `${Math.round((util - 1) * 100)}% at minimum voltage (fine at nominal, not at low SOC)`);
   }
   if (req.energyWh && summary.energyWh > req.energyWh * 1.6 && p > 1) {
     reasons.push('Energy overshoot from power sizing — consider a higher-power cell');

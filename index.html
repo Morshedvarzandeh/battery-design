@@ -146,6 +146,24 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .empty{color:var(--muted);font-size:12.5px;padding:8px 0}
 footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:var(--muted);
   background:var(--surface)}
+.prov{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;
+  font-weight:600;letter-spacing:.02em;border:1px solid}
+.prov-good{color:#0b6e5f;border-color:#7fc9bc;background:#e6f4f1}
+.prov-warn{color:#8a5a00;border-color:#e0c169;background:#fdf4e0}
+.prov-estimate{color:#7a3b12;border-color:#e5b79c;background:#fbeee6}
+.provuid{font-family:ui-monospace,monospace;font-size:10px;opacity:.7}
+.provdetail{margin-top:4px;font-size:11px;line-height:1.45;opacity:.75}
+@media (prefers-color-scheme:dark){
+  .prov-good{color:#7fc9bc;border-color:#1e8f7c;background:#0c2b26}
+  .prov-warn{color:#e5c07b;border-color:#8a6d24;background:#2b2312}
+  .prov-estimate{color:#e0a883;border-color:#8a4f2c;background:#2b1a12}
+}
+:root[data-theme="dark"] .prov-good{color:#7fc9bc;border-color:#1e8f7c;background:#0c2b26}
+:root[data-theme="dark"] .prov-warn{color:#e5c07b;border-color:#8a6d24;background:#2b2312}
+:root[data-theme="dark"] .prov-estimate{color:#e0a883;border-color:#8a4f2c;background:#2b1a12}
+:root[data-theme="light"] .prov-good{color:#0b6e5f;border-color:#7fc9bc;background:#e6f4f1}
+:root[data-theme="light"] .prov-warn{color:#8a5a00;border-color:#e0c169;background:#fdf4e0}
+:root[data-theme="light"] .prov-estimate{color:#7a3b12;border-color:#e5b79c;background:#fbeee6}
 </style>
 </head>
 <body>

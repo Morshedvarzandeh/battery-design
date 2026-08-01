@@ -91,16 +91,41 @@ function circleFits(x, y, r, poly, margin) {
   return pointInPolygon(x, y, poly) && distToEdges(x, y, poly) >= r + margin;
 }
 
-// A rectangular footprint fits: corners and edge midpoints inside with wall
-// clearance (sufficient for the simple convex-ish bays this tool targets).
+// Do segments p1p2 and p3p4 properly cross? Used to catch a wall that passes
+// through a footprint without any sampled point landing outside it.
+function segmentsCross(p1, p2, p3, p4) {
+  const side = (a, b, c) => (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+  const d1 = side(p3, p4, p1), d2 = side(p3, p4, p2);
+  const d3 = side(p1, p2, p3), d4 = side(p1, p2, p4);
+  return ((d1 > 0) !== (d2 > 0)) && ((d3 > 0) !== (d4 > 0));
+}
+
+// A rectangular footprint fits at (x, y) with `margin` wall clearance.
+//
+// This used to sample the four corners and four edge midpoints. Sampling is
+// not enough, and the failure is not exotic: a slot narrower than the gap
+// between sample columns passes straight through the cell while every probe
+// still lands inside the bay. With a 40 mm cell the probes sit at x = -20, 0,
+// +20, so a 10 mm slot at x = 5..15 is invisible to all eight of them, and the
+// packer confidently places a cell the wall bisects.
+//
+// The exact test is containment of the corners PLUS no crossing between the
+// footprint's edges and the bay's. Clearance is then checked at the sample
+// points as before, which is sound because the margin is small relative to a
+// cell and the crossing test has already excluded the geometry that fooled it.
 function rectFits(x, y, fx, fy, poly, margin) {
-  const hx = fx / 2, hy = fy / 2;
-  const pts = [
+  const hx = fx / 2 + margin, hy = fy / 2 + margin;
+  const corners = [
     [x - hx, y - hy], [x + hx, y - hy], [x + hx, y + hy], [x - hx, y + hy],
-    [x, y - hy], [x, y + hy], [x - hx, y], [x + hx, y],
   ];
-  return pts.every(([qx, qy]) =>
-    pointInPolygon(qx, qy, poly) && distToEdges(qx, qy, poly) >= margin - 1e-9);
+  for (const [qx, qy] of corners) if (!pointInPolygon(qx, qy, poly)) return false;
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i], b = corners[(i + 1) % 4];
+    for (let j = 0; j < poly.length; j++) {
+      if (segmentsCross(a, b, poly[j], poly[(j + 1) % poly.length])) return false;
+    }
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------

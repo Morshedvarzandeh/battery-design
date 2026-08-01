@@ -29,6 +29,11 @@ export function electrical(cell, s, p) {
     maxContCurrentA,
     maxPulseCurrentA: cell.maxPulseDischargeA != null ? p * cell.maxPulseDischargeA : null,
     maxContPowerW: nominalV * maxContCurrentA,
+    // ...and the same at the bottom of the window, which is the figure a
+    // design has to survive: a constant-power load draws its highest current
+    // when the pack is nearly empty, and the load does not care that the
+    // nameplate was quoted at nominal.
+    maxContPowerAtVMinW: s * cell.vMin * maxContCurrentA,
     maxChargeCurrentA: p * cell.maxContChargeA,
     // Cells-only DCIR (series adds, parallel divides). Interconnects add more
     // in reality; the UI labels this as a cells-only lower bound.
