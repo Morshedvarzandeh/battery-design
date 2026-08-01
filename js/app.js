@@ -21,6 +21,7 @@ import {
 } from './loadprofiles.js';
 import { climateById, climateSpan, seasonalOutlook, INDOOR_APPS } from './seasons.js';
 import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
+import { buildThermalSystem } from './btms.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
@@ -59,6 +60,7 @@ const state = {
   climateId: 'temperate',  // seasonal ambient family for the environment helper
   seasonId: 'all',         // winter|spring|summer|autumn|all — design for ALL seasons
   marketId: 'eu',          // release-checklist target market
+  loopOverride: 'auto',    // thermal loop choice (like BMS topology: an input)
 };
 let customProfile = null;  // uploaded profile (session only)
 
@@ -75,6 +77,7 @@ let lastLayout = null;
 let lastAnalysis = null;
 let lastArch = null;      // architecture (modules, BMS, HV chain) of the pack
 let lastArchFindings = []; // architecture findings folded into the Electrical pane
+let lastTherm = null;     // thermal management system (loop, BTMS control, costs)
 let lastForm = 'cylindrical';
 let lastFillResults = null; // most recent max-fill ranking, for robustness
 
@@ -282,6 +285,32 @@ function bindTraining() {
     $('segMarket').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
     renderMarketChecklist();
   });
+  // Diagram lightbox: the side panel is narrow, so both architecture
+  // drawings open at reading size on a tap (rendered on the white report
+  // background at 2× resolution).
+  const zoomDiagram = (title, drawFn) => {
+    if (!lastArch) return;
+    $('diagTitle').textContent = title;
+    drawFn($('diagZoom'));
+    $('diagModal').style.display = 'flex';
+  };
+  $('archCanvas').onclick = () =>
+    zoomDiagram('System — pack, HV chain & supervisory layer', (c) => drawArchDiagram(c, lastArch, lastSummary, true));
+  $('archBmsCanvas').onclick = () =>
+    zoomDiagram('Inside the BMS — layer 2', (c) => drawBmsInternals(c, lastArch, true));
+  $('thermCanvas').onclick = () => {
+    if (!lastTherm) return;
+    $('diagTitle').textContent = 'Thermal management system — loop & control';
+    drawThermalLoop($('diagZoom'), lastTherm, true);
+    $('diagModal').style.display = 'flex';
+  };
+  $('segLoop').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    state.loopOverride = b.dataset.loop;
+    $('segLoop').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    renderThermal();
+  });
+  $('diagClose').onclick = () => { $('diagModal').style.display = 'none'; };
+  $('diagModal').onclick = (e) => { if (e.target === $('diagModal')) $('diagModal').style.display = 'none'; };
 }
 
 const findingHTML = (x) => `
@@ -554,6 +583,7 @@ function bindControls() {
       p.classList.toggle('active', p.id === `pane-${t.dataset.tab}`));
     if (t.dataset.tab === 'results') renderResults();
     if (t.dataset.tab === 'eu') renderEu();
+    if (t.dataset.tab === 'therm') renderThermal();
     updateFlowBar(t.dataset.tab);
   });
   buildFlowBar();
@@ -1060,6 +1090,13 @@ function currentReportData() {
       drawBmsInternals(off, lastArch, true);
       return off.toDataURL('image/png');
     })(),
+    thermal: lastTherm,
+    thermPng: (() => {
+      if (!lastTherm) return null;
+      const off = document.createElement('canvas');
+      drawThermalLoop(off, lastTherm, true);
+      return off.toDataURL('image/png');
+    })(),
     loadProfile: (() => {
       const prof = currentProfile();
       if (!prof || !state.profileScaleW) return null;
@@ -1404,8 +1441,126 @@ function recompute() {
   runAnalysis();
   renderStats();
   renderCompLegend();
+  renderThermal();
   if (document.querySelector('#pane-eu.active')) renderEu();
   saveHash();
+}
+
+// ---------------------------------------------------------------------------
+// Thermal management system — loop, BTMS control unit, higher-system cost.
+// Model in js/btms.js.
+// ---------------------------------------------------------------------------
+function renderThermal() {
+  const box = $('thermBody');
+  if (!lastSummary) { box.innerHTML = '<div class="empty">—</div>'; lastTherm = null; return; }
+  const nv = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
+  lastTherm = buildThermalSystem({
+    heatContW: lastAnalysis?.totals?.heatContW ?? null,
+    ambientC: [nv('rqTlo') ?? 0, nv('rqThi') ?? 40],
+    cooling: selComponents().cooling,
+    cell: cell(),
+    override: state.loopOverride,
+  });
+  const T = lastTherm;
+  const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
+  const rows = [];
+  rows.push(stat('Loop', `${esc(T.loop.name)}${T.overridden ? ` <span class="chip warn">override — auto picks ${esc(T.auto)}</span>` : ''}`));
+  rows.push(stat('Heat to move', `~${f1(T.heatContW)} W at continuous load · ambient ${T.ambientC[0]}…${T.ambientC[1]} °C`));
+  if (T.flowLpm != null) {
+    rows.push(stat('Coolant flow', `~${f1(T.flowLpm)} L/min (ΔT ${T.coolant.dTdesignK} K, 50/50 water-glycol — ṁ = Q/(c_p·ΔT))`));
+  }
+  if (T.chillerKW != null) {
+    rows.push(stat('Chiller duty', `~${f1(T.chillerKW)} kW battery side → ~${f1(T.compressorKW)} kW compressor load on the HIGHER system (COP ~${T.chillerCOP})`));
+  }
+  rows.push(stat('Heater', T.heaterNeeded
+    ? `required — ambient below the ${T.chargeFloorC} °C charge floor`
+    : 'not required in this climate window'));
+  rows.push(stat('Control', T.control
+    ? `${esc(T.control.name)} — drives ${esc(T.control.drives.join(', '))}`
+    : 'none — passive system, no moving parts'));
+  const comps = T.loop.components.length
+    ? `<div class="hint" style="margin-top:6px"><b>Loop components:</b><br>${T.loop.components.map(esc).join('<br>')}</div>`
+    : '';
+  const control = T.control
+    ? `<div class="hint">${esc(T.control.inputs)}. ${esc(T.control.note)}</div>` : '';
+  box.innerHTML = rows.join('') + comps + control +
+    T.notes.map((n) => `<div class="hint">${esc(n)}</div>`).join('');
+  drawThermalLoop($('thermCanvas'), T);
+}
+
+// One-line thermal loop: pack plate → pump → valve → radiator / chiller
+// (the chiller couples into the HIGHER system's refrigerant circuit),
+// heater branch, and the BTMS ECU driving it all. Same enlarge/report
+// pattern as the architecture figures.
+function drawThermalLoop(canvas, T, forExport = false) {
+  const dpr = forExport ? 2 : Math.min(window.devicePixelRatio || 1, 2);
+  const W = 640, H = 280;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = (n, fb) => forExport ? fb :
+    (getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fb);
+  const ink = css('--ink', '#1a1a1a'), mut = css('--muted', '#666'), acc = css('--accent', '#0b6e5f');
+  g.fillStyle = forExport ? '#ffffff' : css('--ground', '#f4f6f5');
+  g.fillRect(0, 0, W, H);
+  g.font = '11px ui-monospace, monospace';
+  g.lineWidth = 1.2;
+  const boxAt = (x, y, w, h, label, sub, dashed = false) => {
+    g.strokeStyle = dashed ? mut : acc;
+    if (dashed) g.setLineDash([5, 4]);
+    g.strokeRect(x, y, w, h);
+    g.setLineDash([]);
+    g.fillStyle = ink; g.fillText(label, x + 5, y + 15);
+    if (sub) { g.fillStyle = mut; g.fillText(sub, x + 5, y + 28); }
+  };
+  const line = (x1, y1, x2, y2, dashed = false) => {
+    g.strokeStyle = mut;
+    if (dashed) g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(x1, y1); g.lineTo(x2, y2); g.stroke();
+    g.setLineDash([]);
+  };
+  boxAt(10, 80, 120, 80, 'Pack', T.loopId === 'passive-air' ? 'natural convection'
+    : T.loopId === 'forced-air' ? 'air ducts' : 'cold plate / ribbon');
+  if (T.loopId === 'passive-air') {
+    g.fillStyle = mut;
+    g.fillText('≈ ≈ ≈  no moving parts, no control unit', 150, 125);
+    return;
+  }
+  if (T.loopId === 'forced-air') {
+    line(130, 120, 180, 120);
+    boxAt(180, 95, 90, 50, 'Fan(s)', 'PWM');
+    line(270, 120, 330, 120);
+    g.fillStyle = mut; g.fillText('→ ambient exhaust', 335, 124);
+  } else {
+    // Liquid loop: pack → pump → valve → radiator (top) / chiller (bottom).
+    line(130, 100, 170, 100);
+    boxAt(170, 82, 90, 36, 'Pump', T.flowLpm != null ? `${(Math.round(T.flowLpm * 10) / 10)} L/min` : null);
+    line(260, 100, 300, 100);
+    boxAt(300, 82, 70, 36, '3-way', 'valve');
+    line(370, 92, 410, 60);
+    boxAt(410, 40, 120, 40, 'Radiator + fan', '→ ambient');
+    if (T.loopId === 'liquid-chiller') {
+      line(370, 108, 410, 150);
+      boxAt(410, 140, 120, 40, 'Chiller HX', 'coolant ↔ refrig.');
+      boxAt(545, 128, 88, 64, 'Higher', 'system', true);
+      g.fillStyle = mut; g.fillText('AC/HVAC', 550, 182);
+      line(530, 160, 545, 160, true);
+      g.fillStyle = mut;
+      if (T.compressorKW != null) g.fillText(`~${(Math.round(T.compressorKW * 10) / 10)} kW`, 545, 122);
+    }
+    if (T.heaterNeeded) {
+      boxAt(170, 140, 100, 32, 'PTC heater', 'cold charge');
+      line(220, 118, 220, 140);
+    }
+    // Return line to the pack.
+    line(470, 80, 470, 210); line(470, 210, 70, 210); line(70, 210, 70, 160);
+    g.fillStyle = mut; g.fillText('return', 300, 205);
+  }
+  // BTMS ECU drives the loop; the hierarchy line names all three units.
+  boxAt(10, 228, 180, 34, 'BTMS ECU', 'thermal control unit');
+  line(100, 228, 100, 165, true);
+  g.fillStyle = mut;
+  g.fillText('BMS (protects) ↔ BTMS (moves heat) ↔ supervisor (decides)', 200, 250);
 }
 
 function renderStats() {
@@ -1678,6 +1833,9 @@ function renderArchitecture() {
   if (A.comms) {
     rows.push(stat('Communication', `${esc(A.comms.primary)}${A.comms.alternates?.length ? ` · alt: ${esc(A.comms.alternates.join('; '))}` : ''}`));
   }
+  if (A.supervisor) {
+    rows.push(stat('Supervisory layer', `${esc(A.supervisor.name)} — <span style="font-weight:normal">${esc(A.supervisor.role)}</span>`));
+  }
   if (PR) {
     rows.push(stat('Precharge', `${f1(PR.rOhm)} Ω · within ${PR.closeGapV} V in ${PR.timeToCloseS} s · ${f0(PR.energyPerEventJ)} J/event · avg ${f1(PR.avgPowerDuringEventW)} W during event`));
     rows.push(stat('Sequence', PR.sequence.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')));
@@ -1730,7 +1888,7 @@ function renderArchitecture() {
 // figures, so the report carries it too.
 function drawBmsInternals(canvas, A, forExport = false) {
   const dpr = forExport ? 2 : Math.min(window.devicePixelRatio || 1, 2);
-  const W = 640, H = 250;
+  const W = 640, H = 280;
   canvas.width = W * dpr; canvas.height = H * dpr;
   const g = canvas.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1739,7 +1897,7 @@ function drawBmsInternals(canvas, A, forExport = false) {
   const ink = css('--ink', '#1a1a1a'), mut = css('--muted', '#666'), acc = css('--accent', '#0b6e5f');
   g.fillStyle = forExport ? '#ffffff' : css('--ground', '#f4f6f5');
   g.fillRect(0, 0, W, H);
-  g.font = '10px ui-monospace, monospace';
+  g.font = '11px ui-monospace, monospace';
   g.lineWidth = 1.2;
   const B = A.bms, P = A.partition;
   // Master block with its real internals.
@@ -1747,43 +1905,43 @@ function drawBmsInternals(canvas, A, forExport = false) {
   g.fillStyle = ink; g.fillText('BMS MASTER', 18, 28);
   const sub = (y, label) => {
     g.strokeStyle = mut; g.strokeRect(18, y, 204, 26);
-    g.fillStyle = ink; g.fillText(label, 24, y + 16);
+    g.fillStyle = ink; g.fillText(label, 24, y + 17);
   };
-  const commShort = (A.comms?.primary || 'CAN').split('(')[0].trim().slice(0, 26);
-  sub(36, 'MCU — SoC/SoH estimation, limits');
+  const commShort = (A.comms?.primary || 'CAN').split('(')[0].trim().slice(0, 24);
+  sub(36, 'MCU — SoC/SoH, limits (SoP)');
   sub(66, `${commShort} interface`);
-  sub(96, 'Isolated supply + isoSPI/comm isolation');
+  sub(96, 'Isolated supply + comm isolation');
   sub(126, A.precharge ? 'Contactor + precharge drivers' : 'Solid-state disconnect driver');
-  sub(156, 'Pack current sense (shunt / Hall)');
-  sub(186, `Isolation monitor${A.isolation ? '' : ' (not required ≤60 V)'}`);
+  sub(156, 'Pack current sense (shunt/Hall)');
+  sub(186, `Isolation monitor${A.isolation ? '' : ' (n/a ≤60 V)'}`);
   // Slave/AFE field: one box per IC, grouped by module.
   const total = B.afeTotal;
   const shown = Math.min(total, 12);
   const cols = Math.min(4, Math.max(1, Math.ceil(shown / 3)));
   const rowsN = Math.ceil(shown / cols);
-  const bw = Math.min(90, (380 - 10 * cols) / cols);
-  const bh = Math.min(52, (190 - 8 * rowsN) / rowsN);
-  const boxXY = (i) => [250 + (i % cols) * (bw + 10), 30 + Math.floor(i / cols) * (bh + 8)];
+  const bw = Math.min(92, (380 - 10 * cols) / cols);
+  const bh = Math.min(54, (185 - 8 * rowsN) / rowsN);
+  const boxXY = (i) => [250 + (i % cols) * (bw + 10), 34 + Math.floor(i / cols) * (bh + 8)];
   for (let i = 0; i < shown; i++) {
     const [x, y] = boxXY(i);
     g.strokeStyle = acc; g.strokeRect(x, y, bw, bh);
-    g.fillStyle = ink; g.fillText(`AFE ${i + 1} · ${B.channelsPerIc}ch`, x + 4, y + 13);
+    g.fillStyle = ink; g.fillText(`AFE ${i + 1}·${B.channelsPerIc}ch`, x + 4, y + 14);
     g.fillStyle = mut;
-    if (bh >= 34) g.fillText('sense+balance', x + 4, y + 26);
-    if (bh >= 48) g.fillText(`module ${Math.floor(i / Math.max(1, B.afePerModule)) + 1}`, x + 4, y + 39);
+    if (bh >= 34) g.fillText('sense+bal', x + 4, y + 27);
+    if (bh >= 50) g.fillText(`module ${Math.floor(i / Math.max(1, B.afePerModule)) + 1}`, x + 4, y + 41);
   }
   // Links per topology.
   g.strokeStyle = mut;
   if (B.topology === 'wireless') {
     g.fillStyle = mut;
-    for (let i = 0; i < shown; i++) { const [x, y] = boxXY(i); g.fillText(')))', x + bw - 20, y + 13); }
-    g.fillText('))) RF link — no harness', 250, 240);
+    for (let i = 0; i < shown; i++) { const [x, y] = boxXY(i); g.fillText(')))', x + bw - 22, y + 14); }
+    g.fillText('))) RF link — no harness', 250, 250);
   } else if (B.topology === 'centralized') {
     for (let i = 0; i < shown; i++) {
       const [x, y] = boxXY(i);
       g.beginPath(); g.moveTo(230, 110); g.lineTo(x, y + bh / 2); g.stroke();
     }
-    g.fillStyle = mut; g.fillText('parallel sense harness to one controller', 250, 240);
+    g.fillStyle = mut; g.fillText('parallel sense harness to one controller', 250, 250);
   } else {
     let px = 230, py = 110;
     for (let i = 0; i < shown; i++) {
@@ -1791,11 +1949,19 @@ function drawBmsInternals(canvas, A, forExport = false) {
       g.beginPath(); g.moveTo(px, py); g.lineTo(x, y + bh / 2); g.stroke();
       px = x + bw; py = y + bh / 2;
     }
-    g.fillStyle = mut; g.fillText(`isoSPI daisy chain — ${total} node${total > 1 ? 's' : ''} (≤62)`, 250, 240);
+    g.fillStyle = mut; g.fillText(`isoSPI daisy chain — ${total} node${total > 1 ? 's' : ''} (≤62)`, 250, 250);
+  }
+  // Uplink to the supervisory layer (EMS / VCU / host) — the machine above
+  // the BMS that decides what the battery is asked to do.
+  if (A.supervisor) {
+    g.strokeStyle = mut;
+    g.beginPath(); g.moveTo(120, 224); g.lineTo(120, 240); g.stroke();
+    g.strokeStyle = acc; g.strokeRect(10, 240, 220, 26);
+    g.fillStyle = ink; g.fillText(`↑ ${A.supervisor.name.slice(0, 28)}`, 18, 257);
   }
   g.fillStyle = mut;
-  if (total > shown) g.fillText(`${shown} of ${total} AFE ICs shown`, 480, 24);
-  g.fillText(`${B.senseWiresTotal} sense wires · ${B.tempSensors} temp sensors (1:${B.cellsPerTempSensor})`, 10, 240);
+  if (total > shown) g.fillText(`${shown} of ${total} AFE ICs shown`, 480, 26);
+  g.fillText(`${B.senseWiresTotal} sense wires · ${B.tempSensors} temp sensors (1:${B.cellsPerTempSensor})`, 250, 270);
 }
 
 // One-line diagram of the HV chain: pack (with its modules) → fuse → main
@@ -1803,10 +1969,10 @@ function drawBmsInternals(canvas, A, forExport = false) {
 // the report figure via the forExport PNG path (same pattern as the load
 // profile chart).
 function drawArchDiagram(canvas, A, S, forExport = false) {
-  // Fixed 640×250 logical drawing; the on-screen canvas is scaled down by
-  // its CSS width, the report PNG uses it at full size.
+  // Fixed 640×280 logical drawing; the on-screen canvas is scaled down by
+  // its CSS width (tap to enlarge), the report PNG uses it at full size.
   const dpr = forExport ? 2 : Math.min(window.devicePixelRatio || 1, 2);
-  const W = 640, H = 250;
+  const W = 640, H = 280;
   canvas.width = W * dpr; canvas.height = H * dpr;
   const g = canvas.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1905,6 +2071,14 @@ function drawArchDiagram(canvas, A, S, forExport = false) {
   if (A.precharge) {
     g.fillStyle = mut;
     g.fillText('close: K− → K pre → K+ (link within ~10 V) → open K pre', 180, 245);
+  }
+  // The supervisory layer above the BMS — EMS / VCU / fleet or host
+  // controller: the machine that decides what the battery is asked to do.
+  if (A.supervisor) {
+    line(58, 246, 58, 254);
+    boxAt(10, 254, 200, 24, A.supervisor.name.slice(0, 30), null);
+    g.fillStyle = mut;
+    g.fillText('supervisory layer — decides; the BMS protects', 220, 270);
   }
 }
 

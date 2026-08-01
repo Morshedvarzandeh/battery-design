@@ -63,7 +63,7 @@ for (const pr of PRESETS) {
 
 // --- training tracks --------------------------------------------------------
 {
-  const validTabs = new Set(['design', 'usage', 'fit', 'comp', 'analysis', 'eu', 'results']);
+  const validTabs = new Set(['design', 'usage', 'fit', 'comp', 'analysis', 'therm', 'eu', 'results']);
   for (const [id, track] of Object.entries(TRAINING_TRACKS)) {
     ok(track.steps.length >= 5, `${id} track has a real sequence`);
     for (const st of track.steps) {
