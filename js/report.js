@@ -118,6 +118,21 @@ export function buildReportHTML(R) {
     row('Energy density', `${f0(S.whPerKg)} Wh/kg · ${f0(S.whPerL)} Wh/L`),
   ])}
 
+  ${R.loadProfile ? `
+  <h2 style="${h2}">Load profile — ${esc(R.loadProfile.name)}</h2>
+  <img src="${R.loadProfile.chartPng}" style="width:100%;max-width:640px;border:1px solid #ddd" alt="load profile">
+  ${table([
+    row('One pass', `${R.loadProfile.stats.durationS >= 3600
+      ? f1(R.loadProfile.stats.durationS / 3600) + ' h' : f0(R.loadProfile.stats.durationS) + ' s'} ·
+      ${f0(R.loadProfile.stats.energyPerPassWh)} Wh discharged${R.loadProfile.stats.regenWh > 0.5
+        ? ` · ${f0(R.loadProfile.stats.regenWh)} Wh regenerated` : ''}`),
+    row('Peak / RMS / mean power', `${f0(R.loadProfile.stats.peakW)} / ${f0(R.loadProfile.stats.rmsW)} / ${f0(R.loadProfile.stats.meanW)} W` +
+      (R.loadProfile.stats.crestFactor ? ` (crest ${f1(R.loadProfile.stats.crestFactor)}×)` : '')),
+  ])}
+  ${table(R.loadProfile.findings.map((f) =>
+    row(f.severity.toUpperCase(), `${esc(f.title)} — <span style="font-weight:normal">${esc(f.detail)}</span>`)))}
+  <div style="font-size:11px;color:#666;margin-top:4px">${esc(R.loadProfile.note)}</div>` : ''}
+
   <h2 style="${h2}">Economical analysis (cells, class-estimate prices)</h2>
   ${table([
     row('Upfront cost', C.upfrontUSD != null ? `$${f0(C.upfrontUSD)} · ${f0(C.usdPerKWhCap)} $/kWh capacity` : 'no price data'),
