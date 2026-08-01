@@ -21,6 +21,8 @@ import {
 } from './loadprofiles.js';
 import { climateById, climateSpan, seasonalOutlook } from './seasons.js';
 import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
+import { releaseChecklist } from './markets.js';
+import { TRAINING_TRACKS } from './training.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
 import { buildArchitecture, modulePartition, systemPlan } from './architecture.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
@@ -56,6 +58,7 @@ const state = {
   archIso: 'ece-r100',     // governing isolation standard — explicit, never averaged
   climateId: 'temperate',  // seasonal ambient family for the environment helper
   seasonId: 'all',         // winter|spring|summer|autumn|all — design for ALL seasons
+  marketId: 'eu',          // release-checklist target market
 };
 let customProfile = null;  // uploaded profile (session only)
 
@@ -112,6 +115,7 @@ function init() {
   recompute();
   $('btnWizard').onclick = showWizard;
   $('wzSkip').onclick = () => hideWizard(true);
+  bindTraining();
   if (!localStorage.getItem('bd-wizard-done')) showWizard();
 }
 
@@ -170,12 +174,14 @@ function renderCompLegend() {
   box.style.display = 'block';
 }
 
-// EU rules tab: the 2023/1542 timeline plus what applies to the design on
-// screen. Rendered on demand and after every recompute-driven change.
+// Rules tab: the market release checklist (standards per application and
+// market, with chemistry-market gates like China's e-bus rule), the EU
+// 2023/1542 timeline and what applies to the design on screen.
 function renderEu() {
   $('euDisclaimer').textContent = EU_DISCLAIMER;
   $('euTimeline').innerHTML = EU_TIMELINE.map((e) =>
     `<div class="stat"><span>${esc(e.date)}</span><b style="font-weight:normal">${esc(e.what)}</b></div>`).join('');
+  renderMarketChecklist();
   if (!lastSummary) { $('euBody').innerHTML = '<div class="empty">—</div>'; return; }
   const checks = euChecks({
     energyWh: lastSummary.energyWh,
@@ -184,6 +190,98 @@ function renderEu() {
     commsPrimary: lastArch?.comms?.primary,
   });
   $('euBody').innerHTML = checks.map(findingHTML).join('');
+}
+
+function renderMarketChecklist() {
+  const box = $('mktBody');
+  const app = state.presetId;
+  if (!app) {
+    box.innerHTML = '<div class="empty">Pick an application on the Usage tab — the checklist is per application class.</div>';
+    return;
+  }
+  const cl = releaseChecklist({ market: state.marketId, application: app, chemistry: cell().chemistry });
+  const scopeChip = (s) => ({
+    mandatory: '<span class="chip fail">mandatory</span>',
+    expected: '<span class="chip warn">expected</span>',
+    practice: '<span class="chip info">practice</span>',
+    blocker: '<span class="chip fail">blocker</span>',
+    pass: '<span class="chip pass">pass</span>',
+    note: '<span class="chip info">note</span>',
+  })[s] || '';
+  // Chemistry-market gates first — a blocker must never hide below the fold.
+  const ruleHtml = cl.rules.map((r) => `
+    <div class="finding ${r.scope === 'blocker' ? 'fail' : r.scope === 'pass' ? 'pass' : 'warn'}">
+      <div class="t">${scopeChip(r.scope)} ${esc(r.title)}</div>
+      <div class="d">${esc(r.note)}</div>
+      <div class="r">${esc(r.code)}</div>
+    </div>`).join('');
+  const itemHtml = cl.items.map((i) => `
+    <div class="stat"><span>☐ <b>${esc(i.code)}</b></span>
+      <b style="font-weight:normal">${scopeChip(i.scope)} ${esc(i.title)}${i.note ? ` <span style="color:var(--muted)">— ${esc(i.note)}</span>` : ''}</b></div>`).join('');
+  box.innerHTML = ruleHtml + itemHtml + `<div class="hint">${esc(cl.note)}</div>`;
+}
+
+// Interactive training: walks the REAL UI, one step per tab, in two tracks
+// (simple clicks vs advanced levers) so the process never confuses anyone.
+let trainTrack = null;
+let trainStep = 0;
+
+function startTraining(trackId) {
+  trainTrack = TRAINING_TRACKS[trackId];
+  trainStep = 0;
+  showTrainStep();
+}
+
+function showTrainStep() {
+  const card = $('trainCard');
+  if (!trainTrack) { card.style.display = 'none'; return; }
+  const steps = trainTrack.steps;
+  const st = steps[trainStep];
+  document.querySelector(`#tabs .tab[data-tab="${st.tab}"]`)?.click();
+  card.style.display = 'block';
+  $('trainTitle').textContent = st.title;
+  $('trainText').textContent = st.text;
+  $('trainProg').textContent = `${trainStep + 1}/${steps.length}`;
+  $('trainBack').style.visibility = trainStep === 0 ? 'hidden' : 'visible';
+  $('trainNext').textContent = trainStep === steps.length - 1 ? 'Finish ✓' : 'Next →';
+}
+
+function bindTraining() {
+  $('btnTrain').onclick = () => {
+    // Track chooser inside the same card — one decision, no modal maze.
+    trainTrack = null;
+    const card = $('trainCard');
+    card.style.display = 'block';
+    $('trainTitle').textContent = 'Training — pick your track';
+    $('trainProg').textContent = '';
+    $('trainText').innerHTML = '';
+    const wrap = document.createElement('div');
+    const b1 = document.createElement('button');
+    b1.className = 'btn primary'; b1.style.cssText = 'width:100%;margin-bottom:6px';
+    b1.textContent = `🟢 ${TRAINING_TRACKS.simple.name}`;
+    b1.onclick = () => startTraining('simple');
+    const b2 = document.createElement('button');
+    b2.className = 'btn'; b2.style.cssText = 'width:100%';
+    b2.textContent = `🔵 ${TRAINING_TRACKS.advanced.name}`;
+    b2.onclick = () => startTraining('advanced');
+    $('trainText').append(wrap, b1, b2);
+    $('trainBack').style.visibility = 'hidden';
+    $('trainNext').textContent = 'Close';
+  };
+  $('trainNext').onclick = () => {
+    if (!trainTrack) { $('trainCard').style.display = 'none'; return; }
+    if (trainStep >= trainTrack.steps.length - 1) {
+      $('trainCard').style.display = 'none'; trainTrack = null; return;
+    }
+    trainStep++; showTrainStep();
+  };
+  $('trainBack').onclick = () => { if (trainStep > 0) { trainStep--; showTrainStep(); } };
+  $('trainExit').onclick = () => { $('trainCard').style.display = 'none'; trainTrack = null; };
+  $('segMarket').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    state.marketId = b.dataset.mkt;
+    $('segMarket').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    renderMarketChecklist();
+  });
 }
 
 const findingHTML = (x) => `

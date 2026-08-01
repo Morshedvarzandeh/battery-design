@@ -260,6 +260,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
   <div class="hdr-spacer"></div>
   <div class="hdr-links">
     <button class="btn primary" id="btnWizard">✨ Guided start</button>
+    <button class="btn" id="btnTrain">🎓 Training</button>
     <a href="https://github.com/morshedvarzandeh/battery-data" target="_blank" rel="noopener">cell data</a>
     <button class="btn" id="btnExport">Export JSON</button>
     <button class="btn" id="btnTheme" title="Toggle theme">◐</button>
@@ -324,6 +325,20 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
   </div>
 </div>
 
+<div id="trainCard" style="display:none;position:fixed;right:16px;bottom:16px;z-index:60;width:min(380px,calc(100vw - 32px));
+  background:var(--surface);border:1px solid var(--accent);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.18);padding:14px">
+  <div style="display:flex;align-items:baseline;gap:8px">
+    <b id="trainTitle" style="font-size:13.5px;flex:1"></b>
+    <span id="trainProg" class="chip"></span>
+    <button class="btn" id="trainExit" style="padding:2px 8px">✕</button>
+  </div>
+  <div id="trainText" style="font-size:12.5px;line-height:1.55;margin:8px 0 10px;color:var(--ink-2)"></div>
+  <div style="display:flex;gap:8px">
+    <button class="btn" id="trainBack">← Back</button>
+    <button class="btn primary" id="trainNext" style="flex:1">Next →</button>
+  </div>
+</div>
+
 <div id="wizard"><div class="wz-card">
   <h2 class="wz-title" id="wzTitle"></h2>
   <p class="wz-sub" id="wzSub"></p>
@@ -344,7 +359,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       <button class="tab" data-tab="fit">Fit</button>
       <button class="tab" data-tab="comp">Components</button>
       <button class="tab" data-tab="analysis">Analysis <span class="chip" id="stdBadge"></span></button>
-      <button class="tab" data-tab="eu">EU rules</button>
+      <button class="tab" data-tab="eu">Rules</button>
       <button class="tab" data-tab="results">Results</button>
     </div>
 
@@ -399,6 +414,23 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         <input type="range" id="inWall" min="0.5" max="6" step="0.5" value="2">
         <label class="f">Busbar / BMS headroom <b id="vHead" class="m"></b></label>
         <input type="range" id="inHead" min="0" max="40" step="1" value="8">
+        <details style="margin-top:8px">
+          <summary class="f" style="cursor:pointer">Why these spaces exist — the standards behind them</summary>
+          <div class="hint" style="margin-top:4px">
+            <b>Cell spacing</b> is not padding: prismatic and pouch cells SWELL 10–20% in thickness
+            over life (the design allowance under constraint — unconstrained cells measure far
+            worse), and the gap doubles as the thermal break that propagation tests
+            (IEC 62619 §8, GB 38031) probe. A spacer from the Components tab sets this number
+            from a real part.<br><br>
+            <b>Wall thickness</b> is what the crash and crush tests demand: no standard prescribes
+            a millimetre value — UN ECE R100 Annex 4, GB 38031 and UL 2580 prescribe TESTS
+            (mechanical shock, crush, integrity) the wall must pass for your market. The slider
+            reserves the space; the proof is the test.<br><br>
+            <b>Busbar/BMS headroom</b> keeps room above the cells for interconnects, sense wiring
+            and the gas path to the vent — the sources give no vent-area sizing method (marked
+            honestly, not guessed), but a blocked vent path fails every abuse test.
+          </div>
+        </details>
       </div>
     </div>
 
@@ -591,7 +623,17 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
     <div class="tabpane" id="pane-eu">
       <div class="disclaimer" id="euDisclaimer"></div>
       <div class="sec">
-        <h3>What applies to THIS design</h3>
+        <h3>Release checklist — standards per application &amp; market</h3>
+        <div class="seg" id="segMarket">
+          <button data-mkt="eu" class="active">EU</button>
+          <button data-mkt="us">US</button>
+          <button data-mkt="cn">China</button>
+          <button data-mkt="intl">Intl/UN</button>
+        </div>
+        <div id="mktBody" style="margin-top:8px"><div class="empty">—</div></div>
+      </div>
+      <div class="sec">
+        <h3>EU 2023/1542 — what applies to THIS design</h3>
         <div id="euBody"><div class="empty">—</div></div>
       </div>
       <div class="sec">

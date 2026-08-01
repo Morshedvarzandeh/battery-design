@@ -37,7 +37,7 @@ const NICKEL_COBALT = new Set(['NMC', 'NCA', 'LCO']);
 // Applications the regulation treats as EV vs industrial (stationary /
 // industrial mobility). LMT (light means of transport: e-bikes, scooters)
 // has its own passport track from Feb 2027 as well.
-const EV_APPS = new Set(['ev']);
+const EV_APPS = new Set(['ev', 'ebus']);
 const LMT_APPS = new Set(['ebike', 'escooter']);
 
 export function euChecks({ energyWh, application, chemistry, commsPrimary }) {

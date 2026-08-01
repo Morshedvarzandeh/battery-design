@@ -73,11 +73,22 @@ project's provenance-first datasheet pipeline.
   bands, fill the design temperature window (design case = all year), and a
   season view shows the estimated system temperature (ambient high + the
   pack's own heat rise) with heater/charge-inhibit and cooling-margin flags.
-- **EU rules tab** — Regulation (EU) 2023/1542 staged timeline (carbon
-  declarations, battery passport with LIVE SoH over UDS, recycled-content
-  minimums, recovery targets vs recycling efficiency kept strictly apart)
-  plus "what applies to THIS design" checks from the pack's energy,
-  application and chemistry. Guidance, not legal advice.
+- **Rules tab** — the market release checklist: standards per application
+  class × target market (EU / US / China / International), always including
+  UN 38.3 transport, with chemistry-market gates such as China's e-bus
+  practice that effectively excludes ternary (NMC/NCA) chemistry from urban
+  buses (flagged as a blocker with "verify the current MIIT catalogue").
+  Plus the Regulation (EU) 2023/1542 staged timeline (carbon declarations,
+  battery passport with LIVE SoH over UDS, recycled-content minimums,
+  recovery targets vs recycling efficiency kept strictly apart) and "what
+  applies to THIS design" checks. Guidance, not legal advice.
+- **Interactive training** — a 🎓 walkthrough that drives the real UI, in
+  two tracks: Simple (the five clicks a customer needs) and Advanced (duty
+  & DoD economics, seasons, stacks, multi-objective weights, architecture,
+  release rules, sensitivity). Inline "why these spaces exist" guidance
+  explains cell spacing (swelling design allowance + propagation break),
+  wall thickness (the crash/crush TESTS — ECE R100 Annex 4, GB 38031,
+  UL 2580 — prescribe outcomes, not millimetres) and vent-path headroom.
 - **Closest-possible framing** — when a target is out of reach in the given
   space, the tool never answers "infeasible": it presents the most possible
   solution close to the need, states the shortfall, and says how many
@@ -188,6 +199,8 @@ is copied into the repository.
 | `js/architecture.js` | Module partition, BMS topology, precharge/contactors/fuse/isolation, comms, welding |
 | `js/seasons.js` | Climate/season ambient bands + per-season system-temperature outlook |
 | `js/eurules.js` | EU Battery Regulation 2023/1542 timeline + applicability checks |
+| `js/markets.js` | Release checklist per application class × market + chemistry-market gates |
+| `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |
 | `js/app.js` | UI state and wiring |

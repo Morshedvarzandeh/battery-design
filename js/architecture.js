@@ -383,6 +383,11 @@ export const COMMS_BY_APP = {
     alternates: ['SAE J1939 for heavy/commercial vehicles', 'ISO 15118 / DIN 70121 to the DC charger'],
     note: 'Automotive BMS report on the vehicle CAN and expose diagnostics (incl. live SoH for the EU battery passport) over UDS; heavy trucks and buses use the J1939 flavor instead.',
   },
+  ebus: {
+    primary: 'SAE J1939 (heavy-vehicle CAN, PGN-based)',
+    alternates: ['CAN FD + UDS (ISO 14229) diagnostics', 'ISO 15118 / OppCharge to the pantograph or plug charger'],
+    note: 'Buses and heavy trucks live on the J1939 bus — the battery reports as a J1939 node; diagnostics and passport SoH access still ride UDS.',
+  },
   robot: {
     primary: 'CANopen (CiA 301, battery profile CiA 418)',
     alternates: ['SAE J1939 (lift trucks / heavy platforms)', 'EtherCAT (high-rate robotics)'],

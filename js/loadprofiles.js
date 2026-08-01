@@ -106,6 +106,20 @@ export const LOAD_PROFILES = [
     ],
   },
   {
+    id: 'ebus-route',
+    name: 'City bus route (stop–go, heavy regen, layover)',
+    appIds: ['ebus'],
+    suitableFor: ['ev'],
+    dtS: 10,
+    note: 'Repeated stop-go: launch to high power, cruise, hard regenerative stop (negative), dwell at the stop; a terminus layover ends the pass. Regen is far deeper than a passenger car.',
+    p: [
+      ...seg(0.85, 20, 10), ...seg(0.45, 40, 10), ...seg(-0.60, 10, 10), ...seg(0.05, 20, 10),
+      ...seg(0.90, 20, 10), ...seg(0.50, 50, 10), ...seg(-0.65, 10, 10), ...seg(0.05, 20, 10),
+      ...seg(1.00, 20, 10), ...seg(0.48, 40, 10), ...seg(-0.70, 10, 10), ...seg(0.05, 30, 10),
+      ...seg(0.80, 20, 10), ...seg(0.42, 50, 10), ...seg(-0.60, 10, 10), ...seg(0.03, 60, 10),
+    ],
+  },
+  {
     id: 'rv-house',
     name: 'RV / van day (cooking peaks, charging while driving)',
     appIds: ['rv'],

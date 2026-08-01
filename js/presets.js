@@ -127,6 +127,25 @@ export const PRESETS = [
       'thermal management. Annual cycles are full-cycle equivalents.'
   },
   {
+    id: 'ebus', name: 'City e-bus', icon: '🚌',
+    desc: 'Urban electric bus traction pack (multi-stack)',
+    systemV: [500, 750], typicalV: 614,      // ~192S LFP class
+    energyWh: [150000, 450000], typicalEnergyWh: 250000,
+    contPowerW: 60000, peakPowerW: 250000,
+    maxMassKg: 2500,
+    maxDimsMm: { x: 3000, y: 1700, z: 300 }, // estimate: roof/underfloor stack bay
+    chargeRateC: 1,
+    envTempC: [-25, 45],
+    cyclesPerYear: 350, targetYears: 8,
+    preferredChemistries: ['LFP', 'LTO'],
+    notes: 'Stop-go route duty with heavy regen and near-daily full cycles makes ' +
+      'LFP the world default; note that Chinese e-bus programs effectively ' +
+      'CANNOT use ternary (NMC/NCA) chemistry — the recommended-vehicle ' +
+      'catalogue practice has kept it out of urban buses since 2017 (see the ' +
+      'Rules tab release checklist). A 250 kWh system is several stacks in ' +
+      'parallel, not one pack; the vehicle bus is SAE J1939.'
+  },
+  {
     id: 'robot', name: 'AGV / lift truck', icon: '🏗️',
     desc: 'Warehouse AGV/AMR or electric lift truck, opportunity charging',
     systemV: [24, 80], typicalV: 48,         // AGVs 24-48 V; lift trucks 48/80 V
