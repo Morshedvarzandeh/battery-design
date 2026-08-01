@@ -260,6 +260,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
   <div class="hdr-spacer"></div>
   <div class="hdr-links">
     <button class="btn primary" id="btnWizard">✨ Guided start</button>
+    <button class="btn" id="btnTrain">🎓 Training</button>
     <a href="https://github.com/morshedvarzandeh/battery-data" target="_blank" rel="noopener">cell data</a>
     <button class="btn" id="btnExport">Export JSON</button>
     <button class="btn" id="btnTheme" title="Toggle theme">◐</button>
@@ -324,6 +325,20 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
   </div>
 </div>
 
+<div id="trainCard" style="display:none;position:fixed;right:16px;bottom:16px;z-index:60;width:min(380px,calc(100vw - 32px));
+  background:var(--surface);border:1px solid var(--accent);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.18);padding:14px">
+  <div style="display:flex;align-items:baseline;gap:8px">
+    <b id="trainTitle" style="font-size:13.5px;flex:1"></b>
+    <span id="trainProg" class="chip"></span>
+    <button class="btn" id="trainExit" style="padding:2px 8px">✕</button>
+  </div>
+  <div id="trainText" style="font-size:12.5px;line-height:1.55;margin:8px 0 10px;color:var(--ink-2)"></div>
+  <div style="display:flex;gap:8px">
+    <button class="btn" id="trainBack">← Back</button>
+    <button class="btn primary" id="trainNext" style="flex:1">Next →</button>
+  </div>
+</div>
+
 <div id="wizard"><div class="wz-card">
   <h2 class="wz-title" id="wzTitle"></h2>
   <p class="wz-sub" id="wzSub"></p>
@@ -344,6 +359,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       <button class="tab" data-tab="fit">Fit</button>
       <button class="tab" data-tab="comp">Components</button>
       <button class="tab" data-tab="analysis">Analysis <span class="chip" id="stdBadge"></span></button>
+      <button class="tab" data-tab="eu">Rules</button>
       <button class="tab" data-tab="results">Results</button>
     </div>
 
@@ -398,6 +414,23 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         <input type="range" id="inWall" min="0.5" max="6" step="0.5" value="2">
         <label class="f">Busbar / BMS headroom <b id="vHead" class="m"></b></label>
         <input type="range" id="inHead" min="0" max="40" step="1" value="8">
+        <details style="margin-top:8px">
+          <summary class="f" style="cursor:pointer">Why these spaces exist — the standards behind them</summary>
+          <div class="hint" style="margin-top:4px">
+            <b>Cell spacing</b> is not padding: prismatic and pouch cells SWELL 10–20% in thickness
+            over life (the design allowance under constraint — unconstrained cells measure far
+            worse), and the gap doubles as the thermal break that propagation tests
+            (IEC 62619 §8, GB 38031) probe. A spacer from the Components tab sets this number
+            from a real part.<br><br>
+            <b>Wall thickness</b> is what the crash and crush tests demand: no standard prescribes
+            a millimetre value — UN ECE R100 Annex 4, GB 38031 and UL 2580 prescribe TESTS
+            (mechanical shock, crush, integrity) the wall must pass for your market. The slider
+            reserves the space; the proof is the test.<br><br>
+            <b>Busbar/BMS headroom</b> keeps room above the cells for interconnects, sense wiring
+            and the gas path to the vent — the sources give no vent-area sizing method (marked
+            honestly, not guessed), but a blocked vent path fails every abuse test.
+          </div>
+        </details>
       </div>
     </div>
 
@@ -410,9 +443,32 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         <h3>Load profile — how the power is really drawn</h3>
         <select id="selProfile"></select>
         <input type="file" id="profileFile" accept=".csv,.txt" style="display:none">
+        <button class="btn" id="btnProfileUpload" style="width:100%;margin-top:8px">📁 Upload my load profile (CSV)</button>
+        <div class="hint">Two columns: seconds, watts — positive = discharge, negative = charging.
+          Any logger or Excel export works. <a id="btnProfileSample" style="cursor:pointer">Download a sample CSV</a>.</div>
         <canvas id="profileChart" height="110" style="display:none;width:100%;border:1px solid var(--line);border-radius:var(--r);margin-top:8px;background:var(--ground)"></canvas>
         <div class="hint" id="profileStatsLine"></div>
         <button class="btn" id="btnProfileApply" style="display:none;width:100%;margin-top:8px">Use profile → set continuous (RMS) &amp; peak power below</button>
+      </div>
+      <div class="sec">
+        <h3>Environment — climate &amp; season</h3>
+        <select id="selClimate">
+          <option value="temperate">Temperate (central EU / US midlatitude)</option>
+          <option value="cold">Cold / continental (Nordic, Canada, alpine)</option>
+          <option value="hot">Hot (arid / tropical)</option>
+          <option value="indoor">Indoor (conditioned space)</option>
+        </select>
+        <div class="seg" id="segSeason" style="margin-top:8px">
+          <button data-season="winter">❄ Winter</button>
+          <button data-season="spring">🌱 Spring</button>
+          <button data-season="summer">☀ Summer</button>
+          <button data-season="autumn">🍂 Autumn</button>
+          <button data-season="all" class="active">All year</button>
+        </div>
+        <div id="seasonTable" style="margin-top:8px"></div>
+        <div class="hint">Class-typical ambient bands — the design should survive ALL seasons
+          (All year), a season button just shows what that season does to the system. The system
+          temperature is the ambient plus the pack's own heat rise at continuous load.</div>
       </div>
       <div class="sec">
         <h3>Requirements</h3>
@@ -425,23 +481,34 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           <div><label class="f">Continuous power (W)</label><input type="number" id="rqPc" value="500"></div>
           <div><label class="f">Peak power (W)</label><input type="number" id="rqPp" value="1200"></div>
         </div>
-        <div class="row2">
-          <div><label class="f">Charge rate (C)</label><input type="number" id="rqC" step="0.1" value="0.5"></div>
-          <div><label class="f">Max mass (kg)</label><input type="number" id="rqKg" value=""></div>
-        </div>
-        <label class="f">Max dimensions L×W×H (mm, blank = open)</label>
-        <div class="row3">
-          <input type="number" id="rqDx" placeholder="L"><input type="number" id="rqDy" placeholder="W">
-          <input type="number" id="rqDz" placeholder="H">
-        </div>
-        <div class="row2">
-          <div><label class="f">Temp min (°C)</label><input type="number" id="rqTlo" value="0"></div>
-          <div><label class="f">Temp max (°C)</label><input type="number" id="rqThi" value="40"></div>
-        </div>
-        <div class="row2">
-          <div><label class="f">Cycles / year</label><input type="number" id="rqCy" value="250"></div>
-          <div><label class="f">Target years</label><input type="number" id="rqYr" value="5"></div>
-        </div>
+        <details style="margin-top:10px" id="advSettings">
+          <summary class="f" style="cursor:pointer">Advanced settings — duty cycle, DoD, limits, stacks</summary>
+          <div class="row2">
+            <div><label class="f">Cycles / year</label><input type="number" id="rqCy" value="250"></div>
+            <div><label class="f">Target years</label><input type="number" id="rqYr" value="5"></div>
+          </div>
+          <div class="row2">
+            <div><label class="f">Usable DoD (%)</label><input type="number" id="rqDod" value="80" min="10" max="100"></div>
+            <div><label class="f">Charge rate (C)</label><input type="number" id="rqC" step="0.1" value="0.5"></div>
+          </div>
+          <div class="hint">Duty cycle and depth of discharge drive the lifetime cost (TCO) and the
+            CO₂ payback — the defaults are sensible, tune them when you know your duty.</div>
+          <label class="f">Max mass (kg)</label><input type="number" id="rqKg" value="">
+          <label class="f">Max dimensions L×W×H (mm, blank = open)</label>
+          <div class="row3">
+            <input type="number" id="rqDx" placeholder="L"><input type="number" id="rqDy" placeholder="W">
+            <input type="number" id="rqDz" placeholder="H">
+          </div>
+          <div class="row2">
+            <div><label class="f">Temp min (°C)</label><input type="number" id="rqTlo" value="0"></div>
+            <div><label class="f">Temp max (°C)</label><input type="number" id="rqThi" value="40"></div>
+          </div>
+          <div class="hint">The climate & season picker above fills these — type over them any time.</div>
+          <label class="f">Stacks / racks in parallel (blank = auto from the energy target)</label>
+          <input type="number" id="rqRacks" min="1" placeholder="auto">
+          <div class="hint">For BESS containers, ships, buses and other big systems: the tool designs
+            ONE stack and multiplies — set the count here if your plant layout already fixes it.</div>
+        </details>
         <button class="btn primary" id="btnSuggest" style="width:100%;margin-top:12px">Suggest designs</button>
       </div>
       <div class="sec"><h3>Suggestions</h3><div id="suggestions"><div class="empty">Pick a preset or fill the form, then hit “Suggest designs”.</div></div></div>
@@ -553,6 +620,28 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       <div class="sec"><h3>Standards referenced</h3><div id="stdList" style="font-size:11.5px;color:var(--muted)"></div></div>
     </div>
 
+    <div class="tabpane" id="pane-eu">
+      <div class="disclaimer" id="euDisclaimer"></div>
+      <div class="sec">
+        <h3>Release checklist — standards per application &amp; market</h3>
+        <div class="seg" id="segMarket">
+          <button data-mkt="eu" class="active">EU</button>
+          <button data-mkt="us">US</button>
+          <button data-mkt="cn">China</button>
+          <button data-mkt="intl">Intl/UN</button>
+        </div>
+        <div id="mktBody" style="margin-top:8px"><div class="empty">—</div></div>
+      </div>
+      <div class="sec">
+        <h3>EU 2023/1542 — what applies to THIS design</h3>
+        <div id="euBody"><div class="empty">—</div></div>
+      </div>
+      <div class="sec">
+        <h3>Regulation (EU) 2023/1542 — timeline</h3>
+        <div id="euTimeline" style="font-size:12.5px"></div>
+      </div>
+    </div>
+
     <div class="tabpane" id="pane-results">
       <div class="sec">
         <h3>Cell comparison</h3>
@@ -586,6 +675,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
     <div id="viewport2d"></div>
     <div id="viewport"></div>
     <div class="glass stage-stats" id="stageStats"></div>
+    <div class="glass" id="compLegend" style="display:none;position:absolute;left:12px;top:12px;max-width:280px;font-size:11.5px;line-height:1.6"></div>
     <div class="stage-ui">
       <div class="glass">
         <span class="lbl">View</span>

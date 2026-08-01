@@ -260,13 +260,14 @@ function fmt(v) {
 // at an assumed DoD, no calendar aging, no discounting, no electricity or
 // efficiency costs — a comparison metric, not a finance document.
 // ---------------------------------------------------------------------------
-export const TCO_DOD = 0.8; // assumed usable depth of discharge per cycle
+export const TCO_DOD = 0.8; // default usable depth of discharge per cycle
 
 export function costModel(cell, n, energyWh, usage) {
+  const dod = usage?.dod > 0 && usage?.dod <= 1 ? usage.dod : TCO_DOD;
   const upfrontUSD = cell.priceUSD != null ? cell.priceUSD * n : null;
   const usdPerKWhCap = upfrontUSD != null && energyWh > 0 ? upfrontUSD / (energyWh / 1000) : null;
   const cycleLife = cell.cycleLife ?? null;
-  const throughputKWh = cycleLife != null ? (cycleLife * energyWh * TCO_DOD) / 1000 : null;
+  const throughputKWh = cycleLife != null ? (cycleLife * energyWh * dod) / 1000 : null;
   const usdPerKWhDelivered = upfrontUSD != null && throughputKWh > 0
     ? upfrontUSD / throughputKWh : null;
   let replacements = null, tcoUSD = null, serviceYears = null;
@@ -366,7 +367,7 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
     const meetsEnergy = !req.energyWh || energyWh >= req.energyWh;
     const costUSD = cell.priceUSD != null ? cell.priceUSD * pick.n : null;
     const tco = costModel(cell, pick.n, energyWh,
-      { cyclesPerYear: req.cyclesPerYear, targetYears: req.targetYears });
+      { cyclesPerYear: req.cyclesPerYear, targetYears: req.targetYears, dod: req.dod });
     const warnings = [];
     if (req.costBasis === 'tco' && tco.tcoUSD == null && costUSD != null) {
       warnings.push(cell.cycleLife == null

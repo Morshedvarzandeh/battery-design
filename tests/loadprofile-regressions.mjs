@@ -2,7 +2,7 @@
 // pack checks and the CSV upload path.
 import { PRESETS } from '../js/presets.js';
 import {
-  LOAD_PROFILES, profileForApp, profileStats, profileChecks, parseProfileCSV,
+  LOAD_PROFILES, profileForApp, profilesForApp, profileStats, profileChecks, parseProfileCSV,
 } from '../js/loadprofiles.js';
 
 let fails = 0;
@@ -11,6 +11,40 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
 // Every application preset has its own default profile.
 for (const pr of PRESETS) {
   ok(profileForApp(pr.id) != null, `preset ${pr.id} maps to a load profile`);
+}
+
+// The truck-shaped bug: vehicle-class systems must NOT default to the
+// rooftop-solar cycle. Each gets its own shape; solar stays with solar.
+{
+  ok(profileForApp('rv')?.id === 'rv-house', `RV defaults to rv-house (got ${profileForApp('rv')?.id})`);
+  ok(profileForApp('powerstation')?.id === 'powerstation-trip', 'power station defaults to its own shape');
+  ok(profileForApp('solar-ess')?.id === 'ess-daily', 'solar keeps the solar day');
+  ok(profileForApp('robot')?.id === 'robot-shift', 'AGV/lift truck keeps the shift cycle');
+  ok(profileForApp('humanoid')?.id === 'humanoid-locomotion', 'humanoid has its own profile');
+  ok(profileForApp('robovac')?.id === 'robovac-clean', 'robot vacuum has its own profile');
+}
+
+// Per-application CHOICE: the recommended list has the default first, the
+// suitable alternates after, and never the whole library.
+{
+  const rv = profilesForApp('rv');
+  ok(rv[0]?.id === 'rv-house', 'rv choice list starts with its default');
+  ok(rv.some((p) => p.id === 'ess-daily'), 'solar day offered as an RV alternate (camped off-grid)');
+  ok(rv.length < LOAD_PROFILES.length, 'recommended list is a shortlist, not everything');
+  const hum = profilesForApp('humanoid');
+  ok(hum[0]?.id === 'humanoid-locomotion' && hum.some((p) => p.id === 'robot-shift'),
+    'humanoid: own default + industrial alternate');
+  ok(profilesForApp('nonexistent-app').length === 0, 'unknown app gets no fake recommendations');
+}
+
+// The new shapes behave like their machines: the vacuum ends on a dock
+// CHARGE, the van charges while driving, the humanoid never rests to zero.
+{
+  const p = (id) => LOAD_PROFILES.find((x) => x.id === id);
+  ok(p('robovac-clean').p.some((v) => v < 0), 'robovac has the dock-charging tail');
+  ok(p('rv-house').p.some((v) => v < 0), 'rv day includes charging while driving');
+  ok(p('humanoid-locomotion').p.every((v) => v > 0), 'humanoid base load never drops to zero');
+  ok(Math.min(...p('humanoid-locomotion').p) >= 0.25, 'humanoid balance/compute base is substantial');
 }
 
 // Hand-checked math on a square wave: 1,0,1,0 at dt=10s, scale 100 W.

@@ -95,13 +95,54 @@ export const LOAD_PROFILES = [
   {
     id: 'ess-daily',
     name: 'Daily solar cycle (charge midday, discharge evening)',
-    appIds: ['solar-ess', 'rv', 'powerstation'],
+    appIds: ['solar-ess'],
+    suitableFor: ['rv', 'powerstation'],
     dtS: 3600,
     note: '24 h at 1 h steps: overnight trickle, midday solar CHARGING (negative), evening discharge plateau. One pass = one calendar day.',
     p: [
       0.10, 0.08, 0.08, 0.08, 0.10, 0.15, 0.20, 0.10, -0.30, -0.60,
       -0.80, -0.90, -0.85, -0.70, -0.45, -0.20, 0.15, 0.45, 0.80, 1.00,
       0.90, 0.60, 0.30, 0.15,
+    ],
+  },
+  {
+    id: 'ebus-route',
+    name: 'City bus route (stop–go, heavy regen, layover)',
+    appIds: ['ebus'],
+    suitableFor: ['ev'],
+    dtS: 10,
+    note: 'Repeated stop-go: launch to high power, cruise, hard regenerative stop (negative), dwell at the stop; a terminus layover ends the pass. Regen is far deeper than a passenger car.',
+    p: [
+      ...seg(0.85, 20, 10), ...seg(0.45, 40, 10), ...seg(-0.60, 10, 10), ...seg(0.05, 20, 10),
+      ...seg(0.90, 20, 10), ...seg(0.50, 50, 10), ...seg(-0.65, 10, 10), ...seg(0.05, 20, 10),
+      ...seg(1.00, 20, 10), ...seg(0.48, 40, 10), ...seg(-0.70, 10, 10), ...seg(0.05, 30, 10),
+      ...seg(0.80, 20, 10), ...seg(0.42, 50, 10), ...seg(-0.60, 10, 10), ...seg(0.03, 60, 10),
+    ],
+  },
+  {
+    id: 'rv-house',
+    name: 'RV / van day (cooking peaks, charging while driving)',
+    appIds: ['rv'],
+    suitableFor: ['marine'],
+    dtS: 3600,
+    note: '24 h at 1 h steps: overnight fridge/heater base, morning cooking peak, alternator + solar CHARGING while driving midday (negative), evening cooking and lights. A vehicle house bank, not a rooftop solar plant.',
+    p: [
+      0.12, 0.10, 0.10, 0.10, 0.12, 0.15, 0.55, 1.00, 0.35, -0.45,
+      -0.75, -0.85, -0.80, -0.60, -0.35, 0.12, 0.20, 0.60, 0.95, 0.85,
+      0.50, 0.30, 0.18, 0.12,
+    ],
+  },
+  {
+    id: 'powerstation-trip',
+    name: 'Portable power box (appliance bursts, idle between)',
+    appIds: ['powerstation'],
+    suitableFor: ['ups'],
+    dtS: 60,
+    note: 'Kettle/tool bursts at full inverter power, fridge cycling, long light-load stretches — the inverter rating sets the peaks, the fridge sets the energy.',
+    p: [
+      ...seg(0.05, 900, 60), ...seg(1.00, 240, 60), ...seg(0.08, 1200, 60),
+      ...seg(0.30, 600, 60), ...seg(0.06, 900, 60), ...seg(0.95, 180, 60),
+      ...seg(0.08, 1500, 60), ...seg(0.28, 600, 60), ...seg(0.05, 900, 60),
     ],
   },
   {
@@ -116,15 +157,41 @@ export const LOAD_PROFILES = [
   },
   {
     id: 'robot-shift',
-    name: 'AGV duty cycle (move–lift–return, opportunity charge)',
+    name: 'AGV / lift truck shift (move–lift–return, opportunity charge)',
     appIds: ['robot'],
+    suitableFor: ['humanoid', 'robovac'],
     dtS: 10,
-    note: 'Repetitive task cycle with a short opportunity-charge dip at the station (negative), the LTO/LFP use case.',
+    note: 'Repetitive move–lift–return cycle with a short opportunity-charge dip at the station (negative), the LTO/LFP use case. Lift trucks add the lift peaks; AMRs flatten them.',
     p: [
       ...seg(0.55, 40, 10), ...seg(0.90, 20, 10), ...seg(0.50, 40, 10),
       ...seg(0.15, 20, 10), ...seg(-0.70, 30, 10),
       ...seg(0.60, 40, 10), ...seg(0.95, 20, 10), ...seg(0.45, 40, 10),
       ...seg(0.15, 20, 10), ...seg(-0.70, 30, 10),
+    ],
+  },
+  {
+    id: 'humanoid-locomotion',
+    name: 'Humanoid robot (balance base + joint bursts)',
+    appIds: ['humanoid'],
+    dtS: 2,
+    note: 'Continuous balance/compute base load with walking bursts and manipulation spikes — a humanoid never rests while standing, so the base never drops to zero.',
+    p: [
+      ...seg(0.30, 20, 2), ...seg(0.65, 30, 2), ...seg(0.35, 16, 2),
+      ...seg(1.00, 6, 2), ...seg(0.60, 24, 2), ...seg(0.30, 20, 2),
+      ...seg(0.90, 8, 2), ...seg(0.55, 30, 2), ...seg(0.32, 20, 2),
+      ...seg(0.95, 6, 2), ...seg(0.62, 26, 2), ...seg(0.30, 24, 2),
+    ],
+  },
+  {
+    id: 'robovac-clean',
+    name: 'Robot vacuum run (steady suction, dock recharge)',
+    appIds: ['robovac'],
+    dtS: 60,
+    note: 'Near-constant suction/drive load with carpet-boost spikes, then return to dock and a CHARGING tail (negative). One pass = one cleaning run.',
+    p: [
+      ...seg(0.60, 600, 60), ...seg(1.00, 120, 60), ...seg(0.58, 600, 60),
+      ...seg(0.95, 120, 60), ...seg(0.55, 600, 60), ...seg(0.20, 120, 60),
+      ...seg(-0.55, 1200, 60),
     ],
   },
   {
@@ -143,6 +210,17 @@ export const LOAD_PROFILES = [
 
 export function profileForApp(appId) {
   return LOAD_PROFILES.find((pr) => pr.appIds.includes(appId)) || null;
+}
+
+// Every application gets a CHOICE of profiles, not a single locked default:
+// first the profiles designed for it (appIds — the first is the default),
+// then the ones marked suitable as alternates. The customer can still pick
+// any shape, or upload their own.
+export function profilesForApp(appId) {
+  return [
+    ...LOAD_PROFILES.filter((pr) => pr.appIds.includes(appId)),
+    ...LOAD_PROFILES.filter((pr) => !pr.appIds.includes(appId) && (pr.suitableFor || []).includes(appId)),
+  ];
 }
 
 export function profileById(id) {

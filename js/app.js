@@ -16,8 +16,13 @@ import {
 import { sensitivityAnalysis, priceFlipThreshold } from './sensitivity.js';
 import { parseOutline } from './bay-import.js';
 import {
-  LOAD_PROFILES, profileForApp, profileById, profileStats, profileChecks, parseProfileCSV,
+  LOAD_PROFILES, profileForApp, profilesForApp, profileById, profileStats, profileChecks,
+  parseProfileCSV,
 } from './loadprofiles.js';
+import { climateById, climateSpan, seasonalOutlook } from './seasons.js';
+import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
+import { releaseChecklist } from './markets.js';
+import { TRAINING_TRACKS } from './training.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
 import { buildArchitecture, modulePartition, systemPlan } from './architecture.js';
 import { DISCLAIMER, STANDARDS_INFO, runChecks } from './standards.js';
@@ -51,6 +56,9 @@ const state = {
   profileScaleW: null,     // absolute W the profile's peak (=1.0) maps to
   archTopology: 'auto',    // BMS topology choice ('auto' applies the scale rule)
   archIso: 'ece-r100',     // governing isolation standard — explicit, never averaged
+  climateId: 'temperate',  // seasonal ambient family for the environment helper
+  seasonId: 'all',         // winter|spring|summer|autumn|all — design for ALL seasons
+  marketId: 'eu',          // release-checklist target market
 };
 let customProfile = null;  // uploaded profile (session only)
 
@@ -66,6 +74,7 @@ let lastSummary = null;
 let lastLayout = null;
 let lastAnalysis = null;
 let lastArch = null;      // architecture (modules, BMS, HV chain) of the pack
+let lastArchFindings = []; // architecture findings folded into the Electrical pane
 let lastForm = 'cylindrical';
 let lastFillResults = null; // most recent max-fill ranking, for robustness
 
@@ -106,6 +115,7 @@ function init() {
   recompute();
   $('btnWizard').onclick = showWizard;
   $('wzSkip').onclick = () => hideWizard(true);
+  bindTraining();
   if (!localStorage.getItem('bd-wizard-done')) showWizard();
 }
 
@@ -137,7 +147,149 @@ function setViewMode(mode) {
     viewer?.pause();
     viewer2d.draw();
   }
+  renderCompLegend();
 }
+
+// Names what the 3D render is actually showing, keyed to the mesh colors —
+// so an exploded view stays readable instead of a guessing game.
+function renderCompLegend() {
+  const box = $('compLegend');
+  if (viewMode !== '3d' || !lastSummary) { box.style.display = 'none'; return; }
+  const s = selComponents();
+  const key = (color, name, note) =>
+    `<div><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:${color};margin-right:6px"></span><b>${esc(name)}</b>${note ? ` <span style="color:var(--muted)">— ${esc(note)}</span>` : ''}</div>`;
+  const rows = [];
+  if (s.cooling?.viz) {
+    rows.push(key('#3f7fd0', s.cooling.name,
+      s.cooling.viz === 'between' ? 'blue ribbons between the rows' : `blue ${s.cooling.viz} plate`));
+  }
+  if (s.vent) rows.push(key('#30363a', s.vent.name, s.vent.level === 'pack' ? 'dark nub on the lid (assembled view)' : 'cell-level, inside each cell'));
+  if (s.housing) rows.push(key('#4fd1b5', s.housing.name, 'tinted shell (assembled view)'));
+  if (s.busbar) rows.push(key('#d8d8d2', s.busbar.name, 'silver caps / series path'));
+  if (s.spacer) rows.push(key('#8899aa', s.spacer.name, `sets the ${state.spacingMm} mm cell gap`));
+  if (s.tim) rows.push(key('#d9a441', s.tim.name, 'between cells and the cooling surface'));
+  if (!rows.length) { box.style.display = 'none'; return; }
+  box.innerHTML = '<span class="lbl">Components in view</span>' + rows.join('') +
+    '<div style="color:var(--muted);margin-top:4px">Exploding keeps the cooling hardware visible (it flies apart with the cells); housing and wiring hide while exploded.</div>';
+  box.style.display = 'block';
+}
+
+// Rules tab: the market release checklist (standards per application and
+// market, with chemistry-market gates like China's e-bus rule), the EU
+// 2023/1542 timeline and what applies to the design on screen.
+function renderEu() {
+  $('euDisclaimer').textContent = EU_DISCLAIMER;
+  $('euTimeline').innerHTML = EU_TIMELINE.map((e) =>
+    `<div class="stat"><span>${esc(e.date)}</span><b style="font-weight:normal">${esc(e.what)}</b></div>`).join('');
+  renderMarketChecklist();
+  if (!lastSummary) { $('euBody').innerHTML = '<div class="empty">—</div>'; return; }
+  const checks = euChecks({
+    energyWh: lastSummary.energyWh,
+    application: state.presetId || 'custom',
+    chemistry: cell().chemistry,
+    commsPrimary: lastArch?.comms?.primary,
+  });
+  $('euBody').innerHTML = checks.map(findingHTML).join('');
+}
+
+function renderMarketChecklist() {
+  const box = $('mktBody');
+  const app = state.presetId;
+  if (!app) {
+    box.innerHTML = '<div class="empty">Pick an application on the Usage tab — the checklist is per application class.</div>';
+    return;
+  }
+  const cl = releaseChecklist({ market: state.marketId, application: app, chemistry: cell().chemistry });
+  const scopeChip = (s) => ({
+    mandatory: '<span class="chip fail">mandatory</span>',
+    expected: '<span class="chip warn">expected</span>',
+    practice: '<span class="chip info">practice</span>',
+    blocker: '<span class="chip fail">blocker</span>',
+    pass: '<span class="chip pass">pass</span>',
+    note: '<span class="chip info">note</span>',
+  })[s] || '';
+  // Chemistry-market gates first — a blocker must never hide below the fold.
+  const ruleHtml = cl.rules.map((r) => `
+    <div class="finding ${r.scope === 'blocker' ? 'fail' : r.scope === 'pass' ? 'pass' : 'warn'}">
+      <div class="t">${scopeChip(r.scope)} ${esc(r.title)}</div>
+      <div class="d">${esc(r.note)}</div>
+      <div class="r">${esc(r.code)}</div>
+    </div>`).join('');
+  const itemHtml = cl.items.map((i) => `
+    <div class="stat"><span>☐ <b>${esc(i.code)}</b></span>
+      <b style="font-weight:normal">${scopeChip(i.scope)} ${esc(i.title)}${i.note ? ` <span style="color:var(--muted)">— ${esc(i.note)}</span>` : ''}</b></div>`).join('');
+  box.innerHTML = ruleHtml + itemHtml + `<div class="hint">${esc(cl.note)}</div>`;
+}
+
+// Interactive training: walks the REAL UI, one step per tab, in two tracks
+// (simple clicks vs advanced levers) so the process never confuses anyone.
+let trainTrack = null;
+let trainStep = 0;
+
+function startTraining(trackId) {
+  trainTrack = TRAINING_TRACKS[trackId];
+  trainStep = 0;
+  showTrainStep();
+}
+
+function showTrainStep() {
+  const card = $('trainCard');
+  if (!trainTrack) { card.style.display = 'none'; return; }
+  const steps = trainTrack.steps;
+  const st = steps[trainStep];
+  document.querySelector(`#tabs .tab[data-tab="${st.tab}"]`)?.click();
+  card.style.display = 'block';
+  $('trainTitle').textContent = st.title;
+  $('trainText').textContent = st.text;
+  $('trainProg').textContent = `${trainStep + 1}/${steps.length}`;
+  $('trainBack').style.visibility = trainStep === 0 ? 'hidden' : 'visible';
+  $('trainNext').textContent = trainStep === steps.length - 1 ? 'Finish ✓' : 'Next →';
+}
+
+function bindTraining() {
+  $('btnTrain').onclick = () => {
+    // Track chooser inside the same card — one decision, no modal maze.
+    trainTrack = null;
+    const card = $('trainCard');
+    card.style.display = 'block';
+    $('trainTitle').textContent = 'Training — pick your track';
+    $('trainProg').textContent = '';
+    $('trainText').innerHTML = '';
+    const wrap = document.createElement('div');
+    const b1 = document.createElement('button');
+    b1.className = 'btn primary'; b1.style.cssText = 'width:100%;margin-bottom:6px';
+    b1.textContent = `🟢 ${TRAINING_TRACKS.simple.name}`;
+    b1.onclick = () => startTraining('simple');
+    const b2 = document.createElement('button');
+    b2.className = 'btn'; b2.style.cssText = 'width:100%';
+    b2.textContent = `🔵 ${TRAINING_TRACKS.advanced.name}`;
+    b2.onclick = () => startTraining('advanced');
+    $('trainText').append(wrap, b1, b2);
+    $('trainBack').style.visibility = 'hidden';
+    $('trainNext').textContent = 'Close';
+  };
+  $('trainNext').onclick = () => {
+    if (!trainTrack) { $('trainCard').style.display = 'none'; return; }
+    if (trainStep >= trainTrack.steps.length - 1) {
+      $('trainCard').style.display = 'none'; trainTrack = null; return;
+    }
+    trainStep++; showTrainStep();
+  };
+  $('trainBack').onclick = () => { if (trainStep > 0) { trainStep--; showTrainStep(); } };
+  $('trainExit').onclick = () => { $('trainCard').style.display = 'none'; trainTrack = null; };
+  $('segMarket').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    state.marketId = b.dataset.mkt;
+    $('segMarket').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    renderMarketChecklist();
+  });
+}
+
+const findingHTML = (x) => `
+  <div class="finding ${x.severity}">
+    <div class="t"><span class="chip ${x.severity}">${x.severity}</span> ${esc(x.title)}</div>
+    <div class="d">${esc(x.detail)}</div>
+    <div class="r">${esc(x.ref || 'engineering practice')}${x.category ? ' · ' + esc(x.category) : ''}</div>
+  </div>`;
 
 function initCellSelect() {
   const sel = $('selCell');
@@ -202,9 +354,10 @@ function applyPreset(pr) {
     $('fitY').value = pr.maxDimsMm.y;
     $('fitZ').value = pr.maxDimsMm.z;
   }
-  // Each application carries its OWN characteristic load shape (a UPS is not
-  // a scaled e-bike); selecting the application selects the profile and
-  // derives the power requirements from it (RMS -> continuous, peak -> peak).
+  // Each application carries its OWN characteristic load shape (a truck-like
+  // van is not a rooftop solar plant), plus a short list of alternates the
+  // customer can switch between — the dropdown regroups per application.
+  rebuildProfileSelect(pr.id);
   const prof = profileForApp(pr.id);
   if (prof) {
     state.profileId = prof.id;
@@ -223,16 +376,42 @@ function currentProfile() {
   return state.profileId ? profileById(state.profileId) : null;
 }
 
-function initProfiles() {
+// Regroups the profile dropdown around the chosen application: its
+// recommended shapes first (default on top), everything else still one
+// click away, the customer's upload always last.
+function rebuildProfileSelect(appId) {
   const sel = $('selProfile');
-  const opt = (v, label) => {
+  const cur = sel.value;
+  sel.innerHTML = '';
+  const group = (label) => {
+    const g = document.createElement('optgroup');
+    g.label = label;
+    sel.appendChild(g);
+    return g;
+  };
+  const opt = (parent, v, label) => {
     const o = document.createElement('option');
     o.value = v; o.textContent = label;
-    sel.appendChild(o);
+    (parent || sel).appendChild(o);
   };
-  opt('', 'None — type the power numbers below');
-  for (const pr of LOAD_PROFILES) opt(pr.id, pr.name);
-  opt('upload', 'Custom — upload CSV (time_s, power_W)…');
+  opt(null, '', 'None — type the power numbers below');
+  const rec = appId ? profilesForApp(appId) : [];
+  if (rec.length) {
+    const appName = PRESETS.find((p) => p.id === appId)?.name || appId;
+    const g = group(`Recommended for ${appName}`);
+    for (const pr of rec) opt(g, pr.id, pr.name);
+  }
+  const others = LOAD_PROFILES.filter((pr) => !rec.includes(pr));
+  const g2 = group(rec.length ? 'Other shapes' : 'Profiles');
+  for (const pr of others) opt(g2, pr.id, pr.name);
+  if (customProfile) opt(null, 'custom', customProfile.name);
+  opt(null, 'upload', 'Custom — upload CSV (time_s, power_W)…');
+  if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+}
+
+function initProfiles() {
+  const sel = $('selProfile');
+  rebuildProfileSelect(null);
   sel.onchange = () => {
     if (sel.value === 'upload') { $('profileFile').click(); return; }
     state.profileId = sel.value || null;
@@ -249,19 +428,29 @@ function initProfiles() {
       customProfile = parseProfileCSV(await file.text());
       state.profileId = 'custom';
       state.profileScaleW = customProfile.uploadedPeakW;
-      const sel2 = $('selProfile');
-      if (![...sel2.options].some((o) => o.value === 'custom')) {
-        const o = document.createElement('option');
-        o.value = 'custom'; o.textContent = customProfile.name;
-        sel2.insertBefore(o, sel2.querySelector('option[value="upload"]'));
-      }
-      sel2.value = 'custom';
+      rebuildProfileSelect(state.presetId);
+      $('selProfile').value = 'custom';
       applyProfileToRequirements();
     } catch (e) {
       $('profileStatsLine').innerHTML = `<span style="color:var(--missing)">✗ ${esc(e.message)}</span>`;
     }
     $('profileFile').value = '';
     renderProfile();
+  };
+  // The obvious path for "I have my own measurements": one button, one
+  // sample file showing the exact format.
+  $('btnProfileUpload').onclick = () => $('profileFile').click();
+  $('btnProfileSample').onclick = () => {
+    const csv = 'time_s,power_W\n' +
+      [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        .map((t) => `${t},${[120, 450, 890, 1200, 300, -200, 640, 980, 210, 60][t]}`)
+        .join('\n') + '\n';
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'load-profile-sample.csv';
+    a.click();
+    URL.revokeObjectURL(a.href);
   };
   $('btnProfileApply').onclick = () => { applyProfileToRequirements(); renderProfile(); };
 }
@@ -347,6 +536,7 @@ function bindControls() {
     document.querySelectorAll('.tabpane').forEach((p) =>
       p.classList.toggle('active', p.id === `pane-${t.dataset.tab}`));
     if (t.dataset.tab === 'results') renderResults();
+    if (t.dataset.tab === 'eu') renderEu();
     updateFlowBar(t.dataset.tab);
   });
   buildFlowBar();
@@ -464,11 +654,47 @@ function bindControls() {
     $('segIso').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
     runArchitecture();
   });
-  for (const id of ['archCh', 'archCap', 'archTpre', 'archRep', 'archTs']) {
-    $(id).onchange = runArchitecture;
+  // Architecture assumptions and the advanced duty inputs feed the
+  // Electrical pane and the cost model, so a change re-runs the full audit.
+  for (const id of ['archCh', 'archCap', 'archTpre', 'archRep', 'archTs', 'rqRacks', 'rqDod']) {
+    $(id).onchange = recompute;
   }
+  // Climate & season: the picker fills the env-temp window; the design case
+  // is "All year" (the full span), a season button shows what that season
+  // does to the system temperature.
+  $('selClimate').onchange = () => { state.climateId = $('selClimate').value; applySeason(); };
+  $('segSeason').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    state.seasonId = b.dataset.season;
+    $('segSeason').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    applySeason();
+  });
   $('btnExport').onclick = exportJSON;
   $('btnTheme').onclick = toggleTheme;
+}
+
+function applySeason() {
+  const cl = climateById(state.climateId);
+  if (!cl) return;
+  const band = state.seasonId === 'all' ? climateSpan(cl) : cl.seasons[state.seasonId];
+  if (band) {
+    $('rqTlo').value = band[0];
+    $('rqThi').value = band[1];
+  }
+  recompute(); // env window feeds the standards + thermal checks directly
+}
+
+function renderSeasonTable() {
+  const box = $('seasonTable');
+  if (!box) return;
+  const cl = climateById(state.climateId);
+  if (!cl || !lastSummary) { box.innerHTML = ''; return; }
+  const rows = seasonalOutlook(cl, cell(), lastAnalysis?.totals?.tempRiseContC ?? null);
+  const cap = (s) => s[0].toUpperCase() + s.slice(1);
+  box.innerHTML = rows.map((r) => `
+    <div class="stat"><span>${cap(r.season)} · ${r.ambientC[0]}…${r.ambientC[1]} °C ambient</span>
+      <b><span class="chip ${r.severity}">${r.severity}</span>
+      system ~${Math.round(r.systemHiC)} °C${r.flags.length ? ` — ${esc(r.flags[0])}` : ''}</b></div>`).join('') +
+    `<div class="hint">System temperature = seasonal ambient high + the pack's ~${f1(lastAnalysis?.totals?.tempRiseContC ?? 0)} °C heat rise at continuous load.</div>`;
 }
 
 function readNumbers() {
@@ -580,7 +806,7 @@ function wizardStep3() {
       vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
       energyWh: (num('rqWh') ?? 0) > 0 ? num('rqWh') : null,
       contPowerW: num('rqPc'),
-      cyclesPerYear: num('rqCy'), targetYears: num('rqYr'),
+      cyclesPerYear: num('rqCy'), targetYears: num('rqYr'), dod: currentDod(),
       costBasis: 'tco',
       weights: { energy: 5, cost: 3, mass: 2 },
     },
@@ -767,13 +993,13 @@ function currentGridFactor() {
 function currentReportData() {
   const c = cell();
   const nv = (id) => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : null; };
-  const usage = { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr') };
+  const usage = { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr'), dod: currentDod() };
   const gf = currentGridFactor();
   const costM = costModel(c, lastSummary.cellCount, lastSummary.energyWh, usage);
   const co2M = co2Model({
     cell: c, energyWh: lastSummary.energyWh,
     cyclesPerYear: usage.cyclesPerYear, targetYears: usage.targetYears,
-    gridGPerKWh: gf.g,
+    gridGPerKWh: gf.g, dod: usage.dod,
   });
   const engFindings = lastAnalysis
     ? ['mechanical', 'thermal', 'electrical', 'safety'].flatMap((k) => lastAnalysis.perspectives[k] || [])
@@ -790,7 +1016,7 @@ function currentReportData() {
     gridLabel: gf.label,
     usage,
     selection: selComponents(),
-    findings: [...engFindings, ...lastFindings],
+    findings: [...engFindings, ...lastArchFindings, ...lastFindings],
     sensitivity: sensitivityAnalysis({
       cell: c, n: lastSummary.cellCount, energyWh: lastSummary.energyWh, usage,
     }, 20),
@@ -1154,6 +1380,8 @@ function recompute() {
   }
   runAnalysis();
   renderStats();
+  renderCompLegend();
+  if (document.querySelector('#pane-eu.active')) renderEu();
   saveHash();
 }
 
@@ -1194,7 +1422,7 @@ function renderStats() {
   {
     const nv = (id) => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : null; };
     const cm = costModel(c, S.cellCount, S.energyWh,
-      { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr') });
+      { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr'), dod: currentDod() });
     if (cm.upfrontUSD != null || cm.usdPerKWhDelivered != null) {
       rows.push(['sec', 'Cost (cells, estimate)']);
       if (cm.upfrontUSD != null) rows.push(['Upfront', `~$${f0(cm.upfrontUSD)} · ${f0(cm.usdPerKWhCap)} $/kWh`]);
@@ -1268,10 +1496,16 @@ function runAnalysis() {
     lastAnalysis = null;
   }
 
+  // The architecture is part of the electrical picture, not a separate
+  // world: compute it first, then fold its findings into the Electrical
+  // pane, the pass/fail badge and the report.
+  runArchitecture();
+  lastArchFindings = archElectricalFindings();
+
   const perspectives = lastAnalysis?.perspectives || {};
   const engFindings = ['mechanical', 'thermal', 'electrical', 'safety']
     .flatMap((k) => perspectives[k] || []);
-  const all = [...engFindings, ...lastFindings];
+  const all = [...engFindings, ...lastArchFindings, ...lastFindings];
   const nFail = all.filter((x) => x.severity === 'fail').length;
   const nWarn = all.filter((x) => x.severity === 'warn').length;
   const badge = $('stdBadge');
@@ -1291,12 +1525,60 @@ function runAnalysis() {
   };
   renderPane('anMech', perspectives.mechanical);
   renderPane('anTherm', perspectives.thermal);
-  renderPane('anElec', perspectives.electrical);
+  renderPane('anElec', [...(perspectives.electrical || []), ...lastArchFindings]);
   renderPane('anSafe', perspectives.safety);
   $('findings').innerHTML = lastFindings.map(findingHtml).join('');
   $('stdList').innerHTML = STANDARDS_INFO.map((s) =>
     `<div style="margin-bottom:4px"><b>${esc(s.code)}</b> — ${esc(s.title)}</div>`).join('');
-  runArchitecture();
+  renderSeasonTable();
+}
+
+// The architecture seen through the Electrical perspective: droop with the
+// interconnect lump, the isolation floor, the precharge necessity and the
+// communication bus the application expects — folded into the same audit
+// list as the busbar/creepage findings so nothing lives in a silo.
+function archElectricalFindings() {
+  const A = lastArch, S = lastSummary;
+  if (!A || !S) return [];
+  const out = [];
+  const R = A.resistance;
+  if (R.totalMOhm != null && R.droopVAtCont != null) {
+    const pct = (R.droopVAtCont / S.nominalV) * 100;
+    out.push({
+      severity: pct > 8 ? 'warn' : 'info',
+      title: 'Voltage droop with interconnect resistance',
+      detail: `R_pack ≈ ${f1(R.totalMOhm)} mΩ (cells ${f1(R.cellsMOhm)} + interconnect ${f0(R.interconnectMOhm)} mΩ) drops ~${f1(R.droopVAtCont)} V (${f1(pct)}% of nominal) at max continuous current — busbars, joints and contactors must be sized for it.`,
+      ref: 'R_pack = S·R_cell/P + R_interconnect', category: 'architecture',
+    });
+  }
+  out.push(A.isolation ? {
+    severity: 'info',
+    title: `Isolation floor ${f0(A.isolation.floorKOhm)} kΩ (${A.isolation.standardLabel})`,
+    detail: `${A.isolation.ohmsPerVolt} Ω/V at ${f1(S.vMax)} V max. ${A.isolation.oemPracticeNote}`,
+    ref: A.isolation.standardLabel, category: 'architecture',
+  } : {
+    severity: 'pass',
+    title: 'Low voltage — no isolation-monitoring burden',
+    detail: 'The pack stays at or below the 60 V DC boundary, so HVIL and isolation monitoring are not required — the reason 48 V architectures exist.',
+    ref: 'UN ECE R100', category: 'architecture',
+  });
+  if (A.precharge) {
+    out.push({
+      severity: 'info',
+      title: 'Precharge path required for the capacitive DC link',
+      detail: `A ${f1(A.precharge.rOhm)} Ω resistor brings the link within ${A.precharge.closeGapV} V in ${A.precharge.timeToCloseS} s before the main positive contactor closes — without it the contacts see a near-short inrush on every start.`,
+      ref: 'τ = RC · E = ½CV²', category: 'architecture',
+    });
+  }
+  if (A.comms) {
+    out.push({
+      severity: 'info',
+      title: `Communication: ${A.comms.primary}`,
+      detail: `${A.comms.note}${A.comms.alternates?.length ? ` Alternates: ${A.comms.alternates.join('; ')}.` : ''}`,
+      ref: 'application practice', category: 'architecture',
+    });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -1315,6 +1597,10 @@ function archOptions() {
     prechargesPerHour: n('archRep', 4),
     cellsPerTempSensor: Math.max(1, Math.round(n('archTs', 6))),
     targetEnergyWh: isFinite(target) && target > 0 ? target : null,
+    // BESS containers, ships and buses often fix the stack count up front —
+    // an explicit racks input (Advanced settings) overrides the auto plan.
+    racksOverride: (() => { const v = parseFloat($('rqRacks').value); return isFinite(v) && v >= 1 ? v : null; })(),
+    appId: state.presetId,
   };
 }
 
@@ -1345,11 +1631,16 @@ function renderArchitecture() {
   if (!P.virtual) {
     rows.push(stat('Per module', `${f1(P.moduleVoltageMaxV)} V max · ${fWh(P.moduleEnergyWh)} · ${f1(P.moduleMassCellsKg)} kg cells · ${P.senseWiresPerModule} sense wires`));
   }
-  if (A.system && A.system.racks > 1) {
-    rows.push(stat('System scale', `your ${fWh(A.system.targetWh)} target needs ${A.system.racks} packs (racks) of this design in parallel — this tool models ONE pack; each rack keeps its own contactors, fuse and BMS string`));
+  if (A.system && (A.system.racks > 1 || A.system.overridden)) {
+    rows.push(stat('System scale', A.system.overridden
+      ? `you set ${A.system.racks} stacks — ${fWh(A.system.totalWh)} total${A.system.targetWh ? ` (${f0(A.system.coveragePct)}% of your ${fWh(A.system.targetWh)} target)` : ''}; this tool models ONE stack, each with its own contactors, fuse and BMS string`
+      : `your ${fWh(A.system.targetWh)} target needs ${A.system.racks} packs (racks) of this design in parallel — this tool models ONE pack; each rack keeps its own contactors, fuse and BMS string`));
   }
   rows.push(stat('Voltage class', `${esc(A.voltageClass.label)}`));
   rows.push(stat('BMS', `${esc(B.topologyInfo?.name || B.topology)} · ${B.afeTotal}× AFE (${B.channelsPerIc} ch) · ${B.senseWiresTotal} sense wires · ${B.tempSensors} temp sensors (1:${B.cellsPerTempSensor})`));
+  if (A.comms) {
+    rows.push(stat('Communication', `${esc(A.comms.primary)}${A.comms.alternates?.length ? ` · alt: ${esc(A.comms.alternates.join('; '))}` : ''}`));
+  }
   if (PR) {
     rows.push(stat('Precharge', `${f1(PR.rOhm)} Ω · within ${PR.closeGapV} V in ${PR.timeToCloseS} s · ${f0(PR.energyPerEventJ)} J/event · avg ${f1(PR.avgPowerDuringEventW)} W during event`));
     rows.push(stat('Sequence', PR.sequence.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')));
@@ -1363,10 +1654,15 @@ function renderArchitecture() {
   if (R.totalMOhm != null) {
     rows.push(stat('Pack resistance', `~${f1(R.totalMOhm)} mΩ (cells ${f1(R.cellsMOhm)} + interconnect ${f0(R.interconnectMOhm)}) · droop ~${f1(R.droopVAtCont)} V, loss ~${f0(R.lossWAtCont)} W at max cont.`));
   }
+  if (A.welding) {
+    rows.push(stat('Cell joining', `${esc(A.welding.primary)}<br>alt: ${esc(A.welding.alternates.join(' · '))}`));
+  }
   const notes = [
     ...(P.notes || []), ...(B.notes || []), ...(PR?.notes || []),
     A.dcdc.sizingNote, A.dcdc.chargingNote, K.lvNote,
-    A.isolation?.groundingNote,
+    A.isolation?.groundingNote, A.comms?.note,
+    ...(A.welding ? [...A.welding.cautions,
+      'Joining guidance per Lee, Kim, Hu, Cai & Abell — Joining Technologies for Automotive Li-Ion Battery Manufacturing (ASME MSEC2010-34168).'] : []),
   ].filter(Boolean);
   box.innerHTML = rows.join('') + notes.map(note).join('');
   drawArchDiagram($('archCanvas'), A, lastSummary);
@@ -1443,9 +1739,35 @@ function drawArchDiagram(canvas, A, S, forExport = false) {
   // DC-DC to LV aux.
   line(420, 190, 420, 215);
   boxAt(380, 215, 100, 28, 'DC-DC', `${A.dcdc.lvBusV} V aux`);
-  // BMS under the pack.
-  boxAt(10, 218, 140, 28, `BMS ${A.bms.topology}`, `${A.bms.afeTotal}× AFE`);
-  line(80, 210, 80, 218);
+  // The BMS graphic follows the chosen topology, so switching it visibly
+  // changes the drawing: a sense-harness fan for centralized, one slave
+  // node per module chained to the master for daisy chain, dashed radio
+  // links for wireless.
+  const topo = A.bms.topology;
+  boxAt(10, 218, 96, 28, 'BMS master', `${A.bms.afeTotal}× AFE · ${topo}`);
+  const slotY = (i) => 70 + i * slotH + slotH / 2;
+  if (topo === 'centralized') {
+    // One board, a sense-wire fan to every group.
+    for (let i = 0; i < slots; i++) { line(142, slotY(i), 158, slotY(i)); line(158, slotY(i), 158, 232); }
+    line(106, 232, 158, 232);
+    g.fillStyle = mut; g.fillText(`sense harness (${A.bms.senseWiresTotal} wires)`, 164, 235);
+  } else {
+    // One slave AFE node per module.
+    for (let i = 0; i < slots; i++) { g.strokeStyle = acc; g.strokeRect(128, slotY(i) - 5, 12, 10); }
+    if (topo === 'wireless') {
+      g.setLineDash([2, 3]);
+      for (let i = 0; i < slots; i++) line(128, slotY(i), 60, 218);
+      g.setLineDash([]);
+      g.fillStyle = mut; g.fillText('wireless links — no harness', 112, 235);
+    } else {
+      // Daisy chain: master up through every slave in order.
+      g.strokeStyle = mut; g.beginPath(); g.moveTo(58, 218);
+      g.lineTo(134, slotY(slots - 1) + 5);
+      for (let i = slots - 1; i >= 0; i--) g.lineTo(134, slotY(i));
+      g.stroke();
+      g.fillStyle = mut; g.fillText(`daisy chain (${A.bms.daisyNodes} nodes)`, 112, 235);
+    }
+  }
   // Closing order.
   g.fillStyle = mut;
   g.fillText('close: K− → K pre → K+ (link within ~10 V) → open K pre', 180, 245);
@@ -1453,6 +1775,12 @@ function drawArchDiagram(canvas, A, S, forExport = false) {
 
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (ch) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
+
+// Usable depth of discharge from Advanced settings, as a 0–1 fraction.
+function currentDod() {
+  const v = parseFloat($('rqDod').value);
+  return isFinite(v) && v >= 10 && v <= 100 ? v / 100 : 0.8;
+}
 
 // ---------------------------------------------------------------------------
 // Suggestions ("from usage")
@@ -1538,7 +1866,7 @@ function runMaxFill() {
     vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
     energyWh: (num('rqWh') ?? 0) > 0 ? num('rqWh') : null,
     contPowerW: num('rqPc'),
-    cyclesPerYear: num('rqCy'), targetYears: num('rqYr'),
+    cyclesPerYear: num('rqCy'), targetYears: num('rqYr'), dod: currentDod(),
     costBasis: $('segCost').querySelector('.active')?.dataset.cost || 'tco',
     weights: {
       energy: parseFloat($('wEnergy').value),

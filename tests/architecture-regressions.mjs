@@ -7,6 +7,7 @@ import {
   divisors, modulePartition, systemPlan, voltageClass, bmsArchitecture,
   prechargeDesign, contactorsAndFuse, isolationRequirement, dcdcConverter,
   packResistanceModel, buildArchitecture, DAISY_NODE_LIMIT,
+  commsForApp, weldingForCell,
 } from '../js/architecture.js';
 import { maxFill } from '../js/optimizer.js';
 
@@ -190,6 +191,56 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   const firstMiss = reachable.findIndex((r) => !r.meetsEnergy);
   const lastMeet = reachable.map((r) => r.meetsEnergy).lastIndexOf(true);
   ok(firstMiss === -1 || firstMiss > lastMeet, 'meets-target candidates rank first');
+}
+
+// --- communication standards per application --------------------------------
+{
+  ok(/CAN/.test(commsForApp('ev').primary) && /UDS|14229/.test(commsForApp('ev').primary),
+    'automotive: CAN + UDS diagnostics');
+  ok(commsForApp('ev').alternates.some((a) => /J1939/.test(a)), 'heavy trucks: J1939 named for the EV family');
+  ok(/CANopen/.test(commsForApp('robot').primary), 'AGV: CANopen primary');
+  ok(commsForApp('robot').alternates.some((a) => /J1939/.test(a)), 'lift trucks inherit the J1939 bus');
+  ok(/Modbus/.test(commsForApp('solar-ess').primary), 'stationary storage: Modbus/SunSpec');
+  ok(/NMEA/.test(commsForApp('marine').primary), 'marine: NMEA 2000');
+  ok(commsForApp('does-not-exist').primary.length > 0, 'unknown app falls back honestly');
+}
+
+// --- welding / joining per cell format --------------------------------------
+{
+  ok(/Resistance spot/i.test(weldingForCell({ form: 'cylindrical' }).primary), 'cylindrical: resistance spot weld');
+  ok(/Laser/i.test(weldingForCell({ form: 'prismatic' }).primary), 'prismatic: laser weld to terminal');
+  ok(/Ultrasonic/i.test(weldingForCell({ form: 'pouch' }).primary), 'pouch: ultrasonic tab weld');
+  ok(weldingForCell({ form: 'cylindrical' }).alternates.some((a) => /wire bond/i.test(a)),
+    'cylindrical lists the wire-bond (per-cell fuse) route');
+  ok(weldingForCell({ form: 'unknown' }) === null, 'unknown form returns null, not a guess');
+}
+
+// --- customer-set stack count (BESS / ship / bus scale) ---------------------
+{
+  const summary = {
+    cellCount: 192, nominalV: 96 * cyl.nominalV, vMax: 96 * cyl.vMax, vMin: 96 * cyl.vMin,
+    energyWh: 192 * cyl.nominalV * cyl.capacityAh, maxContCurrentA: 2 * cyl.maxContDischargeA,
+  };
+  const A = buildArchitecture({
+    cell: cyl, s: 96, p: 2, summary,
+    options: { isolationStandard: 'ece-r100', targetEnergyWh: 50_000, racksOverride: 8 },
+  });
+  ok(A.system.overridden === true && A.system.racks === 8, 'explicit stack count wins over auto');
+  ok(Math.abs(A.system.totalWh - 8 * summary.energyWh) < 1e-6, 'total = racks × pack energy');
+  ok(Math.abs(A.system.coveragePct - (A.system.totalWh / 50_000) * 100) < 1e-9,
+    'coverage reported against the target when the stacks fall short');
+  const plenty = buildArchitecture({
+    cell: cyl, s: 96, p: 2, summary,
+    options: { isolationStandard: 'ece-r100', targetEnergyWh: 50_000, racksOverride: 20 },
+  });
+  ok(plenty.system.coveragePct === 100, 'coverage capped at 100% when the stacks exceed the target');
+  const auto = buildArchitecture({
+    cell: cyl, s: 96, p: 2, summary,
+    options: { isolationStandard: 'ece-r100', targetEnergyWh: 50_000 },
+  });
+  ok(!auto.system.overridden && auto.system.racks === Math.ceil(50_000 / summary.energyWh),
+    'no override -> auto rack count from the target');
+  ok(A.comms && A.welding, 'orchestrator carries comms and welding sections');
 }
 
 console.log(fails === 0 ? 'ARCHITECTURE REGRESSIONS PASSED' : `${fails} FAILURES`);

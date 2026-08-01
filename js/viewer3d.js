@@ -247,15 +247,24 @@ export class PackViewer {
       color: 0x3f7fd0, metalness: 0.75, roughness: 0.35,
     });
     const bottomY = -(L.inner.z / 2);
+    // Each mesh remembers where it lives assembled and which way it flies
+    // apart, so the exploded view keeps the selected components visible and
+    // identifiable instead of hiding them.
+    const remember = (mesh, exDir, exDist) => {
+      mesh.userData.basePos = mesh.position.clone();
+      mesh.userData.exDir = exDir;
+      mesh.userData.exDist = exDist;
+      g.add(mesh);
+    };
     if (viz === 'bottom') {
       const plate = new THREE.Mesh(new THREE.BoxGeometry(L.inner.x, 4, L.inner.y), plateMat);
       plate.position.set(0, bottomY - 2.5, 0);
-      g.add(plate);
+      remember(plate, new THREE.Vector3(0, -1, 0), L.inner.z * 0.7);
     } else if (viz === 'side') {
       for (const sx of [-1, 1]) {
         const plate = new THREE.Mesh(new THREE.BoxGeometry(4, L.inner.z, L.inner.y), plateMat);
         plate.position.set(sx * (L.inner.x / 2 + 2.5), 0, 0);
-        g.add(plate);
+        remember(plate, new THREE.Vector3(sx, 0, 0), L.inner.x * 0.55);
       }
     } else if (viz === 'between') {
       // Wall at the midpoint between each pair of adjacent rows.
@@ -266,6 +275,9 @@ export class PackViewer {
       for (let i = 1; i < rows.length; i++) {
         const wall = new THREE.Mesh(new THREE.BoxGeometry(L.inner.x - 1, h, t), plateMat);
         wall.position.set(0, 0, (rows[i - 1] + rows[i]) / 2);
+        // Ribbons live between rows: they track the rows' own spread.
+        wall.userData.basePos = wall.position.clone();
+        wall.userData.trackRows = true;
         g.add(wall);
       }
     }
@@ -295,10 +307,23 @@ export class PackViewer {
     }
     this._cells.instanceMatrix.needsUpdate = true;
     if (this._caps) this._caps.instanceMatrix.needsUpdate = true;
-    // Wiring, enclosure and cooling hardware only make sense assembled.
+    // Wiring and the enclosure only make sense assembled, but the selected
+    // cooling hardware stays VISIBLE while exploding — it flies apart with
+    // the cells so the customer can see which component is which.
     if (this._wire) this._wire.visible = this.showWiring && f < 0.05;
     if (this._encGroup) this._encGroup.visible = this.showEnclosure && f < 0.05;
-    if (this._compGroup) this._compGroup.visible = f < 0.05;
+    if (this._compGroup) {
+      this._compGroup.visible = true;
+      for (const child of this._compGroup.children) {
+        const u = child.userData;
+        if (!u?.basePos) continue;
+        if (u.trackRows) {
+          child.position.set(u.basePos.x, u.basePos.y, u.basePos.z * (1 + f * 0.9));
+        } else {
+          child.position.copy(u.basePos).addScaledVector(u.exDir, f * u.exDist);
+        }
+      }
+    }
   }
 
   _colorInstances() {
