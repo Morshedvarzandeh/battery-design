@@ -18,14 +18,22 @@ export const MARKETS = [
 
 // Application classes: road vehicles, light means of transport, stationary
 // storage, marine, portable/consumer, industrial trucks (AGV/forklift).
-const CLASS_OF_APP = {
+export const CLASS_OF_APP = {
   ev: 'vehicle', ebus: 'vehicle',
   ebike: 'lmt', escooter: 'lmt',
   'solar-ess': 'stationary', ups: 'stationary',
+  rv: 'auxiliary',
   marine: 'marine',
   robot: 'industrial', humanoid: 'industrial',
   drone: 'portable', powertool: 'portable', powerstation: 'portable', robovac: 'portable',
 };
+
+// The single source of "what kind of thing is this application" — every
+// module that filters by application (standards list, checklist, comms)
+// resolves through here so they can never disagree.
+export function appClassOf(appId) {
+  return CLASS_OF_APP[appId] || null;
+}
 
 const item = (code, title, scope, note) => ({ code, title, scope, note: note || '' });
 
@@ -125,6 +133,27 @@ const CHECKLISTS = {
     ],
     cn: [item('GB/T 27544', 'Industrial truck electrical requirements', 'expected')],
     intl: [item('IEC 61508', 'Functional safety baseline (SIL per risk graph)', 'expected')],
+  },
+  // Vehicle-installed house banks (RV/camper): not traction, not grid
+  // storage, not hand-portable — the drop-in 12/24/48 V class with its own
+  // rule set (vehicle EMC applies because it lives in a vehicle).
+  auxiliary: {
+    common: [
+      item('UN 38.3', 'Transport test report', 'mandatory'),
+      item('IEC 62619:2022', 'Industrial/large-format cell and pack safety', 'expected'),
+    ],
+    eu: [
+      item('UN ECE R10', 'Automotive EMC for equipment installed in vehicles', 'mandatory'),
+      item('CE (LVD/EMC)', 'System conformity for the charger/inverter combination', 'mandatory'),
+    ],
+    us: [
+      item('UL 1973', 'The listing drop-in house batteries actually certify to', 'expected'),
+      item('NFPA 1192 / RVIA', 'RV standard the installation must satisfy', 'expected'),
+    ],
+    cn: [
+      item('GB/T 36276', 'Storage-battery norm used as the reference (no RV-specific national battery rule)', 'practice'),
+    ],
+    intl: [item('IEC 62619:2022', 'Large-format safety baseline', 'expected')],
   },
   portable: {
     common: [

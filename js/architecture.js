@@ -74,6 +74,23 @@ export function modulePartition(s, p, cell, opts = {}) {
     };
   };
 
+  // Mechanics sometimes fix the module BEFORE the electronics: a 30S
+  // module at 16-channel AFEs simply needs TWO slave ICs. An explicit
+  // module size (any divisor of S) must be representable — the partition
+  // adapts the electronics to it, never silently re-shapes the module.
+  const ov = opts.sModOverride;
+  if (ov != null && ov !== 'auto') {
+    const sMod = Math.round(ov);
+    if (sMod >= 1 && s % sMod === 0) {
+      const nIcs = Math.ceil(sMod / channelsPerIc);
+      if (nIcs > 1) {
+        notes.push(`Each ${sMod}S module needs ${nIcs} AFE ICs at ${channelsPerIc} channels — multi-slave modules are normal when the mechanical module is fixed first.`);
+      }
+      return mk(sMod, p, false);
+    }
+    notes.push(`${ov}S does not divide ${s}S — the module series count must be a divisor of S (${divisors(s).join(', ')}); using the automatic partition instead.`);
+  }
+
   if (s <= channelsPerIc) {
     notes.push('One AFE IC senses the whole string — the module collapses to a virtual group (cell-to-pack). No physical module tier is required.');
     return mk(s, p, true);
@@ -464,7 +481,10 @@ export function commsForApp(appId) {
 // one design, in one object.
 // ---------------------------------------------------------------------------
 export function buildArchitecture({ cell, s, p, summary, options = {} }) {
-  const partition = modulePartition(s, p, cell, { channelsPerIc: options.channelsPerIc });
+  const partition = modulePartition(s, p, cell, {
+    channelsPerIc: options.channelsPerIc,
+    sModOverride: options.sModOverride,
+  });
   const vc = voltageClass(summary.vMax);
   const bms = bmsArchitecture({
     s, cellCount: summary.cellCount, partition,
@@ -472,12 +492,16 @@ export function buildArchitecture({ cell, s, p, summary, options = {} }) {
     channelsPerIc: options.channelsPerIc,
     cellsPerTempSensor: options.cellsPerTempSensor,
   });
-  const precharge = prechargeDesign({
+  // Integration: below the 60 V DC boundary the HV precharge chain is
+  // noise — LV packs use solid-state disconnects (the contactor section
+  // carries that note) — so the whole section is omitted, and the panel,
+  // diagram, report and findings all follow from this one decision.
+  const precharge = summary.vMax > 60 ? prechargeDesign({
     vPackMaxV: summary.vMax,
     linkCapUF: options.linkCapUF,
     targetTimeS: options.prechargeTimeS,
     prechargesPerHour: options.prechargesPerHour,
-  });
+  }) : null;
   const contactors = contactorsAndFuse({ contA: summary.maxContCurrentA, vMaxV: summary.vMax });
   // Below 60 V DC there is no isolation-monitoring burden — that is the
   // point of the LV boundary; above it the standard must be stated.

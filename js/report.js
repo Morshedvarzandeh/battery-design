@@ -123,6 +123,8 @@ export function buildReportHTML(R) {
     return `
   <h2 style="${h2}">Electrical architecture</h2>
   ${R.archPng ? `<img src="${R.archPng}" style="width:100%;max-width:640px;border:1px solid #ddd" alt="architecture diagram">` : ''}
+  ${R.bmsPng ? `<div style="font-size:11px;color:#666;margin:6px 0 2px">Inside the BMS — layer 2 (master internals + slave AFE ICs)</div>
+  <img src="${R.bmsPng}" style="width:100%;max-width:640px;border:1px solid #ddd" alt="BMS internal diagram">` : ''}
   ${table([
     row('Structure', P.virtual
       ? 'cell-to-pack — one virtual group, no physical module tier'

@@ -586,6 +586,8 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           pack → parallel racks for big systems, plus the BMS topology, precharge, contactors,
           fuse, DC-DC and isolation the customer needs around the cells.</div>
         <canvas id="archCanvas" height="250" style="width:100%;border:1px solid var(--line);border-radius:var(--r);margin:8px 0;background:var(--ground)"></canvas>
+        <label class="f">Inside the BMS — layer 2</label>
+        <canvas id="archBmsCanvas" height="250" style="width:100%;border:1px solid var(--line);border-radius:var(--r);margin:4px 0 8px;background:var(--ground)"></canvas>
         <label class="f">BMS topology</label>
         <div class="seg" id="segTopo">
           <button data-topo="auto" class="active">Auto</button>
@@ -608,8 +610,10 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           <div class="row3" style="margin-top:6px">
             <div><label class="f">Precharges/hour</label><input type="number" id="archRep" value="4" min="1"></div>
             <div><label class="f">Cells/temp sensor</label><input type="number" id="archTs" value="6" min="1"></div>
-            <div></div>
+            <div><label class="f">Module series (S_mod)</label><select id="archSmod"><option value="auto">auto</option></select></div>
           </div>
+          <div class="hint">Set S_mod when the mechanics fix the module first — a 30S module at
+            16-channel AFEs correctly gets 2 slave ICs.</div>
           <div class="hint">AFE ICs run 14–25 channels; the DC-link capacitance belongs to the load's
             inverter — replace the placeholder with its datasheet value. The precharge resistor is
             sized for the stated repetition rate.</div>

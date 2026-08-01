@@ -82,6 +82,22 @@ project's provenance-first datasheet pipeline.
   battery passport with LIVE SoH over UDS, recycled-content minimums,
   recovery targets vs recycling efficiency kept strictly apart) and "what
   applies to THIS design" checks. Guidance, not legal advice.
+- **Application integration** — selecting an application shapes everything
+  and omits what does not apply: the standards reference list filters to
+  the application class (a vacuum robot never advertises ECE R100; UN 38.3
+  transport always stays), low-voltage packs drop the HV precharge chain
+  for a solid-state disconnect, indoor machines auto-select the indoor
+  climate, and off-preference chemistries are visibly chipped on max-fill
+  cards. A dedicated CI suite (`tests/integration-regressions.mjs`) walks
+  every application × every module and FAILS when a new preset or standard
+  is added unclassified — coherence is enforced, not hoped for.
+- **BMS in two layers** — the system diagram shows the topology in context,
+  and a second "Inside the BMS" view shows the master's real contents (MCU,
+  comm interface, isolated supply, drivers, current sense, isolation
+  monitor) and every slave AFE IC with its links per topology. The module
+  series size (S_mod) is selectable from the divisors of S, so a
+  mechanically-fixed 30S module at 16-channel AFEs correctly carries TWO
+  slave ICs — the electronics adapt to the mechanics, never the reverse.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,
