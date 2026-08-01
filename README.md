@@ -81,8 +81,22 @@ view is a **final render**: it is only instantiated when you press
 
 ## Honesty rules
 
-- Every cell record carries `dataQuality` (`datasheet` vs `estimate`) and a
-  `sourceNote` saying exactly what was estimated.
+- Provenance is two fields, not one flag. `basis` says where the electrical
+  core came from — `contrib` (a contribution in the companion battery-data
+  repo, named by `contribUid`), `external_datasheet`, `teardown`,
+  `trade_press`, `composite` or `recalled` — and `inferredFields` lists what
+  was worked out rather than read. A cell can be sourced and still have
+  inferred dimensions; one flag could not say that, and it read the two apart:
+  cells with no document anywhere looked datasheet-grade while the
+  best-evidenced records here looked like estimates.
+- Fitting a cell into a bay is an EXACT test, not a sampled one. Corner and
+  midpoint sampling passes a cell that a wall runs straight through when the
+  wall falls between the probes; the packer placed such cells before this was
+  fixed. Rectangles test corner containment plus wall-edge intersection,
+  circles test distance to every edge.
+- Power is sized at the MINIMUM pack voltage. A constant-power load draws its
+  highest current at the bottom of the discharge, so sizing at nominal
+  under-sizes by vNom/vMin — about 1.44x for NMC.
 - Pack mass adds 8% for interconnects plus an aluminium-wall estimate, and
   the UI says so. DCIR is cells-only (interconnects excluded), labeled.
 - Standards output is engineering guidance derived from public standards —
@@ -90,11 +104,23 @@ view is a **final render**: it is only instantiated when you press
 - Hex (staggered) packing is only offered where it is geometrically real:
   upright cylinders. Lying cylinders and prismatic cells pack rectangularly.
 
+## Reading
+
+Background reading on cell and pack design that informed the engineering
+choices here. Cited as sources to read, not reproduced — nothing from these
+is copied into the repository.
+
+| Source | Useful for |
+|---|---|
+| [Battery Design](https://batterydesign.net/) | Working reference on cell formats, pack architecture, thermal and electrical design; broad and practical |
+| [battery-data](https://github.com/Morshedvarzandeh/battery-data) | The companion repo: extracted datasheet facts with conditions, page numbers and quotes. `basis: 'contrib'` records here point into it |
+
 ## Architecture
 
 | File | Role |
 |---|---|
 | `js/cells.js` | Cell library + chemistry data (self-contained, no imports) |
+| `js/cell-picker.js` | Filter the cell field, then compare survivors as the pack being designed |
 | `js/presets.js` | Application usage presets |
 | `js/standards.js` | Standards rule engine over a computed design context |
 | `js/components.js` | Component & materials catalog with supplier examples |

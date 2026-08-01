@@ -197,6 +197,34 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
 :root[data-theme="light"] .prov-good{color:#0b6e5f;border-color:#7fc9bc;background:#e6f4f1}
 :root[data-theme="light"] .prov-warn{color:#8a5a00;border-color:#e0c169;background:#fdf4e0}
 :root[data-theme="light"] .prov-estimate{color:#7a3b12;border-color:#e5b79c;background:#fbeee6}
+
+/* Cell picker: filter the field, then compare the survivors. */
+.pickpanel{margin-top:10px;border:1px solid var(--line);border-radius:8px;padding:10px}
+.pickfilters{display:grid;grid-template-columns:1fr;gap:6px}
+.pickfilters input,.pickfilters select{width:100%}
+.pickcount{font-size:11px;color:var(--muted);margin:8px 0 4px;letter-spacing:.03em;text-transform:uppercase}
+.picklist{max-height:290px;overflow:auto;border:1px solid var(--line);border-radius:6px}
+.pickrow{display:flex;align-items:center;gap:8px;padding:6px 8px;border-bottom:1px solid var(--line)}
+.pickrow:last-child{border-bottom:0}
+.pickrow.on{background:var(--accent-soft,rgba(14,156,130,.10))}
+.pickbox{display:flex;align-items:center}
+.pickname{flex:1;text-align:left;background:none;border:0;cursor:pointer;font:inherit;color:var(--ink);padding:0}
+.pickname .pn{display:block;font-size:12.5px;line-height:1.3}
+.pickname .pm{display:block;font-size:11px;color:var(--muted)}
+.pickname:hover .pn{text-decoration:underline}
+.pickhint{font-size:11px;color:var(--muted);margin-top:8px;line-height:1.5}
+.pickempty{font-size:11.5px;color:var(--muted);margin-top:8px}
+.pickcmp{margin-top:10px;border-top:1px solid var(--line);padding-top:10px}
+.pickcmphead{font-size:11px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);margin-bottom:6px}
+.pickcmp .tblwrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.cmptbl{border-collapse:collapse;font-size:11.5px;white-space:nowrap;min-width:100%}
+.cmptbl th,.cmptbl td{padding:4px 6px;border-bottom:1px solid var(--line);text-align:left}
+.cmptbl th:first-child,.cmptbl td:first-child{position:sticky;left:0;background:var(--surface);
+  padding-right:10px}
+.cmptbl .cmpname{font-size:11.5px}
+.cmptbl .num{text-align:right;font-variant-numeric:tabular-nums}
+.cmptbl .win{font-weight:700;color:var(--accent)}
+.cmpname{display:block;max-width:190px;overflow:hidden;text-overflow:ellipsis}
 </style>
 </head>
 <body>
@@ -296,6 +324,8 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         <h3>Cell</h3>
         <select id="selCell"></select>
         <div class="hint" id="cellHint"></div>
+        <button class="btn" id="btnBrowse" style="width:100%;margin-top:8px">Browse and compare cells</button>
+        <div id="cellPicker" class="pickpanel" hidden></div>
         <button class="btn" id="btnAddCell" style="width:100%;margin-top:8px">+ My cell isn’t listed — add it privately</button>
       </div>
       <div class="sec">
