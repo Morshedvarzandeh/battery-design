@@ -285,3 +285,191 @@ export function buildWordDocument(reportHTML, title) {
     <!--[if gte mso 9]><xml><w:WordDocument><w:View>Print</w:View></w:WordDocument></xml><![endif]-->
     </head><body>${reportHTML}</body></html>`;
 }
+
+// ---------------------------------------------------------------------------
+// The ARCHITECTURE report — a second, standalone document alongside the main
+// report: a layered HTML file where the reader SELECTS a layer (system →
+// pack → module → cell, plus control / thermal / sensors) and opens exactly
+// the level they care about. Self-contained: inline styles, embedded PNGs,
+// a few lines of vanilla JS — it works as a downloaded file with no server.
+// ---------------------------------------------------------------------------
+export function buildArchReportHTML(R) {
+  const td = 'padding:5px 10px;border-bottom:1px solid #e2e2e2;font-size:12.5px';
+  const th = td + ';text-align:left;color:#667;font-weight:normal;width:40%';
+  const row = (k, v) => v == null ? '' : `<tr><td style="${th}">${esc(k)}</td><td style="${td}"><b style="font-weight:600">${v}</b></td></tr>`;
+  const table = (rows) => `<table style="border-collapse:collapse;width:100%">${rows.join('')}</table>`;
+  const img = (src, alt) => src ? `<img src="${src}" style="width:100%;max-width:660px;border:1px solid #ddd;border-radius:6px;margin:8px 0" alt="${esc(alt)}">` : '';
+  const list = (items) => `<ul style="margin:4px 0 4px 18px;padding:0;line-height:1.7">${items.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>`;
+  const verdictBadge = (a) => a ? `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;background:${a.verdict === 'not-workable' ? '#fbe4e4' : a.verdict === 'workable-with-costs' || a.verdict === 'unproven' ? '#fdf3d7' : '#e0f0ea'};color:${a.verdict === 'not-workable' ? '#b3261e' : a.verdict === 'workable-with-costs' || a.verdict === 'unproven' ? '#8a6d1a' : '#0b6e5f'}">${esc(a.verdict)}</span> ${esc(a.why || '')}` : null;
+
+  const A = R.architecture, S = R.summary, T = R.thermal;
+  const P = A?.partition, B = A?.bms;
+
+  const layer = (id, icon, title, sub, body, open = false) => `
+  <details class="layer" id="L-${id}"${open ? ' open' : ''}>
+    <summary><span class="lic">${icon}</span><b>${esc(title)}</b><span class="lsub">${esc(sub)}</span></summary>
+    <div class="lbody">${body}</div>
+  </details>`;
+
+  const layers = [];
+
+  // --- Layer: system ---------------------------------------------------------
+  if (A) {
+    layers.push(layer('system', '🏭', 'System level', 'stacks, supervisor, EMS, communication', [
+      table([
+        row('Scale', A.system && (A.system.racks > 1 || A.system.overridden)
+          ? `${A.system.racks} packs (stacks/racks) in parallel strings · ${f1(A.system.totalWh / 1000)} kWh total — each string keeps its own contactors, fuse and BMS`
+          : 'single pack — no stack tier'),
+        row('Supervisory unit', A.supervisor ? `${esc(A.supervisor.name)}<br><span style="font-weight:normal">${esc(A.supervisor.role)}</span>` : null),
+        A.supervisor?.detail ? row('Supervisor functions', `<span style="font-weight:normal">${A.supervisor.detail.functions.map(esc).join('; ')}</span>`) : '',
+        A.supervisor?.detail ? row('Supervisor interfaces', `<span style="font-weight:normal">${A.supervisor.detail.interfaces.map(esc).join('; ')}</span>`) : '',
+        row('EMS architecture', A.emsArch ? `${esc(A.emsArch.chosen.name)}${A.emsArch.overridden ? ' (customer override)' : ''}<br><span style="font-weight:normal">${esc(A.emsArch.chosen.when || '')}</span>` : null),
+        R.archAssess?.ems ? row('EMS assessment', `<span style="font-weight:normal">${verdictBadge(R.archAssess.ems)}</span>`) : '',
+        row('Communication', A.comms ? `${esc(A.comms.primary)}<br><span style="font-weight:normal">${esc(A.comms.note || '')}</span>` : null),
+      ]),
+    ].join('\n'), true));
+  }
+
+  // --- Layer: pack (HV chain) ------------------------------------------------
+  if (A && S) {
+    const PR = A.precharge, K = A.contactors;
+    layers.push(layer('pack', '🔋', 'Pack level', 'HV chain — fuse, contactors, precharge, isolation, DC-DC', [
+      img(R.archPng, 'pack electrical architecture'),
+      table([
+        row('Configuration', `${S.s}S${S.p}P · ${S.cellCount} cells · ${f1(S.nominalV)} V nominal (${f1(S.vMin)}–${f1(S.vMax)} V)`),
+        row('Voltage class', A.voltageClass ? `${esc(A.voltageClass.label)} — <span style="font-weight:normal">${esc(A.voltageClass.note)}</span>` : null),
+        row('Main fuse', K?.fuse?.ratingA != null ? `${f0(K.fuse.ratingA)} A — <span style="font-weight:normal">${esc(K.fuse.rules[0])}</span>` : null),
+        row('Contactors', K ? (PR ? `${K.mains} main + ${K.precharge} precharge · ${f0(K.ratingA)} A class` : `<span style="font-weight:normal">${esc(K.lvNote || 'solid-state disconnect (≤60 V)')}</span>`) : null),
+        PR ? row('Precharge', `${f1(PR.rOhm)} Ω · τ = ${f1(PR.tauS)} s · close at ~${f1(PR.timeToCloseS)} s · peak ${f0(PR.peakCurrentA)} A / ${f0(PR.peakPowerW)} W`) : '',
+        PR ? row('Precharge sequence', `<span style="font-weight:normal">${PR.sequence.map(esc).join(' → ')}</span>`) : '',
+        row('Isolation', A.isolation ? `${f0(A.isolation.ohmsPerVolt)} Ω/V (${esc(A.isolation.standardLabel)}) — floor ${f1(A.isolation.floorKOhm)} kΩ` : null),
+        row('DC-DC (LV supply)', A.dcdc ? `${A.dcdc.lvBusV} V bus — <span style="font-weight:normal">${esc(A.dcdc.sizingNote)}</span>` : null),
+        row('Pack resistance', A.resistance?.totalMOhm != null ? `${f1(A.resistance.totalMOhm)} mΩ (cells ${f1(A.resistance.cellsMOhm)} + interconnect ${f1(A.resistance.interconnectMOhm)}) · ${f1(A.resistance.droopVAtCont)} V droop at max continuous` : null),
+      ]),
+    ].join('\n')));
+  }
+
+  // --- Layer: module ---------------------------------------------------------
+  if (P) {
+    layers.push(layer('module', '🧱', 'Module level', P.virtual ? 'cell-to-pack — no physical module tier' : `${P.nModules}× ${P.sMod}S${P.pMod}P`, [
+      table([
+        row('Partition', P.virtual
+          ? 'cell-to-pack: one virtual group — the pack structure carries the cells directly'
+          : `${P.nModules} modules of ${P.sMod}S${P.pMod}P · ${f1(P.moduleVoltageMaxV)} V max · ${f1(P.moduleEnergyWh / 1000)} kWh · ${f1(P.moduleMassCellsKg)} kg cells per module`),
+        row('Sense wiring', B ? `${B.senseWiresPerModule ?? B.senseWiresTotal} sense wires per ${P.virtual ? 'pack' : 'module'} · ${B.tempSensors} temperature sensors (1 per ${B.cellsPerTempSensor} cells)` : null),
+        row('Cell joining', A?.welding ? `${esc(A.welding.primary)}<br><span style="font-weight:normal">Alternates: ${A.welding.alternates.map(esc).join('; ')}</span>` : null),
+      ]),
+    ].join('\n')));
+  }
+
+  // --- Layer: cell -----------------------------------------------------------
+  if (R.cell && S) {
+    layers.push(layer('cell', '⚗️', 'Cell level', `${R.cell.name}`, [
+      table([
+        row('Cell', `${esc(R.cell.name)} — ${esc(R.cell.chemistry)}, ${esc(R.cell.form)} ${esc(R.cell.formFactor || '')}`),
+        row('Ratings', `${f1(R.cell.nominalV)} V · ${f1(R.cell.capacityAh)} Ah · ${f0(R.cell.massG)} g`),
+        row('Energy density (pack)', `${f0(S.whPerKg)} Wh/kg · ${f0(S.whPerL)} Wh/L`),
+      ]),
+    ].join('\n')));
+  }
+
+  // --- Layer: control hierarchy ----------------------------------------------
+  if (B) {
+    layers.push(layer('control', '🧠', 'Control hierarchy', 'BMS protects · BTMS moves heat · supervisor decides', [
+      img(R.bmsPng, 'BMS internals'),
+      table([
+        row('BMS topology', `${esc(B.topologyInfo?.name || B.topology)} · ${B.afeTotal}× AFE IC (${B.channelsPerIc} ch)`),
+        R.archAssess?.topo ? row('Topology assessment', `<span style="font-weight:normal">${verdictBadge(R.archAssess.topo)}</span>`) : '',
+        row('BTMS', T?.control ? `${esc(T.control.name)}<br><span style="font-weight:normal">${esc(T.control.note || '')}</span>` : 'none — no active thermal loop to run'),
+        row('Supervisor', A?.supervisor ? esc(A.supervisor.name) : null),
+      ]),
+    ].join('\n')));
+  }
+
+  // --- Layer: thermal system -------------------------------------------------
+  if (T) {
+    layers.push(layer('thermal', '🌡️', 'Thermal system', T.loop?.name || T.loopId, [
+      img(R.thermPng, 'thermal loop'),
+      table([
+        row('Loop', `${esc(T.loop?.name || T.loopId)}${T.ramAir ? ' — ram air (free airflow in use, nothing to buy)' : ''}`),
+        T.assessment ? row('Loop assessment', `<span style="font-weight:normal">${verdictBadge(T.assessment)}</span>`) : '',
+        row('Continuous heat', `${f0(T.heatContW)} W at ${f0(T.ambientC?.[1])} °C design ambient`),
+        T.flowLpm != null ? row('Coolant flow', `${f1(T.flowLpm)} L/min (ṁ = Q / (c_p·ρ·ΔT), ΔT ${T.coolant.dTdesignK} K)`) : '',
+        T.compressorKW != null ? row('Chiller', `${f1(T.chillerKW)} kW duty → ~${f1(T.compressorKW)} kW compressor at COP ${T.chillerCOP} — owned by the higher system`) : '',
+        row('Winter charging', T.heaterNeeded ? `heater branch required — design ambient falls below the ${f0(T.chargeFloorC)} °C charge floor` : 'no heater needed in the design climate'),
+      ]),
+      T.coolantSide ? `<div class="side"><b>Coolant side</b>${list(T.coolantSide)}</div>` : '',
+      T.refrigerantSide ? `<div class="side"><b>Refrigerant side</b>${list(T.refrigerantSide)}</div>` : '',
+      T.airSide ? `<div class="side"><b>Air side</b>${list(T.airSide)}</div>` : '',
+    ].join('\n')));
+  }
+
+  // --- Layer: sensors --------------------------------------------------------
+  if (R.sensors?.groups?.length) {
+    layers.push(layer('sensors', '📡', 'Sensor plan', `${R.sensors.groups.length} levels`, R.sensors.groups.map((gr) =>
+      `<div class="side"><b>${esc(gr.level)}</b>${list(gr.sensors.map((x) => `${x.name}${x.count != null ? ` — ${x.count}×` : ''}${x.note ? `. ${x.note}` : ''}`))}</div>`
+    ).join('\n')));
+  }
+
+  const navBtn = (id, label) => `<button data-l="${id}">${esc(label)}</button>`;
+  const nav = [
+    A ? navBtn('system', '🏭 System') : '',
+    A ? navBtn('pack', '🔋 Pack') : '',
+    P ? navBtn('module', '🧱 Module') : '',
+    navBtn('cell', '⚗️ Cell'),
+    B ? navBtn('control', '🧠 Control') : '',
+    T ? navBtn('thermal', '🌡️ Thermal') : '',
+    R.sensors?.groups?.length ? navBtn('sensors', '📡 Sensors') : '',
+  ].filter(Boolean).join('');
+
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Architecture report — ${esc(R.application)} ${S ? `${S.s}S${S.p}P` : ''}</title>
+<style>
+  body{font-family:'Segoe UI',Helvetica,Arial,sans-serif;color:#1a1a1a;margin:0;background:#f4f6f5}
+  .wrap{max-width:760px;margin:0 auto;padding:24px 16px 60px}
+  h1{font-size:21px;margin:0 0 2px}
+  .meta{color:#667;font-size:12px;margin-bottom:14px}
+  nav{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 14px}
+  nav button{border:1px solid #cfd6d3;background:#fff;border-radius:14px;padding:4px 12px;
+    font-size:12px;cursor:pointer}
+  nav button:hover{border-color:#0b6e5f;color:#0b6e5f}
+  .layer{background:#fff;border:1px solid #dfe4e2;border-radius:8px;margin-bottom:10px;padding:0}
+  .layer>summary{cursor:pointer;list-style:none;padding:12px 14px;font-size:14px}
+  .layer>summary::-webkit-details-marker{display:none}
+  .layer>summary::before{content:'▸';display:inline-block;margin-right:8px;color:#889;
+    transition:transform .15s}
+  .layer[open]>summary::before{transform:rotate(90deg)}
+  .lic{margin-right:6px}
+  .lsub{color:#667;font-size:12px;margin-left:10px;font-weight:normal}
+  .lbody{padding:2px 14px 14px}
+  .side{font-size:12.5px;margin-top:10px}
+  .foot{color:#667;font-size:11px;margin-top:18px;line-height:1.6}
+  @media print{nav{display:none}.layer{border:none;page-break-inside:avoid}}
+</style></head><body><div class="wrap">
+  <h1>Architecture report — layered</h1>
+  <div class="meta">${esc(R.date)} · application: ${esc(R.application)} · battery-design
+    (morshedvarzandeh.github.io/battery-design)</div>
+  <nav>${nav}<button data-l="__all">⤢ open all</button></nav>
+  ${layers.join('\n')}
+  <div class="foot">Select a layer above, or open the sections directly — each level of the
+  architecture (system → pack → module → cell, plus control, thermal and sensors) is a layer
+  of this report. ${esc(R.disclaimer || '')}</div>
+</div>
+<script>
+  document.querySelectorAll('nav button').forEach(function (b) {
+    b.onclick = function () {
+      if (b.dataset.l === '__all') {
+        var all = document.querySelectorAll('.layer');
+        var open = Array.prototype.some.call(all, function (d) { return !d.open; });
+        all.forEach(function (d) { d.open = open; });
+        return;
+      }
+      var d = document.getElementById('L-' + b.dataset.l);
+      if (d) { d.open = true; d.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+    };
+  });
+</script>
+</body></html>`;
+}

@@ -9,9 +9,10 @@ import { PRESETS } from './presets.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
 import { optimizeSpace, suggestDesigns, maxFill, costModel } from './optimizer.js';
 import { layoutPackBay, polygonBounds } from './bay.js';
-import { co2Model, GRID_FACTORS, buildReportHTML, buildWordDocument } from './report.js';
+import { co2Model, GRID_FACTORS, buildReportHTML, buildWordDocument, buildArchReportHTML } from './report.js';
+import { buildWorkbookXml, workbookFilename } from './excel.js';
 import {
-  loadMyCells, saveMyCells, normalizeCustomCell, validateCustomCell, buildMailto,
+  loadMyCells, saveMyCells, normalizeCustomCell, validateCustomCell, buildMailto, OWNER_EMAIL,
 } from './mycells.js';
 import { sensitivityAnalysis, priceFlipThreshold } from './sensitivity.js';
 import { parseOutline } from './bay-import.js';
@@ -25,13 +26,14 @@ import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
+import { stepsFor, needed, appNeeds } from './knowledge.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
 import {
   buildArchitecture, modulePartition, systemPlan, divisors,
   assessBmsTopology, assessEmsArchitecture,
 } from './architecture.js';
 import { DISCLAIMER, STANDARDS_INFO, standardsForClass, runChecks } from './standards.js';
-import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
+import { COMPONENT_CATEGORIES, COMPONENT_CLASSES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
 import { ANALYSIS_DISCLAIMER, analyze } from './engineering.js';
 import { PackViewer } from './viewer3d.js';
 import { PackViewer2D } from './viewer2d.js';
@@ -242,10 +244,15 @@ function renderMarketChecklist() {
 // Interactive training: walks the REAL UI, one step per tab, in two tracks
 // (simple clicks vs advanced levers) so the process never confuses anyone.
 let trainTrack = null;
+let trainSteps = [];
 let trainStep = 0;
 
 function startTraining(trackId) {
   trainTrack = TRAINING_TRACKS[trackId];
+  // The knowledge graph decides which steps THIS application needs — a
+  // wearable never meets the stacks or EMS steps, and the numbering the
+  // customer sees stays consecutive.
+  trainSteps = stepsFor(trainTrack, state.presetId);
   trainStep = 0;
   showTrainStep();
 }
@@ -253,15 +260,16 @@ function startTraining(trackId) {
 function showTrainStep() {
   const card = $('trainCard');
   if (!trainTrack) { card.style.display = 'none'; return; }
-  const steps = trainTrack.steps;
-  const st = steps[trainStep];
+  const st = trainSteps[trainStep];
   document.querySelector(`#tabs .tab[data-tab="${st.tab}"]`)?.click();
   card.style.display = 'block';
-  $('trainTitle').textContent = st.title;
+  // Titles carry their track-order number, but the graph may have dropped
+  // steps for this application — the progress chip is the numbering now.
+  $('trainTitle').textContent = st.title.replace(/^\d+[ab]? · /, '');
   $('trainText').textContent = st.text;
-  $('trainProg').textContent = `${trainStep + 1}/${steps.length}`;
+  $('trainProg').textContent = `${st.index}/${st.of}`;
   $('trainBack').style.visibility = trainStep === 0 ? 'hidden' : 'visible';
-  $('trainNext').textContent = trainStep === steps.length - 1 ? 'Finish ✓' : 'Next →';
+  $('trainNext').textContent = trainStep === trainSteps.length - 1 ? 'Finish ✓' : 'Next →';
 }
 
 function bindTraining() {
@@ -288,7 +296,7 @@ function bindTraining() {
   };
   $('trainNext').onclick = () => {
     if (!trainTrack) { $('trainCard').style.display = 'none'; return; }
-    if (trainStep >= trainTrack.steps.length - 1) {
+    if (trainStep >= trainSteps.length - 1) {
       $('trainCard').style.display = 'none'; trainTrack = null; return;
     }
     trainStep++; showTrainStep();
@@ -1062,6 +1070,26 @@ function bindResults() {
     a.click();
     URL.revokeObjectURL(a.href);
   };
+  const download = (content, name, type) => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([content], { type }));
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+  // The second report: the layered architecture document.
+  $('btnArchRep').onclick = () => {
+    if (!lastSummary) return;
+    download(buildArchReportHTML(currentReportData()),
+      `pack-architecture-${cell().id}-${state.s}s${state.p}p.html`, 'text/html');
+  };
+  // The engineer's workbook: live formulas + the feedback loop.
+  $('btnXls').onclick = () => {
+    if (!lastSummary) return;
+    const R = currentReportData();
+    download(buildWorkbookXml(R, { feedbackEmail: OWNER_EMAIL }),
+      workbookFilename(R), 'application/vnd.ms-excel');
+  };
 }
 
 function currentGridFactor() {
@@ -1352,7 +1380,24 @@ function initComponents() {
   const box = $('compPickers');
   box.innerHTML = '';
   const form = cell().form;
-  for (const { key, name } of COMPONENT_CATEGORIES) {
+  // One collapsible level per component CLASS (electrical / thermal /
+  // control / safety / mechanical). Pickers mount inside their class; the
+  // read-only members (contactors, precharge, BMS, EMS, standards…) are
+  // filled from the live architecture by renderCompClasses().
+  const bodies = {};
+  for (const k of COMPONENT_CLASSES) {
+    const det = document.createElement('details');
+    det.className = 'ccls';
+    det.id = `ccls-${k.id}`;
+    det.open = true;
+    det.innerHTML =
+      `<summary><b>${k.icon} ${esc(k.name)}</b> <span class="chip" id="cchip-${k.id}">—</span>` +
+      `<div class="hint" style="margin:2px 0 0">${esc(k.blurb)}</div></summary>` +
+      `<div class="cbody"></div><div class="cder" id="cder-${k.id}"></div>`;
+    bodies[k.id] = det.querySelector('.cbody');
+    box.appendChild(det);
+  }
+  for (const { key, name, cls } of COMPONENT_CATEGORIES) {
     const options = componentsFor(key, form);
     if (state.sel[key] && !options.some((o) => o.id === state.sel[key])) {
       state.sel[key] = DEFAULTS_BY_FORM[form][key] ?? options[0]?.id ?? null;
@@ -1387,8 +1432,87 @@ function initComponents() {
       }
       recompute();
     };
-    box.appendChild(sec);
+    (bodies[cls] || box).appendChild(sec);
   }
+  compClsApp = undefined; // force the open/collapse state to re-derive
+  renderCompClasses();
+}
+
+// Fill each component class with its live derived members and mark the
+// classes this application does NOT need — collapsed with the reason, not
+// shown every time. The knowledge graph decides; the live design refines.
+let compClsApp; // last app the open/collapsed state was derived for
+function renderCompClasses() {
+  if (!$('ccls-electrical')) return;
+  const app = state.presetId;
+  const appName = PRESETS.find((x) => x.id === app)?.name || 'this application';
+  const A = lastArch, T = lastTherm;
+  const row = (name, val, note) =>
+    `<div class="stat"><span>${esc(name)}</span><b style="font-weight:normal;text-align:right">${val}${note ? `<br><span style="color:var(--muted);font-size:11px">${esc(note)}</span>` : ''}</b></div>`;
+  const need = { electrical: true, control: true, safety: true, mechanical: true };
+  // The GRAPH decides the marking — that is the point: the visibility of a
+  // whole class traces to an edge in knowledge.js, not to whatever design
+  // happens to be on screen. (The Thermal tab itself always shows the
+  // physics of the live design.)
+  need.thermal = needed(app, 'btms-loop');
+
+  for (const k of COMPONENT_CLASSES) {
+    const chip = $(`cchip-${k.id}`);
+    const ok = need[k.id];
+    chip.textContent = ok ? 'needed' : `not needed for ${appName}`;
+    chip.className = `chip ${ok ? 'pass' : ''}`;
+    chip.title = ok ? '' : 'The knowledge graph has no edge from this application to this class — nothing here to choose.';
+  }
+  // Only clobber the user's open/collapse choices when the application (and
+  // with it the neededness) changes — not on every slider move.
+  if (compClsApp !== app) {
+    compClsApp = app;
+    for (const k of COMPONENT_CLASSES) $(`ccls-${k.id}`).open = need[k.id];
+  }
+
+  // --- electrical: architecture-derived members --------------------------
+  const el = [];
+  if (A) {
+    const hv = A.precharge != null;
+    el.push(row('Contactors', hv ? `${A.contactors.mains} main + ${A.contactors.precharge} precharge` : 'solid-state disconnect (≤60 V)',
+      A.contactors.ratingA != null ? `${f0(A.contactors.ratingA)} A class` : null));
+    if (hv) el.push(row('Precharge resistor', `${f1(A.precharge.rOhm)} Ω`, `τ = ${A.precharge.tauS.toFixed(2)} s · peak ${fPow(A.precharge.peakPowerW)}`));
+    if (A.contactors.fuse?.ratingA != null) el.push(row('Main fuse', `${f0(A.contactors.fuse.ratingA)} A`, '≈2× continuous current'));
+    el.push(row('DC-DC (LV supply)', `${A.dcdc.lvBusV} V bus`, A.dcdc.auxPowerW != null ? `${f0(A.dcdc.auxPowerW)} W aux budget` : 'size from the LV load list'));
+    if (A.comms?.primary) el.push(row('Communication bus', esc(A.comms.primary), 'application-standard interface'));
+  }
+  $('cder-electrical').innerHTML = el.length
+    ? `<div class="hint" style="margin-top:6px">Derived by the architecture (Analysis tab) — shown here so the class is complete:</div>${el.join('')}`
+    : '';
+
+  // --- control: the three-unit hierarchy ---------------------------------
+  const ct = [];
+  if (A) {
+    ct.push(row('BMS', esc(A.bms.topologyInfo?.name || A.bms.topology), `${A.bms.afeTotal} AFE${A.bms.afeTotal === 1 ? '' : 's'} · protects the cells`));
+    ct.push(row('BTMS', T?.control ? esc(T.control.name) : 'none — no active thermal loop', T?.control ? 'moves the heat' : null));
+    if (A.supervisor) ct.push(row('Supervisor', esc(A.supervisor.name), 'decides — the layer above the BMS/BTMS'));
+    if (A.emsArch) ct.push(row('EMS architecture', esc(A.emsArch.chosen.name), 'see Analysis → EMS'));
+  }
+  $('cder-control').innerHTML = ct.length
+    ? `<div class="hint" style="margin-top:6px">Control units are designed, not picked from a catalogue — details in Analysis / Thermal:</div>${ct.join('')}`
+    : '<div class="hint" style="margin-top:6px">Run a design to see the control units.</div>';
+
+  // --- safety: isolation + the standards gate ----------------------------
+  const sf = [];
+  if (A?.isolation) sf.push(row('Isolation monitoring', `${f0(A.isolation.ohmsPerVolt)} Ω/V floor`, esc(A.isolation.standardLabel)));
+  const cls = appClassOf(app);
+  if (cls) {
+    const stds = standardsForClass(cls);
+    if (stds?.length) sf.push(row('Standards', `${stds.length} apply to ${esc(appName)}`, 'full checklist in the Rules tab'));
+  }
+  $('cder-safety').innerHTML = sf.length
+    ? `<div class="hint" style="margin-top:6px">Beyond the vent hardware, safety is requirements:</div>${sf.join('')}`
+    : '';
+
+  // --- thermal: why it is / is not needed --------------------------------
+  $('cder-thermal').innerHTML = !need.thermal
+    ? `<div class="hint" style="margin-top:6px">${esc(appName)} sheds its heat without a pumped loop${T?.ramAir ? ' (ram air — free airflow in use)' : ''} — nothing to buy here. The pickers stay for what-if studies.</div>`
+    : (T?.loop ? `<div class="hint" style="margin-top:6px">Loop: ${esc(T.loop.name)} — the full system (pump, flow, chiller, BTMS) is designed in the Thermal tab.</div>` : '');
 }
 
 function syncInputs() {
@@ -1488,6 +1612,7 @@ function recompute() {
   renderCompLegend();
   renderThermal();
   renderSensors();
+  renderCompClasses();
   if (document.querySelector('#pane-eu.active')) renderEu();
   saveHash();
 }
@@ -1606,6 +1731,68 @@ function renderThermal() {
 // (the chiller couples into the HIGHER system's refrigerant circuit),
 // heater branch, and the BTMS ECU driving it all. Same enlarge/report
 // pattern as the architecture figures.
+// --- P&ID-style glyphs — a pump LOOKS like a pump (circle + impeller
+// triangle), a valve is a bowtie, a radiator has fins, a fuse is the IEC
+// rectangle-with-a-line — not just another rigid box.
+function glyphPump(g, cx, cy, r, stroke) {
+  g.strokeStyle = stroke;
+  g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke();
+  g.beginPath();
+  g.moveTo(cx - r * 0.45, cy - r * 0.62);
+  g.lineTo(cx + r * 0.78, cy);
+  g.lineTo(cx - r * 0.45, cy + r * 0.62);
+  g.closePath(); g.stroke();
+}
+function glyphFan(g, cx, cy, r, stroke) {
+  g.strokeStyle = stroke; g.fillStyle = stroke;
+  g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke();
+  for (let i = 0; i < 3; i++) {
+    g.save(); g.translate(cx, cy); g.rotate((i * 2 * Math.PI) / 3);
+    g.beginPath(); g.ellipse(0, -r * 0.5, r * 0.2, r * 0.38, 0, 0, Math.PI * 2); g.stroke();
+    g.restore();
+  }
+  g.beginPath(); g.arc(cx, cy, 1.6, 0, Math.PI * 2); g.fill();
+}
+function glyphValve3(g, cx, cy, sz, stroke) {
+  g.strokeStyle = stroke;
+  g.beginPath(); g.moveTo(cx - sz, cy - sz * 0.55); g.lineTo(cx, cy); g.lineTo(cx - sz, cy + sz * 0.55); g.closePath(); g.stroke();
+  g.beginPath(); g.moveTo(cx + sz, cy - sz * 0.55); g.lineTo(cx, cy); g.lineTo(cx + sz, cy + sz * 0.55); g.closePath(); g.stroke();
+  g.beginPath(); g.moveTo(cx - sz * 0.55, cy - sz); g.lineTo(cx, cy); g.lineTo(cx + sz * 0.55, cy - sz); g.closePath(); g.stroke();
+}
+function glyphRadiator(g, x, y, w, h, stroke) {
+  g.strokeStyle = stroke; g.strokeRect(x, y, w, h);
+  for (let fx = x + 8; fx < x + w - 5; fx += 9) {
+    g.beginPath(); g.moveTo(fx, y + 4); g.lineTo(fx, y + h - 4); g.stroke();
+  }
+}
+function glyphHX(g, x, y, w, h, stroke) {
+  g.strokeStyle = stroke; g.strokeRect(x, y, w, h);
+  const n = 4, step = (w - 8) / n;
+  g.beginPath(); g.moveTo(x + 4, y + h - 5);
+  for (let i = 0; i < n; i++) g.lineTo(x + 4 + step * (i + 0.5), i % 2 ? y + h - 5 : y + 5);
+  g.lineTo(x + w - 4, y + h - 5); g.stroke();
+}
+function zigzag(g, x, cy, len, amp, n, stroke) {
+  g.strokeStyle = stroke;
+  const step = len / n;
+  g.beginPath(); g.moveTo(x, cy);
+  for (let i = 0; i < n; i++) g.lineTo(x + step * (i + 0.5), cy + (i % 2 ? amp : -amp));
+  g.lineTo(x + len, cy); g.stroke();
+}
+function glyphSwitch(g, x1, x2, cy, stroke) {
+  g.strokeStyle = stroke; g.fillStyle = stroke;
+  g.beginPath(); g.moveTo(x1, cy); g.lineTo(x1 + 6, cy); g.stroke();
+  g.beginPath(); g.arc(x1 + 8, cy, 1.8, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.arc(x2 - 8, cy, 1.8, 0, Math.PI * 2); g.fill();
+  g.beginPath(); g.moveTo(x1 + 9.5, cy - 1); g.lineTo(x2 - 9, cy - 7); g.stroke();
+  g.beginPath(); g.moveTo(x2 - 6, cy); g.lineTo(x2, cy); g.stroke();
+}
+function glyphFuse(g, x, cy, len, stroke) {
+  g.strokeStyle = stroke;
+  g.strokeRect(x, cy - 4, len, 8);
+  g.beginPath(); g.moveTo(x - 4, cy); g.lineTo(x + len + 4, cy); g.stroke();
+}
+
 function drawThermalLoop(canvas, T, forExport = false) {
   const dpr = forExport ? 2 : Math.min(window.devicePixelRatio || 1, 2);
   const W = 640, H = 280;
@@ -1641,38 +1828,51 @@ function drawThermalLoop(canvas, T, forExport = false) {
     return;
   }
   if (T.loopId === 'forced-air') {
-    line(130, 120, 180, 120);
+    line(130, 120, 181, 120);
     if (T.ramAir) {
       g.fillStyle = mut;
       g.fillText('≋ ram air / prop wash — no fans, no ducting, no BTMS', 185, 124);
       return;
     }
-    boxAt(180, 95, 90, 50, 'Fan(s)', 'PWM');
-    line(270, 120, 330, 120);
-    g.fillStyle = mut; g.fillText('→ ambient exhaust', 335, 124);
+    glyphFan(g, 198, 120, 17, acc);
+    g.fillStyle = ink; g.fillText('Fan(s)', 180, 152);
+    g.fillStyle = mut; g.fillText('PWM', 187, 164);
+    line(215, 120, 300, 120);
+    g.fillStyle = mut; g.fillText('→ ambient exhaust', 305, 124);
   } else {
-    // Liquid loop: pack → pump → valve → radiator (top) / chiller (bottom).
-    line(130, 100, 170, 100);
-    boxAt(170, 82, 90, 36, 'Pump', T.flowLpm != null ? `${(Math.round(T.flowLpm * 10) / 10)} L/min` : null);
-    line(260, 100, 300, 100);
-    boxAt(300, 82, 70, 36, '3-way', 'valve');
-    line(370, 92, 410, 60);
-    boxAt(410, 40, 120, 40, 'Radiator + fan', '→ ambient');
+    // Liquid loop, in P&ID symbols: pack → pump → 3-way valve →
+    // radiator (top branch) / chiller HX (bottom branch) → return.
+    line(130, 100, 169, 100);
+    glyphPump(g, 185, 100, 16, acc);
+    g.fillStyle = ink;
+    g.fillText(`Pump${T.flowLpm != null ? ` · ${Math.round(T.flowLpm * 10) / 10} L/min` : ''}`, 148, 78);
+    line(201, 100, 266, 100);
+    glyphValve3(g, 280, 100, 14, acc);
+    g.fillStyle = ink; g.fillText('3-way valve', 250, 130);
+    line(294, 96, 410, 58);
+    glyphRadiator(g, 410, 40, 100, 36, acc);
+    glyphFan(g, 524, 58, 12, acc);
+    g.fillStyle = ink; g.fillText('Radiator + fan', 412, 34);
+    g.fillStyle = mut; g.fillText('→ ambient', 412, 90);
     if (T.loopId === 'liquid-chiller') {
-      line(370, 108, 410, 150);
-      boxAt(410, 140, 120, 40, 'Chiller HX', 'coolant ↔ refrig.');
+      line(294, 104, 410, 150);
+      glyphHX(g, 410, 140, 110, 40, acc);
+      g.fillStyle = ink; g.fillText('Chiller HX', 414, 134);
+      g.fillStyle = mut; g.fillText('coolant ↔ refrig.', 414, 192);
       boxAt(545, 128, 88, 64, 'Higher', 'system', true);
       g.fillStyle = mut; g.fillText('AC/HVAC', 550, 182);
-      line(530, 160, 545, 160, true);
+      line(520, 160, 545, 160, true);
       g.fillStyle = mut;
       if (T.compressorKW != null) g.fillText(`~${fPow(T.compressorKW)}`, 545, 122);
     }
     if (T.heaterNeeded) {
-      boxAt(170, 140, 100, 32, 'PTC heater', 'cold charge');
-      line(220, 118, 220, 140);
+      g.strokeStyle = acc; g.strokeRect(135, 152, 105, 30);
+      zigzag(g, 150, 167, 75, 6, 6, acc);
+      g.fillStyle = ink; g.fillText('PTC heater · cold charge', 135, 196);
+      line(185, 116, 185, 152);
     }
-    // Return line to the pack.
-    line(470, 80, 470, 210); line(470, 210, 70, 210); line(70, 210, 70, 160);
+    // Return line to the pack (routed around the branch boxes).
+    line(520, 58, 532, 58); line(532, 58, 532, 210); line(532, 210, 70, 210); line(70, 210, 70, 160);
     g.fillStyle = mut; g.fillText('return', 300, 205);
   }
   // BTMS ECU drives the loop; the hierarchy line names all three units.
@@ -2177,12 +2377,15 @@ function drawArchDiagram(canvas, A, S, forExport = false) {
   // exists — LV packs correctly show the plain solid-state path).
   line(150, 70, 180, 70);
   boxAt(180, 55, 70, 30, 'Fuse', `${Math.round(A.contactors.fuse.ratingA ?? 0)} A`);
+  glyphFuse(g, 224, 63, 16, mut);
   line(250, 70, 285, 70);
   boxAt(285, 55, 75, 30, A.precharge ? 'K+ main' : 'Disconnect', A.precharge ? null : 'solid-state');
+  if (A.precharge) glyphSwitch(g, 293, 352, 77, mut);
   if (A.precharge) {
     // Precharge branch over K+.
     line(267, 70, 267, 25); line(267, 25, 285, 25);
     boxAt(285, 12, 55, 26, 'K pre', null);
+    glyphSwitch(g, 291, 334, 32, mut);
     line(340, 25, 352, 25);
     // Resistor zigzag.
     g.strokeStyle = mut; g.beginPath(); g.moveTo(352, 25);
@@ -2202,6 +2405,7 @@ function drawArchDiagram(canvas, A, S, forExport = false) {
   // Negative bus: pack → K− → load.
   line(150, 190, 285, 190);
   boxAt(285, 175, 75, 30, 'K− main', null);
+  if (A.precharge) glyphSwitch(g, 293, 352, 197, mut);
   line(360, 190, 490, 190);
   // DC-DC to LV aux.
   line(420, 190, 420, 215);

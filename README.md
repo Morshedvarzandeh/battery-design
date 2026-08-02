@@ -140,10 +140,43 @@ project's provenance-first datasheet pipeline.
   passive air under kilowatt heat), each stated with the reason and the
   fix. Verdicts fold into the Electrical/Thermal audit panes, the pass/fail
   badge and the report.
+- **A knowledge graph decides who sees what** — `js/knowledge.js` holds the
+  concept nodes (stacks & racks, EMS architecture, thermal loop, HV chain…)
+  and the edges from each application class to the concepts it actually
+  needs. Every surface traces its visibility to an edge in this graph
+  instead of scattered ifs: a wearable customer's training never mentions
+  rack stacks or EMS dispatch (the steps are omitted and renumbered), and
+  the Components tab folds whole classes away with the reason. Who needs
+  what is inspectable and tested, not implied.
+- **Components in classes** — the Components tab is organized in collapsible
+  levels: Electrical (busbar + the architecture-derived contactors,
+  precharge resistor, fuse, DC-DC, comm bus), Thermal (cooling + TIM),
+  Control (BMS / BTMS / supervisor / EMS — designed, not picked), Safety
+  (venting + isolation + the standards gate) and Mechanical (spacer,
+  housing). Classes an application does not need are collapsed and labelled
+  "not needed", not shown every time.
+- **Symbols that look like the part** — the thermal loop is drawn in
+  P&ID-style symbols (a pump is a circle with an impeller triangle, a
+  3-way valve a bowtie, the radiator has fins, the chiller its plate-HX
+  zigzag, the heater its element) and the HV chain uses IEC-style fuse and
+  contactor-switch glyphs — not one more rigid box.
+- **Two reports** — alongside the customer PDF/Word report, a LAYERED
+  architecture report downloads as a standalone HTML file: the reader
+  selects a layer (system → pack → module → cell, control hierarchy,
+  thermal system, sensor plan) and opens exactly the level they care
+  about, diagrams embedded.
+- **The engineer's workbook (Excel)** — an export engineers can argue with:
+  a SpreadsheetML workbook whose computed cells carry LIVE formulas over
+  named inputs (`=CellPrice*SCount*PCount`, `=CEILING(CyclesYr*Years/
+  CycleLife,1)`…). Change a yellow input and the TCO, CO₂ and coolant-flow
+  chains recompute in Excel/LibreOffice; a "Your value" column and the
+  Feedback sheet invite corrections back by email — the feedback loop that
+  teaches the tool.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,
-  release rules, sensitivity). Inline "why these spaces exist" guidance
+  release rules, sensitivity), filtered per application through the
+  knowledge graph. Inline "why these spaces exist" guidance
   explains cell spacing (swelling design allowance + propagation break),
   wall thickness (the crash/crush TESTS — ECE R100 Annex 4, GB 38031,
   UL 2580 — prescribe outcomes, not millimetres) and vent-path headroom.
