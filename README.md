@@ -172,6 +172,19 @@ project's provenance-first datasheet pipeline.
   chains recompute in Excel/LibreOffice; a "Your value" column and the
   Feedback sheet invite corrections back by email — the feedback loop that
   teaches the tool.
+- **Mission simulation (level 1)** — the Sim tab runs the design through
+  TIME: the application's load profile drives an equivalent-circuit model
+  of the pack (chemistry-class OCV(SoC) − I·R, coulomb counting) coupled to
+  a lumped thermal model (I²R in, the selected cooling's conductance out).
+  Traces for power, SoC, voltage sag and temperature; repeat passes, start
+  below full, or switch to the winter/summer ambient of the chosen climate.
+  Violations are findings like everything else: pack runs EMPTY at 1.2 h,
+  voltage cutoff under peak (power-limited, not energy-limited), the
+  temperature rating crossed, winter charge inhibited without a heater
+  branch, regen lost against a full battery. Assumptions stated in the
+  pane and the report — class-typical OCV shapes, constant DCIR, one
+  lumped mass; deliberately level 1 (electrode-level P2D needs parameters
+  manufacturers do not publish).
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,
@@ -293,6 +306,7 @@ is copied into the repository.
 | `js/markets.js` | Release checklist per application class × market + chemistry-market gates |
 | `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
 | `js/sensors.js` | Sensor plan by level (cell/module/system/cooling), omission-first |
+| `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |

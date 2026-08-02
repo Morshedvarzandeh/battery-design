@@ -24,6 +24,7 @@ import { climateById, climateSpan, seasonalOutlook, INDOOR_APPS } from './season
 import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
 import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
+import { simulateMission } from './sim1d.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
 import { stepsFor, needed, appNeeds } from './knowledge.js';
@@ -327,6 +328,27 @@ function bindTraining() {
     drawThermalLoop($('diagZoom'), lastTherm, true);
     $('diagModal').style.display = 'flex';
   };
+  $('simCanvas').onclick = () => {
+    if (!lastSim || lastSim.unavailable) return;
+    $('diagTitle').textContent = 'Mission simulation — power, SoC/voltage, temperature';
+    drawSimChart($('diagZoom'), lastSim, true);
+    $('diagModal').style.display = 'flex';
+  };
+  $('segSimSeason').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    simSeason = b.dataset.season;
+    $('segSimSeason').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    computeSim(); renderSim();
+  });
+  $('simPasses').onchange = () => {
+    simPasses = Math.max(1, Math.min(50, Math.round(parseFloat($('simPasses').value) || 1)));
+    $('simPasses').value = simPasses;
+    computeSim(); renderSim();
+  };
+  $('simSoC').onchange = () => {
+    simSoC = Math.max(5, Math.min(100, Math.round(parseFloat($('simSoC').value) || 100)));
+    $('simSoC').value = simSoC;
+    computeSim(); renderSim();
+  };
   $('segLoop').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.loopOverride = b.dataset.loop;
     $('segLoop').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
@@ -617,6 +639,7 @@ function bindControls() {
     if (t.dataset.tab === 'results') renderResults();
     if (t.dataset.tab === 'eu') renderEu();
     if (t.dataset.tab === 'therm') renderThermal();
+    if (t.dataset.tab === 'sim') renderSim();
     if (t.dataset.tab === 'sensors') renderSensors();
     updateFlowBar(t.dataset.tab);
   });
@@ -1128,7 +1151,7 @@ function currentReportData() {
     gridLabel: gf.label,
     usage,
     selection: selComponents(),
-    findings: [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastFindings],
+    findings: [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastSimFindings, ...lastFindings],
     sensitivity: sensitivityAnalysis({
       cell: c, n: lastSummary.cellCount, energyWh: lastSummary.energyWh, usage,
     }, 20),
@@ -1167,6 +1190,13 @@ function currentReportData() {
       if (!lastTherm) return null;
       const off = document.createElement('canvas');
       drawThermalLoop(off, lastTherm, true);
+      return off.toDataURL('image/png');
+    })(),
+    sim: lastSim && !lastSim.unavailable ? lastSim : null,
+    simPng: (() => {
+      if (!lastSim || lastSim.unavailable) return null;
+      const off = document.createElement('canvas');
+      drawSimChart(off, lastSim, true);
       return off.toDataURL('image/png');
     })(),
     sensors: lastSensors,
@@ -1612,6 +1642,7 @@ function recompute() {
   renderCompLegend();
   renderThermal();
   renderSensors();
+  renderSim();
   renderCompClasses();
   if (document.querySelector('#pane-eu.active')) renderEu();
   saveHash();
@@ -1675,6 +1706,48 @@ function computeThermal() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Mission simulation (level 1) — the design run through time. Controls are
+// session-local (not persisted); the physics lives in js/sim1d.js.
+// ---------------------------------------------------------------------------
+let lastSim = null;
+let lastSimFindings = [];
+let simSeason = 'design', simPasses = 1, simSoC = 100;
+
+function computeSim() {
+  const prof = currentProfile();
+  const S = lastSummary;
+  if (!S || !prof || !state.profileScaleW) {
+    lastSim = { unavailable: true, why: 'No load profile applied — pick one on the Usage tab and press "Use profile".' };
+    lastSimFindings = [];
+    return;
+  }
+  // Scenario ambient: the design window's hot end by default; the winter /
+  // summer stress cases come from the chosen climate's seasonal bands.
+  const nv = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
+  const cl = climateById(state.climateId);
+  const ambientC = simSeason === 'winter' && cl ? cl.seasons.winter[0]
+    : simSeason === 'summer' && cl ? cl.seasons.summer[1]
+    : (nv('rqThi') ?? 25);
+  // Thermal conductance from the engineering analysis (heat / temperature
+  // rise for the selected cooling); geometric fallback for sparse cases.
+  const tot = lastAnalysis?.totals;
+  const d = S.dims;
+  const uaWK = tot?.heatContW > 0 && tot?.tempRiseContC > 0
+    ? tot.heatContW / tot.tempRiseContC
+    : (d ? (8 * 2 * (d.x * d.y + d.x * d.z + d.y * d.z)) / 1e6 : null);
+  lastSim = simulateMission({
+    cell: cell(), s: state.s, p: state.p,
+    profile: prof, scaleW: state.profileScaleW,
+    passes: simPasses, startSoC: simSoC / 100,
+    ambientC,
+    resistanceMOhm: lastArch?.resistance?.totalMOhm ?? undefined,
+    uaWK, thermalMassJK: (S.massCellsKg ?? S.massKg ?? 1) * 1000,
+    hasHeater: !!lastTherm?.heaterNeeded,
+  });
+  lastSimFindings = lastSim.unavailable ? [] : lastSim.findings;
+}
+
 // The loop choice's consequences belong in the Analysis, not only the tab:
 // a physically unworkable selection is a FAIL finding with the reason.
 function thermFindings() {
@@ -1731,6 +1804,116 @@ function renderThermal() {
 // (the chiller couples into the HIGHER system's refrigerant circuit),
 // heater branch, and the BTMS ECU driving it all. Same enlarge/report
 // pattern as the architecture figures.
+// ---------------------------------------------------------------------------
+// Mission simulation pane: three-strip chart (power / SoC+V / temperature)
+// and the findings the mission raised.
+// ---------------------------------------------------------------------------
+const fmtDur = (sec) => sec >= 3600 ? `${(sec / 3600).toFixed(1)} h` : `${Math.round(sec / 60)} min`;
+
+function drawSimChart(canvas, sim, forExport = false) {
+  const dpr = forExport ? 2 : Math.min(window.devicePixelRatio || 1, 2);
+  const W = 640, H = 280;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = (n, fb) => forExport ? fb :
+    (getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fb);
+  const ink = css('--ink', '#1a1a1a'), mut = css('--muted', '#666'),
+    acc = css('--accent', '#0b6e5f'), bad = css('--missing', '#b3261e');
+  g.fillStyle = forExport ? '#ffffff' : css('--ground', '#f4f6f5');
+  g.fillRect(0, 0, W, H);
+  g.font = '10px ui-monospace, monospace';
+  g.lineWidth = 1.2;
+  const T = sim.trace, n = T.tS.length;
+  if (!n) return;
+  const X0 = 44, X1 = W - 10;
+  const x = (i) => X0 + (i / Math.max(1, n - 1)) * (X1 - X0);
+  const strip = (y0, y1, lo, hi, arr, color, dash = false) => {
+    if (hi <= lo) hi = lo + 1;
+    const y = (v) => y1 - ((v - lo) / (hi - lo)) * (y1 - y0);
+    g.strokeStyle = color;
+    if (dash) g.setLineDash([3, 3]);
+    g.beginPath();
+    let started = false;
+    for (let i = 0; i < n; i++) {
+      if (arr[i] == null) continue;
+      if (!started) { g.moveTo(x(i), y(arr[i])); started = true; } else g.lineTo(x(i), y(arr[i]));
+    }
+    g.stroke(); g.setLineDash([]);
+    return y;
+  };
+  const label = (txt, yv, color) => { g.fillStyle = color; g.fillText(txt, 4, yv); };
+
+  // Strip 1 — power demand (regen below zero).
+  const pLo = Math.min(0, ...T.pW), pHi = Math.max(1, ...T.pW);
+  const yP = strip(16, 88, pLo, pHi, T.pW, acc);
+  g.strokeStyle = mut; g.setLineDash([2, 3]);
+  g.beginPath(); g.moveTo(X0, yP(0)); g.lineTo(X1, yP(0)); g.stroke(); g.setLineDash([]);
+  label(`Power · peak ${fPow(pHi)}${pLo < 0 ? ' · regen below 0' : ''}`, 12, ink);
+
+  // Strip 2 — SoC (accent) and pack voltage (ink) on their own scales.
+  strip(112, 184, 0, 1, T.soc, acc);
+  const vLo = sim.summary.vMinPack, vHi = sim.summary.vMaxPack;
+  strip(112, 184, vLo, vHi, T.vPack, ink, true);
+  label(`SoC (solid) · V pack (dashed, ${Math.round(vLo)}–${Math.round(vHi)} V)`, 108, ink);
+  g.fillStyle = mut;
+  g.fillText('100%', 6, 120); g.fillText('0%', 6, 184);
+
+  // Strip 3 — temperature with ambient + rating lines.
+  const hasT = T.tC.some((v) => v != null);
+  if (hasT) {
+    const tArr = T.tC.filter((v) => v != null);
+    const lim = sim.summary.tempMaxC;
+    const tLo = Math.min(sim.ambientC, ...tArr) - 2;
+    const tHi = Math.max(lim, ...tArr) + 2;
+    const yT = strip(208, 268, tLo, tHi, T.tC, acc);
+    g.strokeStyle = mut; g.setLineDash([2, 3]);
+    g.beginPath(); g.moveTo(X0, yT(sim.ambientC)); g.lineTo(X1, yT(sim.ambientC)); g.stroke();
+    g.strokeStyle = bad;
+    g.beginPath(); g.moveTo(X0, yT(lim)); g.lineTo(X1, yT(lim)); g.stroke(); g.setLineDash([]);
+    label(`Temperature · ambient ${Math.round(sim.ambientC)} °C (grey) · limit ${lim} °C (red)`, 204, ink);
+  } else {
+    label('Temperature: no thermal model for this run', 204, mut);
+  }
+
+  // Time axis.
+  g.fillStyle = mut;
+  for (let k = 0; k <= 4; k++) {
+    const tv = (sim.durationS * k) / 4;
+    g.fillText(fmtDur(tv), X0 + ((X1 - X0) * k) / 4 - 8, 278);
+  }
+}
+
+function renderSim() {
+  const statsBox = $('simStats'), body = $('simBody');
+  if (!statsBox) return;
+  const canvas = $('simCanvas');
+  if (!lastSim || lastSim.unavailable) {
+    statsBox.innerHTML = '';
+    body.innerHTML = `<div class="empty">${esc(lastSim?.why || '—')}</div>`;
+    $('simAssump').textContent = '';
+    const g = canvas.getContext('2d');
+    canvas.width = 640; canvas.height = 280;
+    g.font = '12px ui-monospace, monospace'; g.fillStyle = '#888';
+    g.fillText(lastSim?.why || 'No simulation yet.', 20, 140);
+    return;
+  }
+  drawSimChart(canvas, lastSim, false);
+  const m = lastSim.summary;
+  const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b style="font-weight:normal;text-align:right">${v}</b></div>`;
+  statsBox.innerHTML = [
+    stat('Mission', `${lastSim.passes}× profile · ${fmtDur(lastSim.durationS)} · ${Math.round(lastSim.ambientC)} °C ambient`),
+    stat('State of charge', `${Math.round(m.startSoC * 100)}% → <b>${Math.round(m.endSoC * 100)}%</b> (min ${Math.round(m.minSoC * 100)}%)`),
+    stat('Voltage', `min ${f1(m.minV)} V · cutoff ${f1(m.vMinPack)} V`),
+    m.maxT != null ? stat('Temperature', `peak ${f1(m.maxT)} °C · limit ${f0(m.tempMaxC)} °C`) : '',
+    stat('Energy', `${fWh(m.energyOutWh)} out · ${fWh(m.energyInWh)} regen · ${fWh(m.lossWh)} loss`),
+    m.efficiencyPct != null ? stat('Round-trip efficiency', `${f1(m.efficiencyPct)}%`) : '',
+    stat('Heat', `${fPow(m.avgHeatW)} average · ${fPow(m.peakHeatW)} peak`),
+  ].join('');
+  body.innerHTML = lastSim.findings.map(findingHTML).join('');
+  $('simAssump').innerHTML = lastSim.assumptions.map((a) => `• ${esc(a)}`).join('<br>');
+}
+
 // --- P&ID-style glyphs — a pump LOOKS like a pump (circle + impeller
 // triangle), a valve is a bowtie, a radiator has fins, a fuse is the IEC
 // rectangle-with-a-line — not just another rigid box.
@@ -2000,11 +2183,12 @@ function runAnalysis() {
   lastArchFindings = archElectricalFindings();
   computeThermal();
   lastThermFindings = thermFindings();
+  computeSim();
 
   const perspectives = lastAnalysis?.perspectives || {};
   const engFindings = ['mechanical', 'thermal', 'electrical', 'safety']
     .flatMap((k) => perspectives[k] || []);
-  const all = [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastFindings];
+  const all = [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastSimFindings, ...lastFindings];
   const nFail = all.filter((x) => x.severity === 'fail').length;
   const nWarn = all.filter((x) => x.severity === 'warn').length;
   const badge = $('stdBadge');

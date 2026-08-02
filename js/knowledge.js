@@ -29,6 +29,7 @@ export const CONCEPTS = {
   'sensors-plan': { label: 'Sensor plan', why: 'What the harness must carry, by level.' },
   'release-rules': { label: 'Release rules & market checklist', why: 'What certification will demand in each target market.' },
   'report': { label: 'Report & sensitivity', why: 'The customer document, stress-tested.' },
+  'simulation': { label: 'Mission simulation', why: 'The design run through time — SoC, sag and temperature over the real profile.' },
 };
 
 // Edges: which application classes need each concept. Per-app extra edges
@@ -59,6 +60,7 @@ export const NEEDS = {
   'sensors-plan': { classes: ALL },
   'release-rules': { classes: ALL },
   'report': { classes: ALL },
+  'simulation': { classes: ALL },
 };
 
 // Does this application need this concept? No app selected -> everything
