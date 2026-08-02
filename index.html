@@ -385,6 +385,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       <button class="tab" data-tab="comp">Components</button>
       <button class="tab" data-tab="analysis">Analysis <span class="chip" id="stdBadge"></span></button>
       <button class="tab" data-tab="therm">Thermal</button>
+      <button class="tab" data-tab="sim">Sim</button>
       <button class="tab" data-tab="sensors">Sensors</button>
       <button class="tab" data-tab="eu">Rules</button>
       <button class="tab" data-tab="results">Results</button>
@@ -680,6 +681,36 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         <label class="f" style="margin-top:8px">Loop &amp; control <span style="color:var(--muted)">(tap to enlarge)</span></label>
         <canvas id="thermCanvas" height="280" style="width:100%;cursor:zoom-in;border:1px solid var(--line);border-radius:var(--r);margin:4px 0 8px;background:var(--ground)"></canvas>
         <div id="thermBody"><div class="empty">—</div></div>
+      </div>
+    </div>
+
+    <div class="tabpane" id="pane-sim">
+      <div class="hint" style="margin-bottom:10px">The design, run through TIME: the application's load
+        profile drives an equivalent-circuit model of YOUR pack (OCV−I·R, coulomb counting) coupled to a
+        lumped thermal model (I²R in, cooling out). Watch SoC, voltage sag and temperature over the
+        mission — and see exactly when a pack runs empty, hits the voltage cutoff, overheats or refuses
+        winter charge.</div>
+      <div class="sec">
+        <h3>Mission simulation</h3>
+        <div class="seg" id="segSimSeason">
+          <button data-season="design" class="active">Design window</button>
+          <button data-season="winter">Winter</button>
+          <button data-season="summer">Summer</button>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:8px;align-items:end">
+          <label class="f" style="flex:1">Profile passes
+            <input type="number" id="simPasses" value="1" min="1" max="50" step="1"></label>
+          <label class="f" style="flex:1">Start SoC %
+            <input type="number" id="simSoC" value="100" min="5" max="100" step="5"></label>
+        </div>
+        <label class="f" style="margin-top:8px">Mission traces <span style="color:var(--muted)">(tap to enlarge)</span></label>
+        <canvas id="simCanvas" height="280" style="width:100%;cursor:zoom-in;border:1px solid var(--line);border-radius:var(--r);margin:4px 0 8px;background:var(--ground)"></canvas>
+        <div id="simStats"></div>
+        <div id="simBody" style="margin-top:8px"><div class="empty">—</div></div>
+        <details style="margin-top:8px">
+          <summary class="f" style="cursor:pointer">What this model is (and is not)</summary>
+          <div class="hint" id="simAssump"></div>
+        </details>
       </div>
     </div>
 

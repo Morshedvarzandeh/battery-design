@@ -175,6 +175,24 @@ export function buildReportHTML(R) {
   ])}
   <div style="font-size:11px;color:#666;margin-top:4px">${R.thermal.notes.map(esc).join(' ')}</div>` : ''}
 
+  ${R.sim ? (() => {
+    const m = R.sim.summary;
+    const fmtDur = (sec) => sec >= 3600 ? `${(sec / 3600).toFixed(1)} h` : `${Math.round(sec / 60)} min`;
+    return `
+  <h2 style="${h2}">Mission simulation (level 1)</h2>
+  ${R.simPng ? `<img src="${R.simPng}" style="width:100%;max-width:640px;border:1px solid #ddd" alt="mission simulation traces">` : ''}
+  ${table([
+    row('Mission', `${R.sim.passes}× load profile · ${fmtDur(R.sim.durationS)} · ${Math.round(R.sim.ambientC)} °C ambient`),
+    row('State of charge', `${Math.round(m.startSoC * 100)}% → ${Math.round(m.endSoC * 100)}% (minimum ${Math.round(m.minSoC * 100)}%)`),
+    row('Voltage', `minimum ${f1(m.minV)} V against the ${f1(m.vMinPack)} V cutoff`),
+    ...(m.maxT != null ? [row('Temperature', `peak ${f1(m.maxT)} °C against the ${f0(m.tempMaxC)} °C rating`)] : []),
+    row('Energy', `${f1(m.energyOutWh)} Wh delivered · ${f1(m.energyInWh)} Wh regen absorbed · ${f1(m.lossWh)} Wh I²R loss${m.efficiencyPct != null ? ` (${f1(m.efficiencyPct)}% round trip)` : ''}`),
+    ...(R.sim.findings.filter((f) => f.severity !== 'pass').map((f) =>
+      row(`Simulation ${f.severity.toUpperCase()}`, `<span style="font-weight:normal">${esc(f.title)} — ${esc(f.detail)}</span>`))),
+  ])}
+  <div style="font-size:11px;color:#666;margin-top:4px">${R.sim.assumptions.map(esc).join(' ')}</div>`;
+  })() : ''}
+
   ${R.sensors?.groups?.length ? `
   <h2 style="${h2}">Sensor plan — by level</h2>
   ${R.sensors.groups.map((gr) => `

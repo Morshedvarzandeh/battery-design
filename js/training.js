@@ -79,6 +79,10 @@ export const TRAINING_TRACKS = {
         text: 'The cold plate is the tip of a loop: pump, radiator, a refrigerant chiller when you must cool below ambient (owned by the vehicle AC / plant HVAC), a heater branch for winter charging — all run by the BTMS ECU, the third control unit: the BMS protects, the BTMS moves heat, the supervisor decides. The Thermal tab sizes the flow (ṁ = Q/(c_p·ΔT)) and the compressor cost.',
       },
       {
+        tab: 'sim', title: '6c · Run the mission', concept: 'simulation',
+        text: 'The Sim tab drives your pack through the application\'s load profile in time: SoC and voltage sag from an equivalent-circuit model, temperature from a lumped thermal model. Repeat the profile, start below full, or switch to the winter/summer ambient — and see when a pack runs empty, hits the cutoff, overheats or refuses cold charge. Failures land in the Analysis audit like every other finding.',
+      },
+      {
         tab: 'eu', title: '7 · Release rules before release', concept: 'release-rules',
         text: 'The Rules tab holds the market release checklist per application (pick EU / US / China / International) — including chemistry-market rules like China\'s e-bus exclusion of NMC — and the EU 2023/1542 timeline with what applies to THIS design.',
       },

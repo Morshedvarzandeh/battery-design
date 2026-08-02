@@ -58,7 +58,7 @@ test('e-bus: preset, route profile, J1939, EU treatment as an EV battery', () =>
 });
 
 test('training tracks: real tabs, real explanations, right ordering', () => {
-  const validTabs = new Set(['design', 'usage', 'fit', 'comp', 'analysis', 'therm', 'eu', 'results']);
+  const validTabs = new Set(['design', 'usage', 'fit', 'comp', 'analysis', 'therm', 'sim', 'eu', 'results']);
   for (const [id, track] of Object.entries(TRAINING_TRACKS)) {
     ok(track.steps.length >= 5, `${id} track has a real sequence`);
     for (const st of track.steps) {
