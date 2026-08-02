@@ -1,30 +1,29 @@
-// Regressions for the module hierarchy + electrical architecture layer:
+// Architecture — the module hierarchy + electrical architecture layer:
 // divisor-enumeration partition (cell-to-pack first-class), BMS topology and
 // counts, precharge math, contactor/fuse rules, isolation-as-argument, and
 // the closest-possible framing in maxFill (never a silent dead end).
+import { test } from 'node:test';
+import { ok, near, throws } from './helpers.mjs';
 import { CELLS, cellById } from '../js/cells.js';
 import {
   divisors, modulePartition, systemPlan, voltageClass, bmsArchitecture,
   prechargeDesign, contactorsAndFuse, isolationRequirement, dcdcConverter,
   packResistanceModel, buildArchitecture, DAISY_NODE_LIMIT,
   commsForApp, weldingForCell,
+  assessBmsTopology, BMS_TOPOLOGIES, assessEmsArchitecture, emsArchitectureFor,
 } from '../js/architecture.js';
 import { maxFill } from '../js/optimizer.js';
 
-let fails = 0;
-const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
-const near = (a, b, tol, m) => ok(Math.abs(a - b) <= tol, `${m} (${a} vs ${b})`);
-
 const cyl = cellById('samsung-inr21700-50e');
-ok(cyl, 'reference cell exists');
 
-// --- divisors ---------------------------------------------------------------
-ok(JSON.stringify(divisors(96)) === JSON.stringify([1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 96]),
-  'divisors(96) matches the brief §4.2 set');
-ok(JSON.stringify(divisors(97)) === JSON.stringify([1, 97]), 'divisors of a prime');
+test('divisors: the brief §4.2 enumeration', () => {
+  ok(cyl, 'reference cell exists');
+  ok(JSON.stringify(divisors(96)) === JSON.stringify([1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48, 96]),
+    'divisors(96) matches the brief §4.2 set');
+  ok(JSON.stringify(divisors(97)) === JSON.stringify([1, 97]), 'divisors of a prime');
+});
 
-// --- module partition -------------------------------------------------------
-{
+test('module partition: S_mod always divides S, bookkeeping exact', () => {
   // S_mod must always DIVIDE S — divisor enumeration, not free choice.
   for (const s of [13, 24, 96, 97, 108, 220]) {
     const part = modulePartition(s, 4, cyl);
@@ -54,28 +53,27 @@ ok(JSON.stringify(divisors(97)) === JSON.stringify([1, 97]), 'divisors of a prim
   near(part.moduleEnergyWh, 16 * 2 * cyl.nominalV * cyl.capacityAh, 1e-6, 'module energy');
   near(part.moduleMassCellsKg, (16 * 2 * cyl.massG) / 1000, 1e-9, 'module cells mass');
   ok(part.lvModule === (16 * cyl.vMax <= 60), 'LV-module flag from vMax');
-}
+});
 
-// --- system plan (the clear limit for big applications) ---------------------
-{
+test('system plan: the clear limit for big applications', () => {
   const plan = systemPlan(1_000_000, 120_000); // 1 MWh target, 120 kWh pack
   ok(plan.racks === 9, `1 MWh / 120 kWh -> 9 racks (got ${plan.racks})`);
   ok(plan.totalWh >= 1_000_000, 'racks cover the target');
   const one = systemPlan(50_000, 120_000);
   ok(one.racks === 1, 'target under one pack -> 1 rack');
   ok(systemPlan(null, 120_000) === null && systemPlan(1000, 0) === null, 'null-safe');
-}
+});
 
-// --- voltage class ----------------------------------------------------------
-ok(voltageClass(48).id === 'lv', '48 V is LV');
-ok(voltageClass(60).id === 'lv' && voltageClass(60.1).id !== 'lv', '60 V DC boundary exact');
-ok(voltageClass(400).id === 'hv-400', '400 V class');
-ok(voltageClass(800).id === 'hv-800', '800 V class');
-ok(voltageClass(1200).id === 'hv-1000+', 'beyond automotive classes flagged');
-ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semiconductor classes');
+test('voltage classes: the 60 V DC boundary is exact', () => {
+  ok(voltageClass(48).id === 'lv', '48 V is LV');
+  ok(voltageClass(60).id === 'lv' && voltageClass(60.1).id !== 'lv', '60 V DC boundary exact');
+  ok(voltageClass(400).id === 'hv-400', '400 V class');
+  ok(voltageClass(800).id === 'hv-800', '800 V class');
+  ok(voltageClass(1200).id === 'hv-1000+', 'beyond automotive classes flagged');
+  ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semiconductor classes');
+});
 
-// --- BMS architecture -------------------------------------------------------
-{
+test('BMS architecture: topology suggestion, AFE counts, honest notes', () => {
   const part = modulePartition(96, 2, cyl, { channelsPerIc: 16 });
   const bms = bmsArchitecture({ s: 96, cellCount: 192, partition: part, topology: 'auto', channelsPerIc: 16 });
   ok(bms.topology === 'master-slave', 'several modules -> master/slave suggested');
@@ -94,10 +92,9 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   // Explicit topology is honored.
   const w = bmsArchitecture({ s: 96, cellCount: 192, partition: part, topology: 'wireless', channelsPerIc: 16 });
   ok(w.topology === 'wireless' && w.notes.some((n) => n.includes('latency')), 'wireless honesty note');
-}
+});
 
-// --- precharge --------------------------------------------------------------
-{
+test('precharge: tau, resistor, energy, sequence order', () => {
   const pre = prechargeDesign({ vPackMaxV: 400, linkCapUF: 500, closeGapV: 10, targetTimeS: 0.5, prechargesPerHour: 4 });
   // tau = t / ln(V/gap); R = tau/C; E = 0.5*C*V^2.
   const tau = 0.5 / Math.log(400 / 10);
@@ -113,12 +110,11 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   // the wait, precharge opened last.
   const seq = pre.sequence.join(' | ');
   ok(seq.indexOf('NEGATIVE') < seq.indexOf('precharge contactor') &&
-     seq.indexOf('Wait') < seq.indexOf('POSITIVE'), 'closing sequence order');
+    seq.indexOf('Wait') < seq.indexOf('POSITIVE'), 'closing sequence order');
   ok(prechargeDesign({ vPackMaxV: 8 }) === null, 'no precharge below the gap voltage');
-}
+});
 
-// --- contactors, fuse, isolation, DC-DC, resistance -------------------------
-{
+test('contactors, fuse, isolation, DC-DC, pack resistance', () => {
   const k = contactorsAndFuse({ contA: 200, vMaxV: 400 });
   ok(k.fuse.ratingA === 400, 'fuse = 2x continuous');
   ok(k.massEachG === 350, 'contactor mass 150 g + 1 g/A');
@@ -131,9 +127,7 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   near(isolationRequirement(400, 'ece-r100').floorKOhm, 200, 1e-9, 'ECE R100 floor');
   near(isolationRequirement(400, 'iso-6469-dc').floorKOhm, 40, 1e-9, 'ISO 6469-3 DC floor');
   near(isolationRequirement(800, 'ece-r100').floorKOhm, 400, 1e-9, '800 V floor');
-  let threw = false;
-  try { isolationRequirement(400); } catch { threw = true; }
-  ok(threw, 'missing standard throws instead of defaulting silently');
+  throws(() => isolationRequirement(400), 'missing standard throws instead of defaulting silently');
 
   const d = dcdcConverter({ vMin: 300, vMax: 403, lvBusV: 12 });
   ok(d.sizingNote.includes('no default'), 'aux budget honesty when unstated');
@@ -145,10 +139,9 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   near(r.totalMOhm, 980, 1e-9, 'interconnect added');
   near(r.droopVAtCont, 98, 1e-9, 'droop I*R');
   ok(packResistanceModel({ s: 10, p: 1, cellDcirMOhm: null }).totalMOhm === null, 'null DCIR stays null');
-}
+});
 
-// --- orchestrator -----------------------------------------------------------
-{
+test('orchestrator: every section present, LV boundary respected', () => {
   const summary = {
     cellCount: 192, nominalV: 96 * cyl.nominalV, vMax: 96 * cyl.vMax, vMin: 96 * cyl.vMin,
     energyWh: 192 * cyl.nominalV * cyl.capacityAh, maxContCurrentA: 2 * cyl.maxContDischargeA,
@@ -166,10 +159,9 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   const lv = buildArchitecture({ cell: cyl, s: 13, p: 4, summary: lvSummary, options: {} });
   ok(lv.isolation === null, 'LV pack skips the isolation floor');
   ok(lv.voltageClass.id === 'lv', 'LV class detected');
-}
+});
 
-// --- closest-possible framing in maxFill ------------------------------------
-{
+test('closest-possible framing in maxFill: never a silent dead end', () => {
   const env = { x: 300, y: 200, z: 90 };
   const base = { spacingMm: 1, wallMm: 2, layerGapMm: 2, coolingSpace: { bottom: 0, side: 0, rowGap: 0 } };
   // An unreachable energy target must NOT empty the results — the tool
@@ -191,10 +183,9 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   const firstMiss = reachable.findIndex((r) => !r.meetsEnergy);
   const lastMeet = reachable.map((r) => r.meetsEnergy).lastIndexOf(true);
   ok(firstMiss === -1 || firstMiss > lastMeet, 'meets-target candidates rank first');
-}
+});
 
-// --- communication standards per application --------------------------------
-{
+test('communication standards per application', () => {
   ok(/CAN/.test(commsForApp('ev').primary) && /UDS|14229/.test(commsForApp('ev').primary),
     'automotive: CAN + UDS diagnostics');
   ok(commsForApp('ev').alternates.some((a) => /J1939/.test(a)), 'heavy trucks: J1939 named for the EV family');
@@ -203,20 +194,18 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   ok(/Modbus/.test(commsForApp('solar-ess').primary), 'stationary storage: Modbus/SunSpec');
   ok(/NMEA/.test(commsForApp('marine').primary), 'marine: NMEA 2000');
   ok(commsForApp('does-not-exist').primary.length > 0, 'unknown app falls back honestly');
-}
+});
 
-// --- welding / joining per cell format --------------------------------------
-{
+test('welding / joining per cell format', () => {
   ok(/Resistance spot/i.test(weldingForCell({ form: 'cylindrical' }).primary), 'cylindrical: resistance spot weld');
   ok(/Laser/i.test(weldingForCell({ form: 'prismatic' }).primary), 'prismatic: laser weld to terminal');
   ok(/Ultrasonic/i.test(weldingForCell({ form: 'pouch' }).primary), 'pouch: ultrasonic tab weld');
   ok(weldingForCell({ form: 'cylindrical' }).alternates.some((a) => /wire bond/i.test(a)),
     'cylindrical lists the wire-bond (per-cell fuse) route');
   ok(weldingForCell({ form: 'unknown' }) === null, 'unknown form returns null, not a guess');
-}
+});
 
-// --- customer-set stack count (BESS / ship / bus scale) ---------------------
-{
+test('customer-set stack count (BESS / ship / bus scale)', () => {
   const summary = {
     cellCount: 192, nominalV: 96 * cyl.nominalV, vMax: 96 * cyl.vMax, vMin: 96 * cyl.vMin,
     energyWh: 192 * cyl.nominalV * cyl.capacityAh, maxContCurrentA: 2 * cyl.maxContDischargeA,
@@ -241,12 +230,9 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   ok(!auto.system.overridden && auto.system.racks === Math.ceil(50_000 / summary.energyWh),
     'no override -> auto rack count from the target');
   ok(A.comms && A.welding, 'orchestrator carries comms and welding sections');
-}
+});
 
-// --- choice assessments: pros/cons + design-context verdicts ----------------
-{
-  const { assessBmsTopology, BMS_TOPOLOGIES, assessEmsArchitecture, emsArchitectureFor } =
-    await import('../js/architecture.js');
+test('choice assessments: pros/cons + design-context verdicts', () => {
   // Every option carries pros AND cons — no free lunches in the table.
   for (const t of BMS_TOPOLOGIES) {
     ok(t.pros?.length >= 2 && t.cons?.length >= 2, `${t.id}: pros and cons stated`);
@@ -267,7 +253,4 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   ok(assessEmsArchitecture(emsArchitectureFor('solar-ess', 8)).verdict === 'suggested', 'EMS auto: suggested');
   const emsOv = assessEmsArchitecture(emsArchitectureFor('solar-ess', 8, 'centralized'));
   ok(emsOv.verdict === 'workable-with-costs' && emsOv.cons.length >= 2, 'EMS override: costs carried');
-}
-
-console.log(fails === 0 ? 'ARCHITECTURE REGRESSIONS PASSED' : `${fails} FAILURES`);
-process.exit(fails ? 1 : 0);
+});

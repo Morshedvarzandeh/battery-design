@@ -1,16 +1,14 @@
-// Regressions for the CO2/report models and the private customer-cell logic.
+// Report — the CO2/report models and the private customer-cell logic.
+import { test } from 'node:test';
+import { ok } from './helpers.mjs';
 import { cellById } from '../js/cells.js';
 import { costModel } from '../js/optimizer.js';
 import { co2Model, CO2_MFG_PER_KWH, buildReportHTML, buildWordDocument } from '../js/report.js';
 import { normalizeCustomCell, validateCustomCell, buildMailto, OWNER_EMAIL } from '../js/mycells.js';
 
-let fails = 0;
-const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
-
-// --- CO2 model arithmetic on a 10 kWh LFP ESS
-{
+test('CO2 arithmetic on a ~14 kWh LFP ESS', () => {
   const lfp = cellById('eve-lf280k'); // 3.2V 280Ah, 6000 cycles class
-  const energyWh = 16 * lfp.nominalV * lfp.capacityAh; // 16 cells ≈ 14.3 kWh
+  const energyWh = 16 * lfp.nominalV * lfp.capacityAh;
   const m = co2Model({ cell: lfp, energyWh, cyclesPerYear: 300, targetYears: 10, gridGPerKWh: 440 });
   ok(Math.abs(m.mfgKgPerPack - (energyWh / 1000) * CO2_MFG_PER_KWH.LFP) < 1e-6, 'mfg = kWh × factor');
   // payback: mfg / (perCycleKWh × g/1000)
@@ -22,17 +20,15 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
   // Cleaner grid → later payback point.
   const clean = co2Model({ cell: lfp, energyWh, cyclesPerYear: 300, targetYears: 10, gridGPerKWh: 100 });
   ok(clean.paybackCycles > m.paybackCycles, 'cleaner displaced source → later CO2 payback');
-}
+});
 
-// --- Payback can honestly fail: short-cycle-life cell on a clean grid
-{
+test('payback can honestly fail: short cycle life on a clean grid', () => {
   const nmc = cellById('samsung-inr21700-50e'); // 500 cycles
   const m = co2Model({ cell: nmc, energyWh: 917, cyclesPerYear: 100, targetYears: 5, gridGPerKWh: 50 });
   ok(m.paybackReached === false, 'payback not reached flags honestly on clean grid + short life');
-}
+});
 
-// --- Report document builds with full and sparse data
-{
+test('report document builds with full and sparse data', () => {
   const c = cellById('samsung-inr21700-50e');
   const summary = {
     s: 13, p: 4, cellCount: 52, nominalV: 46.8, vMin: 32.5, vMax: 54.6,
@@ -59,14 +55,16 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
   ok(!/undefined|NaN/.test(html), 'no undefined/NaN leaks into the report');
   const doc = buildWordDocument(html, 'T');
   ok(doc.includes('urn:schemas-microsoft-com:office:word'), 'Word wrapper present');
-  // Sparse: no price, no cycles, no usage
+  // Sparse: no price, no cycles, no usage.
   const c2 = { ...c, priceUSD: null, cycleLife: null };
-  const R2 = { ...R, cell: c2, cost: costModel(c2, 52, 917, {}), co2: co2Model({ cell: c2, energyWh: 917, gridGPerKWh: 440 }), usage: {} };
+  const R2 = {
+    ...R, cell: c2, cost: costModel(c2, 52, 917, {}),
+    co2: co2Model({ cell: c2, energyWh: 917, gridGPerKWh: 440 }), usage: {},
+  };
   ok(!/undefined|NaN/.test(buildReportHTML(R2)), 'sparse report clean');
-}
+});
 
-// --- Customer cell: validation and normalization
-{
+test('customer cells: validation, normalization, and the private mail path', () => {
   const good = {
     manufacturer: 'Acme', model: 'X-100', form: 'cylindrical', chemistry: 'LFP',
     d: '26', h: '65', capacityAh: '3.0', massG: '85',
@@ -84,7 +82,4 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
   const mailto = buildMailto(rec);
   ok(mailto.startsWith(`mailto:${OWNER_EMAIL}?subject=`), 'mailto addressed to owner');
   ok(decodeURIComponent(mailto).includes('"capacityAh": 3'), 'datasheet JSON in mail body');
-}
-
-console.log(fails === 0 ? 'REPORT/CO2/MYCELLS REGRESSIONS PASSED' : `${fails} FAILURES`);
-process.exit(fails ? 1 : 0);
+});

@@ -1,32 +1,28 @@
-// Regressions for load profiles: per-application defaults, profile math,
-// pack checks and the CSV upload path.
+// Load profiles — per-application defaults, profile math, pack checks and
+// the CSV upload path.
+import { test } from 'node:test';
+import { ok, throws } from './helpers.mjs';
 import { PRESETS } from '../js/presets.js';
 import {
   LOAD_PROFILES, profileForApp, profilesForApp, profileStats, profileChecks, parseProfileCSV,
 } from '../js/loadprofiles.js';
 
-let fails = 0;
-const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
+test('every application preset has its own default profile', () => {
+  for (const pr of PRESETS) {
+    ok(profileForApp(pr.id) != null, `preset ${pr.id} maps to a load profile`);
+  }
+});
 
-// Every application preset has its own default profile.
-for (const pr of PRESETS) {
-  ok(profileForApp(pr.id) != null, `preset ${pr.id} maps to a load profile`);
-}
-
-// The truck-shaped bug: vehicle-class systems must NOT default to the
-// rooftop-solar cycle. Each gets its own shape; solar stays with solar.
-{
+test('vehicle-class systems never default to the rooftop-solar cycle', () => {
   ok(profileForApp('rv')?.id === 'rv-house', `RV defaults to rv-house (got ${profileForApp('rv')?.id})`);
   ok(profileForApp('powerstation')?.id === 'powerstation-trip', 'power station defaults to its own shape');
   ok(profileForApp('solar-ess')?.id === 'ess-daily', 'solar keeps the solar day');
   ok(profileForApp('robot')?.id === 'robot-shift', 'AGV/lift truck keeps the shift cycle');
   ok(profileForApp('humanoid')?.id === 'humanoid-locomotion', 'humanoid has its own profile');
   ok(profileForApp('robovac')?.id === 'robovac-clean', 'robot vacuum has its own profile');
-}
+});
 
-// Per-application CHOICE: the recommended list has the default first, the
-// suitable alternates after, and never the whole library.
-{
+test('the per-application choice list is a shortlist, default first', () => {
   const rv = profilesForApp('rv');
   ok(rv[0]?.id === 'rv-house', 'rv choice list starts with its default');
   ok(rv.some((p) => p.id === 'ess-daily'), 'solar day offered as an RV alternate (camped off-grid)');
@@ -35,30 +31,26 @@ for (const pr of PRESETS) {
   ok(hum[0]?.id === 'humanoid-locomotion' && hum.some((p) => p.id === 'robot-shift'),
     'humanoid: own default + industrial alternate');
   ok(profilesForApp('nonexistent-app').length === 0, 'unknown app gets no fake recommendations');
-}
+});
 
-// The new shapes behave like their machines: the vacuum ends on a dock
-// CHARGE, the van charges while driving, the humanoid never rests to zero.
-{
+test('the shapes behave like their machines', () => {
   const p = (id) => LOAD_PROFILES.find((x) => x.id === id);
   ok(p('robovac-clean').p.some((v) => v < 0), 'robovac has the dock-charging tail');
   ok(p('rv-house').p.some((v) => v < 0), 'rv day includes charging while driving');
   ok(p('humanoid-locomotion').p.every((v) => v > 0), 'humanoid base load never drops to zero');
   ok(Math.min(...p('humanoid-locomotion').p) >= 0.25, 'humanoid balance/compute base is substantial');
-}
+});
 
-// Hand-checked math on a square wave: 1,0,1,0 at dt=10s, scale 100 W.
-{
-  const prof = { dtS: 10, p: [1, 0, 1, 0] };
+test('hand-checked math on a square wave', () => {
+  const prof = { dtS: 10, p: [1, 0, 1, 0] }; // scale 100 W
   const st = profileStats(prof, 100);
   ok(st.peakW === 100 && st.meanW === 50, 'peak/mean on square wave');
   ok(Math.abs(st.rmsW - 100 / Math.SQRT2) < 1e-9, 'RMS = peak/sqrt(2) at 50% duty');
   ok(Math.abs(st.energyPerPassWh - (2 * 100 * 10) / 3600) < 1e-9, 'energy per pass');
   ok(Math.abs(st.crestFactor - 2) < 1e-9, 'crest factor');
-}
+});
 
-// The shapes are genuinely different — that is the whole point.
-{
+test('the shapes are genuinely different — that is the whole point', () => {
   const crest = (id) => {
     const p = LOAD_PROFILES.find((x) => x.id === id);
     return profileStats(p, 1000).crestFactor;
@@ -71,10 +63,9 @@ for (const pr of PRESETS) {
   ok(has('ess-daily', (v) => v < 0), 'solar day has charging');
   ok(!has('ebike-assist', (v) => v < 0), 'e-bike has no regen');
   ok(!has('powertool-bursts', (v) => v < 0), 'power tool has no charging');
-}
+});
 
-// Pack checks: an RMS-hot profile fails even when the mean looks fine.
-{
+test('pack checks: an RMS-hot profile fails even when the mean looks fine', () => {
   const prof = { dtS: 5, p: [1, 1, 1, 0.9, 1, 0.95] }; // near-constant full power
   const pack = { nominalV: 36, energyWh: 500, maxContCurrentA: 20, maxPulseCurrentA: 40, maxChargeCurrentA: 10 };
   const { findings } = profileChecks(prof, 1000, pack, {}); // ~27.6 A RMS vs 20 A
@@ -85,10 +76,9 @@ for (const pr of PRESETS) {
   const light = profileChecks({ dtS: 5, p: [0.3, 0.2, 0.25, 0.1] }, 1000, pack, {});
   ok(light.findings.find((f) => f.id === 'lp-rms')?.severity === 'pass', 'light profile passes');
   ok(light.findings.find((f) => f.id === 'lp-dod'), 'DoD-per-pass reported');
-}
+});
 
-// CSV upload: two-column, one-column, decimation, and honest failures.
-{
+test('CSV upload: two-column, one-column, decimation, honest failures', () => {
   const two = parseProfileCSV('0,100\n1,200\n2,-50\n3,150\n4,80\n');
   ok(two.uploadedPeakW === 200 && two.p.length === 5, 'two-column CSV parsed');
   ok(Math.abs(Math.min(...two.p) + 0.25) < 1e-9, 'regen normalized');
@@ -96,10 +86,5 @@ for (const pr of PRESETS) {
   ok(one.p.length === 4 && one.uploadedPeakW === 40, 'one-column CSV parsed');
   const big = parseProfileCSV(Array.from({ length: 1500 }, (_, i) => `${i},${100 + (i % 7)}`).join('\n'));
   ok(big.p.length <= 500, `long upload decimated to ${big.p.length}`);
-  let threw = false;
-  try { parseProfileCSV('1,0\n2,0\n3,0\n4,0\n'); } catch { threw = true; }
-  ok(threw, 'all-zero profile rejected');
-}
-
-console.log(fails === 0 ? 'LOAD-PROFILE REGRESSIONS PASSED' : `${fails} FAILURES`);
-process.exit(fails ? 1 : 0);
+  throws(() => parseProfileCSV('1,0\n2,0\n3,0\n4,0\n'), 'all-zero profile rejected');
+});

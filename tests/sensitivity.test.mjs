@@ -1,13 +1,11 @@
-// Regressions for the cost-sensitivity analysis and the patent landscape.
+// Sensitivity — the cost stress test and the patent landscape.
+import { test } from 'node:test';
+import { ok } from './helpers.mjs';
 import { cellById } from '../js/cells.js';
 import { sensitivityAnalysis, priceFlipThreshold } from '../js/sensitivity.js';
 import { PATENT_LANDSCAPE, matchPatents } from '../js/patents.js';
 
-let fails = 0;
-const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
-
-// --- Sensitivity on a TCO-bearing base case
-{
+test('sensitivity on a TCO-bearing base case', () => {
   const c = cellById('samsung-inr21700-50e'); // $5, 500 cycles
   const base = { cell: c, n: 52, energyWh: 917, usage: { cyclesPerYear: 250, targetYears: 6 } };
   const S = sensitivityAnalysis(base, 20);
@@ -24,17 +22,15 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
     `cycle-life downside triggers replacement jump (${cyc.loReplacements} packs)`);
   // Sorted by swing, descending.
   for (let i = 1; i < S.rows.length; i++) ok(S.rows[i - 1].swing >= S.rows[i].swing, 'tornado sorted');
-}
+});
 
-// --- Sensitivity degrades gracefully without prices
-{
+test('sensitivity degrades gracefully without prices', () => {
   const c = { ...cellById('samsung-inr21700-50e'), priceUSD: null, cycleLife: null };
   const S = sensitivityAnalysis({ cell: c, n: 10, energyWh: 176, usage: {} }, 20);
   ok(S.baseVal === null && S.rows.length === 0, 'no-price case returns empty, not NaN');
-}
+});
 
-// --- Price flip threshold
-{
+test('price flip threshold', () => {
   const w = { tco: { tcoUSD: 1000 }, costUSD: 500 };
   const r = { tco: { tcoUSD: 1300 }, costUSD: 450 };
   const fl = priceFlipThreshold(w, r, 'tco');
@@ -42,10 +38,9 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
   const fl2 = priceFlipThreshold(w, r, 'upfront');
   ok(fl2.alreadyCheaper === true, 'runner-up already cheaper upfront detected');
   ok(priceFlipThreshold({ tco: {}, costUSD: null }, r, 'tco') === null, 'null-safe');
-}
+});
 
-// --- Patent landscape shape and matching
-{
+test('patent landscape: entries complete, matching follows the design', () => {
   for (const p of PATENT_LANDSCAPE) {
     ok(p.id && p.title && p.holder && p.covers && p.designNote, `${p.id || '?'} entry complete`);
     ok(Array.isArray(p.links) && p.links.length >= 1 &&
@@ -67,7 +62,4 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
   ok(m3.some((p) => p.id === 'cyl-module-architecture'), 'every cylindrical design gets the baseline family');
   const mPouch = matchPatents({ cell: cellById('generic-nmc-pouch-10ah-hp'), cellCount: 10, selection: {} });
   ok(mPouch.some((p) => p.id === 'pouch-module-architecture'), 'pouch baseline family matches');
-}
-
-console.log(fails === 0 ? 'SENSITIVITY/PATENT REGRESSIONS PASSED' : `${fails} FAILURES`);
-process.exit(fails ? 1 : 0);
+});
