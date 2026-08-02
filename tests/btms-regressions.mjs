@@ -112,6 +112,25 @@ const cell = cellById('samsung-inr21700-50e'); // charge floor 0 °C
     'kW-class heat escalates past ram air even for a drone');
 }
 
+// --- choice assessments: physics-backed verdicts ----------------------------
+{
+  for (const l of LOOP_TYPES) ok(l.pros?.length >= 2 && l.cons?.length >= 2, `${l.id}: pros and cons stated`);
+  // Passive air under real heat: NOT workable, with the physical reason.
+  const p = buildThermalSystem({ heatContW: 1500, ambientC: [0, 25], cell, override: 'passive-air' });
+  ok(p.assessment.verdict === 'not-workable' && /beyond what/.test(p.assessment.why),
+    'passive air at 1.5 kW: not workable, reason stated');
+  // Radiator loop where the design must cool below ambient: NOT workable.
+  const r = buildThermalSystem({ heatContW: 2000, ambientC: [10, 42], cell, override: 'liquid' });
+  ok(r.assessment.verdict === 'not-workable' && /BELOW ambient/.test(r.assessment.why),
+    'radiator-only in a hot climate: not workable — cannot cool below ambient');
+  // Over-provisioning is legitimate, with its costs.
+  const o = buildThermalSystem({ heatContW: 100, ambientC: [10, 25], cell, override: 'liquid-chiller' });
+  ok(o.assessment.verdict === 'workable-with-costs', 'chiller for 100 W: workable, costs listed');
+  // Auto matches -> suggested.
+  ok(buildThermalSystem({ heatContW: 1500, ambientC: [0, 25], cell }).assessment.verdict === 'suggested',
+    'auto choice: suggested');
+}
+
 // --- data sanity ------------------------------------------------------------
 ok(LOOP_TYPES.length === 4 && LOOP_TYPES.every((l) => l.id && l.name && l.when), 'loop table complete');
 ok(loopById('liquid') && loopById('nope') === null, 'loop lookup');

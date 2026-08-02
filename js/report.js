@@ -134,10 +134,11 @@ export function buildReportHTML(R) {
       : `the ${f1(A.system.targetWh / 1000)} kWh target needs <b>${A.system.racks} packs (racks)</b> of this design in parallel strings — this report models ONE pack; each rack keeps its own contactors, fuse and BMS string`)] : []),
     row('Voltage class', `${esc(A.voltageClass.label)} — <span style="font-weight:normal">${esc(A.voltageClass.note)}</span>`),
     row('BMS', `${esc(B.topologyInfo?.name || B.topology)} · ${B.afeTotal}× AFE IC (${B.channelsPerIc} ch) · ${B.senseWiresTotal} sense wires · ${B.tempSensors} temperature sensors (1 per ${B.cellsPerTempSensor} cells)`),
+    ...(R.archAssess?.topo ? [row('Topology assessment', `<b>${esc(R.archAssess.topo.verdict)}</b> — <span style="font-weight:normal">${esc(R.archAssess.topo.why)} Pros: ${R.archAssess.topo.pros.map(esc).join('; ')}. Cons: ${R.archAssess.topo.cons.map(esc).join('; ')}.</span>`)] : []),
     ...(A.comms ? [row('Communication', `${esc(A.comms.primary)}${A.comms.alternates?.length ? ` — <span style="font-weight:normal">alternates: ${esc(A.comms.alternates.join('; '))}</span>` : ''}<br><span style="font-weight:normal">${esc(A.comms.note)}</span>`)] : []),
     ...(A.welding ? [row('Cell joining / welding', `${esc(A.welding.primary)} — <span style="font-weight:normal">alternates: ${esc(A.welding.alternates.join('; '))}. ${esc(A.welding.cautions.join(' '))} (Joining review: Lee, Kim, Hu, Cai &amp; Abell, ASME MSEC2010-34168.)</span>`)] : []),
     ...(A.supervisor ? [row('Supervisory layer', `${esc(A.supervisor.name)} — <span style="font-weight:normal">${esc(A.supervisor.role)} The control hierarchy is cell → module (slave AFE) → BMS master → supervisor.${A.supervisor.detail ? `<br>Functions: ${A.supervisor.detail.functions.map(esc).join('; ')}.<br>Interfaces: ${A.supervisor.detail.interfaces.map(esc).join('; ')}.` : ''}</span>`)] : []),
-    ...(A.emsArch ? [row('EMS architecture', `${esc(A.emsArch.chosen.name)} — <span style="font-weight:normal">${esc(A.emsArch.chosen.when)} ${esc(A.emsArch.note)}</span>`)] : []),
+    ...(A.emsArch ? [row('EMS architecture', `${esc(A.emsArch.chosen.name)} — <span style="font-weight:normal">${esc(A.emsArch.chosen.when)} Pros: ${(A.emsArch.chosen.pros || []).map(esc).join('; ')}. Cons: ${(A.emsArch.chosen.cons || []).map(esc).join('; ')}. ${esc(A.emsArch.note)}</span>`)] : []),
     ...(PR ? [
       row('Precharge', `${f1(PR.rOhm)} Ω resistor · DC link within ${PR.closeGapV} V in ${PR.timeToCloseS} s (τ = ${f2(PR.tauS)} s) · ${f0(PR.energyPerEventJ)} J and ${f1(PR.avgPowerDuringEventW)} W average per event · sized for ${PR.prechargesPerHour}/h`),
       row('Switching sequence', PR.sequence.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')),
@@ -158,6 +159,7 @@ export function buildReportHTML(R) {
   ${R.thermPng ? `<img src="${R.thermPng}" style="width:100%;max-width:640px;border:1px solid #ddd" alt="thermal loop diagram">` : ''}
   ${table([
     row('Loop', `${esc(R.thermal.loop.name)} — <span style="font-weight:normal">${esc(R.thermal.loop.when)}</span>`),
+    ...(R.thermal.assessment ? [row('Loop assessment', `<b>${esc(R.thermal.assessment.verdict)}</b> — <span style="font-weight:normal">${esc(R.thermal.assessment.why)} Pros: ${(R.thermal.loop.pros || []).map(esc).join('; ')}. Cons: ${(R.thermal.loop.cons || []).map(esc).join('; ')}.</span>`)] : []),
     row('Heat to move', `~${f1(R.thermal.heatContW)} W at continuous load · design ambient ${R.thermal.ambientC[0]}…${R.thermal.ambientC[1]} °C`),
     ...(R.thermal.flowLpm != null ? [row('Coolant flow (first-order)', `~${f1(R.thermal.flowLpm)} L/min at ΔT ${R.thermal.coolant.dTdesignK} K, 50/50 water-glycol (ṁ = Q/(c_p·ΔT))`)] : []),
     ...(R.thermal.chillerKW != null ? [row('Chiller / higher system', `~${f1(R.thermal.chillerKW)} kW battery-side duty → ~${f1(R.thermal.compressorKW)} kW compressor load on the vehicle AC / plant HVAC (COP ~${R.thermal.chillerCOP}) — the refrigerant side is OWNED by the higher system`)] : []),

@@ -131,6 +131,15 @@ project's provenance-first datasheet pipeline.
   detector — absent groups are genuinely absent. Ram-air applications
   (drones, e-bikes) are recognized: real heat, free airflow, no fans, no
   BTMS, nothing to instrument.
+- **Choices carry their consequences** — every architecture selection (BMS
+  topology, EMS architecture, thermal loop) shows explicit pros and cons AT
+  the selector, and is judged against the actual design with a verdict:
+  suggested / workable with the costs listed / **not workable here** — the
+  last reserved for physics- or source-backed limits (a >62-node daisy
+  chain as one string, a radiator loop that must cool below ambient,
+  passive air under kilowatt heat), each stated with the reason and the
+  fix. Verdicts fold into the Electrical/Thermal audit panes, the pass/fail
+  badge and the report.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,
