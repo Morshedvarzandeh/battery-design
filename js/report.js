@@ -193,6 +193,28 @@ export function buildReportHTML(R) {
   <div style="font-size:11px;color:#666;margin-top:4px">${R.sim.assumptions.map(esc).join(' ')}</div>`;
   })() : ''}
 
+  ${R.simCompare?.rows?.length >= 2 ? `
+  <h2 style="${h2}">Cell comparison — same mission, same duty</h2>
+  <div style="font-size:11px;color:#666;margin-bottom:4px">${esc(R.simCompare.basis)}</div>
+  <table style="border-collapse:collapse;width:100%;font-size:11.5px">
+    <tr>${['Cell', 'Pack for this job', 'End SoC', 'Min V', 'Peak T', 'I²R loss', 'Cells cost', '$/kWh delivered', 'Mission verdict']
+      .map((h) => `<th style="${td};text-align:left;color:#666;font-weight:normal">${h}</th>`).join('')}</tr>
+    ${R.simCompare.rows.map((r) => {
+      const m = r.sim.unavailable ? null : r.sim.summary;
+      return `<tr${r.current ? ' style="background:#eef5f2"' : ''}>
+        <td style="${td}"><b>${esc(r.cell.name)}</b>${r.current ? ' (this design)' : ''} <span style="color:#666">${esc(r.cell.chemistry)}</span></td>
+        <td style="${td}">${r.s}S${r.p}P · ${f0(r.energyWh)} Wh · ${f1(r.massKg)} kg${r.notes.length ? `<br><span style="color:#666">${r.notes.map(esc).join('; ')}</span>` : ''}</td>
+        <td style="${td}">${m ? `${Math.round(m.endSoC * 100)}%` : '—'}</td>
+        <td style="${td}">${m ? `${f1(m.minV)} V` : '—'}</td>
+        <td style="${td}">${m && m.maxT != null ? `${f1(m.maxT)} °C` : '—'}</td>
+        <td style="${td}">${m ? `${f1(m.lossWh)} Wh` : '—'}</td>
+        <td style="${td}">${r.cost?.upfrontUSD != null ? `$${f0(r.cost.upfrontUSD)}` : '—'}</td>
+        <td style="${td}">${r.cost?.usdPerKWhDelivered != null ? `$${r.cost.usdPerKWhDelivered.toFixed(2)}` : '—'}</td>
+        <td style="${td}">${r.sim.unavailable ? 'no DCIR published' : esc(r.verdict === 'pass' ? 'completes' : r.verdict)}</td>
+      </tr>`;
+    }).join('')}
+  </table>` : ''}
+
   ${R.sensors?.groups?.length ? `
   <h2 style="${h2}">Sensor plan — by level</h2>
   ${R.sensors.groups.map((gr) => `

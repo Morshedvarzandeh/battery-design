@@ -5,6 +5,7 @@ import { cellById } from '../js/cells.js';
 import { costModel } from '../js/optimizer.js';
 import { co2Model, CO2_MFG_PER_KWH, buildReportHTML, buildWordDocument } from '../js/report.js';
 import { normalizeCustomCell, validateCustomCell, buildMailto, OWNER_EMAIL } from '../js/mycells.js';
+import { compareCells } from '../js/sim1d.js';
 
 test('CO2 arithmetic on a ~14 kWh LFP ESS', () => {
   const lfp = cellById('eve-lf280k'); // 3.2V 280Ah, 6000 cycles class
@@ -62,6 +63,21 @@ test('report document builds with full and sparse data', () => {
     co2: co2Model({ cell: c2, energyWh: 917, gridGPerKWh: 440 }), usage: {},
   };
   ok(!/undefined|NaN/.test(buildReportHTML(R2)), 'sparse report clean');
+
+  // With compared cells: the report carries the same-mission comparison so
+  // the value of different cells can be weighed side by side.
+  const lfp = cellById('eve-lf280k');
+  const cmp = compareCells({
+    cells: [c, lfp], targetVNom: summary.nominalV, targetEnergyWh: summary.energyWh,
+    profile: { dtS: 30, p: [0.4, 0.9, 0.2] }, scaleW: 1200, ambientC: 25, uaWK: 3, currentId: c.id,
+  });
+  for (const r of cmp.rows) r.cost = costModel(r.cell, r.s * r.p, r.energyWh, { cyclesPerYear: 250, targetYears: 5 });
+  const R3 = { ...R, simCompare: cmp };
+  const html3 = buildReportHTML(R3);
+  ok(html3.includes('Cell comparison — same mission, same duty'), 'comparison section present');
+  ok(html3.includes(lfp.name) && html3.includes('(this design)'), 'both cells named, current marked');
+  ok(html3.includes('$/kWh delivered'), 'the value column is there');
+  ok(!/undefined|NaN/.test(html3), 'comparison section clean');
 });
 
 test('customer cells: validation, normalization, and the private mail path', () => {

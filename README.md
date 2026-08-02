@@ -184,7 +184,12 @@ project's provenance-first datasheet pipeline.
   branch, regen lost against a full battery. Assumptions stated in the
   pane and the report — class-typical OCV shapes, constant DCIR, one
   lumped mass; deliberately level 1 (electrode-level P2D needs parameters
-  manufacturers do not publish).
+  manufacturers do not publish). Tick two or more cells in the cell picker
+  and the IDENTICAL mission runs for each as the equivalent pack for the
+  same job (S from the design's voltage window, P from its energy target) —
+  outcome, cost and $/kWh-delivered side by side in the Sim tab and as a
+  comparison table in the report, so the value of different cells is weighed
+  on results, not datasheets.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,

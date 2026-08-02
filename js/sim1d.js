@@ -277,3 +277,44 @@ export function simulateMission(a) {
     ],
   };
 }
+
+// ---------------------------------------------------------------------------
+// Cell comparison over the SAME mission. The compare ticks in the cell
+// picker already drive the radar; this runs the identical mission for each
+// ticked cell, built as the equivalent pack for the same job: S from the
+// design's voltage, P from its energy target. Same profile, same climate,
+// same cooling conductance — the CELLS differ, nothing else, so the
+// difference in outcome is the difference in value.
+// ---------------------------------------------------------------------------
+export function compareCells({ cells, targetVNom, targetEnergyWh, profile, scaleW, passes = 1, startSoC = 1, ambientC = 25, interconnectMOhm = 0, uaWK = null, hasHeater = false, currentId = null }) {
+  const rows = [];
+  for (const cell of cells || []) {
+    const s = Math.max(1, Math.round((targetVNom || cell.nominalV) / cell.nominalV));
+    const cellWh = cell.nominalV * cell.capacityAh;
+    const p = Math.max(1, Math.round((targetEnergyWh || s * cellWh) / (s * cellWh)));
+    const energyWh = s * p * cellWh;
+    const massKg = (s * p * (cell.massG ?? 0)) / 1000;
+    const resistanceMOhm = cell.dcirMOhm != null ? (s * cell.dcirMOhm) / p + interconnectMOhm : null;
+    const notes = [];
+    // Honesty: a big-format cell can overshoot a small target even at 1P.
+    if (targetEnergyWh && energyWh > 2 * targetEnergyWh) {
+      notes.push(`oversized for this job — ${s}S1P is already ${(energyWh / targetEnergyWh).toFixed(1)}× the target energy`);
+    }
+    const sim = simulateMission({
+      cell, s, p, profile, scaleW, passes, startSoC, ambientC,
+      resistanceMOhm: resistanceMOhm ?? undefined,
+      uaWK, thermalMassJK: Math.max(1, massKg) * 1000, hasHeater,
+    });
+    rows.push({
+      cell, s, p, energyWh, massKg, resistanceMOhm, notes, sim,
+      current: cell.id === currentId,
+      verdict: sim.unavailable ? 'unavailable'
+        : sim.findings.some((f) => f.severity === 'fail') ? 'fail'
+        : sim.findings.some((f) => f.severity === 'warn') ? 'warn' : 'pass',
+    });
+  }
+  return {
+    rows,
+    basis: `Each cell built as the equivalent pack for the same job (S from the ${Math.round(targetVNom)} V window, P from the ${Math.round(targetEnergyWh)} Wh target), run through the identical mission, climate and cooling conductance.`,
+  };
+}
