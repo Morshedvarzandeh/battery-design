@@ -1895,6 +1895,10 @@ function renderArchitecture() {
   }
   if (A.supervisor) {
     rows.push(stat('Supervisory layer', `${esc(A.supervisor.name)} — <span style="font-weight:normal">${esc(A.supervisor.role)}</span>`));
+    if (A.supervisor.detail) {
+      rows.push(stat('… its functions', `<span style="font-weight:normal">${A.supervisor.detail.functions.map(esc).join(' · ')}</span>`));
+      rows.push(stat('… its interfaces', `<span style="font-weight:normal">${A.supervisor.detail.interfaces.map(esc).join(' · ')}</span>`));
+    }
   }
   if (PR) {
     rows.push(stat('Precharge', `${f1(PR.rOhm)} Ω · within ${PR.closeGapV} V in ${PR.timeToCloseS} s · ${f0(PR.energyPerEventJ)} J/event · avg ${f1(PR.avgPowerDuringEventW)} W during event`));

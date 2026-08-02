@@ -493,66 +493,130 @@ export const SUPERVISORS_BY_APP = {
   ev: {
     name: 'VCU (vehicle control unit)',
     role: 'Coordinates torque, regen blending, charging and thermal preconditioning; the BMS publishes limits (SoP), the VCU stays inside them.',
+    detail: {
+      functions: ['torque & regen blending inside the BMS SoP limits', 'charge session control (ISO 15118 to the charger)', 'thermal preconditioning requests to the BTMS'],
+      interfaces: ['vehicle CAN / CAN FD', 'UDS (ISO 14229) diagnostics', 'ISO 15118 / DIN 70121 charge comms'],
+    },
   },
   ebus: {
-    name: 'VCU + fleet/depot telematics',
-    role: 'Vehicle control plus depot charging management — the depot EMS schedules which bus charges when; the BMS only enforces limits.',
+    name: 'VCU + depot EMS',
+    role: 'Vehicle control on board plus a DEPOT ENERGY MANAGEMENT SYSTEM off board — the depot EMS schedules which bus charges when, against grid limits and departure times; the BMS only enforces limits.',
+    detail: {
+      functions: ['on-board: torque/regen and charge control', 'depot EMS: fleet charging schedule vs grid connection limit', 'departure-time and route-energy planning'],
+      interfaces: ['SAE J1939 on board', 'OppCharge / ISO 15118 to chargers', 'OCPP from the depot EMS to charge points'],
+    },
   },
   ebike: {
     name: 'Drive unit controller',
     role: 'The motor drive unit is the system master (Bosch/Shimano pattern); the battery reports capacity and limits to it.',
+    detail: {
+      functions: ['assist-level power management', 'range estimation from the pack gauge'],
+      interfaces: ['drive-system CAN or UART'],
+    },
   },
   escooter: {
     name: 'Controller + fleet IoT board',
     role: 'The motor controller runs the ride; shared fleets add an IoT board for remote lock, telemetry and geofencing.',
+    detail: {
+      functions: ['ride power control', 'fleet: remote lock, geofencing, battery telemetry'],
+      interfaces: ['UART to the BMS', 'CAN + cellular on fleet IoT boards'],
+    },
   },
   'solar-ess': {
     name: 'EMS (energy management system)',
-    role: 'Dispatches charge/discharge against tariffs, solar forecast and grid codes via the hybrid inverter; the BMS enforces the battery envelope.',
+    role: 'Dispatches charge/discharge against tariffs, solar forecast and grid codes via the hybrid inverter (PCS); the BMS enforces the battery envelope.',
+    detail: {
+      functions: ['dispatch: charge on solar surplus / cheap tariff, discharge on peaks', 'solar and load forecasting', 'grid-code compliance (feed-in limits, frequency response)', 'PCS/inverter setpoints — always inside the BMS-published envelope'],
+      interfaces: ['SunSpec Modbus RTU/TCP to the inverter', 'inverter-vendor CAN dialects', 'IEC 61850 at grid scale', 'cloud/portal for tariffs and monitoring'],
+    },
   },
   ups: {
-    name: 'UPS / rectifier controller',
+    name: 'UPS / rectifier controller (EMS role)',
     role: 'Owns the transfer logic and float strategy; the battery string reports health and takes the load on mains failure.',
+    detail: {
+      functions: ['mains-failure transfer logic', 'float/equalize strategy and battery test cycles', 'alarm escalation to the NOC'],
+      interfaces: ['Modbus RTU/TCP', 'SNMP to the monitoring system', 'dry contacts for hard alarms'],
+    },
   },
   rv: {
-    name: 'Power hub / inverter-charger controller',
+    name: 'Power hub / inverter-charger controller (EMS role)',
     role: 'Prioritizes alternator, solar and shore sources and sheds loads; the battery publishes its state on the house network.',
+    detail: {
+      functions: ['source priority: alternator / solar / shore', 'load shedding below a state-of-charge floor', 'charge profile per battery chemistry'],
+      interfaces: ['RV-C or vendor CAN', 'Modbus to solar/inverter gear'],
+    },
   },
   marine: {
-    name: 'PMS (power management system)',
+    name: 'PMS (power management system — the vessel\'s EMS)',
     role: 'Vessel-level source and load management under class rules; battery banks are one source among generators and shore power.',
+    detail: {
+      functions: ['source scheduling: generators / battery / shore', 'load management under class-society rules', 'blackout prevention and recovery'],
+      interfaces: ['NMEA 2000', 'Modbus to inverter/chargers', 'class-approved alarm panel'],
+    },
   },
   robot: {
-    name: 'Robot / fleet controller',
+    name: 'Robot / fleet controller (fleet EMS role)',
     role: 'Schedules missions and opportunity charging across the fleet (PLC/WMS level); each truck\'s BMS guards its own pack.',
+    detail: {
+      functions: ['mission scheduling vs pack state of charge', 'opportunity-charge slotting across the fleet', 'charger allocation'],
+      interfaces: ['CANopen to the vehicle', 'WMS/PLC network (fieldbus or Ethernet)'],
+    },
   },
   humanoid: {
     name: 'Robot main computer',
     role: 'The locomotion/planning computer budgets power per task; the battery node reports state over the robot bus.',
+    detail: {
+      functions: ['per-task power budgeting', 'return-to-dock decision from pack state'],
+      interfaces: ['CAN FD battery node', 'EtherCAT joint bus alongside'],
+    },
   },
   drone: {
     name: 'Flight controller',
     role: 'Enforces return-to-home and landing thresholds from the smart battery\'s reported state.',
+    detail: {
+      functions: ['return-to-home / forced-landing thresholds', 'per-mission energy budgeting'],
+      interfaces: ['SMBus smart battery', 'telemetry downlink'],
+    },
   },
   powertool: {
     name: 'Tool MCU',
     role: 'A minimal controller reads pack ID/temperature and cuts on stall; there is no higher layer.',
+    detail: {
+      functions: ['stall cut-off', 'pack ID / chemistry handshake'],
+      interfaces: ['1-Wire / vendor serial'],
+    },
   },
   powerstation: {
-    name: 'Device MCU + phone app',
+    name: 'Device MCU + phone app (EMS role)',
     role: 'Owns the inverter, input priorities and the user interface; the pack gauge feeds it.',
+    detail: {
+      functions: ['input priority: solar / AC / car', 'inverter load management', 'user limits via the app'],
+      interfaces: ['SMBus internally', 'BLE/Wi-Fi to the app'],
+    },
   },
   robovac: {
     name: 'Host SoC (navigation computer)',
     role: 'Decides when to return to dock from the gauge\'s reported state; charging is dock-controlled.',
+    detail: {
+      functions: ['return-to-dock decision', 'clean-cycle planning vs remaining charge'],
+      interfaces: ['I²C gauge', 'dock charge handshake'],
+    },
   },
   wearable: {
     name: 'Host SoC / PMIC',
     role: 'The power-management IC and SoC budget every milliwatt; the fuel gauge is their sensor, not a controller.',
+    detail: {
+      functions: ['milliwatt power budgeting per feature', 'low-battery feature shedding'],
+      interfaces: ['I²C fuel gauge', 'BLE to the phone'],
+    },
   },
   default: {
     name: 'Supervisory controller (EMS / ECU / host)',
     role: 'Every deployed pack answers to a system controller above the BMS — name it early; its bus and update rate shape the BMS interface.',
+    detail: {
+      functions: ['decides what the battery is asked to do, inside the BMS-published limits'],
+      interfaces: ['the bus named under Communication'],
+    },
   },
 };
 
