@@ -103,9 +103,14 @@ project's provenance-first datasheet pipeline.
 - **The full control hierarchy** — cell → module (slave AFE) → BMS master →
   **supervisory layer**: the machine above the BMS is named per application
   (EMS for storage, VCU/ECU for vehicles, PMS for vessels, fleet controller
-  for AGVs, host SoC for gadgets) in the diagrams, the panel and the
-  report; the integration suite requires an explicit supervisor for every
-  application.
+  for AGVs, host SoC for gadgets) with its functions and interfaces in the
+  diagrams, the panel and the report; the integration suite requires an
+  explicit supervisor for every application. Where the supervisor is a real
+  **EMS**, its architecture is chosen from the literature families —
+  centralized / hierarchical (three control levels, IEEE 2030.7 framing) /
+  distributed (droop/price signals) — auto-suggested from the stack count,
+  overridable, and the question never appears for applications without an
+  EMS.
 - **Thermal management system tab** — the SYSTEM behind the cold plate: the
   loop (pump, radiator, refrigerant chiller / heat exchanger, valves,
   heater branch for winter charging) selected by heat load, climate and

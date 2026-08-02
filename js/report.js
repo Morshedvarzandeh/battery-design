@@ -137,6 +137,7 @@ export function buildReportHTML(R) {
     ...(A.comms ? [row('Communication', `${esc(A.comms.primary)}${A.comms.alternates?.length ? ` — <span style="font-weight:normal">alternates: ${esc(A.comms.alternates.join('; '))}</span>` : ''}<br><span style="font-weight:normal">${esc(A.comms.note)}</span>`)] : []),
     ...(A.welding ? [row('Cell joining / welding', `${esc(A.welding.primary)} — <span style="font-weight:normal">alternates: ${esc(A.welding.alternates.join('; '))}. ${esc(A.welding.cautions.join(' '))} (Joining review: Lee, Kim, Hu, Cai &amp; Abell, ASME MSEC2010-34168.)</span>`)] : []),
     ...(A.supervisor ? [row('Supervisory layer', `${esc(A.supervisor.name)} — <span style="font-weight:normal">${esc(A.supervisor.role)} The control hierarchy is cell → module (slave AFE) → BMS master → supervisor.${A.supervisor.detail ? `<br>Functions: ${A.supervisor.detail.functions.map(esc).join('; ')}.<br>Interfaces: ${A.supervisor.detail.interfaces.map(esc).join('; ')}.` : ''}</span>`)] : []),
+    ...(A.emsArch ? [row('EMS architecture', `${esc(A.emsArch.chosen.name)} — <span style="font-weight:normal">${esc(A.emsArch.chosen.when)} ${esc(A.emsArch.note)}</span>`)] : []),
     ...(PR ? [
       row('Precharge', `${f1(PR.rOhm)} Ω resistor · DC link within ${PR.closeGapV} V in ${PR.timeToCloseS} s (τ = ${f2(PR.tauS)} s) · ${f0(PR.energyPerEventJ)} J and ${f1(PR.avgPowerDuringEventW)} W average per event · sized for ${PR.prechargesPerHour}/h`),
       row('Switching sequence', PR.sequence.map((x, i) => `${i + 1}. ${esc(x)}`).join('<br>')),

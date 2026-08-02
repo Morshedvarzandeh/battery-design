@@ -625,6 +625,59 @@ export function supervisorForApp(appId) {
 }
 
 // ---------------------------------------------------------------------------
+// EMS architectures — from the microgrid/ESS literature, the same way the
+// BMS got its topology table. Three families recur across the reviews and
+// the IEEE 2030.7 microgrid-controller framing:
+//   centralized — one controller optimizes every asset;
+//   hierarchical — three control levels with separate timescales (primary:
+//     device, ms; secondary: site coordination, seconds–minutes; tertiary:
+//     market/grid dispatch, minutes–hours);
+//   distributed — units decide locally and coordinate through shared
+//     signals (droop / price), no single point of failure.
+// Like BMS topology, no universal crossover exists — the choice is an
+// input with a scale-based suggestion. And integration holds: this table
+// exists ONLY for applications that genuinely have an EMS; a wearable or
+// a power tool never sees it.
+// ---------------------------------------------------------------------------
+export const EMS_ARCHITECTURES = [
+  {
+    id: 'centralized',
+    name: 'Centralized EMS',
+    when: 'One controller measures and dispatches every asset. Right for single-site, few-asset plants (a home ESS, one container) — simplest to build and certify, but a single point of failure and it scales poorly past a handful of assets.',
+  },
+  {
+    id: 'hierarchical',
+    name: 'Hierarchical EMS (three control levels)',
+    when: 'The microgrid-literature standard (IEEE 2030.7 framing): primary control at the device (milliseconds, inverter-local), secondary coordinating the site (seconds–minutes, voltage/frequency restoration and setpoint sharing), tertiary running dispatch against markets and grid codes (minutes–hours). Right for multi-rack plants, depots and utility-scale systems.',
+  },
+  {
+    id: 'distributed',
+    name: 'Distributed EMS (droop / peer signals)',
+    when: 'Each unit decides locally and coordinates through shared signals — droop curves, price broadcasts, consensus. No single point of failure and racks can join/leave freely; harder to prove optimal behavior, and market participation still needs an aggregating layer.',
+  },
+];
+
+// Applications whose supervisor genuinely IS an energy management system
+// coordinating multiple assets. Everything else returns null — the EMS
+// architecture question must never appear for a wearable.
+const EMS_ARCH_APPS = new Set(['solar-ess', 'ups', 'ebus', 'marine', 'robot']);
+
+export function emsArchitectureFor(appId, racks = 1, override = 'auto') {
+  if (!EMS_ARCH_APPS.has(appId)) return null;
+  // Scale suggestion: one asset -> centralized; several racks/vehicles ->
+  // hierarchical (the literature default for coordinated plants).
+  const recommended = (racks ?? 1) > 1 ? 'hierarchical' : 'centralized';
+  const chosenId = override && override !== 'auto' ? override : recommended;
+  const chosen = EMS_ARCHITECTURES.find((a) => a.id === chosenId) || EMS_ARCHITECTURES[0];
+  return {
+    chosen, recommended,
+    overridden: !!(override && override !== 'auto' && override !== recommended),
+    list: EMS_ARCHITECTURES,
+    note: 'Families per the microgrid EMS literature and the IEEE 2030.7 microgrid-controller framing — like BMS topology, no universal crossover exists, so the choice is an input with a scale-based suggestion.',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Orchestrator — everything the customer needs to see the architecture of
 // one design, in one object.
 // ---------------------------------------------------------------------------
@@ -685,7 +738,8 @@ export function buildArchitecture({ cell, s, p, summary, options = {} }) {
   const comms = commsForApp(options.appId);
   const welding = weldingForCell(cell);
   const supervisor = supervisorForApp(options.appId);
-  return { partition, voltageClass: vc, bms, precharge, contactors, isolation, dcdc, resistance, system, comms, welding, supervisor };
+  const emsArch = emsArchitectureFor(options.appId, system?.racks ?? 1, options.emsOverride);
+  return { partition, voltageClass: vc, bms, precharge, contactors, isolation, dcdc, resistance, system, comms, welding, supervisor, emsArch };
 }
 
 const round2 = (v) => Math.round(v * 100) / 100;

@@ -158,6 +158,19 @@ for (const pr of PRESETS) {
     'EMS detail: dispatch + grid codes');
   ok(ems.interfaces.some((i) => /SunSpec|Modbus/i.test(i)) && ems.interfaces.some((i) => /61850/.test(i)),
     'EMS detail: SunSpec Modbus + IEC 61850 interfaces');
+  // EMS architectures (literature families) — only where an EMS exists.
+  const { emsArchitectureFor, EMS_ARCHITECTURES } = await import('../js/architecture.js');
+  ok(EMS_ARCHITECTURES.length === 3 &&
+     EMS_ARCHITECTURES.some((a) => /2030\.7|three control levels/i.test(a.when)),
+    'literature families present with the IEEE 2030.7 framing');
+  ok(emsArchitectureFor('wearable') === null && emsArchitectureFor('powertool') === null &&
+     emsArchitectureFor('drone') === null,
+    'the EMS-architecture question never appears for gadget applications');
+  ok(emsArchitectureFor('solar-ess', 1).chosen.id === 'centralized', 'one asset -> centralized suggested');
+  ok(emsArchitectureFor('solar-ess', 8).chosen.id === 'hierarchical', 'multi-rack -> hierarchical suggested');
+  ok(emsArchitectureFor('ebus', 4).chosen.id === 'hierarchical', 'bus depot -> hierarchical');
+  const ov = emsArchitectureFor('solar-ess', 8, 'distributed');
+  ok(ov.chosen.id === 'distributed' && ov.overridden, 'override honored and marked');
   ok(/VCU/.test(supervisorForApp('ev').name), 'vehicle supervisor: VCU');
   ok(/PMS/.test(supervisorForApp('marine').name), 'marine supervisor: PMS');
   ok(supervisorForApp('never-heard-of-it').name.length > 0, 'unknown app falls back honestly');
