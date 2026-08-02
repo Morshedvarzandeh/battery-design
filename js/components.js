@@ -278,6 +278,18 @@ export const COMPONENTS = {
   // ------------------------------------------------------------------ vent --
   vent: [
     {
+      id: 'none-cell-venting',
+      name: 'None — the cell\'s own venting feature',
+      kind: 'none-cell-vent',
+      forms: ['cylindrical', 'prismatic', 'pouch'],
+      suppliers: null,
+      notes: 'No pack-level vent hardware: gadget-scale sealed packs (wearables, earbuds, small devices) rely on the cell\'s own venting feature — the score/CID in cans, the laminate seam tearing in pouches — plus free space in the housing. Right for watt-hour-class packs only; anything that can build real headspace pressure needs a breather or PRV.',
+      dataQuality: 'typical-class',
+      level: 'cell',
+      mechanism: 'cell-integral',
+      activationNote: 'The cell vents through its own weakest feature; the housing must not form a sealed pressure vessel around it.',
+    },
+    {
       id: 'cell-score-vent-cid',
       name: 'Integral score vent + CID (cylindrical cell)',
       kind: 'cell-integral-vent',

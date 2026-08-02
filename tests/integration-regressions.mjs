@@ -155,6 +155,14 @@ for (const pr of PRESETS) {
   // The day profile belongs to it and ends the day on the dock.
   const prof = profileForApp('wearable');
   ok(prof?.id === 'wearable-day' && prof.p.some((v) => v < 0), 'wearable day profile with dock charging');
+  // No phantom pack vent: the cell's-own-venting entry exists for every
+  // form, is cell-level (so the 3D pack nub never renders), and says
+  // honestly where it stops applying.
+  const { componentById } = await import('../js/components.js');
+  const noVent = componentById('vent', 'none-cell-venting');
+  ok(noVent && noVent.level === 'cell', 'none-cell-venting entry exists at cell level');
+  ok(noVent.forms.length === 3, 'available for every cell form');
+  ok(/watt-hour-class packs only/i.test(noVent.notes), 'scope limit stated — not for packs with real headspace pressure');
 }
 
 // --- off-preference detection data is consistent ----------------------------

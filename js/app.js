@@ -100,7 +100,13 @@ const coolingSpace = () => selComponents().cooling?.spaceMm || { bottom: 0, side
 // ---------------------------------------------------------------------------
 const f1 = (v) => v == null ? '—' : (Math.round(v * 10) / 10).toLocaleString();
 const f0 = (v) => v == null ? '—' : Math.round(v).toLocaleString();
-const fWh = (v) => v == null ? '—' : (v >= 5000 ? `${f1(v / 1000)} kWh` : `${f0(v)} Wh`);
+// Tiny packs are real packs: a 0.44 Wh wearable must never display as
+// "0 Wh · 0 kg" — the units adapt to the scale.
+const fWh = (v) => v == null ? '—'
+  : v >= 5000 ? `${f1(v / 1000)} kWh`
+    : v >= 10 ? `${f0(v)} Wh`
+      : `${(Math.round(v * 100) / 100).toLocaleString()} Wh`;
+const fKg = (v) => v == null ? '—' : (v < 0.0995 ? `${f1(v * 1000)} g` : `${f1(v)} kg`);
 const fDim = (d) => d ? `${f0(d.x)} × ${f0(d.y)} × ${f0(d.z)} mm` : '—';
 
 // ---------------------------------------------------------------------------
@@ -393,11 +399,13 @@ function applyPreset(pr) {
     syncInputs();
   }
   // Integration: portable-class machines (wearables, drones, tools, robot
-  // vacuums, power boxes) are air-cooled by default — the cell form's
-  // default liquid plate would drag a phantom coolant loop into the
-  // Thermal and Sensors views. The customer can still pick any cooling.
+  // vacuums, power boxes) are air-cooled by default and have NO pack-level
+  // vent hardware — the cell's own venting feature is the vent. The form
+  // defaults (liquid plate, pack breather) would drag phantom hardware
+  // into the Thermal/Sensors views and the 3D render. Still user-changeable.
   if (appClassOf(pr.id) === 'portable') {
     state.sel.cooling = 'passive-air';
+    state.sel.vent = 'none-cell-venting';
     initComponents();
   }
   // Integration: an indoor machine never sees a Nordic winter — picking an
@@ -797,7 +805,10 @@ function onCellChange() {
   // air-cooled regardless of which form's defaults just loaded.
   if (c.form !== lastForm) {
     state.sel = { ...DEFAULTS_BY_FORM[c.form] };
-    if (appClassOf(state.presetId) === 'portable') state.sel.cooling = 'passive-air';
+    if (appClassOf(state.presetId) === 'portable') {
+      state.sel.cooling = 'passive-air';
+      state.sel.vent = 'none-cell-venting';
+    }
     lastForm = c.form;
     initComponents();
   }
@@ -895,7 +906,7 @@ function wizardStep3() {
     const el = document.createElement('div');
     el.className = 'wz-pick';
     el.innerHTML = `
-      <div class="big">${fWh(r.energyWh)} · ${f1(r.massKg)} kg</div>
+      <div class="big">${fWh(r.energyWh)} · ${fKg(r.massKg)}</div>
       <div>${esc(r.cell.name)} — ${r.s}S${r.p}P, ${r.n} cells</div>
       <div class="why">${esc(why)}</div>`;
     el.onclick = () => {
@@ -1632,8 +1643,8 @@ function renderStats() {
     ['sec', 'Physical'],
     ['Outer dimensions', fDim(S.dims)],
     ['Volume', `${f1(S.volumeL)} L`],
-    ['Mass (est.)', `${f1(S.massKg)} kg`],
-    ['Cells mass', `${f1(S.massCellsKg)} kg`],
+    ['Mass (est.)', fKg(S.massKg)],
+    ['Cells mass', fKg(S.massCellsKg)],
     ['Energy density', `${f0(S.whPerKg)} Wh/kg · ${f0(S.whPerL)} Wh/L`],
     ['Packing efficiency', `${f0(S.packingEfficiency * 100)}%`],
   ];
@@ -1672,7 +1683,7 @@ function renderStats() {
   $('hdrStats').innerHTML =
     `<span>${S.s}S${S.p}P</span><span><b>${f1(S.nominalV)}</b> V</span>` +
     `<span><b>${f1(S.capacityAh)}</b> Ah</span><span><b>${fWh(S.energyWh)}</b></span>` +
-    `<span><b>${f1(S.massKg)}</b> kg</span>`;
+    `<span><b>${fKg(S.massKg)}</b></span>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2173,7 +2184,7 @@ function runSuggest() {
       <h4>#${i + 1} ${esc(r.cell.name)}
         <span class="chip" style="color:${ch?.color};border-color:${ch?.color}">${r.cell.chemistry}</span></h4>
       <div class="m">${r.s}S${r.p}P · ${f1(r.summary.nominalV)} V · ${fWh(r.summary.energyWh)} ·
-        ${f1(r.summary.massKg)} kg · ${f1(r.summary.volumeL)} L
+        ${fKg(r.summary.massKg)} · ${f1(r.summary.volumeL)} L
         ${r.costUSD != null ? `· ~$${f0(r.costUSD)}` : ''}</div>
       <div class="scorebar"><i style="width:${clamp(r.score, 2, 100)}%"></i></div>
       <ul>${r.reasons.map((t) => `<li>${esc(t)}</li>`).join('')}
@@ -2273,7 +2284,7 @@ function runMaxFill() {
         ${r.targetEnergyWh ? (r.meetsEnergy ? '<span class="chip pass">meets target</span>' : '<span class="chip warn">closest possible</span>') : ''}
         ${offPref ? `<span class="chip warn">off-preference for ${esc(preset.name)}</span>` : ''}</h4>
       <div class="m">${r.s}S${r.p}P · ${f1(r.nominalV)} V · ${r.n}/${r.nMax} cells (${f0(r.utilization * 100)}% of fit) ·
-        ${fWh(r.energyWh)} · ${f1(r.massKg)} kg ·
+        ${fWh(r.energyWh)} · ${fKg(r.massKg)} ·
         ${r.grid.nx != null ? `${r.grid.nx}×${r.grid.ny}${r.grid.nz > 1 ? `×${r.grid.nz}` : ''} ` : ''}${r.opts.arrangement}</div>
       <div class="m" style="margin-top:2px">Architecture: ${part.virtual
         ? 'cell-to-pack — one virtual group'

@@ -197,13 +197,15 @@ export class PackViewer {
       panel.material.color.set(tint[0]);
       panel.material.opacity = tint[1];
     }
-    // Pack-level vent nub on the lid.
+    // Pack-level vent nub on the lid — scaled to the pack, so a Gore-vent-
+    // sized part never towers over a gadget enclosure like a boulder.
     if (this.compViz?.vent) {
+      const vs = Math.min(1, Math.max(0.2, Math.min(L.outer.x, L.outer.y) / 120));
       const ventMesh = new THREE.Mesh(
-        new THREE.CylinderGeometry(5, 6, 3.2, 20),
+        new THREE.CylinderGeometry(5 * vs, 6 * vs, 3.2 * vs, 20),
         new THREE.MeshStandardMaterial({ color: 0x30363a, metalness: 0.4, roughness: 0.6 })
       );
-      ventMesh.position.set(L.outer.x / 2 - 14, L.outer.z / 2 + 1.6, L.outer.y / 2 - 14);
+      ventMesh.position.set(L.outer.x / 2 - 14 * vs, L.outer.z / 2 + 1.6 * vs, L.outer.y / 2 - 14 * vs);
       enc.add(ventMesh);
     }
     this._encLines = lines;
