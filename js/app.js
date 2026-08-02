@@ -62,6 +62,7 @@ const state = {
   seasonId: 'all',         // winter|spring|summer|autumn|all — design for ALL seasons
   marketId: 'eu',          // release-checklist target market
   loopOverride: 'auto',    // thermal loop choice (like BMS topology: an input)
+  emsOverride: 'auto',     // EMS architecture (only for EMS-bearing applications)
 };
 let customProfile = null;  // uploaded profile (session only)
 
@@ -107,6 +108,9 @@ const fWh = (v) => v == null ? '—'
     : v >= 10 ? `${f0(v)} Wh`
       : `${(Math.round(v * 100) / 100).toLocaleString()} Wh`;
 const fKg = (v) => v == null ? '—' : (v < 0.0995 ? `${f1(v * 1000)} g` : `${f1(v)} kg`);
+// Power stated in kW must never round to "0 kW" — below a kilowatt it
+// reads in watts.
+const fPow = (kW) => kW == null ? '—' : (kW < 0.9995 ? `${f0(kW * 1000)} W` : `${f1(kW)} kW`);
 const fDim = (d) => d ? `${f0(d.x)} × ${f0(d.y)} × ${f0(d.z)} mm` : '—';
 
 // ---------------------------------------------------------------------------
@@ -717,6 +721,11 @@ function bindControls() {
   $('segIso').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.archIso = b.dataset.iso;
     $('segIso').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    runArchitecture();
+  });
+  $('segEms').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    state.emsOverride = b.dataset.ems;
+    $('segEms').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
     runArchitecture();
   });
   // Architecture assumptions and the advanced duty inputs feed the
@@ -1519,7 +1528,7 @@ function renderThermal() {
     rows.push(stat('Coolant flow', `~${f1(T.flowLpm)} L/min (ΔT ${T.coolant.dTdesignK} K, 50/50 water-glycol — ṁ = Q/(c_p·ΔT))`));
   }
   if (T.chillerKW != null) {
-    rows.push(stat('Chiller duty', `~${f1(T.chillerKW)} kW battery side → ~${f1(T.compressorKW)} kW compressor load on the HIGHER system (COP ~${T.chillerCOP})`));
+    rows.push(stat('Chiller duty', `~${fPow(T.chillerKW)} battery side → ~${fPow(T.compressorKW)} compressor load on the HIGHER system (COP ~${T.chillerCOP})`));
   }
   rows.push(stat('Heater', T.heaterNeeded
     ? `required — ambient below the ${T.chargeFloorC} °C charge floor`
@@ -1606,7 +1615,7 @@ function drawThermalLoop(canvas, T, forExport = false) {
       g.fillStyle = mut; g.fillText('AC/HVAC', 550, 182);
       line(530, 160, 545, 160, true);
       g.fillStyle = mut;
-      if (T.compressorKW != null) g.fillText(`~${(Math.round(T.compressorKW * 10) / 10)} kW`, 545, 122);
+      if (T.compressorKW != null) g.fillText(`~${fPow(T.compressorKW)}`, 545, 122);
     }
     if (T.heaterNeeded) {
       boxAt(170, 140, 100, 32, 'PTC heater', 'cold charge');
@@ -1842,6 +1851,7 @@ function archOptions() {
   return {
     topology: state.archTopology,
     isolationStandard: state.archIso,
+    emsOverride: state.emsOverride,
     sModOverride: smodRaw && smodRaw !== 'auto' ? parseInt(smodRaw, 10) : null,
     channelsPerIc: ch,
     linkCapUF: n('archCap', 500),
@@ -1898,6 +1908,14 @@ function renderArchitecture() {
     if (A.supervisor.detail) {
       rows.push(stat('… its functions', `<span style="font-weight:normal">${A.supervisor.detail.functions.map(esc).join(' · ')}</span>`));
       rows.push(stat('… its interfaces', `<span style="font-weight:normal">${A.supervisor.detail.interfaces.map(esc).join(' · ')}</span>`));
+    }
+    // EMS architecture — only for applications that genuinely have an EMS
+    // (the selector stays hidden everywhere else; a wearable never sees it).
+    $('emsArchWrap').style.display = A.emsArch ? 'block' : 'none';
+    if (A.emsArch) {
+      rows.push(stat('EMS architecture', `${esc(A.emsArch.chosen.name)}${A.emsArch.overridden
+        ? ` <span class="chip warn">override — auto suggests ${esc(A.emsArch.recommended)}</span>` : ''}
+        — <span style="font-weight:normal">${esc(A.emsArch.chosen.when)}</span>`));
     }
   }
   if (PR) {
