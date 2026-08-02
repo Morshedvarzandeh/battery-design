@@ -34,4 +34,5 @@ jobs:
       - run: node tests/integration-regressions.mjs
       - run: node tests/btms-regressions.mjs
       - run: node tests/sensor-regressions.mjs
+      - run: node tests/knowledge-regressions.mjs
       - run: node tools/validate-vs-market.mjs

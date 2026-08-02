@@ -109,6 +109,18 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .chip.pass{background:var(--ok-soft);color:var(--ok);border-color:transparent}
 .chip.info{color:var(--muted)}
 
+/* Component classes — one collapsible level each; "not needed" stays visible
+   but folded so the customer is never confused by hardware they don't have. */
+.ccls{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);
+  padding:8px 10px;margin-bottom:8px}
+.ccls>summary{cursor:pointer;list-style:none;font-size:13px}
+.ccls>summary::-webkit-details-marker{display:none}
+.ccls>summary::before{content:'▸';display:inline-block;margin-right:6px;color:var(--muted);
+  transition:transform .15s}
+.ccls[open]>summary::before{transform:rotate(90deg)}
+.ccls .cbody{margin-top:6px}
+.ccls .cder .stat b{max-width:70%}
+
 .preset-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
 .preset{border:1px solid var(--line);border-radius:var(--r);background:var(--ground);
   padding:8px 4px;text-align:center;cursor:pointer;font-size:11px;color:var(--ink-2)}
@@ -725,6 +737,12 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       <div class="sec">
         <button class="btn primary" id="btnPdf" style="width:49%">Download PDF</button>
         <button class="btn primary" id="btnWord" style="width:49%">Download Word</button>
+        <button class="btn" id="btnArchRep" style="width:49%;margin-top:6px">Architecture report</button>
+        <button class="btn" id="btnXls" style="width:49%;margin-top:6px">Engineer's workbook</button>
+        <div class="hint">The architecture report is a layered HTML page — select and open exactly
+          the level you care about (system → pack → module → cell, control, thermal, sensors).
+          The workbook (Excel) computes with live formulas over named cells, so you can check every
+          number against your own spreadsheet — edit it and send it back to teach the tool.</div>
       </div>
       <div class="sec" id="reportView" style="font-size:12.5px"></div>
     </div>

@@ -11,12 +11,31 @@
 // category-specific fields; fields that are truly not applicable are null.
 
 export const COMPONENT_CATEGORIES = [
-  { key: 'busbar', name: 'Busbar / interconnect' },
-  { key: 'spacer', name: 'Cell spacer / holder' },
-  { key: 'vent', name: 'Venting / gas management' },
-  { key: 'cooling', name: 'Cooling system' },
-  { key: 'tim', name: 'Thermal interface material' },
-  { key: 'housing', name: 'Housing / enclosure' },
+  { key: 'busbar', name: 'Busbar / interconnect', cls: 'electrical' },
+  { key: 'spacer', name: 'Cell spacer / holder', cls: 'mechanical' },
+  { key: 'vent', name: 'Venting / gas management', cls: 'safety' },
+  { key: 'cooling', name: 'Cooling system', cls: 'thermal' },
+  { key: 'tim', name: 'Thermal interface material', cls: 'thermal' },
+  { key: 'housing', name: 'Housing / enclosure', cls: 'mechanical' },
+];
+
+// The component CLASSES the tab is organized by — each one a collapsible
+// level, so a customer only opens what their system actually has. Classes
+// whose `concept` the knowledge graph says the application does not need
+// are collapsed and labelled "not needed" instead of shown every time.
+// Derived (read-only) members — contactors, precharge, DC-DC, BMS, EMS,
+// standards — are filled in from the live architecture by the UI.
+export const COMPONENT_CLASSES = [
+  { id: 'electrical', name: 'Electrical', icon: '⚡', concept: null,
+    blurb: 'The current path: interconnects, switching and conversion.' },
+  { id: 'thermal', name: 'Thermal', icon: '🌡️', concept: 'btms-loop',
+    blurb: 'Hardware that moves heat: cooling system and interface material.' },
+  { id: 'control', name: 'Control', icon: '🧠', concept: null,
+    blurb: 'The control units: BMS protects, BTMS moves heat, the supervisor decides.' },
+  { id: 'safety', name: 'Safety', icon: '🛡️', concept: null,
+    blurb: 'Venting, isolation and the standards the release must pass.' },
+  { id: 'mechanical', name: 'Mechanical', icon: '🔩', concept: null,
+    blurb: 'Structure: spacers that set the gaps and the enclosure.' },
 ];
 
 export const COMPONENTS = {
