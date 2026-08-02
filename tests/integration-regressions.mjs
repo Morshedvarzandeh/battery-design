@@ -36,6 +36,10 @@ for (const pr of PRESETS) {
   ok(SUPERVISORS_BY_APP[pr.id] != null, `${pr.id}: has an explicit supervisor mapping`);
   ok(SUPERVISORS_BY_APP[pr.id]?.name && SUPERVISORS_BY_APP[pr.id]?.role?.length > 30,
     `${pr.id}: supervisor names the machine and explains its role`);
+  // …and the supervisor has real DETAIL: what it does and what it speaks.
+  const det = SUPERVISORS_BY_APP[pr.id]?.detail;
+  ok(det?.functions?.length >= 1 && det?.interfaces?.length >= 1,
+    `${pr.id}: supervisor detail (functions + interfaces) present`);
   // A release checklist in every market, transport gate always present.
   for (const m of MARKETS) {
     const cl = releaseChecklist({ market: m.id, application: pr.id, chemistry: pr.preferredChemistries[0] });
@@ -149,12 +153,25 @@ for (const pr of PRESETS) {
   // for storage, VCU for a vehicle — and rides through the orchestrator.
   ok(/SoC|PMIC/i.test(A.supervisor.name), 'wearable supervisor: host SoC/PMIC');
   ok(/EMS/.test(supervisorForApp('solar-ess').name), 'storage supervisor: EMS');
+  const ems = supervisorForApp('solar-ess').detail;
+  ok(ems.functions.some((f) => /dispatch/i.test(f)) && ems.functions.some((f) => /grid-code/i.test(f)),
+    'EMS detail: dispatch + grid codes');
+  ok(ems.interfaces.some((i) => /SunSpec|Modbus/i.test(i)) && ems.interfaces.some((i) => /61850/.test(i)),
+    'EMS detail: SunSpec Modbus + IEC 61850 interfaces');
   ok(/VCU/.test(supervisorForApp('ev').name), 'vehicle supervisor: VCU');
   ok(/PMS/.test(supervisorForApp('marine').name), 'marine supervisor: PMS');
   ok(supervisorForApp('never-heard-of-it').name.length > 0, 'unknown app falls back honestly');
   // The day profile belongs to it and ends the day on the dock.
   const prof = profileForApp('wearable');
   ok(prof?.id === 'wearable-day' && prof.p.some((v) => v < 0), 'wearable day profile with dock charging');
+  // No phantom pack vent: the cell's-own-venting entry exists for every
+  // form, is cell-level (so the 3D pack nub never renders), and says
+  // honestly where it stops applying.
+  const { componentById } = await import('../js/components.js');
+  const noVent = componentById('vent', 'none-cell-venting');
+  ok(noVent && noVent.level === 'cell', 'none-cell-venting entry exists at cell level');
+  ok(noVent.forms.length === 3, 'available for every cell form');
+  ok(/watt-hour-class packs only/i.test(noVent.notes), 'scope limit stated — not for packs with real headspace pressure');
 }
 
 // --- off-preference detection data is consistent ----------------------------
