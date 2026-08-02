@@ -20,6 +20,8 @@ export const LOOP_TYPES = [
     when: 'Milliwatt–watt heat loads: wearables, small portable packs. No moving parts, no control unit.',
     components: [],
     activeControl: false,
+    pros: ['zero cost, zero parts, zero failure modes', 'silent, no power draw'],
+    cons: ['only ~5–10 W/m²K to ambient — tens of watts at most', 'no control authority at all: the pack is at the weather\'s mercy'],
   },
   {
     id: 'forced-air',
@@ -31,6 +33,8 @@ export const LOOP_TYPES = [
       'Air temperature sensors (inlet/outlet)',
     ],
     activeControl: true,
+    pros: ['cheap and simple — fans and ducts', 'good enough into the hundreds of watts', 'no coolant, no leaks'],
+    cons: ['air carries little heat — kW loads need impractical airflow', 'can never cool below ambient', 'dust/ingress management (filters, IP loss)'],
   },
   {
     id: 'liquid',
@@ -46,6 +50,8 @@ export const LOOP_TYPES = [
       'PTC or film heater branch for cold-weather charging',
     ],
     activeControl: true,
+    pros: ['kW-class heat with modest flow (ṁ = Q/(c_p·ΔT))', 'tight cell-to-cell temperature spread', 'the heater branch solves winter charging in the same loop'],
+    cons: ['pump, valve, tank, sensors — cost, mass and leak paths', 'still cannot cool BELOW ambient (radiator limit)', 'coolant between live parts demands leak detection'],
   },
   {
     id: 'liquid-chiller',
@@ -59,6 +65,8 @@ export const LOOP_TYPES = [
       'Refrigerant pressure/temperature sensors at the chiller',
     ],
     activeControl: true,
+    pros: ['the only way to cool below ambient — hot climates and fast charge', 'chiller plate is compact; the compressor lives in the higher system'],
+    cons: ['compressor power is a real load on the higher system (~duty/COP)', 'refrigerant-side integration and controls to negotiate with the platform', 'most expensive option'],
   },
 ];
 
@@ -109,6 +117,20 @@ export function buildThermalSystem({ heatContW, ambientC, cooling, cell, overrid
     notes.push(`The selected cooling hardware (${cooling?.name}) implies at least a ${hwFloor} system — the override is shown, but the hardware disagrees.`);
   }
   const loop = loopById(loopId) || LOOP_TYPES[0];
+  // The chosen loop judged against THIS design. Pros/cons are table facts;
+  // "not workable" is reserved for physics — heat beyond the mechanism, or
+  // cooling below ambient without a refrigerant stage.
+  let assessment;
+  if (order.indexOf(loopId) < order.indexOf(auto)) {
+    const why = auto === 'liquid-chiller'
+      ? `at ${Math.round(hi)} °C ambient with ~${Math.round(heat)} W to move, the loop must cool BELOW ambient — ${loop.name.toLowerCase()} physically cannot; this design needs the refrigerant chiller`
+      : `~${Math.round(heat)} W of continuous heat is beyond what ${loop.name.toLowerCase()} rejects — this design needs at least ${loopById(auto).name.toLowerCase()}`;
+    assessment = { verdict: 'not-workable', why: `${why}. Shown for comparison only.` };
+  } else if (loopId !== auto) {
+    assessment = { verdict: 'workable-with-costs', why: `More system than the heat demands (auto suggests ${loopById(auto).name.toLowerCase()}) — legitimate for headroom or fast-charge duty; the costs are listed.` };
+  } else {
+    assessment = { verdict: 'suggested', why: 'Matches the heat load, the climate window and the selected hardware.' };
+  }
   const ramAir = loopId === 'forced-air' && RAM_AIR_APPS.has(appId);
   if (ramAir) {
     notes.push('This application is cooled by its own motion (ram air / prop wash) — the heat is real and air carries it, but there are no fans, no ducting and no thermal control unit to buy.');
@@ -181,7 +203,7 @@ export function buildThermalSystem({ heatContW, ambientC, cooling, cell, overrid
   ]) : null;
 
   return {
-    loopId, loop, auto, ramAir, overridden: !!(override && override !== 'auto'),
+    loopId, loop, auto, ramAir, assessment, overridden: !!(override && override !== 'auto'),
     heatContW: heat, ambientC: [lo, hi],
     flowLpm, chillerKW, compressorKW,
     coolant: COOLANT, chillerCOP: CHILLER_COP,

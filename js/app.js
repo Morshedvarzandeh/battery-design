@@ -26,7 +26,10 @@ import { buildSensorPlan } from './sensors.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
-import { buildArchitecture, modulePartition, systemPlan, divisors } from './architecture.js';
+import {
+  buildArchitecture, modulePartition, systemPlan, divisors,
+  assessBmsTopology, assessEmsArchitecture,
+} from './architecture.js';
 import { DISCLAIMER, STANDARDS_INFO, standardsForClass, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
 import { ANALYSIS_DISCLAIMER, analyze } from './engineering.js';
@@ -80,6 +83,7 @@ let lastAnalysis = null;
 let lastArch = null;      // architecture (modules, BMS, HV chain) of the pack
 let lastArchFindings = []; // architecture findings folded into the Electrical pane
 let lastTherm = null;     // thermal management system (loop, BTMS control, costs)
+let lastThermFindings = []; // loop-choice verdicts folded into the Thermal pane
 let lastForm = 'cylindrical';
 let lastFillResults = null; // most recent max-fill ranking, for robustness
 
@@ -318,7 +322,7 @@ function bindTraining() {
   $('segLoop').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.loopOverride = b.dataset.loop;
     $('segLoop').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    renderThermal();
+    recompute(); // the loop verdict is an Analysis finding, not just a tab row
   });
   $('diagClose').onclick = () => { $('diagModal').style.display = 'none'; };
   $('diagModal').onclick = (e) => { if (e.target === $('diagModal')) $('diagModal').style.display = 'none'; };
@@ -716,17 +720,17 @@ function bindControls() {
   $('segTopo').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.archTopology = b.dataset.topo;
     $('segTopo').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    runArchitecture();
+    recompute(); // the choice's verdict is an Analysis finding, not just a panel row
   });
   $('segIso').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.archIso = b.dataset.iso;
     $('segIso').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    runArchitecture();
+    recompute(); // the choice's verdict is an Analysis finding, not just a panel row
   });
   $('segEms').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.emsOverride = b.dataset.ems;
     $('segEms').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    runArchitecture();
+    recompute(); // the choice's verdict is an Analysis finding, not just a panel row
   });
   // Architecture assumptions and the advanced duty inputs feed the
   // Electrical pane and the cost model, so a change re-runs the full audit.
@@ -1096,7 +1100,7 @@ function currentReportData() {
     gridLabel: gf.label,
     usage,
     selection: selComponents(),
-    findings: [...engFindings, ...lastArchFindings, ...lastFindings],
+    findings: [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastFindings],
     sensitivity: sensitivityAnalysis({
       cell: c, n: lastSummary.cellCount, energyWh: lastSummary.energyWh, usage,
     }, 20),
@@ -1111,6 +1115,13 @@ function currentReportData() {
     patents: matchPatents({ cell: c, cellCount: lastSummary.cellCount, selection: selComponents() }),
     patentsDisclaimer: PATENTS_DISCLAIMER,
     architecture: lastArch,
+    archAssess: lastArch ? {
+      topo: assessBmsTopology({
+        topology: lastArch.bms.topology, s: state.s,
+        afeTotal: lastArch.bms.afeTotal, nModules: lastArch.partition.nModules,
+      }),
+      ems: lastArch.emsArch ? assessEmsArchitecture(lastArch.emsArch) : null,
+    } : null,
     archPng: (() => {
       if (!lastArch) return null;
       const off = document.createElement('canvas');
@@ -1507,9 +1518,27 @@ function renderSensors() {
 // Thermal management system — loop, BTMS control unit, higher-system cost.
 // Model in js/btms.js.
 // ---------------------------------------------------------------------------
-function renderThermal() {
-  const box = $('thermBody');
-  if (!lastSummary) { box.innerHTML = '<div class="empty">—</div>'; lastTherm = null; return; }
+// Verdict → severity chip: only physics/sourced limits ever read as fail.
+const VERDICT_CHIP = {
+  suggested: ['pass', 'suggested'],
+  workable: ['pass', 'workable'],
+  'workable-with-costs': ['warn', 'workable — costs listed'],
+  unproven: ['warn', 'unproven'],
+  'not-workable': ['fail', 'not workable here'],
+};
+const verdictChip = (v) => {
+  const [sev, label] = VERDICT_CHIP[v] || ['info', v];
+  return `<span class="chip ${sev}">${esc(label)}</span>`;
+};
+// Pros/cons card for a chosen architecture option — the customer sees the
+// trade BEFORE living with it.
+const assessCard = (a) => a ? `
+  ${verdictChip(a.verdict)} <span style="font-size:11.5px">${esc(a.why)}</span>
+  <div style="margin-top:3px">${(a.pros || []).map((p) => `<div>✓ ${esc(p)}</div>`).join('')}
+  ${(a.cons || []).map((c) => `<div>✗ ${esc(c)}</div>`).join('')}</div>` : '';
+
+function computeThermal() {
+  if (!lastSummary) { lastTherm = null; return; }
   const nv = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
   lastTherm = buildThermalSystem({
     heatContW: lastAnalysis?.totals?.heatContW ?? null,
@@ -1519,10 +1548,31 @@ function renderThermal() {
     override: state.loopOverride,
     appId: state.presetId,
   });
+}
+
+// The loop choice's consequences belong in the Analysis, not only the tab:
+// a physically unworkable selection is a FAIL finding with the reason.
+function thermFindings() {
   const T = lastTherm;
+  if (!T || T.assessment.verdict === 'suggested') return [];
+  const sev = T.assessment.verdict === 'not-workable' ? 'fail' : 'warn';
+  return [{
+    severity: sev,
+    title: `Thermal loop choice: ${T.loop.name} — ${VERDICT_CHIP[T.assessment.verdict][1]}`,
+    detail: `${T.assessment.why} Key cons of this choice: ${(T.loop.cons || []).join('; ')}.`,
+    ref: 'thermal system assessment', category: 'architecture',
+  }];
+}
+
+function renderThermal() {
+  const box = $('thermBody');
+  if (!lastSummary) { box.innerHTML = '<div class="empty">—</div>'; lastTherm = null; return; }
+  if (!lastTherm) computeThermal();
+  const T = lastTherm;
+  $('loopAssess').innerHTML = assessCard({ ...T.assessment, pros: T.loop.pros, cons: T.loop.cons });
   const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
   const rows = [];
-  rows.push(stat('Loop', `${esc(T.loop.name)}${T.overridden ? ` <span class="chip warn">override — auto picks ${esc(T.auto)}</span>` : ''}`));
+  rows.push(stat('Loop', `${esc(T.loop.name)} ${verdictChip(T.assessment.verdict)}`));
   rows.push(stat('Heat to move', `~${f1(T.heatContW)} W at continuous load · ambient ${T.ambientC[0]}…${T.ambientC[1]} °C`));
   if (T.flowLpm != null) {
     rows.push(stat('Coolant flow', `~${f1(T.flowLpm)} L/min (ΔT ${T.coolant.dTdesignK} K, 50/50 water-glycol — ṁ = Q/(c_p·ΔT))`));
@@ -1748,11 +1798,13 @@ function runAnalysis() {
   // pane, the pass/fail badge and the report.
   runArchitecture();
   lastArchFindings = archElectricalFindings();
+  computeThermal();
+  lastThermFindings = thermFindings();
 
   const perspectives = lastAnalysis?.perspectives || {};
   const engFindings = ['mechanical', 'thermal', 'electrical', 'safety']
     .flatMap((k) => perspectives[k] || []);
-  const all = [...engFindings, ...lastArchFindings, ...lastFindings];
+  const all = [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastFindings];
   const nFail = all.filter((x) => x.severity === 'fail').length;
   const nWarn = all.filter((x) => x.severity === 'warn').length;
   const badge = $('stdBadge');
@@ -1771,7 +1823,7 @@ function runAnalysis() {
       : '<div class="empty">Nothing to report.</div>';
   };
   renderPane('anMech', perspectives.mechanical);
-  renderPane('anTherm', perspectives.thermal);
+  renderPane('anTherm', [...(perspectives.thermal || []), ...lastThermFindings]);
   renderPane('anElec', [...(perspectives.electrical || []), ...lastArchFindings]);
   renderPane('anSafe', perspectives.safety);
   $('findings').innerHTML = lastFindings.map(findingHtml).join('');
@@ -1824,6 +1876,32 @@ function archElectricalFindings() {
       detail: `A ${f1(A.precharge.rOhm)} Ω resistor brings the link within ${A.precharge.closeGapV} V in ${A.precharge.timeToCloseS} s before the main positive contactor closes — without it the contacts see a near-short inrush on every start.`,
       ref: 'τ = RC · E = ½CV²', category: 'architecture',
     });
+  }
+  // The chosen BMS topology judged against this design — an unbuildable
+  // chain is a FAIL with the fix, not a footnote; overrides carry their
+  // cons into the audit.
+  const topoA = assessBmsTopology({
+    topology: A.bms.topology, s: state.s,
+    afeTotal: A.bms.afeTotal, nModules: A.partition.nModules,
+  });
+  if (topoA && topoA.verdict !== 'workable') {
+    out.push({
+      severity: topoA.verdict === 'not-workable' ? 'fail' : 'warn',
+      title: `BMS topology: ${topoA.name} — ${(VERDICT_CHIP[topoA.verdict] || [null, topoA.verdict])[1]}`,
+      detail: `${topoA.why} Cons to carry: ${(topoA.cons || []).join('; ')}.`,
+      ref: 'BMS topology assessment', category: 'architecture',
+    });
+  }
+  if (A.emsArch) {
+    const emsA = assessEmsArchitecture(A.emsArch);
+    if (emsA && emsA.verdict !== 'suggested') {
+      out.push({
+        severity: 'warn',
+        title: `EMS architecture: ${emsA.name} — ${(VERDICT_CHIP[emsA.verdict] || [null, emsA.verdict])[1]}`,
+        detail: `${emsA.why} Cons to carry: ${(emsA.cons || []).join('; ')}.`,
+        ref: 'EMS architecture assessment', category: 'architecture',
+      });
+    }
   }
   if (A.comms) {
     out.push({
@@ -1960,6 +2038,14 @@ function renderArchitecture() {
     smodSel.value = [...smodSel.options].some((o) => o.value === cur) ? cur : 'auto';
   }
   box.innerHTML = rows.join('') + notes.map(note).join('');
+  // Pros/cons cards under the selectors: the trade is visible AT the
+  // control, not three scrolls below it.
+  const topoA = assessBmsTopology({
+    topology: A.bms.topology, s: state.s,
+    afeTotal: A.bms.afeTotal, nModules: A.partition.nModules,
+  });
+  $('topoAssess').innerHTML = assessCard(topoA);
+  $('emsAssess').innerHTML = A.emsArch ? assessCard(assessEmsArchitecture(A.emsArch)) : '';
   drawArchDiagram($('archCanvas'), A, lastSummary);
   drawBmsInternals($('archBmsCanvas'), A);
 }

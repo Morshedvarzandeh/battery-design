@@ -243,5 +243,31 @@ ok(voltageClass(450).note.includes('semiconductor'), 'classes stated as semicond
   ok(A.comms && A.welding, 'orchestrator carries comms and welding sections');
 }
 
+// --- choice assessments: pros/cons + design-context verdicts ----------------
+{
+  const { assessBmsTopology, BMS_TOPOLOGIES, assessEmsArchitecture, emsArchitectureFor } =
+    await import('../js/architecture.js');
+  // Every option carries pros AND cons — no free lunches in the table.
+  for (const t of BMS_TOPOLOGIES) {
+    ok(t.pros?.length >= 2 && t.cons?.length >= 2, `${t.id}: pros and cons stated`);
+  }
+  // The sourced hard limit: >62 daisy nodes as ONE chain is not buildable —
+  // a FAIL verdict with the fix, not a footnote.
+  const broken = assessBmsTopology({ topology: 'master-slave', s: 300, afeTotal: 80, nModules: 40 });
+  ok(broken.verdict === 'not-workable', '>62-node chain: not workable');
+  ok(/split into 2 parallel chains/.test(broken.why), 'the fix is named (split chains)');
+  const fine = assessBmsTopology({ topology: 'master-slave', s: 96, afeTotal: 6, nModules: 6 });
+  ok(fine.verdict === 'workable', 'in-limit chain: workable');
+  ok(assessBmsTopology({ topology: 'wireless', s: 96, afeTotal: 6, nModules: 6 }).verdict === 'unproven',
+    'wireless: unproven (no sourced data)');
+  const central = assessBmsTopology({ topology: 'centralized', s: 96, afeTotal: 6, nModules: 6 });
+  ok(central.verdict === 'workable-with-costs' && /harness/.test(central.why),
+    'centralized across modules: workable with the harness cost named');
+  // EMS: override marked with its costs, suggestion clean.
+  ok(assessEmsArchitecture(emsArchitectureFor('solar-ess', 8)).verdict === 'suggested', 'EMS auto: suggested');
+  const emsOv = assessEmsArchitecture(emsArchitectureFor('solar-ess', 8, 'centralized'));
+  ok(emsOv.verdict === 'workable-with-costs' && emsOv.cons.length >= 2, 'EMS override: costs carried');
+}
+
 console.log(fails === 0 ? 'ARCHITECTURE REGRESSIONS PASSED' : `${fails} FAILURES`);
 process.exit(fails ? 1 : 0);

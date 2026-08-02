@@ -26,10 +26,48 @@ export const DAISY_NODE_LIMIT = 62;
 // The §8.4 table, verbatim intent — shown to the customer so the topology
 // choice is understandable, not hidden.
 export const BMS_TOPOLOGIES = [
-  { id: 'centralized', name: 'Centralized', when: 'Small, fixed-configuration packs; cost-dominated; low channel count. One controller senses every cell.' },
-  { id: 'master-slave', name: 'Master / slave (daisy chain)', when: 'Scalable or configurable pack families; one slave board per module, daisy-chained to a master. Wiring reduction outweighs the slave PCB cost.' },
-  { id: 'wireless', name: 'Wireless', when: 'Eliminates the intra-pack LV harness. No latency or reliability data exists in the sources — evaluate with the vendor before committing.' },
+  {
+    id: 'centralized', name: 'Centralized',
+    when: 'Small, fixed-configuration packs; cost-dominated; low channel count. One controller senses every cell.',
+    pros: ['lowest cost — one board, no chain transceivers', 'simplest to certify and debug', 'no inter-board comms to fail'],
+    cons: ['every sense wire runs the full pack to one board — harness length and noise grow with S', 'no serviceable module boundary', 'a board failure blinds the whole pack'],
+  },
+  {
+    id: 'master-slave', name: 'Master / slave (daisy chain)',
+    when: 'Scalable or configurable pack families; one slave board per module, daisy-chained to a master. Wiring reduction outweighs the slave PCB cost.',
+    pros: ['sense wires stay short — inside each module', 'scales by adding slaves; modules are serviceable units', 'isoSPI chain replaces a fat harness'],
+    cons: ['one slave PCB per module of extra cost', 'a broken chain link isolates everything past it (ring topology mitigates)', 'hard limit: ≤62 nodes per chain'],
+  },
+  {
+    id: 'wireless', name: 'Wireless',
+    when: 'Eliminates the intra-pack LV harness. No latency or reliability data exists in the sources — evaluate with the vendor before committing.',
+    pros: ['no intra-pack LV harness at all — mass, connectors and routing disappear', 'modules place freely'],
+    cons: ['NO latency or reliability data exists in the sources — unproven here', 'RF inside a metal enclosure needs validation', 'security/pairing adds certification scope'],
+  },
 ];
+
+// The chosen topology judged against THIS design — pros and cons are table
+// facts; the verdict is contextual, and "not workable" is reserved for
+// limits the sources actually give (the 62-node chain).
+export function assessBmsTopology({ topology, s, afeTotal, nModules }) {
+  const t = BMS_TOPOLOGIES.find((x) => x.id === topology);
+  if (!t) return null;
+  let verdict = 'workable';
+  let why = '';
+  if (topology === 'master-slave' && afeTotal > DAISY_NODE_LIMIT) {
+    verdict = 'not-workable';
+    why = `${afeTotal} AFE nodes exceed the ${DAISY_NODE_LIMIT}-node daisy-chain limit — as ONE chain this cannot be built. The fix: split into ${Math.ceil(afeTotal / DAISY_NODE_LIMIT)} parallel chains (or racks), each within the limit.`;
+  } else if (topology === 'wireless') {
+    verdict = 'unproven';
+    why = 'No latency or reliability data exists in the sources — treat as a vendor evaluation, not a paper decision.';
+  } else if (topology === 'centralized' && nModules > 1) {
+    verdict = 'workable-with-costs';
+    why = `${s + 1} sense wires must run from every group across ${nModules} physical modules to one board — the harness IS the cost; count it before choosing.`;
+  } else {
+    why = 'Fits the design at this scale.';
+  }
+  return { ...t, verdict, why };
+}
 
 // Isolation floors — the two source standards CONFLICT (500 Ω/V citing
 // UN ECE R100 vs 100 Ω/V DC per ISO 6469-3), so the governing standard is
@@ -644,18 +682,35 @@ export const EMS_ARCHITECTURES = [
     id: 'centralized',
     name: 'Centralized EMS',
     when: 'One controller measures and dispatches every asset. Right for single-site, few-asset plants (a home ESS, one container) — simplest to build and certify, but a single point of failure and it scales poorly past a handful of assets.',
+    pros: ['simplest to build, certify and reason about', 'globally optimal dispatch is straightforward — one solver sees everything', 'one integration point for tariffs and monitoring'],
+    cons: ['single point of failure — the plant is blind when it dies', 'scales poorly: every asset added grows one controller\'s I/O and compute', 'site-wide comms outage stops dispatch entirely'],
   },
   {
     id: 'hierarchical',
     name: 'Hierarchical EMS (three control levels)',
     when: 'The microgrid-literature standard (IEEE 2030.7 framing): primary control at the device (milliseconds, inverter-local), secondary coordinating the site (seconds–minutes, voltage/frequency restoration and setpoint sharing), tertiary running dispatch against markets and grid codes (minutes–hours). Right for multi-rack plants, depots and utility-scale systems.',
+    pros: ['each timescale handled where it belongs — device stability survives a site-level outage', 'scales to utility plants and depots', 'the literature and IEEE 2030.7 default — auditors know it'],
+    cons: ['three layers to build, test and version', 'inter-level interfaces need careful specification', 'overkill for a single home unit'],
   },
   {
     id: 'distributed',
     name: 'Distributed EMS (droop / peer signals)',
     when: 'Each unit decides locally and coordinates through shared signals — droop curves, price broadcasts, consensus. No single point of failure and racks can join/leave freely; harder to prove optimal behavior, and market participation still needs an aggregating layer.',
+    pros: ['no single point of failure — units keep working alone', 'racks join and leave freely (plug-and-play growth)', 'minimal central infrastructure'],
+    cons: ['global optimality is hard to prove — behavior emerges from local rules', 'market/grid-code participation still needs an aggregating layer on top', 'fault diagnosis across peers is harder'],
   },
 ];
+
+// The chosen EMS architecture judged against THIS plant.
+export function assessEmsArchitecture(emsArch) {
+  if (!emsArch) return null;
+  const a = emsArch.chosen;
+  let verdict = emsArch.overridden ? 'workable-with-costs' : 'suggested';
+  let why = emsArch.overridden
+    ? `Auto suggests ${emsArch.recommended} at this scale — your choice stands, with its costs listed.`
+    : 'Matches the scale suggestion.';
+  return { ...a, verdict, why };
+}
 
 // Applications whose supervisor genuinely IS an energy management system
 // coordinating multiple assets. Everything else returns null — the EMS
