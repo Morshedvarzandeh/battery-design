@@ -43,10 +43,11 @@ export class CellPicker {
   // getConfig: () => { s, p, opts }  — the live design, so comparison is
   //   always at the configuration on screen rather than some default.
   // onPick:   (cellId) => void
-  constructor(getConfig, onPick, extraCells = () => []) {
+  constructor(getConfig, onPick, extraCells = () => [], onCompareChange = null) {
     this.getConfig = getConfig;
     this.onPick = onPick;
     this.extraCells = extraCells;
+    this.onCompareChange = onCompareChange;
     this.filters = { form: '', chem: '', q: '' };
     this.selected = new Set();
     this._build();
@@ -123,6 +124,9 @@ export class CellPicker {
         if (cb.checked) this.selected.add(cb.dataset.id);
         else this.selected.delete(cb.dataset.id);
         this.renderCompare();
+        // The same ticks drive the radar AND the mission comparison —
+        // tell the app so every comparing surface refreshes together.
+        this.onCompareChange?.();
       };
     });
     this.renderCompare();

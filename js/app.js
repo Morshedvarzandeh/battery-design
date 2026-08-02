@@ -24,7 +24,7 @@ import { climateById, climateSpan, seasonalOutlook, INDOOR_APPS } from './season
 import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
 import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
-import { simulateMission } from './sim1d.js';
+import { simulateMission, compareCells } from './sim1d.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
 import { stepsFor, needed, appNeeds } from './knowledge.js';
@@ -172,7 +172,10 @@ function setViewMode(mode) {
 }
 
 // Names what the 3D render is actually showing, keyed to the mesh colors —
-// so an exploded view stays readable instead of a guessing game.
+// so an exploded view stays readable instead of a guessing game. Folded by
+// default: the header is always there, the list opens on a click so the
+// overlay never covers the render uninvited.
+let compLegendOpen = false;
 function renderCompLegend() {
   const box = $('compLegend');
   if (viewMode !== '3d' || !lastSummary) { box.style.display = 'none'; return; }
@@ -190,8 +193,14 @@ function renderCompLegend() {
   if (s.spacer) rows.push(key('#8899aa', s.spacer.name, `sets the ${state.spacingMm} mm cell gap`));
   if (s.tim) rows.push(key('#d9a441', s.tim.name, 'between cells and the cooling surface'));
   if (!rows.length) { box.style.display = 'none'; return; }
-  box.innerHTML = '<span class="lbl">Components in view</span>' + rows.join('') +
-    '<div style="color:var(--muted);margin-top:4px">Exploding keeps the cooling hardware visible (it flies apart with the cells); housing and wiring hide while exploded.</div>';
+  box.innerHTML =
+    `<details class="fold"${compLegendOpen ? ' open' : ''}>` +
+    `<summary><span class="lbl" style="cursor:pointer">Components in view (${rows.length})</span></summary>` +
+    rows.join('') +
+    '<div style="color:var(--muted);margin-top:4px">Exploding keeps the cooling hardware visible (it flies apart with the cells); housing and wiring hide while exploded.</div>' +
+    '</details>';
+  const det = box.querySelector('details');
+  det.ontoggle = () => { compLegendOpen = det.open; };
   box.style.display = 'block';
 }
 
@@ -661,7 +670,8 @@ function bindControls() {
       recompute();
       picker.render(id);
     },
-    () => myCells);
+    () => myCells,
+    () => { computeSim(); renderSim(); renderRadar(); });
   $('btnBrowse').onclick = () => {
     const panel = $('cellPicker');
     panel.hidden = !panel.hidden;
@@ -1193,6 +1203,7 @@ function currentReportData() {
       return off.toDataURL('image/png');
     })(),
     sim: lastSim && !lastSim.unavailable ? lastSim : null,
+    simCompare: lastSimCompare,
     simPng: (() => {
       if (!lastSim || lastSim.unavailable) return null;
       const off = document.createElement('canvas');
@@ -1506,7 +1517,7 @@ function renderCompClasses() {
     const hv = A.precharge != null;
     el.push(row('Contactors', hv ? `${A.contactors.mains} main + ${A.contactors.precharge} precharge` : 'solid-state disconnect (≤60 V)',
       A.contactors.ratingA != null ? `${f0(A.contactors.ratingA)} A class` : null));
-    if (hv) el.push(row('Precharge resistor', `${f1(A.precharge.rOhm)} Ω`, `τ = ${A.precharge.tauS.toFixed(2)} s · peak ${fPow(A.precharge.peakPowerW)}`));
+    if (hv) el.push(row('Precharge resistor', `${f1(A.precharge.rOhm)} Ω`, `τ = ${A.precharge.tauS.toFixed(2)} s · peak ${fPow(A.precharge.peakPowerW / 1000)}`));
     if (A.contactors.fuse?.ratingA != null) el.push(row('Main fuse', `${f0(A.contactors.fuse.ratingA)} A`, '≈2× continuous current'));
     el.push(row('DC-DC (LV supply)', `${A.dcdc.lvBusV} V bus`, A.dcdc.auxPowerW != null ? `${f0(A.dcdc.auxPowerW)} W aux budget` : 'size from the LV load list'));
     if (A.comms?.primary) el.push(row('Communication bus', esc(A.comms.primary), 'application-standard interface'));
@@ -1712,6 +1723,7 @@ function computeThermal() {
 // ---------------------------------------------------------------------------
 let lastSim = null;
 let lastSimFindings = [];
+let lastSimCompare = null;
 let simSeason = 'design', simPasses = 1, simSoC = 100;
 
 function computeSim() {
@@ -1746,6 +1758,28 @@ function computeSim() {
     hasHeater: !!lastTherm?.heaterNeeded,
   });
   lastSimFindings = lastSim.unavailable ? [] : lastSim.findings;
+
+  // Comparison: the compare ticks in the cell picker (the same selection
+  // that drives the radar) run the IDENTICAL mission as equivalent packs —
+  // so the value of different cells can be weighed on outcomes, not specs.
+  const ids = picker ? [...picker.selected] : [];
+  const compCells = ids.map(cellFind).filter(Boolean).slice(0, 4);
+  const cur = cell();
+  if (compCells.length && !compCells.some((c) => c.id === cur.id)) compCells.unshift(cur);
+  if (compCells.length >= 2) {
+    const cmp = compareCells({
+      cells: compCells, targetVNom: S.nominalV, targetEnergyWh: S.energyWh,
+      profile: prof, scaleW: state.profileScaleW, passes: simPasses, startSoC: simSoC / 100,
+      ambientC, interconnectMOhm: lastArch?.resistance?.interconnectMOhm ?? 0,
+      uaWK, hasHeater: !!lastTherm?.heaterNeeded, currentId: cur.id,
+    });
+    // The VALUE side of the comparison: same duty, each cell's lifetime cost.
+    const usage = { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr'), dod: currentDod() };
+    for (const r of cmp.rows) r.cost = costModel(r.cell, r.s * r.p, r.energyWh, usage);
+    lastSimCompare = cmp;
+  } else {
+    lastSimCompare = null;
+  }
 }
 
 // The loop choice's consequences belong in the Analysis, not only the tab:
@@ -1849,7 +1883,7 @@ function drawSimChart(canvas, sim, forExport = false) {
   const yP = strip(16, 88, pLo, pHi, T.pW, acc);
   g.strokeStyle = mut; g.setLineDash([2, 3]);
   g.beginPath(); g.moveTo(X0, yP(0)); g.lineTo(X1, yP(0)); g.stroke(); g.setLineDash([]);
-  label(`Power · peak ${fPow(pHi)}${pLo < 0 ? ' · regen below 0' : ''}`, 12, ink);
+  label(`Power · peak ${fPow(pHi / 1000)}${pLo < 0 ? ' · regen below 0' : ''}`, 12, ink);
 
   // Strip 2 — SoC (accent) and pack voltage (ink) on their own scales.
   strip(112, 184, 0, 1, T.soc, acc);
@@ -1908,10 +1942,38 @@ function renderSim() {
     m.maxT != null ? stat('Temperature', `peak ${f1(m.maxT)} °C · limit ${f0(m.tempMaxC)} °C`) : '',
     stat('Energy', `${fWh(m.energyOutWh)} out · ${fWh(m.energyInWh)} regen · ${fWh(m.lossWh)} loss`),
     m.efficiencyPct != null ? stat('Round-trip efficiency', `${f1(m.efficiencyPct)}%`) : '',
-    stat('Heat', `${fPow(m.avgHeatW)} average · ${fPow(m.peakHeatW)} peak`),
+    stat('Heat', `${fPow(m.avgHeatW / 1000)} average · ${fPow(m.peakHeatW / 1000)} peak`),
   ].join('');
   body.innerHTML = lastSim.findings.map(findingHTML).join('');
   $('simAssump').innerHTML = lastSim.assumptions.map((a) => `• ${esc(a)}`).join('<br>');
+  renderSimCompare();
+}
+
+// The comparison cards: one per compared cell, same mission, same duty.
+function renderSimCompare() {
+  const box = $('simCompare');
+  if (!box) return;
+  if (!lastSimCompare?.rows?.length) {
+    box.innerHTML = '<div class="hint">Tick two or more cells to compare in the cell picker (Design tab) — the same mission runs for each as the equivalent pack, and the outcomes land here and in the report.</div>';
+    return;
+  }
+  const vch = (r) => r.verdict === 'unavailable'
+    ? '<span class="chip info">no DCIR</span>'
+    : `<span class="chip ${r.verdict}">${r.verdict === 'pass' ? 'completes' : r.verdict}</span>`;
+  const cards = lastSimCompare.rows.map((r) => {
+    const m = r.sim.unavailable ? null : r.sim.summary;
+    const line = (k, v) => `<div class="stat"><span>${esc(k)}</span><b style="font-weight:normal;text-align:right">${v}</b></div>`;
+    return `<div class="card"${r.current ? ' style="border-color:var(--accent)"' : ''}>
+      <h4>${esc(r.cell.name)} ${r.current ? '<span class="chip pass">this design</span>' : ''} ${vch(r)}</h4>
+      ${line('Pack for this job', `${r.s}S${r.p}P · ${fWh(r.energyWh)} · ${fKg(r.massKg)}`)}
+      ${m ? line('Mission outcome', `SoC → ${Math.round(m.endSoC * 100)}% · min ${f1(m.minV)} V${m.maxT != null ? ` · peak ${f1(m.maxT)} °C` : ''} · loss ${fWh(m.lossWh)}`) : ''}
+      ${r.cost?.upfrontUSD != null ? line('Value', `$${f0(r.cost.upfrontUSD)} cells${r.cost.usdPerKWhDelivered != null ? ` · $${r.cost.usdPerKWhDelivered.toFixed(2)}/kWh delivered` : ''}${r.cost.replacements != null ? ` · ${r.cost.replacements} pack${r.cost.replacements > 1 ? 's' : ''} over the duty` : ''}`) : ''}
+      ${r.notes.length ? `<div class="hint">${r.notes.map(esc).join(' · ')}</div>` : ''}
+      ${r.sim.unavailable ? `<div class="hint">${esc(r.sim.why)}</div>` : ''}
+    </div>`;
+  }).join('');
+  box.innerHTML = `<h3 style="margin-top:12px">Cell comparison — same mission, same duty</h3>
+    <div class="hint" style="margin-bottom:6px">${esc(lastSimCompare.basis)}</div>${cards}`;
 }
 
 // --- P&ID-style glyphs — a pump LOOKS like a pump (circle + impeller

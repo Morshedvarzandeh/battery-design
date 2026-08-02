@@ -164,3 +164,42 @@ test('a real pack end to end: e-bike day on the 50E', () => {
     `round-trip efficiency plausible (${r.summary.efficiencyPct?.toFixed(1)}%)`);
   ok(r.summary.endSoC < r.summary.startSoC, 'the day costs charge');
 });
+
+test('compareCells: equivalent packs for the same job, same mission', async () => {
+  const { compareCells } = await import('../js/sim1d.js');
+  const { cellById: byId } = await import('../js/cells.js');
+  const nmc = byId('samsung-inr21700-50e'); // 3.6 V, 4.9 Ah
+  const lfp = byId('eve-lf280k');           // 3.2 V, 280 Ah prismatic
+  const profile = { dtS: 30, p: [0.3, 0.8, 1, 0.4, 0.1, 0.6] };
+  const cmp = compareCells({
+    cells: [nmc, lfp], targetVNom: 46.8, targetEnergyWh: 917,
+    profile, scaleW: 1200, ambientC: 25, uaWK: 3, currentId: nmc.id,
+  });
+  ok(cmp.rows.length === 2, 'one row per compared cell');
+  const [rN, rL] = cmp.rows;
+  // S from the voltage window: 46.8/3.6 = 13; 46.8/3.2 ≈ 15.
+  ok(rN.s === 13, `NMC pack lands at 13S (got ${rN.s}S)`);
+  ok(rL.s === Math.round(46.8 / lfp.nominalV), `LFP pack S from its own voltage (got ${rL.s}S)`);
+  // P from the energy target — and the honest oversize note for the 280 Ah cell.
+  ok(rN.p >= 1 && Math.abs(rN.energyWh - 917) / 917 < 0.35, 'NMC pack lands near the energy target');
+  ok(rL.p === 1 && rL.notes.some((n) => /oversized/.test(n)),
+    'a 280 Ah cell cannot scale down to 917 Wh — 1P with the oversize note');
+  ok(rN.current === true && rL.current === false, 'current design flagged');
+  // Same mission ran for both: traces exist, verdicts assigned.
+  for (const r of cmp.rows) {
+    ok(!r.sim.unavailable && r.sim.trace.tS.length > 0, `${r.cell.id} simulated`);
+    ok(['pass', 'warn', 'fail'].includes(r.verdict), `${r.cell.id} verdict assigned (${r.verdict})`);
+  }
+  ok(/same job|equivalent pack/i.test(cmp.basis), 'the comparison states its basis');
+});
+
+test('compareCells: a cell without DCIR gets an honest unavailable row', async () => {
+  const { compareCells } = await import('../js/sim1d.js');
+  const noR = { name: 'mystery-cell', chemistry: 'NMC', vMin: 3.0, vMax: 4.2, nominalV: 3.6, capacityAh: 5, dcirMOhm: null, massG: 70, tempChargeC: [0, 45], tempDischargeC: [-20, 60] };
+  const cmp = compareCells({
+    cells: [noR], targetVNom: 36, targetEnergyWh: 500,
+    profile: { dtS: 30, p: [0.5, 0.5] }, scaleW: 500, ambientC: 25,
+  });
+  ok(cmp.rows[0].verdict === 'unavailable' && cmp.rows[0].sim.unavailable,
+    'no-DCIR cell: unavailable verdict, not a fake number');
+});
