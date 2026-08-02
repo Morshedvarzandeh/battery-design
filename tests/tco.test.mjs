@@ -1,15 +1,13 @@
-// Regressions for the cycle-based TCO cost model: cost per delivered kWh,
-// replacements over the target duty, and the cost-basis switch in max-fill.
+// TCO — the cycle-based cost model: cost per delivered kWh, replacements
+// over the target duty, and the cost-basis switch in max-fill.
+import { test } from 'node:test';
+import { ok } from './helpers.mjs';
 import { CELLS, cellById } from '../js/cells.js';
 import { costModel, maxFill, TCO_DOD } from '../js/optimizer.js';
 
-let fails = 0;
-const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
-
-// Hand-check the arithmetic on the 50E (500 cycles, $5, 17.64 Wh).
-{
+test('hand-checked arithmetic on the 50E (500 cycles, $5, 13S4P)', () => {
   const c = cellById('samsung-inr21700-50e');
-  const n = 52, energyWh = n * c.nominalV * c.capacityAh; // 13S4P pack
+  const n = 52, energyWh = n * c.nominalV * c.capacityAh;
   const cm = costModel(c, n, energyWh, { cyclesPerYear: 250, targetYears: 6 });
   ok(Math.abs(cm.upfrontUSD - 52 * c.priceUSD) < 1e-9, 'upfront = n × price');
   const expThroughput = (c.cycleLife * energyWh * TCO_DOD) / 1000;
@@ -19,30 +17,25 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
   ok(cm.replacements === 3, `replacements (${cm.replacements}) = 3`);
   ok(Math.abs(cm.tcoUSD - cm.upfrontUSD * 3) < 1e-9, 'TCO = upfront × replacements');
   ok(Math.abs(cm.serviceYears - 2) < 1e-9, 'service life = cycleLife / cyclesPerYear');
-}
+});
 
-// Cycle life must flip the economics: LFP (3000+ cycles) beats NMC
-// (500 cycles) per delivered kWh even where NMC wins upfront per kWh.
-{
+test('cycle life flips the economics: LFP beats NMC per delivered kWh', () => {
   const nmc = cellById('samsung-inr21700-50e');
   const lfp = cellById('eve-lf280k');
   const cmN = costModel(nmc, 100, 100 * nmc.nominalV * nmc.capacityAh, {});
   const cmL = costModel(lfp, 2, 2 * lfp.nominalV * lfp.capacityAh, {});
   ok(cmN.usdPerKWhDelivered > cmL.usdPerKWhDelivered,
     `LFP delivered-kWh cost (${cmL.usdPerKWhDelivered?.toFixed(2)}) beats NMC (${cmN.usdPerKWhDelivered?.toFixed(2)})`);
-}
+});
 
-// Null-safety: no price and no cycle life stay null, never NaN.
-{
+test('null-safety: no price and no cycle life stay null, never NaN', () => {
   const c = { ...cellById('samsung-inr21700-50e'), priceUSD: null, cycleLife: null };
   const cm = costModel(c, 10, 176, { cyclesPerYear: 100, targetYears: 5 });
   ok(cm.upfrontUSD === null && cm.usdPerKWhDelivered === null && cm.tcoUSD === null, 'nulls stay null');
-}
+});
 
-// The cost basis changes the ranking: under heavy cost weight and a hard
-// duty (365 cy/y × 10 y), TCO must favor long-life chemistry relative to the
-// upfront ordering.
-{
+test('the cost basis changes the ranking under a hard duty', () => {
+  // 365 cy/y × 10 y: TCO must favor long-life chemistry relative to upfront.
   const env = { x: 500, y: 300, z: 250 };
   const base = { spacingMm: 1, wallMm: 2, layerGapMm: 2, coolingSpace: { bottom: 0, side: 0, rowGap: 0 } };
   const mk = (costBasis) => maxFill(CELLS, env, {
@@ -64,7 +57,4 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
       ok(r.tco.tcoUSD != null && r.tco.replacements >= 1, `${r.cell.id} carries TCO`);
     }
   }
-}
-
-console.log(fails === 0 ? 'TCO REGRESSIONS PASSED' : `${fails} FAILURES`);
-process.exit(fails ? 1 : 0);
+});

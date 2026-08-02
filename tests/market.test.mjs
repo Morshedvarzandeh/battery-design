@@ -1,6 +1,8 @@
-// Regressions for the market release checklist (standards per application
-// class and market, chemistry-market gates like China's e-bus rule), the
-// e-bus preset/profile/comms, and the training tracks.
+// Markets — the release checklist (standards per application class and
+// market, chemistry-market gates like China's e-bus rule), the e-bus
+// preset/profile/comms, and the training tracks.
+import { test } from 'node:test';
+import { ok } from './helpers.mjs';
 import { PRESETS } from '../js/presets.js';
 import { MARKETS, releaseChecklist } from '../js/markets.js';
 import { profileForApp, LOAD_PROFILES, profileStats } from '../js/loadprofiles.js';
@@ -8,11 +10,7 @@ import { commsForApp } from '../js/architecture.js';
 import { euChecks } from '../js/eurules.js';
 import { TRAINING_TRACKS } from '../js/training.js';
 
-let fails = 0;
-const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
-
-// --- the user's exact case: no NMC buses in China ---------------------------
-{
+test('the exact customer case: no NMC buses in China', () => {
   const nmc = releaseChecklist({ market: 'cn', application: 'ebus', chemistry: 'NMC' });
   ok(nmc.rules.some((r) => r.scope === 'blocker' && /excluded/.test(r.title)),
     'China + e-bus + NMC raises a blocker');
@@ -23,19 +21,18 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
   ok(!lfp.rules.some((r) => r.scope === 'blocker'), 'no blocker for LFP');
   const eu = releaseChecklist({ market: 'eu', application: 'ebus', chemistry: 'NMC' });
   ok(!eu.rules.some((r) => r.scope === 'blocker'), 'the China rule does not leak into the EU list');
-}
+});
 
-// --- checklist coverage: every application × every market -------------------
-for (const pr of PRESETS) {
-  for (const m of MARKETS) {
-    const cl = releaseChecklist({ market: m.id, application: pr.id, chemistry: 'LFP' });
-    ok(cl.items.length > 0, `${pr.id} × ${m.id} has checklist items`);
-    ok(cl.items.some((i) => i.code === 'UN 38.3'), `${pr.id} × ${m.id} always includes UN 38.3 transport`);
-    ok(cl.items.every((i) => ['mandatory', 'expected', 'practice'].includes(i.scope)),
-      `${pr.id} × ${m.id} scopes valid`);
+test('checklist coverage: every application × every market', () => {
+  for (const pr of PRESETS) {
+    for (const m of MARKETS) {
+      const cl = releaseChecklist({ market: m.id, application: pr.id, chemistry: 'LFP' });
+      ok(cl.items.length > 0, `${pr.id} × ${m.id} has checklist items`);
+      ok(cl.items.some((i) => i.code === 'UN 38.3'), `${pr.id} × ${m.id} always includes UN 38.3 transport`);
+      ok(cl.items.every((i) => ['mandatory', 'expected', 'practice'].includes(i.scope)),
+        `${pr.id} × ${m.id} scopes valid`);
+    }
   }
-}
-{
   const ev = releaseChecklist({ market: 'eu', application: 'ev', chemistry: 'NMC' });
   ok(ev.items.some((i) => /R100/.test(i.code)), 'EU vehicle: ECE R100 present');
   ok(ev.items.some((i) => /2023\/1542/.test(i.code)), 'EU vehicle: battery regulation present');
@@ -44,10 +41,9 @@ for (const pr of PRESETS) {
     'US stationary: UL 9540 + NFPA 855');
   const agv = releaseChecklist({ market: 'eu', application: 'robot', chemistry: 'LTO' });
   ok(agv.items.some((i) => /1175|3691/.test(i.code)), 'EU industrial truck: EN 1175 / ISO 3691-4');
-}
+});
 
-// --- e-bus preset, profile, comms, EU treatment -----------------------------
-{
+test('e-bus: preset, route profile, J1939, EU treatment as an EV battery', () => {
   const ebus = PRESETS.find((p) => p.id === 'ebus');
   ok(ebus && ebus.preferredChemistries[0] === 'LFP', 'e-bus preset exists, LFP-first');
   ok(/NMC|ternary/i.test(ebus.notes), 'e-bus preset notes carry the China chemistry warning');
@@ -59,10 +55,9 @@ for (const pr of PRESETS) {
   ok(/J1939/.test(commsForApp('ebus').primary), 'e-bus communication: SAE J1939 primary');
   const eu = euChecks({ energyWh: 250000, application: 'ebus', chemistry: 'LFP', commsPrimary: commsForApp('ebus').alternates.join(' ') });
   ok(eu.some((f) => /passport/i.test(f.title) && f.severity === 'warn'), 'e-bus treated as EV battery under 2023/1542');
-}
+});
 
-// --- training tracks --------------------------------------------------------
-{
+test('training tracks: real tabs, real explanations, right ordering', () => {
   const validTabs = new Set(['design', 'usage', 'fit', 'comp', 'analysis', 'therm', 'eu', 'results']);
   for (const [id, track] of Object.entries(TRAINING_TRACKS)) {
     ok(track.steps.length >= 5, `${id} track has a real sequence`);
@@ -76,7 +71,4 @@ for (const pr of PRESETS) {
   ok(TRAINING_TRACKS.advanced.steps.some((s) => /swell|crash|ECE R100/i.test(s.text)),
     'advanced track teaches why the spaces exist');
   ok(TRAINING_TRACKS.advanced.steps.some((s) => s.tab === 'eu'), 'advanced track covers the rules tab');
-}
-
-console.log(fails === 0 ? 'MARKET/TRAINING REGRESSIONS PASSED' : `${fails} FAILURES`);
-process.exit(fails ? 1 : 0);
+});

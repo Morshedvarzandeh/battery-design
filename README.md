@@ -89,7 +89,7 @@ project's provenance-first datasheet pipeline.
   transport always stays), low-voltage packs drop the HV precharge chain
   for a solid-state disconnect, indoor machines auto-select the indoor
   climate, and off-preference chemistries are visibly chipped on max-fill
-  cards. A dedicated CI suite (`tests/integration-regressions.mjs`) walks
+  cards. A dedicated CI suite (`tests/integration.test.mjs`) walks
   every application × every module and FAILS when a new preset or standard
   is added unclassified — coherence is enforced, not hoped for.
 - **BMS in two layers** — the system diagram shows the topology in context,
@@ -300,3 +300,18 @@ is copied into the repository.
 
 The data modules are import-free so they can be consumed by tooling (node
 scripts, tests) without a browser.
+
+## Tests
+
+The suites live in `tests/*.test.mjs` and run on Node's built-in test
+runner — no dependencies, named `test()` blocks, shared assertions from
+`tests/helpers.mjs`:
+
+```bash
+node --test tests/*.test.mjs   # every suite
+node --test tests/btms.test.mjs  # one area
+```
+
+CI runs three gates on every change: `tools/validate.mjs` (data contracts),
+the full test run, and `tools/validate-vs-market.mjs` (the result must still
+match production packs).

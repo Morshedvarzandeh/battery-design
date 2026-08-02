@@ -1,62 +1,62 @@
-// Integration regressions — "when the person speaks about one application,
-// the things which are not related are omitted." These tests walk EVERY
-// application and assert cross-module coherence: profiles, standards list,
-// checklist class, comms, climate, chemistry preferences and the LV/HV
-// architecture behavior must all tell the same story. A new preset or
-// standard that is not classified FAILS here — integration is enforced,
-// not hoped for.
+// Integration — "when the person speaks about one application, the things
+// which are not related are omitted." These tests walk EVERY application and
+// assert cross-module coherence: profiles, standards list, checklist class,
+// comms, climate, chemistry preferences and the LV/HV architecture behavior
+// must all tell the same story. A new preset or standard that is not
+// classified FAILS here — integration is enforced, not hoped for.
+import { test } from 'node:test';
+import { ok } from './helpers.mjs';
 import { PRESETS } from '../js/presets.js';
 import { CELLS, CHEMISTRIES, cellById } from '../js/cells.js';
 import { profileForApp, profilesForApp } from '../js/loadprofiles.js';
 import { MARKETS, releaseChecklist, appClassOf, CLASS_OF_APP } from '../js/markets.js';
 import {
   COMMS_BY_APP, commsForApp, buildArchitecture, modulePartition, bmsArchitecture,
-  SUPERVISORS_BY_APP, supervisorForApp,
+  SUPERVISORS_BY_APP, supervisorForApp, emsArchitectureFor, EMS_ARCHITECTURES,
 } from '../js/architecture.js';
 import { STANDARDS_INFO, STANDARD_CLASSES, standardsForClass } from '../js/standards.js';
 import { INDOOR_APPS } from '../js/seasons.js';
 import { euChecks } from '../js/eurules.js';
-
-let fails = 0;
-const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
+import { maxFill } from '../js/optimizer.js';
+import { componentById } from '../js/components.js';
 
 const VALID_CLASSES = new Set(['vehicle', 'lmt', 'stationary', 'marine', 'industrial', 'portable', 'auxiliary']);
 
-// --- every application is fully integrated ----------------------------------
-for (const pr of PRESETS) {
-  const cls = appClassOf(pr.id);
-  ok(VALID_CLASSES.has(cls), `${pr.id}: classified (${cls})`);
-  // Its own profile, and the recommendation list starts with it.
-  const def = profileForApp(pr.id);
-  ok(def && def.appIds.includes(pr.id), `${pr.id}: default profile belongs to it`);
-  ok(profilesForApp(pr.id)[0]?.id === def.id, `${pr.id}: recommendation list starts with its default`);
-  // Its own communication entry — not the generic fallback.
-  ok(COMMS_BY_APP[pr.id] != null, `${pr.id}: has an explicit comms mapping`);
-  // Its own supervisory layer (EMS / VCU / host…) — never the fallback.
-  ok(SUPERVISORS_BY_APP[pr.id] != null, `${pr.id}: has an explicit supervisor mapping`);
-  ok(SUPERVISORS_BY_APP[pr.id]?.name && SUPERVISORS_BY_APP[pr.id]?.role?.length > 30,
-    `${pr.id}: supervisor names the machine and explains its role`);
-  // …and the supervisor has real DETAIL: what it does and what it speaks.
-  const det = SUPERVISORS_BY_APP[pr.id]?.detail;
-  ok(det?.functions?.length >= 1 && det?.interfaces?.length >= 1,
-    `${pr.id}: supervisor detail (functions + interfaces) present`);
-  // A release checklist in every market, transport gate always present.
-  for (const m of MARKETS) {
-    const cl = releaseChecklist({ market: m.id, application: pr.id, chemistry: pr.preferredChemistries[0] });
-    ok(cl.applicationClass === cls, `${pr.id}×${m.id}: checklist uses the same class`);
-    ok(cl.items.some((i) => i.code === 'UN 38.3'), `${pr.id}×${m.id}: UN 38.3 present`);
+test('every application is fully integrated', () => {
+  for (const pr of PRESETS) {
+    const cls = appClassOf(pr.id);
+    ok(VALID_CLASSES.has(cls), `${pr.id}: classified (${cls})`);
+    // Its own profile, and the recommendation list starts with it.
+    const def = profileForApp(pr.id);
+    ok(def && def.appIds.includes(pr.id), `${pr.id}: default profile belongs to it`);
+    ok(profilesForApp(pr.id)[0]?.id === def.id, `${pr.id}: recommendation list starts with its default`);
+    // Its own communication entry — not the generic fallback.
+    ok(COMMS_BY_APP[pr.id] != null, `${pr.id}: has an explicit comms mapping`);
+    // Its own supervisory layer (EMS / VCU / host…) — never the fallback.
+    ok(SUPERVISORS_BY_APP[pr.id] != null, `${pr.id}: has an explicit supervisor mapping`);
+    ok(SUPERVISORS_BY_APP[pr.id]?.name && SUPERVISORS_BY_APP[pr.id]?.role?.length > 30,
+      `${pr.id}: supervisor names the machine and explains its role`);
+    // …and the supervisor has real DETAIL: what it does and what it speaks.
+    const det = SUPERVISORS_BY_APP[pr.id]?.detail;
+    ok(det?.functions?.length >= 1 && det?.interfaces?.length >= 1,
+      `${pr.id}: supervisor detail (functions + interfaces) present`);
+    // A release checklist in every market, transport gate always present.
+    for (const m of MARKETS) {
+      const cl = releaseChecklist({ market: m.id, application: pr.id, chemistry: pr.preferredChemistries[0] });
+      ok(cl.applicationClass === cls, `${pr.id}×${m.id}: checklist uses the same class`);
+      ok(cl.items.some((i) => i.code === 'UN 38.3'), `${pr.id}×${m.id}: UN 38.3 present`);
+    }
+    // Chemistry preferences are real chemistries.
+    for (const c of pr.preferredChemistries) ok(CHEMISTRIES[c] != null, `${pr.id}: chemistry ${c} exists`);
+    // EU checks never crash and always answer.
+    ok(euChecks({
+      energyWh: pr.typicalEnergyWh, application: pr.id,
+      chemistry: pr.preferredChemistries[0], commsPrimary: commsForApp(pr.id).primary,
+    }).length > 0, `${pr.id}: EU applicability answers`);
   }
-  // Chemistry preferences are real chemistries.
-  for (const c of pr.preferredChemistries) ok(CHEMISTRIES[c] != null, `${pr.id}: chemistry ${c} exists`);
-  // EU checks never crash and always answer.
-  ok(euChecks({
-    energyWh: pr.typicalEnergyWh, application: pr.id,
-    chemistry: pr.preferredChemistries[0], commsPrimary: commsForApp(pr.id).primary,
-  }).length > 0, `${pr.id}: EU applicability answers`);
-}
+});
 
-// --- the standards reference list follows the application -------------------
-{
+test('the standards reference list follows the application class', () => {
   // Every listed standard must be classified — a new entry fails until it is.
   for (const s of STANDARDS_INFO) {
     const c = STANDARD_CLASSES[s.id];
@@ -79,16 +79,14 @@ for (const pr of PRESETS) {
   for (const cls of VALID_CLASSES) ok(codes(cls).length >= 4, `${cls} list is non-trivial`);
   // The 'all' basics appear everywhere.
   for (const cls of VALID_CLASSES) ok(codes(cls).includes('un383'), `${cls} keeps UN 38.3`);
-}
+});
 
-// --- indoor machines never see a Nordic winter ------------------------------
-{
+test('indoor machines never see a Nordic winter', () => {
   for (const id of ['robovac', 'robot', 'humanoid', 'ups']) ok(INDOOR_APPS.has(id), `${id} is indoor`);
   for (const id of ['ev', 'ebus', 'marine', 'rv', 'ebike']) ok(!INDOOR_APPS.has(id), `${id} is outdoor`);
-}
+});
 
-// --- LV/HV architecture coherence -------------------------------------------
-{
+test('LV/HV architecture coherence at the 60 V boundary', () => {
   const cyl = cellById('samsung-inr21700-50e');
   const lvSummary = {
     cellCount: 16, nominalV: 4 * cyl.nominalV, vMax: 4 * cyl.vMax, vMin: 4 * cyl.vMin,
@@ -104,10 +102,9 @@ for (const pr of PRESETS) {
   };
   const hv = buildArchitecture({ cell: cyl, s: 96, p: 2, summary: hvSummary, options: { isolationStandard: 'ece-r100' } });
   ok(hv.precharge != null && hv.isolation != null, 'HV pack keeps precharge + isolation');
-}
+});
 
-// --- the 30-channel case: a fixed module gets its TWO slaves ----------------
-{
+test('the 30-channel case: a fixed module gets its TWO slaves', () => {
   const cyl = cellById('samsung-inr21700-50e');
   // Mechanics fix a 30S module in a 60S pack; AFEs are 16-channel.
   const part = modulePartition(60, 2, cyl, { channelsPerIc: 16, sModOverride: 30 });
@@ -124,16 +121,14 @@ for (const pr of PRESETS) {
   const ctp = modulePartition(30, 1, cyl, { channelsPerIc: 16 });
   const cbms = bmsArchitecture({ s: 30, cellCount: 30, partition: ctp, topology: 'centralized', channelsPerIc: 16 });
   ok(cbms.afeTotal === 2, `centralized 30S @16ch -> 2 AFEs (got ${cbms.afeTotal})`);
-}
+});
 
-// --- wearable gadgets: 1S LiPo end-to-end -----------------------------------
-{
+test('wearable gadgets: 1S LiPo end-to-end', () => {
   const lipo = cellById('lipo-602030-300mah');
   ok(lipo && lipo.chemistry === 'LCO' && lipo.form === 'pouch', 'wearable LiPo cell exists (LCO pouch)');
   ok(/lipo/i.test(lipo.formFactor), 'named as the market names it — LiPo');
   // The watch bay with watch-scale reserves actually yields designs, the
   // winners are 1S (single-cell systems), and LiPo cells surface.
-  const { maxFill } = await import('../js/optimizer.js');
   const res = maxFill(CELLS, { x: 40, y: 35, z: 8 },
     { vRange: [3.0, 4.4], weights: { energy: 5, cost: 3, mass: 2 } },
     { spacingMm: 0.5, wallMm: 1, headroomMm: 2, layerGapMm: 1, coolingSpace: { bottom: 0, side: 0, rowGap: 0 } }, 8);
@@ -149,46 +144,46 @@ for (const pr of PRESETS) {
   ok(A.precharge === null && A.isolation === null, '1S wearable: no HV chain');
   ok(A.partition.virtual && A.partition.nModules === 1, '1S wearable: one virtual group');
   ok(/fuel gauge/i.test(A.comms.primary), 'wearable comms: fuel gauge, not a vehicle bus');
-  // The supervisory layer follows the application: SoC for a gadget, EMS
-  // for storage, VCU for a vehicle — and rides through the orchestrator.
-  ok(/SoC|PMIC/i.test(A.supervisor.name), 'wearable supervisor: host SoC/PMIC');
+  // No phantom pack vent: the cell's-own-venting entry exists for every
+  // form, is cell-level (so the 3D pack nub never renders), and says
+  // honestly where it stops applying.
+  const noVent = componentById('vent', 'none-cell-venting');
+  ok(noVent && noVent.level === 'cell', 'none-cell-venting entry exists at cell level');
+  ok(noVent.forms.length === 3, 'available for every cell form');
+  ok(/watt-hour-class packs only/i.test(noVent.notes), 'scope limit stated — not for packs with real headspace pressure');
+  // The day profile belongs to it and ends the day on the dock.
+  const prof = profileForApp('wearable');
+  ok(prof?.id === 'wearable-day' && prof.p.some((v) => v < 0), 'wearable day profile with dock charging');
+});
+
+test('the supervisory layer follows the application', () => {
+  ok(/SoC|PMIC/i.test(supervisorForApp('wearable').name), 'wearable supervisor: host SoC/PMIC');
   ok(/EMS/.test(supervisorForApp('solar-ess').name), 'storage supervisor: EMS');
   const ems = supervisorForApp('solar-ess').detail;
   ok(ems.functions.some((f) => /dispatch/i.test(f)) && ems.functions.some((f) => /grid-code/i.test(f)),
     'EMS detail: dispatch + grid codes');
   ok(ems.interfaces.some((i) => /SunSpec|Modbus/i.test(i)) && ems.interfaces.some((i) => /61850/.test(i)),
     'EMS detail: SunSpec Modbus + IEC 61850 interfaces');
-  // EMS architectures (literature families) — only where an EMS exists.
-  const { emsArchitectureFor, EMS_ARCHITECTURES } = await import('../js/architecture.js');
+  ok(/VCU/.test(supervisorForApp('ev').name), 'vehicle supervisor: VCU');
+  ok(/PMS/.test(supervisorForApp('marine').name), 'marine supervisor: PMS');
+  ok(supervisorForApp('never-heard-of-it').name.length > 0, 'unknown app falls back honestly');
+});
+
+test('EMS architectures (literature families) appear only where an EMS exists', () => {
   ok(EMS_ARCHITECTURES.length === 3 &&
-     EMS_ARCHITECTURES.some((a) => /2030\.7|three control levels/i.test(a.when)),
+    EMS_ARCHITECTURES.some((a) => /2030\.7|three control levels/i.test(a.when)),
     'literature families present with the IEEE 2030.7 framing');
   ok(emsArchitectureFor('wearable') === null && emsArchitectureFor('powertool') === null &&
-     emsArchitectureFor('drone') === null,
+    emsArchitectureFor('drone') === null,
     'the EMS-architecture question never appears for gadget applications');
   ok(emsArchitectureFor('solar-ess', 1).chosen.id === 'centralized', 'one asset -> centralized suggested');
   ok(emsArchitectureFor('solar-ess', 8).chosen.id === 'hierarchical', 'multi-rack -> hierarchical suggested');
   ok(emsArchitectureFor('ebus', 4).chosen.id === 'hierarchical', 'bus depot -> hierarchical');
   const ov = emsArchitectureFor('solar-ess', 8, 'distributed');
   ok(ov.chosen.id === 'distributed' && ov.overridden, 'override honored and marked');
-  ok(/VCU/.test(supervisorForApp('ev').name), 'vehicle supervisor: VCU');
-  ok(/PMS/.test(supervisorForApp('marine').name), 'marine supervisor: PMS');
-  ok(supervisorForApp('never-heard-of-it').name.length > 0, 'unknown app falls back honestly');
-  // The day profile belongs to it and ends the day on the dock.
-  const prof = profileForApp('wearable');
-  ok(prof?.id === 'wearable-day' && prof.p.some((v) => v < 0), 'wearable day profile with dock charging');
-  // No phantom pack vent: the cell's-own-venting entry exists for every
-  // form, is cell-level (so the 3D pack nub never renders), and says
-  // honestly where it stops applying.
-  const { componentById } = await import('../js/components.js');
-  const noVent = componentById('vent', 'none-cell-venting');
-  ok(noVent && noVent.level === 'cell', 'none-cell-venting entry exists at cell level');
-  ok(noVent.forms.length === 3, 'available for every cell form');
-  ok(/watt-hour-class packs only/i.test(noVent.notes), 'scope limit stated — not for packs with real headspace pressure');
-}
+});
 
-// --- off-preference detection data is consistent ----------------------------
-{
+test('classification data is consistent on both sides', () => {
   // Every cell chemistry that max-fill can surface exists in CHEMISTRIES, so
   // the off-preference chip can always resolve.
   for (const c of CELLS) ok(CHEMISTRIES[c.chemistry] != null, `${c.id} chemistry known`);
@@ -196,7 +191,4 @@ for (const pr of PRESETS) {
   const presetIds = new Set(PRESETS.map((p) => p.id));
   for (const id of Object.keys(CLASS_OF_APP)) ok(presetIds.has(id), `classified app ${id} exists as a preset`);
   for (const id of presetIds) ok(CLASS_OF_APP[id] != null, `preset ${id} is classified`);
-}
-
-console.log(fails === 0 ? 'INTEGRATION REGRESSIONS PASSED' : `${fails} FAILURES`);
-process.exit(fails ? 1 : 0);
+});

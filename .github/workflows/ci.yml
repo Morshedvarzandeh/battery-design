@@ -14,25 +14,10 @@ jobs:
         with:
           node-version: 22
       # The integration gate: every cell, component and preset in the
-      # database must satisfy the data contracts, and the engine math must
-      # pass its regression suites, before a change can merge.
+      # database must satisfy the data contracts (validate), the whole
+      # engine must pass its named test suites under Node's test runner,
+      # and the result must still match production packs (validate-vs-market)
+      # before a change can merge.
       - run: node tools/validate.mjs
-      - run: node tests/sanity.mjs
-      - run: node tests/geometry-regressions.mjs
-      - run: node tests/review-regressions.mjs
-      - run: node tests/maxfill-regressions.mjs
-      - run: node tests/bay-regressions.mjs
-      - run: node tests/radar-regressions.mjs
-      - run: node tests/tco-regressions.mjs
-      - run: node tests/report-regressions.mjs
-      - run: node tests/sensitivity-regressions.mjs
-      - run: node tests/bay-import-regressions.mjs
-      - run: node tests/loadprofile-regressions.mjs
-      - run: node tests/architecture-regressions.mjs
-      - run: node tests/season-regressions.mjs
-      - run: node tests/market-regressions.mjs
-      - run: node tests/integration-regressions.mjs
-      - run: node tests/btms-regressions.mjs
-      - run: node tests/sensor-regressions.mjs
-      - run: node tests/knowledge-regressions.mjs
+      - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs

@@ -1,10 +1,11 @@
-// Regressions for the who-needs-what layer and the two new deliverables that
-// hang off it: (1) the knowledge graph that decides which concepts each
-// application meets (a wearable customer NEVER sees rack stacks in training),
-// (2) the component classes (thermal/electrical/control/safety/mechanical),
-// (3) the layered architecture HTML report, and (4) the engineer's workbook
-// with live formulas and no hardcoded contact address in source.
+// Knowledge — the who-needs-what layer and the deliverables that hang off
+// it: the graph that decides which concepts each application meets (a
+// wearable customer NEVER sees rack stacks in training), the component
+// classes, the layered architecture HTML report, and the engineer's
+// workbook with live formulas and no hardcoded contact address in source.
+import { test } from 'node:test';
 import { readFileSync } from 'fs';
+import { ok } from './helpers.mjs';
 import { cellById } from '../js/cells.js';
 import { layoutPack, summarize } from '../js/pack-engine.js';
 import {
@@ -21,19 +22,14 @@ import { co2Model, buildArchReportHTML } from '../js/report.js';
 import { costModel } from '../js/optimizer.js';
 import { buildWorkbookXml, workbookFilename } from '../js/excel.js';
 
-let fails = 0;
-const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
-
-// --- the graph itself -------------------------------------------------------
-{
+test('the graph itself validates', () => {
   const errs = validateGraph();
   ok(errs.length === 0, `graph validates (${errs.join(' | ')})`);
   ok(Object.keys(CONCEPTS).length >= 14, 'concept nodes present');
   ok(Object.keys(NEEDS).length === Object.keys(CONCEPTS).length, 'every concept has an edge');
-}
+});
 
-// --- who needs what: the wearable is the acid test --------------------------
-{
+test('who needs what: the wearable is the acid test', () => {
   ok(!needed('wearable', 'stacks-racks'), 'wearable does NOT need stacks/racks');
   ok(!needed('wearable', 'ems-arch'), 'wearable does NOT need EMS architecture');
   ok(!needed('wearable', 'btms-loop'), 'wearable does NOT need a thermal loop');
@@ -45,10 +41,9 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
   ok(!needed('ebike', 'ems-arch'), 'e-bike has no EMS');
   ok(needed(null, 'stacks-racks'), 'no application chosen -> nothing hidden yet');
   ok(!appNeeds('wearable').includes('stacks-racks'), 'appNeeds traces the same answer');
-}
+});
 
-// --- training steps filter through the graph --------------------------------
-{
+test('training steps filter through the graph', () => {
   for (const track of Object.values(TRAINING_TRACKS)) {
     for (const st of track.steps) {
       if (st.concept) ok(CONCEPTS[st.concept], `step "${st.title}" tags a known concept (${st.concept})`);
@@ -65,10 +60,9 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
     'storage plant keeps the full advanced track');
   ok(stepsFor(TRAINING_TRACKS.simple, 'wearable').length === TRAINING_TRACKS.simple.steps.length,
     'the simple track is universal');
-}
+});
 
-// --- component classes ------------------------------------------------------
-{
+test('component classes: complete and mapped', () => {
   const ids = new Set(COMPONENT_CLASSES.map((k) => k.id));
   for (const want of ['thermal', 'electrical', 'control', 'safety', 'mechanical']) {
     ok(ids.has(want), `component class ${want} exists`);
@@ -78,9 +72,9 @@ const ok = (c, m) => { if (!c) { console.error('FAIL:', m); fails++; } };
   }
   const thermal = COMPONENT_CLASSES.find((k) => k.id === 'thermal');
   ok(thermal.concept === 'btms-loop', 'thermal class gates on the btms-loop edge');
-}
+});
 
-// --- fixture: a real EV design end to end ------------------------------------
+// A real EV design end to end — the fixture the report and workbook build on.
 const c = cellById('samsung-inr21700-50e');
 const layout = layoutPack(c, 96, 2, { spacingMm: 1 });
 const summary = summarize(c, 96, 2, layout);
@@ -108,8 +102,7 @@ const R = {
   disclaimer: 'test disclaimer',
 };
 
-// --- the layered architecture report ----------------------------------------
-{
+test('the layered architecture report', () => {
   const html = buildArchReportHTML(R);
   ok(html.startsWith('<!doctype html>'), 'standalone document');
   for (const id of ['L-system', 'L-pack', 'L-module', 'L-cell', 'L-control', 'L-thermal', 'L-sensors']) {
@@ -127,10 +120,9 @@ const R = {
   const wHtml = buildArchReportHTML({ ...R, thermal: null, sensors: { groups: [], notes: [] } });
   ok(wHtml.startsWith('<!doctype html>') && !wHtml.includes('L-thermal'),
     'no thermal layer when there is no thermal system');
-}
+});
 
-// --- the engineer's workbook -------------------------------------------------
-{
+test('the engineer\'s workbook: live formulas, feedback loop, well-formed XML', () => {
   const xml = buildWorkbookXml(R, { feedbackEmail: 'owner@example.com' });
   ok(xml.includes('<?mso-application progid="Excel.Sheet"?>'), 'Excel XML preamble');
   const namedRanges = (xml.match(/<NamedRange /g) || []).length;
@@ -162,13 +154,12 @@ const R = {
   const w = buildWorkbookXml({ ...R, thermal: null });
   ok(!w.includes('ss:Name="Thermal"'), 'no Thermal sheet without a thermal system');
   ok(workbookFilename(R).endsWith('.xls'), 'workbook filename');
-  // PRIVACY: the source file must not hardcode the owner's address — it is
-  // assembled at runtime (mycells.js pattern) and passed in.
+});
+
+test('privacy: no hardcoded contact address in excel.js source', () => {
+  // The address is assembled at runtime (mycells.js pattern) and passed in.
   // (The public app/repo URLs are fine — it is the email that stays out.)
   const src = readFileSync(new URL('../js/excel.js', import.meta.url), 'utf8');
   ok(!/gmail|morshed\.varzandeh|mailto:[^$]/i.test(src.replace(/mailto:\$\{/g, '')),
     'no hardcoded contact address in excel.js source');
-}
-
-console.log(fails === 0 ? 'KNOWLEDGE REGRESSIONS PASSED' : `${fails} FAILURES`);
-process.exit(fails ? 1 : 0);
+});
