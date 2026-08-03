@@ -73,6 +73,19 @@ test('the validation anchor and its number are documented', () => {
     'the integration allowance is traced to that anchor');
 });
 
+test('the page describes itself for link previews and search', () => {
+  const html = read('index.html');
+  ok(/<meta name="description"/.test(html), 'meta description present');
+  ok(/property="og:title"/.test(html) && /property="og:description"/.test(html),
+    'Open Graph title and description present');
+  ok(/property="og:image" content="https:\/\/[^"]+\/assets\/social-preview\.png"/.test(html),
+    'og:image is an absolute URL (relative ones do not resolve for crawlers)');
+  ok(/twitter:card" content="summary_large_image"/.test(html), 'large-image card declared');
+  // The footer must keep pointing at the sources and the licence.
+  ok(/REFERENCES\.md/.test(html) && /Apache/.test(html),
+    'footer links to the sources and states the licence');
+});
+
 test('licence and attribution files are present and consistent', () => {
   const lic = read('LICENSE'), notice = read('NOTICE'), cff = read('CITATION.cff');
   ok(/Apache License/.test(lic) && /Version 2\.0/.test(lic), 'LICENSE is Apache 2.0');
