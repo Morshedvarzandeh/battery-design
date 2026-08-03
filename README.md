@@ -1,10 +1,22 @@
 # battery-design
 
+**Design a battery pack from an application and an available space — geometry,
+electrical architecture, thermal system, mission simulation and the customer
+report — entirely in your browser.**
+
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-0b6e5f.svg)](LICENSE)
+[![CI](https://github.com/Morshedvarzandeh/battery-design/actions/workflows/ci.yml/badge.svg)](https://github.com/Morshedvarzandeh/battery-design/actions/workflows/ci.yml)
+[![References](https://img.shields.io/badge/sources-REFERENCES.md-0b6e5f.svg)](REFERENCES.md)
+
 **Live app: <https://morshedvarzandeh.github.io/battery-design/>**
 
 A 3D battery pack designer that runs entirely in the browser — a static page
 with no build step and no server (deployed by GitHub Pages on every merge to
 `main`; Three.js is vendored, so it also works offline).
+
+Every rule, threshold and default is traceable to a public datasheet or a named
+standard — and the assumptions that have **no** public source are listed openly
+in [REFERENCES.md §8](REFERENCES.md#8-assumptions-with-no-public-source).
 
 Want to add a cell or component you found on the market? See
 [CONTRIBUTING.md](CONTRIBUTING.md) — new entries integrate into the pickers,
@@ -334,3 +346,58 @@ node --test tests/btms.test.mjs  # one area
 CI runs three gates on every change: `tools/validate.mjs` (data contracts),
 the full test run, and `tools/validate-vs-market.mjs` (the result must still
 match production packs).
+
+## References and sources
+
+Every standard, regulation, paper, datasheet source and patent family this tool
+relies on is catalogued in **[REFERENCES.md](REFERENCES.md)**, cross-referenced
+to the module that uses it:
+
+- **Transport** — UN 38.3, IEC 62281, IATA PI 965 Section IB
+- **Cell & system safety** — IEC 62133-2, IEC 62619, IEC 63056, IEC 62933-5-2,
+  UL 1973 / 2580 / 9540 / 9540A / 2271 / 2272 / 2849 / 2743, NFPA 855, NFPA 68
+- **Vehicles & transport classes** — UN ECE R100 (incl. Annex 4) and R10,
+  ISO 6469-1/-3, ISO 12405, ISO 26262, EN 15194, EN 50604-1, EN 1175,
+  ISO 3691-4, ABYC E-13
+- **China** — GB 38031 (2020 and the 2025 revision), GB 18384, GB/T 31498,
+  GB/T 36276, and MIIT recommended-catalogue practice
+- **Communication & control** — ISO 11898, ISO 14229 (UDS), ISO 15118 /
+  DIN 70121, SAE J1939, CANopen, Modbus/SunSpec, IEC 61850, NMEA 2000,
+  IEEE 2030.7
+- **Regulation** — Regulation (EU) 2023/1542
+- **Literature** — the ASME MSEC2010-34168 joining review behind the welding
+  recommendations; microgrid EMS survey literature behind the EMS families
+- **Validation anchor** — the production Tesla Model 3 Long Range pack, which
+  the CI gate checks the whole chain against to within 1%
+
+No standard is reproduced in this repository. The citations tell you what to
+obtain and from whom; editions change, and the release checklist says so.
+
+**Found a citation that is wrong or out of date?** That matters more than a
+missing one — [open an issue](https://github.com/Morshedvarzandeh/battery-design/issues)
+naming the standard and the edition.
+
+## Licence
+
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). You can use
+this commercially, modify it and redistribute it; the licence includes an
+express patent grant, and requires you to keep the notices and state your
+changes.
+
+The engineering output is **first-order guidance, not certification**, and is
+provided without warranty. It does not replace CAD, validation testing,
+homologation or the judgement of a qualified engineer.
+
+## Citing this tool
+
+If output from this project ends up in a report, paper or tender, please cite
+it — see [CITATION.cff](CITATION.cff) (GitHub renders a "Cite this repository"
+button from it).
+
+## Contributing
+
+Cell data, component classes, corrections and code are all welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md). New entries flow into the pickers,
+optimizer, analysis and reports automatically once they pass the CI data gate.
+Data contributions need a public datasheet behind them; that is the whole basis
+of the provenance model.

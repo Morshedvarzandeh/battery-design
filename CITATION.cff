@@ -1,0 +1,37 @@
+cff-version: 1.2.0
+title: >-
+  battery-design: an in-browser battery pack design, architecture and
+  mission-simulation tool
+message: >-
+  If you use this tool, or figures produced by it, in a report, paper or tender
+  document, please cite it as below.
+type: software
+authors:
+  - family-names: Varzandeh
+    given-names: Morshed
+repository-code: https://github.com/Morshedvarzandeh/battery-design
+url: https://morshedvarzandeh.github.io/battery-design/
+abstract: >-
+  A browser-based battery pack designer that derives a complete concept design
+  from an application and an available space: it packs every cell in its library
+  into the given bay and ranks the results on energy, lifetime cost and mass;
+  derives the electrical architecture (module partition, BMS topology and AFE
+  count, precharge, contactors, fuse, isolation, DC-DC, communication bus);
+  sizes the thermal system (loop, coolant flow, chiller duty, heater need);
+  plans the sensor set by level; simulates the mission in time with an
+  equivalent-circuit electrical model coupled to a lumped thermal model; and
+  produces customer-facing reports. Every value is traced to a public datasheet
+  or a named standard, and assumptions without a public source are listed
+  explicitly. Output is first-order engineering guidance, not certification.
+keywords:
+  - battery pack design
+  - lithium-ion
+  - battery management system
+  - thermal management
+  - energy storage
+  - electric vehicles
+  - engineering design tool
+  - simulation
+license: Apache-2.0
+version: 1.0.0
+date-released: '2026-08-03'
