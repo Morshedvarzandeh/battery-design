@@ -154,6 +154,23 @@ export function buildReportHTML(R) {
   <div style="font-size:11px;color:#666;margin-top:4px">${[...(P.notes || []), ...(B.notes || []), A.dcdc.chargingNote, K.lvNote, A.isolation?.groundingNote].filter(Boolean).map(esc).join(' ')}</div>`;
   })() : ''}
 
+  ${R.vehicle?.drive ? (() => {
+    const V = R.vehicle, D = V.drive, b = D.breakdown;
+    const spent = b.rolling + b.aero + b.grade + b.accel + b.aux;
+    const pct = (x) => spent > 0 ? `${Math.round((x / spent) * 100)}%` : '—';
+    return `
+  <h2 style="${h2}">Vehicle, driving mode & range</h2>
+  ${table([
+    row('Consumption', `<b>${f1(D.whPerKm)} Wh/km</b> in ${esc(D.mode.name)} mode${V.range != null ? ` — <b>about ${f0(V.range)} km</b> of range from this pack at ${Math.round(V.dod * 100)}% usable DoD` : ''}`),
+    row('Moving mass', `${f0(D.massKg)} kg — <span style="font-weight:normal">${f0(V.vehicle.curbKg)} kg vehicle + ${f0(V.vehicle.payloadKg)} kg payload + ${f0(V.packMassKg)} kg battery pack${V.share.note ? `. ${esc(V.share.note)}` : ''}</span>`),
+    row('Where the energy goes', `Rolling ${pct(b.rolling)} · aerodynamic ${pct(b.aero)} · acceleration ${pct(b.accel)}${Math.abs(b.grade) > 1 ? ` · gradient ${pct(b.grade)}` : ''} · auxiliaries ${pct(b.aux)}<br><span style="font-weight:normal">Regenerative braking returns ${f0(Math.abs(b.recovered))} Wh over the cycle.</span>`),
+    row('Duty', `${f1(D.distanceKm)} km in ${f0(D.durationS / 60)} min, average ${f0(D.avgSpeedKmh)} km/h, peak ${f1(D.peakW / 1000)} kW — <span style="font-weight:normal">${esc(V.trace.name)}</span>`),
+    ...(V.modes.length ? [row('Driving mode sensitivity', V.modes.map((m) =>
+      `${esc(m.mode.name)}: ${f1(m.whPerKm)} Wh/km${m.rangeKm != null ? ` → ${f0(m.rangeKm)} km` : ''}`).join(' · '))] : []),
+  ])}
+  <div style="font-size:11px;color:#666;margin-top:4px">${esc(V.trace.note)} ${esc(V.vehicle.note)} Road load: F = Crr·m·g·cos θ + ½·ρ·Cd·A·v² + m·g·sin θ + m·(1+ε)·a, integrated over the trace.</div>`;
+  })() : ''}
+
   ${R.charging ? (() => {
     const C = R.charging;
     const fmtH = (h) => h >= 1 ? `${Math.round(h * 10) / 10} h` : `${Math.round(h * 60)} min`;

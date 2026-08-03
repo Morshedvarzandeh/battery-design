@@ -33,6 +33,7 @@ export const CONCEPTS = {
   'ac-side': { label: 'AC side & charging', why: 'How the pack meets the grid — on-board charger, connectors, charge time.' },
   'charging-strategy': { label: 'Charging strategy', why: 'Depot vs opportunity vs tariff windows — a pack-sizing decision, not an afterthought.' },
   'v2x': { label: 'Feeding power back (V2X)', why: 'V2L, V2H, V2G — and the wear floor that decides whether selling energy back ever pays.' },
+  'vehicle-dynamics': { label: 'The vehicle & driving mode', why: 'Mass, drag and the driver decide the demand — and the pack carries its own weight.' },
 };
 
 // Edges: which application classes need each concept. Per-app extra edges
@@ -72,6 +73,9 @@ export const NEEDS = {
   // Stationary storage feeds the grid as its normal duty — that is the PCS
   // panel's story, not a V2X edge.
   'v2x': { classes: [], apps: ['ev', 'ebus'] },
+  // Road load applies to machines that actually drive. A drone flies, a
+  // humanoid walks, a plant sits still — none of them are road vehicles.
+  'vehicle-dynamics': { classes: [], apps: ['ev', 'ebus', 'ebike', 'escooter', 'robot'] },
 };
 
 // Does this application need this concept? No app selected -> everything

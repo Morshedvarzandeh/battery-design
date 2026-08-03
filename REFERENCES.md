@@ -131,6 +131,20 @@ than one that prints them.
   **MSEC2010-34168**. — Basis for the welding/joining recommendation per cell
   format (resistance spot for cylindrical, laser for prismatic terminals,
   ultrasonic for pouch tabs) and the cautions attached to each. → `architecture.js`
+- **Gillespie, T. D. (1992).** *Fundamentals of Vehicle Dynamics.* SAE
+  International, **R-114**. — The road-load equation the vehicle model
+  integrates: rolling resistance, aerodynamic drag, grade and inertial terms,
+  and the rotating-mass factor that makes acceleration cost more than m·a.
+  → `vehicle.js`
+- **Ehsani, M., Gao, Y., Longo, S., & Ebrahimi, K. (2018).** *Modern Electric,
+  Hybrid Electric, and Fuel Cell Vehicles* (3rd ed.). CRC Press. — Drivetrain
+  efficiency and regenerative-braking recovery treated as fractions of wheel
+  power, which is how the tool books regen against braking energy. → `vehicle.js`
+- **UNECE Global Technical Regulation No. 15 (WLTP).** — The published Class 3
+  cycle STRUCTURE used by the EV speed trace: four phases (Low / Medium / High /
+  Extra-High), their durations, distances and peak speeds. The tool synthesizes
+  a trace that matches those published aggregates; it does not reproduce the
+  homologation second-by-second data. → `vehicle.js`
 - **Microgrid EMS literature (survey-level).** The centralized / hierarchical /
   distributed families, and the finding that no universal crossover between them
   exists — which is why the tool treats the choice as an input with a
@@ -205,6 +219,10 @@ are exposed as inputs wherever possible, and stated as estimates in the output.
 | CV taper model | CC to 80% SoC, then 0.45× average rate | A class simplification of the constant-voltage tail — real taper curves are cell-specific and unpublished |
 | Mission charge power | the cell's rated continuous charge current (base charging additionally throttled by the OBC) | Mission-charging power in the simulation comes from the cell's own datasheet rating, not an invented charger |
 | BMS topology crossover | none | No sourced quantitative crossover between centralized / master-slave / wireless exists, so the tool suggests by scale and says openly that the rule is not sourced |
+| Vehicle class defaults (mass, Cd, frontal area, Crr, drivetrain efficiency, auxiliary load) | per application, e.g. 1250 kg / 0.29 / 2.2 m² for a C-segment EV | Class-typical values for sizing, not any specific vehicle — every one is an exposed input the customer overwrites with their own |
+| Driving-mode factors | Eco 0.94× speed, 0.80× acceleration, 1.25× regen; Sport 1.06× / 1.40× / 0.85× | A class model of driver behaviour. No standard defines "Sport"; the factors are stated and exposed so the customer can dispute them |
+| Rotating-mass factor ε | 0.02–0.07 by machine | Wheels, gears and rotor inertia add to the effective mass under acceleration; the value is a class estimate |
+| Synthesized WLTP Class 3 trace | matches the published phase durations, distances and peak speeds within ~5% | The phase aggregates are public; the second-by-second homologation trace is not reproduced, and the tool says so wherever the trace is used |
 | V2G wear floor | (cell price × count) ÷ (nameplate cycle life × usable energy) | Uses the **nameplate** cycle life — shallow V2G micro-cycling usually ages more gently per kWh, so the floor is a conservative first-order ceiling on wear cost, stated as such wherever it appears |
 
 ---
