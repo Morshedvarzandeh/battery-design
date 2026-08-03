@@ -85,8 +85,8 @@ header{display:flex;align-items:center;gap:14px;padding:10px 16px;
 main{flex:1;display:grid;grid-template-columns:352px minmax(0,1fr) 296px;min-height:0}
 @media (max-width:1100px){main{grid-template-columns:320px minmax(0,1fr)}#statsPanel{display:none}
   .stage-stats{display:block!important}}
-@media (max-width:760px){main{display:flex;flex-direction:column}
-  .panel{max-height:none!important}.stage{min-height:380px}}
+/* Phone rules are NOT here: they live at the end of this stylesheet, after
+   every rule they have to beat. See the block at the bottom for why. */
 
 .panel{background:var(--surface);border-right:1px solid var(--line);overflow-y:auto;
   min-height:0;max-height:calc(100vh - 49px)}
@@ -291,6 +291,101 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
 .rdrtbl .num{text-align:right;font-variant-numeric:tabular-nums}
 .rdrtbl .unk{color:var(--muted);font-style:italic}
 .rdru{color:var(--muted);font-size:10px}
+
+/* ---------------------------------------------------------------------------
+   Phones. This block lives LAST on purpose: a media query adds no specificity,
+   so an earlier `@media (max-width:760px){.stage{min-height:380px}}` loses to a
+   later plain `.stage{min-height:0}`. That is exactly what used to happen —
+   the stage collapsed to zero height, the whole 3D/2D view vanished, and its
+   floating controls fell on top of the panel text. Rules that must win on a
+   phone belong here, after everything they override.
+
+   The shape on a phone: SEE the pack first, then the controls that change it,
+   then the results. One column, in that order.
+--------------------------------------------------------------------------- */
+@media (max-width:760px){
+  /* On a desktop the app is three columns that each scroll inside a fixed
+     viewport. On a phone that same rule squeezed every panel into a sliver
+     with its own scrollbar — 1200px of controls inside a 135px window. A
+     phone gets ONE scrolling document instead. */
+  html,body{height:auto;min-height:100%}
+  main{display:flex;flex-direction:column;flex:0 0 auto;min-height:0}
+  /* The pack itself, first — this is what the tool is for, and it is what a
+     visitor came to see. */
+  .stage{order:1;min-height:46vh;height:46vh;flex:0 0 auto;
+    border-bottom:1px solid var(--line)}
+  .panel{order:2;max-height:none!important;height:auto!important;
+    overflow:visible!important;flex:0 0 auto;border-right:none;
+    border-bottom:1px solid var(--line)}
+  /* Navigation stays reachable however far down the page you are. */
+  #tabs{position:sticky;top:0;z-index:7;background:var(--surface);
+    box-shadow:0 1px 0 var(--line)}
+  /* The headline numbers already live in the header on a phone, so the big
+     stats overlay would only cover the pack it is describing. */
+  .stage-stats{display:none!important}
+  #compLegend{max-width:60%!important;font-size:10.5px!important;
+    left:6px!important;top:6px!important;max-height:38%;overflow:auto}
+  /* On a wide screen these controls float over a large view and cost nothing.
+     On a phone they covered the bottom third of the pack drawing. So the
+     viewports get a shorter box and the controls become a real toolbar
+     underneath — the viewers measure clientHeight, so shortening the box is
+     what actually makes the drawing fit rather than hiding behind it. */
+  #viewport,#viewport2d{bottom:54px}
+  .stage-ui{left:0;right:0;bottom:0;gap:6px;flex-wrap:nowrap;height:54px;
+    overflow-x:auto;overflow-y:hidden;padding:6px 8px;align-items:center;
+    background:var(--surface);border-top:1px solid var(--line);
+    scrollbar-width:none;pointer-events:auto}
+  .stage-ui::-webkit-scrollbar{display:none}
+  .stage-ui>*{flex:0 0 auto}
+  .stage-ui .glass{padding:0;border:none;background:none;backdrop-filter:none;
+    display:flex;align-items:center;gap:6px}
+  .stage-ui .lbl{font-size:9px;margin:0}
+  .stage-ui .seg{min-width:0!important}
+  .stage-ui .seg button{padding:6px 9px;font-size:11.5px;min-height:34px}
+  /* The header is chrome, not content: on a phone it gives the pack its room
+     back — one compact line of identity, the actions in a side-scrolling row. */
+  header{gap:8px 10px}
+  .brand{font-size:12px}
+  .hdr-stats{font-size:11px;gap:8px;width:100%;order:3}
+  .hdr-spacer{display:none}
+  .hdr-links{width:100%;order:2;flex-wrap:nowrap;overflow-x:auto;
+    scrollbar-width:none;padding-bottom:2px}
+  .hdr-links::-webkit-scrollbar{display:none}
+  .hdr-links>*{flex:0 0 auto}
+  .hdr-links .btn{min-height:36px}
+  #flowBar{padding:4px 10px;font-size:11px}
+  /* Fingers are not mouse pointers: every control gets a real target. */
+  .panel button,.panel select,aside button,aside select,
+  .panel input[type=number],.panel input[type=text],
+  aside input[type=number],aside input[type=text]{min-height:40px}
+  .seg button{min-height:40px}
+  .preset{min-height:64px}
+  .preset-grid{grid-template-columns:1fr 1fr}
+  .row3{grid-template-columns:1fr 1fr}
+  /* Long strips scroll sideways rather than truncating mid-word. */
+  #flowBar{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+  #flowBar::-webkit-scrollbar{display:none}
+  #flowBar .fstep{flex:0 0 auto}
+  #tabs{padding:0 6px}
+  #tabs button{padding:10px 10px;font-size:13px}
+  header{padding:8px 10px}
+  .panel .sec,aside .sec{padding:10px 12px}
+  /* A modal that cannot be scrolled on a phone is a dead end. */
+  .wz-card,.diag-card{max-width:96vw!important;max-height:88vh!important;overflow-y:auto}
+  .wz-grid{grid-template-columns:1fr 1fr}
+  .wz-dims{grid-template-columns:1fr 1fr 1fr}
+}
+/* Very small phones: one column of presets, tighter type. */
+@media (max-width:400px){
+  .preset-grid,.wz-grid{grid-template-columns:1fr}
+  .row2{grid-template-columns:1fr}
+  .stage{min-height:42vh;height:42vh}
+}
+/* Landscape phones are short, not narrow — give the view less height so the
+   controls under it are reachable without a long scroll. */
+@media (max-width:900px) and (orientation:landscape) and (max-height:500px){
+  .stage{min-height:60vh;height:60vh}
+}
 </style>
 </head>
 <body>
