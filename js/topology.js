@@ -154,6 +154,14 @@ export function buildTopology({
     method: 'bolted', note: 'Housing-to-bracket. This is both the bonding path and a galvanic couple, and it is usually nobody\'s job until it fails.',
   }));
 
+  // Which runs the pack current passes through IN SERIES, end to end. Every
+  // group interconnect is on that path, and so is each main cable. The module
+  // terminal runs are not: they are the taps where a module's ends are brought
+  // out, and adding all ten to the pack's drop would count the same volts many
+  // times over. Marking the path on the edges themselves means anything
+  // downstream — the wiring study, the fault study — sums the same set this
+  // file does, instead of re-deriving it from the shape of an id.
+  for (const e of edges) e.inSeriesPath = e.id.startsWith('ic') || e.id.startsWith('pk');
   const seriesPath = edges.filter((e) => e.id.startsWith('ic'));
   const totalSeriesOhm = seriesPath.reduce((s, e) => s + (e.resistanceOhm || 0), 0);
   const packCableOhm = edges.filter((e) => e.id.startsWith('pk')).reduce((s, e) => s + (e.resistanceOhm || 0), 0);

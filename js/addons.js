@@ -132,10 +132,10 @@ export const ADDONS = [
   },
   {
     id: 'wiring', name: 'Wiring, joints & bill of materials', tier: 'desktop', status: 'shipped',
-    module: 'topology.js + materials.js', concepts: [],
-    what: 'The pack as a connection graph rather than a number: every conductor run with its material, length and section, every joint with the two surfaces that meet there. Out of it come the real interconnect resistance, the voltage drop and loss at continuous current, the galvanic check on every joint, and the bill of materials the customer receives.',
-    provides: ['conductor runs and joints', 'voltage drop and loss', 'galvanic compatibility per joint', 'bill of materials with mass and cost'],
-    needs: ['a pack', 'run lengths (estimated from the envelope if not given)'],
+    module: 'topology.js + materials.js + wiring.js', concepts: [],
+    what: 'The pack as a connection graph rather than a number: every conductor run with its material, length and section, every joint with the two surfaces that meet there. Each run is then sized two ways — by the current-density rule of thumb and by the steady-state heat balance that says how hot it actually gets — and where they disagree the temperature answer wins. Out of the same graph come the interconnect resistance, the voltage drop and loss at continuous current, the galvanic check on every joint, and the bill of materials the customer receives.',
+    provides: ['conductor runs and joints', 'temperature and required section per run', 'voltage drop and loss', 'galvanic compatibility per joint', 'bill of materials with mass and cost'],
+    needs: ['a pack', 'run lengths (estimated from the envelope if not given)', 'how the runs are installed: free air, loomed, potted or on a cold plate'],
     why: 'Grounding, corrosion, runaway propagation and LCA are all views of this one graph. Building it first is what stops each of them reshaping the others\' work.',
   },
   {
