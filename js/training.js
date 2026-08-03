@@ -87,6 +87,10 @@ export const TRAINING_TRACKS = {
         text: 'How does this machine actually charge? The Charging panel answers in one line — on-board charger and 20→80% time for a vehicle, shore power for a boat, "the inverter IS the AC side" for storage — and folds the expert detail (charger classes, connectors per market, depot-vs-opportunity strategy) out of sight until you ask for it.',
       },
       {
+        tab: 'analysis', title: '6e · Feeding power back', concept: 'v2x',
+        text: 'Some vehicles can push energy out as well as pull it in: V2L runs a load from the vehicle, V2H backs up a home, V2G sells services to the grid. The Charging panel\'s expert fold assesses each mode against THIS design — and prices the one number brochures omit: the wear floor, what every delivered kWh costs in cycle life. V2G revenue below that floor loses money before the hardware is even bought.',
+      },
+      {
         tab: 'eu', title: '7 · Release rules before release', concept: 'release-rules',
         text: 'The Rules tab holds the market release checklist per application (pick EU / US / China / International) — including chemistry-market rules like China\'s e-bus exclusion of NMC — and the EU 2023/1542 timeline with what applies to THIS design.',
       },

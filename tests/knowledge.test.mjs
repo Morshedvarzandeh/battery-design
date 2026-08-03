@@ -56,8 +56,13 @@ test('training steps filter through the graph', () => {
     'wearable never meets stacks/EMS/thermal-loop steps');
   wAdv.forEach((st, i) => ok(st.index === i + 1 && st.of === wAdv.length,
     `wearable numbering stays consecutive (${st.index}/${st.of})`));
-  ok(stepsFor(TRAINING_TRACKS.advanced, 'solar-ess').length === advAll,
-    'storage plant keeps the full advanced track');
+  ok(stepsFor(TRAINING_TRACKS.advanced, 'ebus').length === advAll,
+    'an e-bus keeps the full advanced track — EMS, strategy and V2X included');
+  ok(stepsFor(TRAINING_TRACKS.advanced, 'ev').some((st) => st.concept === 'v2x'),
+    'an EV gets the "Feeding power back" step');
+  const essAdv = stepsFor(TRAINING_TRACKS.advanced, 'solar-ess');
+  ok(essAdv.length === advAll - 1 && !essAdv.some((st) => st.concept === 'v2x'),
+    'storage drops exactly the V2X step — feeding the grid is its day job, not a mode');
   ok(stepsFor(TRAINING_TRACKS.simple, 'wearable').length === TRAINING_TRACKS.simple.steps.length,
     'the simple track is universal');
 });

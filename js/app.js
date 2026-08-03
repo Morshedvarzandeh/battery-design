@@ -26,6 +26,7 @@ import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
 import { simulateMission, compareCells } from './sim1d.js';
 import { buildChargingPlan } from './charging.js';
+import { v2xPlan } from './v2x.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
 import { stepsFor, needed, appNeeds } from './knowledge.js';
@@ -1222,6 +1223,7 @@ function currentReportData() {
     sim: lastSim && !lastSim.unavailable ? lastSim : null,
     simCompare: lastSimCompare,
     charging: lastCharging,
+    v2x: lastV2x,
     simPng: (() => {
       if (!lastSim || lastSim.unavailable) return null;
       const off = document.createElement('canvas');
@@ -1757,14 +1759,20 @@ let simChargeMode = 'none', simChargeMin = 15;
 // the detail at all.
 // ---------------------------------------------------------------------------
 let lastCharging = null;
+let lastV2x = null;
 let obcSel = 'auto';
 
 function computeCharging() {
-  if (!lastSummary) { lastCharging = null; return; }
+  if (!lastSummary) { lastCharging = null; lastV2x = null; return; }
   lastCharging = buildChargingPlan({
     appId: state.presetId, marketId: state.marketId,
     energyWh: lastSummary.energyWh, vNomV: lastSummary.nominalV,
     cell: cell(), obcOverride: obcSel,
+  });
+  lastV2x = v2xPlan({
+    appId: state.presetId, cell: cell(),
+    cellCount: lastSummary.cellCount, energyWh: lastSummary.energyWh,
+    dod: currentDod(),
   });
 }
 
@@ -1795,9 +1803,24 @@ function renderCharging() {
     rows.push(row('Charging strategy', esc(strat.name),
       C.strategies.length > 1 ? `alternatives: ${C.strategies.slice(1).map((x) => x.name).join(' · ')}` : null));
   }
+  // Feeding power back (V2X) — vehicles with a bidirectional port get the
+  // per-mode verdicts and the wear floor; storage gets the one honest line
+  // ("the PCS already does this"); everyone else hears nothing. All of it
+  // stays inside the fold — the plain summary above never changes.
+  let v2x = '';
+  const V = lastV2x;
+  if (V?.applicable) {
+    v2x = `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+      <b style="font-size:12px">Feeding power back (V2X)</b>` +
+      V.modes.map((m) =>
+        `<div style="margin-top:5px">${verdictChip(m.assessment.verdict)} <b style="font-size:11.5px">${esc(m.name)}</b><br><span style="font-size:11px;color:var(--muted)">${esc(m.assessment.why)}</span></div>`).join('') +
+      `<div class="hint" style="margin-top:6px">${esc(V.wearNote)}</div></div>`;
+  } else if (V && C.arch.kind === 'pcs') {
+    v2x = `<div class="hint" style="margin-top:8px">${esc(V.why)}</div>`;
+  }
   $('acBody').innerHTML = rows.join('') +
     (strat ? `<div class="hint" style="margin-top:6px">✓ ${strat.pros.map(esc).join(' · ')}<br>✗ ${strat.cons.map(esc).join(' · ')}</div>` : '') +
-    `<div class="hint" style="margin-top:6px">${C.notes.map(esc).join(' ')}</div>`;
+    `<div class="hint" style="margin-top:6px">${C.notes.map(esc).join(' ')}</div>` + v2x;
 }
 
 function computeSim() {
