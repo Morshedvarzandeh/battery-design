@@ -97,7 +97,15 @@ test('the MCP server speaks the protocol and returns real answers', () => {
   ok(/not from a language model/.test(init.instructions),
     'the assistant is told where the numbers come from');
   const tools = handleMessage({ id: 2, method: 'tools/list' }).tools;
-  ok(tools.length === 7, `seven tools exposed (${tools.length})`);
+  // Named rather than counted: a count breaks every time a tool is added,
+  // which teaches people to bump the number instead of checking the list.
+  // What matters is that every tool an agent relies on is still there.
+  const names = tools.map((t) => t.name);
+  for (const n of ['list_applications', 'list_cells', 'design_pack', 'run_mission',
+    'compare_cells', 'explain_v2x', 'explain_concept', 'review_design']) {
+    ok(names.includes(n), `${n} is exposed`);
+  }
+  ok(new Set(names).size === names.length, 'no tool is declared twice');
   for (const t of tools) {
     ok(t.name && t.description.length > 60 && t.inputSchema.type === 'object',
       `${t.name}: named, described and schema'd`);

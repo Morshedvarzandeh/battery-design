@@ -37,6 +37,7 @@ import { buildFmu } from '../js/fmi.js';
 import { buildTopology, jointCompatibility, billOfMaterials, materialBreakdown } from '../js/topology.js';
 import { wiringStudy, INSTALLATIONS } from '../js/wiring.js';
 import { groundingStudy, faultFromShortCircuit } from '../js/grounding.js';
+import { designBrief } from '../js/brief.js';
 import { materialById } from '../js/materials.js';
 import { ADDONS, addonsFor, capabilityReport } from '../js/addons.js';
 import { mkdirSync } from 'node:fs';
@@ -562,6 +563,50 @@ const COMMANDS = {
     emit(args, { apiVersion: API_VERSION, isolation: iso || null, grounding: study }, lines.join('\n'));
   },
 
+  // Everything the tool knows about one design, in one prioritised list —
+  // including the wiring and grounding studies the browser tier does not run.
+  brief(args) {
+    const d = designFromSpec(specFrom(args));
+    const cell = cellById(d.cell.id);
+    const topo = buildTopology({ summary: d.pack, partition: d.architecture.partition, cellForm: cell.form });
+    const wiring = wiringStudy({
+      topology: topo, packV: d.pack.nominalV, ambientC: num(args.ambient, 25),
+      installation: args.install || 'free-air',
+      maxTempC: num(args.maxtemp) ?? cell.tempDischargeC?.[1] ?? 90,
+    });
+    const fault = faultFromShortCircuit(d.shortCircuit) || {};
+    const grounding = groundingStudy({
+      topology: topo, application: d.spec?.application || args.app, packVMax: d.pack.vMax,
+      isolation: d.architecture?.isolation,
+      faultA: fault.faultA, clearingS: fault.clearingS, faultBasis: fault.basis,
+      finish: args.finish || 'bare', method: args.bond || 'bolt-serrated',
+    });
+    const b = designBrief(d, { wiring, grounding });
+    const mark = { fail: '✗', warn: '!', info: 'i', pass: '✓' };
+    const show = num(args.top, 12);
+    const lines = [
+      `${b.pack.application || 'Custom'} — ${b.pack.s}S${b.pack.p}P ${b.pack.cell}, ${(b.pack.energyWh / 1000).toFixed(1)} kWh`,
+      '',
+      wrap(b.headline),
+      `${b.counts.fail} must fix · ${b.counts.warn} worth knowing · ${b.counts.info} noted · ${b.counts.total} checks reported`,
+      '',
+      `WHAT MATTERS, IN ORDER${b.counts.total > show ? ` (top ${show} of ${b.counts.total})` : ''}`,
+      ...b.findings.slice(0, show).flatMap((f) => [
+        `  ${mark[f.severity] || '·'} ${f.title}   [${f.sources.join(' + ')}${f.ref ? ` · ${f.ref}` : ''}]`,
+        wrap(f.detail, 6),
+      ]),
+      '',
+      'WHAT WOULD CHANGE THE ANSWER — questions for you',
+      ...(b.questions.length
+        ? b.questions.flatMap((q) => [`  ? ${q.asks}`, wrap(q.why, 6), wrap(`→ ${q.how}`, 6)])
+        : ['  Nothing material is being guessed.']),
+      '',
+      'NOT CHECKED',
+      ...b.notChecked.map((n) => bullet(n)),
+    ];
+    emit(args, { apiVersion: API_VERSION, brief: b }, lines.join('\n'));
+  },
+
   apps(args) {
     const list = listApplications();
     emit(args, list, list.map((a) =>
@@ -789,6 +834,8 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   bom       every conductor sized, every       --app ev [--install bundled] [--env harsh]
             joint checked, and the bill of     [--modrun 300 --packrun 400 --pitch 25]
             materials you hand over
+  brief     every check in one ordered list,   --app ev --energy 60000 [--top 20]
+            plus what the tool is guessing
   ground    isolation, bonding paths and       --app ev [--finish anodised] [--bond bolt-plain]
             whether the bond survives the      [--strap aluminium --strapmm2 25]
             fault it exists for

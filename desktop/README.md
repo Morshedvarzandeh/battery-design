@@ -33,6 +33,7 @@ node desktop/bd.mjs help
 | `fmu` | Export the pack as an FMI 2.0 co-simulation FMU for Twin Builder, Simulink or GT-SUITE |
 | `bom` | Every conductor sized, every joint checked for corrosion, and the bill of materials |
 | `ground` | Isolation, bonding paths, touch voltage, and whether the bond survives the fault |
+| `brief` | Every check in one ordered list, plus the questions the tool needs you to answer |
 | `addons` | What this tool can do, and what it cannot — including what is planned |
 | `apps` / `cells` | The application presets and the cell library |
 | `serve` | The web UI, served from your own machine, offline |
@@ -178,6 +179,55 @@ shows the numbers captioned rather than graded.
 
 Below 60 V there is no shock hazard to bond against at all, and it says that
 too rather than demanding a strap for a 48 V pack.
+
+---
+
+## The review: one voice, and the questions it owes you
+
+Fifteen modules answer fifteen questions, each in the shape that suited it.
+That is fine while you read them one tab at a time, and useless the moment
+anything wants to read *all* of them. `brief` does the translation once.
+
+```bash
+node desktop/bd.mjs brief --app ev --energy 60000
+```
+
+Three things come out of it that no single tab gives you:
+
+**One order, and it is not alphabetical.** Safety before cost, failures before
+warnings, the loudest thing first — rather than whatever you happened to open.
+
+**Duplicates merged, both finders named.** The audit and the fault study both
+reach the internal-short conclusion, because both are entitled to. Saying it
+twice is noise; dropping one hides that two independent checks agreed. So it
+appears once, marked `audit + fault`.
+
+**The questions the tool owes you.** Every estimate that would change the
+answer if you replaced it with a real number, ranked by how much it would
+move:
+
+```
+? How long are the conductor runs?
+    Every wiring number scales with length. The lengths here were estimated
+    from the pack envelope, which is deliberately conservative: a pack can
+    show a dozen undersized conductors on estimates and none once the real
+    routing is given.
+    → Measure group pitch, the module busbar run and the main cable run.
+```
+
+That last section is the point. A tool that presents a confident answer built
+on guesses is worse than one that says which guesses it made — and answering a
+question genuinely retires it, which is checked by test rather than promised.
+
+It also lists **what was not checked**, because a briefing that says what it
+covered without saying what it skipped is the more dangerous of the two
+omissions.
+
+The same review is an MCP tool — `review_design` — so an assistant reads the
+identical list and is told, in the tool description, to ask you the open
+questions rather than quietly designing around them. That is what keeping a
+human in the loop actually requires: not a chat window, but the tool being
+honest about the difference between what it found and what it assumed.
 
 ---
 

@@ -16,9 +16,13 @@
 //                         "args": ["/path/to/battery-design/desktop/mcp-server.mjs"] } }
 
 import { designFromSpec, briefFromDesign, listApplications, listCells, API_VERSION } from '../js/api.js';
-import { CELLS } from '../js/cells.js';
+import { CELLS, cellById } from '../js/cells.js';
 import { V2X_MODES, v2xParts } from '../js/v2x.js';
 import { CONCEPTS, appNeeds } from '../js/knowledge.js';
+import { buildTopology } from '../js/topology.js';
+import { wiringStudy } from '../js/wiring.js';
+import { groundingStudy, faultFromShortCircuit } from '../js/grounding.js';
+import { designBrief } from '../js/brief.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 
@@ -95,6 +99,11 @@ const TOOLS = [
   {
     name: 'explain_v2x',
     description: 'Explain what feeding power back would mean for a design: which modes the application can do (V2L, V2H, V2G, V2V), the verdict on each, the parts the choice adds to the bill of materials, how much energy can be exported while keeping a usable reserve, and the wear floor in $/kWh that decides whether V2G ever pays.',
+    inputSchema: { type: 'object', properties: SPEC_PROPERTIES, required: ['application'] },
+  },
+  {
+    name: 'review_design',
+    description: 'Review a design the way an engineer would. Every check the tool runs — the audit, the fault study, conductor sizing, grounding, thermal, charging, sensors and feed-back policy — read into ONE list, ordered so that what could hurt someone comes before what costs money, with the same problem found by two modules merged rather than repeated. It also returns the questions the tool needs answered, ranked by how much each would change the answer, and an explicit list of what was NOT checked. Use this for "what is wrong with my design" or "what should I do next" — and ASK the customer the open questions rather than quietly designing around a guess.',
     inputSchema: { type: 'object', properties: SPEC_PROPERTIES, required: ['application'] },
   },
   {
@@ -204,6 +213,43 @@ const HANDLERS = {
         : `· ${r.id}: ${r.kWh.toFixed(1)} kWh, ${r.massKg.toFixed(1)} kg, ${r.usd != null ? `$${Math.round(r.usd)} upfront` : 'price unknown'}, ${r.perKWh != null ? `$${r.perKWh.toFixed(3)}/kWh delivered` : 'lifetime cost unknown'}${r.whPerKm != null ? `, ${r.whPerKm.toFixed(0)} Wh/km` : ''}${r.rangeKm != null ? `, ${Math.round(r.rangeKm)} km range` : ''}${r.fails ? `, ${r.fails} FAIL finding(s)` : ''}`),
       '',
       'Packs are built from whole cells, so energies differ slightly — compare cost per kWh delivered rather than totals.',
+    ].join('\n'));
+  },
+
+  // The whole tool's opinion of one design, in the order it should be heard.
+  // The open questions are returned last and deliberately: an assistant that
+  // reads to the end is told to ask them rather than design around a guess.
+  review_design(args) {
+    const d = designFromSpec(specOf(args));
+    const cell = cellById(d.cell.id);
+    const topo = buildTopology({ summary: d.pack, partition: d.architecture.partition, cellForm: cell.form });
+    const wiring = wiringStudy({
+      topology: topo, packV: d.pack.nominalV,
+      maxTempC: cell.tempDischargeC?.[1] ?? 90,
+    });
+    const fault = faultFromShortCircuit(d.shortCircuit) || {};
+    const grounding = groundingStudy({
+      topology: topo, application: specOf(args).application, packVMax: d.pack.vMax,
+      isolation: d.architecture?.isolation,
+      faultA: fault.faultA, clearingS: fault.clearingS, faultBasis: fault.basis,
+    });
+    const b = designBrief(d, { wiring, grounding });
+    const mark = { fail: 'MUST FIX', warn: 'WORTH KNOWING', info: 'NOTED', pass: 'OK' };
+    return text([
+      `${b.pack.application} — ${b.pack.s}S${b.pack.p}P ${b.pack.cell}, ${(b.pack.energyWh / 1000).toFixed(1)} kWh, verdict: ${b.verdict}`,
+      b.headline,
+      '',
+      'WHAT MATTERS, IN ORDER',
+      ...b.findings.filter((f) => f.severity !== 'pass').slice(0, 20).map((f) =>
+        `[${mark[f.severity]}] ${f.title} (${f.sources.join(' + ')}${f.ref ? `, ${f.ref}` : ''})\n    ${f.detail}`),
+      '',
+      'QUESTIONS FOR THE CUSTOMER — ask these, do not guess past them',
+      ...(b.questions.length
+        ? b.questions.map((q) => `? ${q.asks}\n    Why it matters: ${q.why}\n    How to answer: ${q.how}`)
+        : ['Nothing material is being estimated.']),
+      '',
+      'NOT CHECKED',
+      ...b.notChecked.map((n) => `· ${n}`),
     ].join('\n'));
   },
 
