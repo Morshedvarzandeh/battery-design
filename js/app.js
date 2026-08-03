@@ -27,6 +27,7 @@ import { buildSensorPlan } from './sensors.js';
 import { simulateMission, compareCells } from './sim1d.js';
 import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
+import { shortCircuitStudy } from './shortcircuit.js';
 import {
   vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare,
   modeComparison, DRIVING_MODES,
@@ -137,6 +138,8 @@ function init() {
   initPresets();
   initProfiles();
   bindVehicle();
+  bindShort();
+  bindShort();
   restoreHash();
   initComponents();
   bindControls();
@@ -1282,7 +1285,7 @@ function currentReportData() {
     gridLabel: gf.label,
     usage,
     selection: selComponents(),
-    findings: [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastSimFindings, ...lastFindings],
+    findings: [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastSimFindings, ...(lastShort?.findings || []), ...lastFindings],
     sensitivity: sensitivityAnalysis({
       cell: c, n: lastSummary.cellCount, energyWh: lastSummary.energyWh, usage,
     }, 20),
@@ -1328,6 +1331,7 @@ function currentReportData() {
     charging: lastCharging,
     v2x: lastV2x,
     vehicle: lastVehicle,
+    shortCircuit: lastShort,
     simPng: (() => {
       if (!lastSim || lastSim.unavailable) return null;
       const off = document.createElement('canvas');
@@ -1784,6 +1788,7 @@ function recompute() {
   renderSim();
   renderCharging();
   renderVehicle();
+  renderShort();
   renderCompClasses();
   if (document.querySelector('#pane-eu.active')) renderEu();
   saveHash();
@@ -1863,6 +1868,59 @@ let simChargeMode = 'none', simChargeMin = 15;
 // behind the collapsed expert fold. The knowledge graph decides who gets
 // the detail at all.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// The fault study — what the pack does in the first milliseconds of a short.
+// Model in js/shortcircuit.js. One sentence visible; the race between fuse,
+// busbar and thermal runaway is behind the fold.
+// ---------------------------------------------------------------------------
+let lastShort = null;
+
+function computeShort() {
+  if (!lastSummary) { lastShort = null; return; }
+  const nv = (id) => { const v = parseFloat($(id)?.value); return isFinite(v) ? v : null; };
+  lastShort = shortCircuitStudy({
+    cell: cell(), s: state.s, p: state.p, summary: lastSummary,
+    busbarAreaMm2: nv('scArea') ?? 50,
+    fuseRatingA: nv('scFuse'),
+    linkFuseA: nv('scLink'),
+    contactorBreakingA: lastArch?.contactors?.breakingA ?? null,
+  });
+}
+
+function renderShort() {
+  const box = $('scSummary');
+  if (!box) return;
+  const S = lastShort;
+  if (!S) { box.innerHTML = '<div class="empty">—</div>'; if ($('scBody')) $('scBody').innerHTML = ''; return; }
+  const terminal = S.faults.find((f) => f.kind.id === 'terminal');
+  // The plain sentence: how big, how fast, and is that fast enough.
+  box.innerHTML = `${verdictChip(S.verdict)} <b>${esc(S.headline)}</b>`
+    + `<div class="hint">${esc(terminal.why)}</div>`;
+  const body = $('scBody');
+  if (!body) return;
+  const ms = (v) => v == null ? '—' : `${(v * 1000).toFixed(2)} ms`;
+  const row = (k, v, note) =>
+    `<div class="stat"><span>${esc(k)}</span><b style="font-weight:normal;text-align:right">${v}${note ? `<br><span style="color:var(--muted);font-size:11px">${esc(note)}</span>` : ''}</b></div>`;
+  const rows = S.faults.map((f) => {
+    const r = f.result;
+    return `<div style="margin-top:8px">${verdictChip(f.verdict)} <b style="font-size:11.5px">${esc(f.kind.name)}</b>`
+      + `<div style="font-size:11px;color:var(--muted);margin-top:2px">${esc(f.why)}</div>`
+      + row('Peak current', `${f1(r.peakA / 1000)} kA`, `rises with the ${(r.timeConstantS * 1e6).toFixed(0)} µs loop time constant`)
+      + row('The race', `fuse ${ms(r.fuseClearedAtS)} · busbar ${r.busbarFailedAtS == null ? 'survives' : ms(r.busbarFailedAtS)} · runaway ${r.runawayAtS == null ? 'not reached' : ms(r.runawayAtS)}`, 'the fuse has to be first')
+      + (f.contactor ? `<div class="hint" style="margin-top:4px">${esc(f.contactor.note)}</div>` : '')
+      + `</div>`;
+  }).join('');
+  const I = S.internal;
+  const internal = `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
+      ${verdictChip(I.verdict)} <b style="font-size:11.5px">Internal short inside one parallel group</b>
+      <div style="font-size:11px;color:var(--muted);margin-top:2px">${esc(I.why)}</div>
+      ${row('Neighbours feeding it', `${I.neighbours} cells, ${f0(I.totalIntoFaultA)} A total`, `${f0(I.faultPowerW / 1000)} kW into one can`)}
+      ${row('Time to runaway onset', `${ms(I.secondsToOnset)} to ${I.onsetC} °C`, I.linkOpensAtS != null ? `fusible link opens in ${ms(I.linkOpensAtS)}` : 'nothing interrupts it')}
+    </div>`;
+  body.innerHTML = rows + internal
+    + `<div class="hint" style="margin-top:8px">${S.assumptions.map(esc).join(' ')}</div>`;
+}
+
 // ---------------------------------------------------------------------------
 // The vehicle — mass, driving mode, and the demand that follows from physics
 // instead of a typed number. Model in js/vehicle.js.
@@ -1992,6 +2050,16 @@ function useVehicleProfile() {
   applyProfileToRequirements();
   renderProfile();
   renderVehicle();
+}
+
+// The fault inputs are design decisions - busbar section, fuse rating, and
+// whether per-cell links are fitted - so changing one re-runs the study and,
+// since its findings are audit findings, the whole analysis with it.
+function bindShort() {
+  for (const id of ['scArea', 'scFuse', 'scLink']) {
+    const el = $(id);
+    if (el) el.onchange = () => recompute();
+  }
 }
 
 function bindVehicle() {
@@ -2629,12 +2697,13 @@ function runAnalysis() {
   lastThermFindings = thermFindings();
   computeCharging();
   computeVehicle();
+  computeShort();
   computeSim();
 
   const perspectives = lastAnalysis?.perspectives || {};
   const engFindings = ['mechanical', 'thermal', 'electrical', 'safety']
     .flatMap((k) => perspectives[k] || []);
-  const all = [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastSimFindings, ...lastFindings];
+  const all = [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastSimFindings, ...(lastShort?.findings || []), ...lastFindings];
   const nFail = all.filter((x) => x.severity === 'fail').length;
   const nWarn = all.filter((x) => x.severity === 'warn').length;
   const badge = $('stdBadge');
@@ -2655,7 +2724,9 @@ function runAnalysis() {
   renderPane('anMech', perspectives.mechanical);
   renderPane('anTherm', [...(perspectives.thermal || []), ...lastThermFindings]);
   renderPane('anElec', [...(perspectives.electrical || []), ...lastArchFindings]);
-  renderPane('anSafe', perspectives.safety);
+  // Fault-study findings are safety findings: they belong in the safety
+  // audit, not only in the panel that produced them.
+  renderPane('anSafe', [...(perspectives.safety || []), ...(lastShort?.findings || [])]);
   $('findings').innerHTML = lastFindings.map(findingHtml).join('');
   // Integration: the reference list follows the application — a vacuum
   // robot never advertises ECE R100; transport/insulation basics always

@@ -134,6 +134,13 @@ than one that prints them.
   **MSEC2010-34168**. — Basis for the welding/joining recommendation per cell
   format (resistance spot for cylindrical, laser for prismatic terminals,
   ultrasonic for pouch tabs) and the cautions attached to each. → `architecture.js`
+- **IEC 60949 / IEC 60364-4-43 — adiabatic conductor rule.** *Calculation of
+  thermally permissible short-circuit currents.* — The rule the busbar study
+  uses: a conductor survives a fault if I²t ≤ (k·A)², with k in A·√s/mm²
+  depending on the conductor material and what it is insulated with (≈115 for
+  PVC-insulated copper, ≈143 for XLPE, ≈226 for bare copper). The tool exposes
+  k as an input rather than fixing it, because it is a design choice.
+  → `shortcircuit.js`
 - **Plett, G. L. (2015).** *Battery Management Systems, Volume I: Battery
   Modeling.* Artech House. — The **equivalent-circuit** model family used by
   the level-2 simulation: OCV plus a series resistance plus N parallel RC
@@ -258,6 +265,9 @@ are exposed as inputs wherever possible, and stated as estimates in the output.
 | Driving-mode factors | Eco 0.94× speed, 0.80× acceleration, 1.25× regen; Sport 1.06× / 1.40× / 0.85× | A class model of driver behaviour. No standard defines "Sport"; the factors are stated and exposed so the customer can dispute them |
 | Rotating-mass factor ε | 0.02–0.07 by machine | Wheels, gears and rotor inertia add to the effective mass under acceleration; the value is a class estimate |
 | Synthesized WLTP Class 3 trace | matches the published phase durations, distances and peak speeds within ~5% | The phase aggregates are public; the second-by-second homologation trace is not reproduced, and the tool says so wherever the trace is used |
+| Thermal-runaway onset temperature | 130–220 °C by chemistry | No datasheet publishes it and it depends on state of charge and cell design. The tool uses class values and says so; replace them with ARC (accelerating rate calorimetry) data for the actual cell before relying on a margin |
+| Fusible-link opening time | square-law overload, floored at ~100 µs | Wire-bond fusing time is geometry- and alloy-specific. The model shows whether a link opens in the right ORDER of magnitude relative to runaway onset, not a certified clearing time |
+| Fuse melting I²t when none is supplied | (10 × rated A)² × 10 ms | A class rule of thumb for a fast pack fuse. Every run says when this guess was used and asks for the datasheet value instead |
 | Level-2 model coefficients (RC resistances and time constants, Arrhenius activation energies, entropic coefficient, module conduction, current imbalance) | class-typical defaults, all exposed in `PARAM_SPEC` with units and bounds | No datasheet publishes these. They are defaults to start from, not values to quote — which is why `calibrate()` exists: fit them to your own pulse and cycling data, and the tool reports how far each moved and whether it hit a bound |
 | Calendar and cycle aging coefficients | √t and √EFC power laws with Arrhenius weighting (Wang et al. form) | The SHAPE is sourced; the coefficients are class-typical. Aging is cell-, format- and duty-specific, so these must be fitted against your own cycling data before they mean anything for warranty |
 | V2G wear floor | (cell price × count) ÷ (nameplate cycle life × usable energy) | Uses the **nameplate** cycle life — shallow V2G micro-cycling usually ages more gently per kWh, so the floor is a conservative first-order ceiling on wear cost, stated as such wherever it appears |
