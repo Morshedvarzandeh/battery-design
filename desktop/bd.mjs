@@ -35,6 +35,7 @@ import { cellById } from '../js/cells.js';
 import { profileById } from '../js/loadprofiles.js';
 import { buildFmu } from '../js/fmi.js';
 import { buildTopology, jointCompatibility, billOfMaterials, materialBreakdown } from '../js/topology.js';
+import { wiringStudy, INSTALLATIONS } from '../js/wiring.js';
 import { ADDONS, addonsFor, capabilityReport } from '../js/addons.js';
 import { mkdirSync } from 'node:fs';
 
@@ -447,15 +448,33 @@ const COMMANDS = {
     const joints = jointCompatibility(topo, env);
     const failing = joints.filter((j) => !j.risk.ok);
     const bom = billOfMaterials({ topology: topo, summary: d.pack, cell, selection: {} });
+    // The temperature limit is what the SURROUNDINGS tolerate, not what the
+    // copper survives. Beside cells that is the cell's own upper discharge
+    // temperature, which the library already knows — so the default is the
+    // right number without anyone being asked for it.
+    const maxTempC = num(args.maxtemp) ?? cell.tempDischargeC?.[1] ?? 90;
+    const install = args.install || 'free-air';
+    const study = wiringStudy({
+      topology: topo, packV: d.pack.nominalV, ambientC: num(args.ambient, 25),
+      installation: install, maxTempC, dropLimitPct: num(args.droplimit, 2),
+    });
     const t = topo.totals;
+    const w = study.totals;
     const lines = [
       `${d.application?.name || 'Custom'} — ${d.pack.s}S${d.pack.p}P ${cell.name}`,
       '',
       'WIRING',
       `  Interconnect      ${t.interconnectMOhm.toFixed(2)} mΩ total through ${topo.edges.length} runs`,
-      `  At ${Math.round(d.pack.maxContCurrentA)} A continuous   ${t.dropAtContV.toFixed(2)} V dropped, ${t.lossAtContW.toFixed(0)} W lost in the conductors`,
+      `  At ${Math.round(d.pack.maxContCurrentA)} A continuous   ${w.seriesDropV.toFixed(2)} V dropped, ${w.totalHeatW.toFixed(0)} W lost in the conductors`,
       `  Conductor mass    ${t.conductorMassKg.toFixed(2)} kg`,
       ...(topo.estimated ? [`  NOTE  ${topo.notes[0]}`] : []),
+      '',
+      `CONDUCTOR SIZING (${(INSTALLATIONS[install]?.name || install).toLowerCase()}, ${maxTempC} °C limit, ${num(args.ambient, 25)} °C ambient)`,
+      `  ${study.headline}`,
+      `  ${w.runsChecked} runs checked · ${w.failing} undersized · ${w.costly} hot or dropping voltage`,
+      ...(study.findings.length
+        ? study.findings.map((f) => `  ${f.severity === 'fail' ? '✗' : f.severity === 'warn' ? '!' : 'i'} ${f.title}\n${wrap(f.detail, 6)}`)
+        : ['  ✓ Every conductor stays inside the limit on both the rule of thumb and the heat balance.']),
       '',
       `JOINTS (${env} environment)`,
       `  ${joints.length} joints, ${failing.length} needing attention`,
@@ -472,7 +491,12 @@ const COMMANDS = {
       '',
       `  ${bom.note}`,
     ];
-    emit(args, { apiVersion: API_VERSION, topology: { totals: topo.totals, estimated: topo.estimated }, joints, bom }, lines.join('\n'));
+    emit(args, {
+      apiVersion: API_VERSION,
+      topology: { totals: topo.totals, estimated: topo.estimated },
+      wiring: { verdict: study.verdict, totals: study.totals, findings: study.findings, assumptions: study.assumptions, runs: study.runs },
+      joints, bom,
+    }, lines.join('\n'));
   },
 
   apps(args) {
@@ -632,6 +656,20 @@ const COMMANDS = {
 
 const pad = (v, n) => String(v ?? '—').padEnd(n);
 
+// Findings are written as prose because that is what makes them readable.
+// Prose in a terminal needs wrapping, or it becomes one line that scrolls.
+function wrap(text, indent = 0, width = 92) {
+  const pre = ' '.repeat(indent);
+  const out = [];
+  let line = '';
+  for (const word of String(text).split(/\s+/)) {
+    if (line && (line.length + 1 + word.length) > width - indent) { out.push(pre + line); line = word; }
+    else line = line ? `${line} ${word}` : word;
+  }
+  if (line) out.push(pre + line);
+  return out.join('\n');
+}
+
 // A parameter file is plain JSON: dump it, edit it in any editor, hand it back.
 function loadParams(file) {
   try {
@@ -676,7 +714,10 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   range     drive-cycle study, mass × mode     --app ev --energy 60000 [--from --to --step]
   fmu       export as an FMI 2.0 co-sim FMU    --app ev [--out ./fmu] [--params p.json]
   addons    what this tool can do, and cannot   [--app ev]
-  bom       wiring, joints and the bill of      --app ev [--env harsh] [--busbar aluminium]\n            materials you hand over\n  apps      the application presets
+  bom       every conductor sized, every       --app ev [--install bundled] [--env harsh]
+            joint checked, and the bill of     [--modrun 300 --packrun 400 --pitch 25]
+            materials you hand over
+  apps      the application presets
   cells     the cell library                   [--chemistry LFP] [--form cylindrical]
   serve     the web UI from your own machine   [--port 8080]
 
@@ -690,6 +731,16 @@ Common flags
   --json            machine-readable output                 --out FILE    write JSON to a file
   --jobs N          worker threads (default: every core)     --top N       how many results to show
   --chemistry LFP   restrict a sweep or search              --all         include designs that FAIL the audit
+
+Wiring flags (bom)
+  --install free-air|bundled|potted|plate-bonded   how the runs are installed; it changes
+                                                   how hot they get more than anything else
+  --modrun MM --packrun MM --pitch MM              REAL run lengths. Without them the tool
+                                                   estimates from the pack envelope and says so
+  --maxtemp C       temperature limit (default: the cell's own upper discharge rating)
+  --ambient C       ambient the runs sit in (default 25)   --droplimit PCT  voltage budget (default 2)
+  --busbar ID --cable ID --plating ID              conductor and plating materials
+  --env harsh|normal|dry                           environment for the galvanic check
 
 Big runs use every core. Small ones stay on one thread on purpose: starting a
 worker costs more than the few designs it would have saved. Serial and

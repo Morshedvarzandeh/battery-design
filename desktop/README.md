@@ -30,6 +30,9 @@ node desktop/bd.mjs help
 | `sim2` | The full model: RC dynamics, entropic heat, per-module temperatures, coolant, aging |
 | `calibrate` | Correct the model against **your** measured data |
 | `params` | Every coefficient, with units, bounds and where its default came from |
+| `fmu` | Export the pack as an FMI 2.0 co-simulation FMU for Twin Builder, Simulink or GT-SUITE |
+| `bom` | Every conductor sized, every joint checked for corrosion, and the bill of materials |
+| `addons` | What this tool can do, and what it cannot — including what is planned |
 | `apps` / `cells` | The application presets and the cell library |
 | `serve` | The web UI, served from your own machine, offline |
 
@@ -48,12 +51,67 @@ node desktop/bd.mjs range --app ev --energy 60000 --from 1400 --to 1800 --step 1
 # Six passes of a bus route with a 90-minute charge at the depot
 node desktop/bd.mjs mission --app ebus --passes 6 --charge base --minutes 90
 
+# Every conductor sized and every joint checked, with the BOM you hand over
+node desktop/bd.mjs bom --app ev --energy 60000
+
+# The same pack with the routing you actually measured, loomed rather than open
+node desktop/bd.mjs bom --app ev --energy 60000 --install bundled \
+  --pitch 25 --modrun 300 --packrun 400
+
 # The full result as JSON, to keep, diff or feed to something else
 node desktop/bd.mjs design --app ebike --json --out ebike.json
 ```
 
 Add `--json` to any command for machine-readable output, `--out FILE` to write
 it to disk.
+
+---
+
+## Wiring: two answers, and which one wins
+
+`bom` sizes every conductor twice, because the two methods fail differently.
+
+**The rule of thumb** — about 5 A/mm² for copper — is what most people size
+by. It is fast and it is wrong at both ends, because it knows nothing about how
+long the run is or how it is installed.
+
+**The heat balance** is the real question. A conductor warms until what it
+sheds equals the I²R it makes; solve that and you get the number that matters,
+which is how hot the metal actually gets. Two paths shed the heat: convection
+off its surface, and conduction out through both ends into whatever it bolts
+to. That second path is the one most models leave out, and for a 20 mm
+interconnect it is hundreds of times the first — leave it out and the tool
+tells you an ordinary busbar reaches 3400 °C.
+
+On a real 60 kWh pack the two methods disagree in **both** directions:
+
+| Run | Density | Rule of thumb | Heat balance |
+|---|---|---|---|
+| 20 mm nickel interconnect | 6 A/mm² | over the limit | 28 °C — fine |
+| 1.25 m copper busbar | 4 A/mm² | inside the limit | 86 °C — not fine |
+
+Where they disagree the temperature wins, and the tool says which rule flagged
+it, because an engineer used to the rule of thumb deserves to know why the tool
+disagrees with them.
+
+Because resistance itself climbs with temperature, that balance has a feedback
+loop in it, and the loop has a gain. Below one, the run settles at a
+temperature. At or above one, it does not settle at all — so instead of
+quoting a meaningless number the tool says there is no steady state, which is
+both the truth and the more useful answer.
+
+### The one input worth measuring
+
+Every number here scales with run length, and without your routing the tool
+estimates lengths from the pack envelope. Those estimates are conservative:
+the same 60 kWh pack shows twelve undersized conductors on estimated lengths
+and **none** once you give it real ones. Estimated runs are flagged
+individually, named in the findings, and repeated in every failure that
+depends on one — so pass `--pitch`, `--modrun` and `--packrun` before you act
+on a verdict.
+
+`--install` matters nearly as much: the same busbar reaches 91 °C in free air,
+145 °C in a loom, and 42 °C bonded to a cold plate.
 
 ---
 
