@@ -102,7 +102,7 @@ export const ADDONS = [
   },
   {
     id: 'fault', name: 'Short circuit & fault study', tier: 'browser', status: 'shipped',
-    module: 'shortcircuit.js', concepts: [],
+    module: 'shortcircuit.js', concepts: ['fault-study'],
     what: 'The first milliseconds of a fault: prospective current, and the race between the fuse clearing, the busbar surviving and the cells reaching runaway onset. Includes the internal short, where the parallel neighbours are the danger.',
     provides: ['fault currents', 'fuse/busbar/runaway timing', 'fusible-link assessment'],
     needs: ['a pack', 'busbar section and fuse rating'],
@@ -117,7 +117,7 @@ export const ADDONS = [
   },
   {
     id: 'search', name: 'Design-space search', tier: 'desktop', status: 'shipped',
-    module: 'desktop/bd.mjs + pool.mjs', concepts: ['multi-objective'],
+    module: 'desktop/bd.mjs + desktop/pool.mjs', concepts: ['multi-objective'],
     what: 'Every cell against every energy target, each one fully worked and then ranked by cost per kWh delivered, range, mass or density — across all your cores.',
     provides: ['ranked candidate designs', 'sweeps over any one variable'],
     needs: ['the desktop runner'],
@@ -125,23 +125,59 @@ export const ADDONS = [
   },
   {
     id: 'blocks', name: 'Block editor for model composition', tier: 'desktop', status: 'planned',
-    module: 'planned', concepts: [],
+    module: 'planned', concepts: ['simulation', 'cosim'],
     what: 'Wiring the tool\'s own models together on a canvas the way Simulink or GT-SUITE does — pack, vehicle, thermal loop, charger and load as blocks with typed ports, so a customer can compose a study instead of choosing from the studies that exist.',
     provides: ['a visual model graph', 'studies the customer composes rather than picks', 'an export the FMU already knows how to carry'],
     needs: ['the modules to declare their inputs and outputs as typed ports', 'app.js split up first — at 3,500 lines it is the obstacle, not the canvas'],
     why: 'Every model here already has a clean functional signature, so the ports exist implicitly. Declaring them is what turns fifteen fixed studies into an open-ended one.',
   },
+  // --- The physical simulation package -------------------------------------
+  // Everything here is PLANNED, and grouped deliberately: these are the
+  // domains a CAE suite sells, and the ones this tool has so far only been
+  // able to point at. It already refuses to invent a wall thickness because
+  // the crash standards prescribe an OUTCOME rather than a millimetre — this
+  // is how it would say something useful about the outcome instead of
+  // stopping at the refusal.
+  //
+  // They are also the first work here that a compiled language genuinely
+  // needs. Everything shipped so far is closed-form or a few thousand time
+  // steps, and measured at 0.63 ms for a complete design; a mesh is a
+  // different kind of arithmetic, and the honest answer changes with it.
   {
-    id: 'structural', name: 'Structural & vibration analysis', tier: 'desktop', status: 'planned',
-    module: 'planned', concepts: [],
-    what: 'Mount loads, natural frequencies and the shock and vibration profiles the release standards actually test against — the one physical domain the tool currently says nothing about.',
-    provides: ['mount and fastener loads', 'first natural frequency against the excitation', 'a shock and vibration verdict'],
+    id: 'crush', name: 'Crush & intrusion', tier: 'desktop', status: 'planned',
+    module: 'planned', concepts: ['crush', 'spaces-why'],
+    what: 'What the structure does when something presses on it: intrusion into the cell block, the load path through the frame, and how much of the crush space is actually doing work. The counterpart to the crash tests the release checklist already names — ECE R100 Annex 4, GB 38031, UL 2580 — which prescribe an outcome and leave the dimension to you.',
+    provides: ['intrusion depth against the cell block', 'load path and where it fails first', 'how much crush space earns its volume'],
+    needs: ['pack and enclosure geometry', 'material yield data', 'a mesh, and the solver to run it'],
+    why: 'The tool already says no standard prescribes a wall thickness. That is true and unhelpful on its own — this is the half that makes it actionable.',
+  },
+  {
+    id: 'vibration', name: 'Vibration & shock', tier: 'desktop', status: 'planned',
+    module: 'planned', concepts: ['vibration'],
+    what: 'Mount loads, the first natural frequency, and the random-vibration and shock profiles the standards actually test against. A pack whose first mode sits inside the excitation band fails by fatigue long before anything electrical does.',
+    provides: ['mount and fastener loads', 'first natural frequency vs the excitation band', 'a shock and vibration verdict'],
     needs: ['pack mass and mounting geometry', 'the vibration profile for the application class'],
-    why: 'The tool already refuses to invent a wall thickness because the standards prescribe outcomes rather than millimetres. This is how it would say something useful about those outcomes instead.',
+    why: 'It is the one physical domain the tool currently says nothing about, and the cheapest of this package to build — a modal estimate needs far less than a crush solve.',
+  },
+  {
+    id: 'thermal-field', name: 'Thermal field across the pack', tier: 'desktop', status: 'planned',
+    module: 'planned', concepts: ['thermal-field'],
+    what: 'Not the loop that removes the heat — that is the BTMS add-on — but where the heat IS. The gradient across the pack that ages one module faster than the rest, and turns a fleet-average life figure into a warranty claim on the hot corner.',
+    provides: ['temperature field and the gradient across modules', 'which module ages first and how much faster', 'where a sensor would actually tell you something'],
+    needs: ['the module partition', 'the cooling geometry', 'heat generation from the level-2 model'],
+    why: 'The level-2 model already computes per-module temperatures on a lumped network. This is the same question asked spatially, and it is what decides sensor placement.',
+  },
+  {
+    id: 'corrosion-sim', name: 'Corrosion over life', tier: 'desktop', status: 'planned',
+    module: 'planned — on materials.js + topology.js', concepts: ['corrosion'],
+    what: 'The galvanic check the wiring study already runs says whether a joint is a couple. This says what that costs over ten years in the environment the machine lives in: material loss at the interface, the joint resistance climbing as it goes, and when it stops being a joint.',
+    provides: ['material loss per joint over life', 'joint resistance drift', 'time to an unacceptable joint'],
+    needs: ['the connection graph', 'an environment and a duty', 'exposure time'],
+    why: 'The pairing check is shipped and it answers a yes/no. Corrosion is a rate, and a rate is what tells you whether to care.',
   },
   {
     id: 'agents', name: 'AI & automation interface', tier: 'desktop', status: 'shipped',
-    module: 'desktop/mcp-server.mjs + api.js + brief.js', concepts: [],
+    module: 'desktop/mcp-server.mjs + api.js + brief.js', concepts: ['report', 'simulation'],
     what: 'The whole designer as one JSON call, plus an MCP server so Claude or any agent can size packs, run missions and compare cells by calling the real modules — and review a design the way an engineer would, with every check read into one list ordered so that what could hurt someone comes before what costs money.',
     provides: ['designFromSpec() JSON', 'MCP tools', 'a prioritised design review', 'the questions the tool needs answered, ranked by leverage'],
     needs: ['the desktop runner for MCP'],
@@ -149,7 +185,7 @@ export const ADDONS = [
   },
   {
     id: 'brief', name: 'Design review & briefing', tier: 'core', status: 'shipped',
-    module: 'brief.js', concepts: [],
+    module: 'brief.js', concepts: ['report'],
     what: 'Fifteen modules answer fifteen questions, each in its own shape. This reads all of them into one prioritised list — safety before cost, failures before warnings, the same problem found twice merged rather than repeated — then says what the tool is still guessing and what it did not check at all.',
     provides: ['one ordered list of everything found', 'open questions ranked by how much they would change the answer', 'an explicit list of what was NOT checked'],
     needs: ['a design; the wiring and grounding studies fold in where the desktop tier has run them'],
@@ -157,7 +193,7 @@ export const ADDONS = [
   },
   {
     id: 'wiring', name: 'Wiring, joints & bill of materials', tier: 'desktop', status: 'shipped',
-    module: 'topology.js + materials.js + wiring.js', concepts: [],
+    module: 'topology.js + materials.js + wiring.js', concepts: ['conductors', 'corrosion'],
     what: 'The pack as a connection graph rather than a number: every conductor run with its material, length and section, every joint with the two surfaces that meet there. Each run is then sized two ways — by the current-density rule of thumb and by the steady-state heat balance that says how hot it actually gets — and where they disagree the temperature answer wins. Out of the same graph come the interconnect resistance, the voltage drop and loss at continuous current, the galvanic check on every joint, and the bill of materials the customer receives.',
     provides: ['conductor runs and joints', 'temperature and required section per run', 'voltage drop and loss', 'galvanic compatibility per joint', 'bill of materials with mass and cost'],
     needs: ['a pack', 'run lengths (estimated from the envelope if not given)', 'how the runs are installed: free air, loomed, potted or on a cold plate'],
@@ -165,7 +201,7 @@ export const ADDONS = [
   },
   {
     id: 'grounding', name: 'Grounding & bonding analysis', tier: 'desktop', status: 'shipped',
-    module: 'grounding.js', concepts: [],
+    module: 'grounding.js', concepts: ['bonding'],
     what: 'Isolation keeps fault current off the case; bonding decides what happens when isolation fails, and is asked about far less often. Every bonding path is checked three ways — continuity against the 0.1 Ω limit, touch voltage against the 60 V DC boundary, and whether the strap survives the fault current until protection clears. It catches the anodised housing that is not a bonding path however many bolts go through it, the stainless bond chosen for corrosion rather than conduction, and the machine that is conventionally ungrounded and to which none of these rules apply as written.',
     provides: ['bonding path resistance vs the 0.1 Ω limit', 'touch voltage at the prospective fault current', 'fault survival by the adiabatic rule', 'the ungrounded-system verdict where it applies'],
     needs: ['the connection graph', 'the bonding scheme (assumed and flagged if not described)', 'a fault current — taken from the short-circuit study'],
@@ -173,7 +209,7 @@ export const ADDONS = [
   },
   {
     id: 'lca', name: 'Life-cycle assessment', tier: 'desktop', status: 'shipped',
-    module: 'lca.js', concepts: [],
+    module: 'lca.js', concepts: ['footprint'],
     what: 'The whole footprint by phase — cells, conductors, enclosure, use-phase losses and recycling recovery — each carrying its own data quality, because they differ by more than an order of magnitude in how well they are known. It answers the question worth asking first: the cells are around 95% of what it costs to build a pack, so chemistry and cell count move the footprint and busbar optimisation does not. It also picks the right comparison for the energy delivered, which for a vehicle is the fuel it replaces and NOT a grid factor.',
     provides: ['footprint by phase with a data-quality label on each', 'kg CO₂e per kWh of capacity and g per kWh delivered', 'the correct displacement basis for this machine', 'what is deliberately not estimated'],
     needs: ['a pack and a cell', 'the connection graph for the conductor share', 'a grid factor where the machine draws from one'],
@@ -181,7 +217,7 @@ export const ADDONS = [
   },
   {
     id: 'cosim', name: 'Co-simulation (FMI)', tier: 'desktop', status: 'shipped',
-    module: 'fmi.js', concepts: [],
+    module: 'fmi.js', concepts: ['cosim'],
     what: 'Export the pack as a standard FMI 2.0 co-simulation FMU so it runs as a component inside ANSYS Twin Builder, Simulink, GT-SUITE or Dymola — your vehicle or plant model drives it, and the pack answers with voltage, current, temperature and state of charge each coupling step.',
     provides: ['an .fmu the rest of your toolchain can load', 'a documented coupling interface'],
     needs: ['a C toolchain to compile the FMU binary'],
@@ -189,7 +225,7 @@ export const ADDONS = [
   },
   {
     id: 'swap', name: 'Swappable-pack policy', tier: 'desktop', status: 'shipped',
-    module: 'swap.js', concepts: [],
+    module: 'swap.js', concepts: ['swappable'],
     what: 'Fixed, swappable or hot-swappable as a design policy that cuts across every application. Choosing it changes four things at once: the mass stops being an outcome and becomes a requirement someone has to lift; the connector stops being a fitting and becomes a wear item with a finite mating count; you buy more packs than machines; and the pack has to survive being off the machine with no host BMS, disconnect or enclosure.',
     provides: ['the parts a fixed pack does not need', 'fleet size and packs per machine', 'connector mating-cycle life against the fleet life', 'the handling method the mass actually allows'],
     needs: ['a pack', 'a swap policy', 'run and charge hours for the fleet maths'],
@@ -197,7 +233,7 @@ export const ADDONS = [
   },
   {
     id: 'runaway', name: 'Runaway propagation', tier: 'desktop', status: 'shipped',
-    module: 'runaway.js', concepts: [],
+    module: 'runaway.js', concepts: ['propagation'],
     what: 'One cell goes — how much does each design decision help? Cell adjacency from the real layout, then conduction, radiation and the interconnect stepped in time with two thermal nodes per cell. It ranks barrier options and spacing against each other, and sizes the energy the enclosure must contain. It does NOT predict whether a pack propagates: the mechanisms that carry a real event are ejecta and flame, which are not modelled, so it under-predicts and can never clear a design.',
     provides: ['barrier and spacing options ranked against each other', 'MJ per cell and per module to contain', 'the effect of state of charge and of a heat-bridging interconnect'],
     needs: ['a pack layout', 'a cell', 'what sits between the cells'],
@@ -210,6 +246,33 @@ export const addonById = (id) => ADDONS.find((a) => a.id === id) || null;
 // Which add-ons matter for this application? Relevance comes from the same
 // knowledge graph that decides everything else — an add-on whose concepts the
 // application does not need is not "hidden", it is genuinely not its business.
+/**
+ * Every shipped capability must be findable in the knowledge graph.
+ *
+ * This exists because it had already gone wrong. The graph was built early
+ * and then eight modules and eleven add-ons were added without an edge, so
+ * `addonsFor()` could not filter them by relevance and they were shown to
+ * every application regardless — including a route simulation offered to a
+ * wearable. A graph that does not know a capability exists cannot say who
+ * needs it, and the whole point of it is that visibility traces to an edge
+ * rather than to a guess.
+ *
+ * Checked by test, so the next capability cannot be added silently.
+ */
+export function validateAddonConcepts(CONCEPTS) {
+  const errors = [];
+  for (const a of ADDONS) {
+    if (!a.concepts?.length) {
+      errors.push(`${a.id} declares no concept, so nothing can decide which applications need it`);
+      continue;
+    }
+    for (const c of a.concepts) {
+      if (!CONCEPTS[c]) errors.push(`${a.id} names concept "${c}", which is not in the graph`);
+    }
+  }
+  return errors;
+}
+
 export function addonsFor(appId, { tier = null, includePlanned = true } = {}) {
   return ADDONS.filter((a) => {
     if (tier && a.tier !== tier) return false;
@@ -217,7 +280,13 @@ export function addonsFor(appId, { tier = null, includePlanned = true } = {}) {
     if (a.tier === 'core') return true;
     if (!a.concepts.length) return true;      // no concept gate: always offered
     if (!appId) return true;                   // nothing chosen yet: show everything
-    return a.concepts.some((c) => needed(appId, c));
+    // The FIRST concept is the defining one and is what gates; the rest are
+    // context. Matching on any of them let a universal concept smuggle a
+    // specialised add-on everywhere: crush declares ['crush', 'spaces-why'],
+    // and because every application needs spaces-why, crush simulation was
+    // being offered to a wearable. An add-on is defined by the one thing it
+    // is for, not by everything it touches.
+    return needed(appId, a.concepts[0]);
   });
 }
 
