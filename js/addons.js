@@ -156,12 +156,12 @@ export const ADDONS = [
     why: 'The graph, the materials and the fault current already exist, so this is a reading of them rather than a new model.',
   },
   {
-    id: 'lca', name: 'Life-cycle assessment', tier: 'desktop', status: 'planned',
-    module: 'planned — on topology.js', concepts: [],
-    what: 'Cradle-to-grave footprint built from the bill of materials: embodied carbon per material, manufacturing, the use phase already modelled, and end-of-life recovery.',
-    provides: ['embodied CO₂ by material', 'full life-cycle footprint'],
-    needs: ['the bill of materials'],
-    why: 'The BOM already carries mass per material and each material already carries its embodied CO₂ — the remaining work is the use and end-of-life phases.',
+    id: 'lca', name: 'Life-cycle assessment', tier: 'desktop', status: 'shipped',
+    module: 'lca.js', concepts: [],
+    what: 'The whole footprint by phase — cells, conductors, enclosure, use-phase losses and recycling recovery — each carrying its own data quality, because they differ by more than an order of magnitude in how well they are known. It answers the question worth asking first: the cells are around 95% of what it costs to build a pack, so chemistry and cell count move the footprint and busbar optimisation does not. It also picks the right comparison for the energy delivered, which for a vehicle is the fuel it replaces and NOT a grid factor.',
+    provides: ['footprint by phase with a data-quality label on each', 'kg CO₂e per kWh of capacity and g per kWh delivered', 'the correct displacement basis for this machine', 'what is deliberately not estimated'],
+    needs: ['a pack and a cell', 'the connection graph for the conductor share', 'a grid factor where the machine draws from one'],
+    why: 'A screening estimate, never a declaration: a footprint declared under ISO 14040/14044 or the EU Battery Regulation is an audited study on supplier-specific data. This says so everywhere, and states pack assembly as unknown rather than inventing a number that would look just as confident as the grounded ones.'
   },
   {
     id: 'cosim', name: 'Co-simulation (FMI)', tier: 'desktop', status: 'shipped',

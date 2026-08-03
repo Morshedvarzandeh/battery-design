@@ -38,6 +38,7 @@ import { buildTopology, jointCompatibility, billOfMaterials, materialBreakdown }
 import { wiringStudy, INSTALLATIONS } from '../js/wiring.js';
 import { groundingStudy, faultFromShortCircuit } from '../js/grounding.js';
 import { designBrief } from '../js/brief.js';
+import { lifeCycle } from '../js/lca.js';
 import { materialById } from '../js/materials.js';
 import { ADDONS, addonsFor, capabilityReport } from '../js/addons.js';
 import { mkdirSync } from 'node:fs';
@@ -607,6 +608,50 @@ const COMMANDS = {
     emit(args, { apiVersion: API_VERSION, brief: b }, lines.join('\n'));
   },
 
+  // The whole footprint, with an honest account of how well each part is known.
+  lca(args) {
+    const d = designFromSpec(specFrom(args));
+    const cell = cellById(d.cell.id);
+    const topo = buildTopology({ summary: d.pack, partition: d.architecture.partition, cellForm: cell.form });
+    const r = lifeCycle({
+      pack: d.pack, cell, topology: topo, application: d.spec?.application || args.app,
+      gridGPerKWh: num(args.grid, 440), chargeGPerKWh: num(args.chargegrid),
+      dod: d.spec?.dod ?? 0.8, roundTripEff: num(args.rte, 0.92),
+    });
+    const t = r.totals;
+    const kg = (v) => (v == null ? 'not estimated' : `${v >= 0 ? '' : '−'}${Math.abs(v).toFixed(0)} kg`);
+    const lines = [
+      `${d.application?.name || 'Custom'} — ${d.pack.s}S${d.pack.p}P ${cell.name}, ${r.capacityKWh.toFixed(1)} kWh`,
+      '',
+      wrap(r.headline),
+      '',
+      'BY PHASE',
+      pad('  phase', 30) + pad('kg CO2e', 15) + pad('share of build', 16) + 'how well known',
+      ...r.phases.map((p) => pad('  ' + p.name, 30) + pad(kg(p.kgCO2e), 15)
+        + pad(p.shareOfMaterials != null ? `${(p.shareOfMaterials * 100).toFixed(1)}%` : '—', 16)
+        + p.quality.label),
+      `  ${'-'.repeat(70)}`,
+      pad('  TO BUILD (cradle to gate)', 30) + pad(kg(t.cradleToGateKg), 15)
+        + `${t.gateLowKg.toFixed(0)}–${t.gateHighKg.toFixed(0)} kg on the spread of the factors`,
+      pad('  WHOLE LIFE', 30) + pad(kg(t.totalKg), 15) + `${t.lowKg.toFixed(0)}–${t.highKg.toFixed(0)} kg`,
+      '',
+      `  ${t.kgPerKWhCapacity.toFixed(0)} kg CO2e per kWh of capacity`
+        + (t.gPerKWhDelivered != null ? ` · ${t.gPerKWhDelivered.toFixed(0)} g CO2e per kWh delivered over life` : ''),
+      ...(t.unknownPhases.length ? [`  NOT ESTIMATED: ${t.unknownPhases.join(', ')}`] : []),
+      '',
+      `HOW TO COMPARE THE ENERGY IT DELIVERS — ${r.basis.name}`,
+      wrap(r.basis.what, 2),
+      wrap(`You need: ${r.basis.needs}`, 2),
+      '',
+      'WHAT THIS TELLS YOU',
+      ...r.findings.map((f) => `  ${f.severity === 'warn' ? '!' : 'i'} ${f.title}\n${wrap(f.detail, 6)}`),
+      '',
+      'ASSUMPTIONS',
+      ...r.assumptions.map((a) => bullet(a)),
+    ];
+    emit(args, { apiVersion: API_VERSION, lca: r }, lines.join('\n'));
+  },
+
   apps(args) {
     const list = listApplications();
     emit(args, list, list.map((a) =>
@@ -836,6 +881,8 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
             materials you hand over
   brief     every check in one ordered list,   --app ev --energy 60000 [--top 20]
             plus what the tool is guessing
+  lca       the whole footprint by phase, and   --app ev --energy 60000 [--grid 250]
+            how well each part is known
   ground    isolation, bonding paths and       --app ev [--finish anodised] [--bond bolt-plain]
             whether the bond survives the      [--strap aluminium --strapmm2 25]
             fault it exists for

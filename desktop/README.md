@@ -34,6 +34,7 @@ node desktop/bd.mjs help
 | `bom` | Every conductor sized, every joint checked for corrosion, and the bill of materials |
 | `ground` | Isolation, bonding paths, touch voltage, and whether the bond survives the fault |
 | `brief` | Every check in one ordered list, plus the questions the tool needs you to answer |
+| `lca` | The whole footprint by phase, each with how well it is actually known |
 | `addons` | What this tool can do, and what it cannot — including what is planned |
 | `apps` / `cells` | The application presets and the cell library |
 | `serve` | The web UI, served from your own machine, offline |
@@ -222,6 +223,66 @@ question genuinely retires it, which is checked by test rather than promised.
 It also lists **what was not checked**, because a briefing that says what it
 covered without saying what it skipped is the more dangerous of the two
 omissions.
+
+---
+
+## Life-cycle assessment, with the error bars left on
+
+A footprint quoted to four figures with no error bar is the most misleading
+number a tool can produce. `lca` reports every phase with how well it is
+actually known, because they differ by more than an order of magnitude.
+
+```bash
+node desktop/bd.mjs lca --app ev --energy 60000
+```
+
+```
+Cells                       5115 kg    95.1%   literature-class
+Conductors                    99 kg     1.8%   material-class
+Enclosure                    163 kg     3.0%   material-class
+Pack assembly          not estimated      —    unknown
+Round-trip losses            737 kg      —     derived
+Recycling recovery         −1975 kg      —     policy-dependent
+```
+
+**The cells are the answer.** About 95% of what it costs to build a pack.
+Chemistry and cell count move the footprint; busbar material does not — worth
+knowing before spending a month optimising conductor mass for carbon reasons.
+
+**Assembly is not estimated.** It depends on your factory, its grid and its
+yield, and nobody publishes it per pack. A plausible invented figure would be
+indistinguishable from the ones that are grounded, so the total names it as
+missing instead.
+
+**Ranges, not midpoints.** The cell factor varies by factory, grid and year
+by more than the difference between chemistries, so it is carried as a
+0.6–1.5× spread.
+
+### The comparison most tools get wrong
+
+"Avoided emissions" assumes the delivered energy displaces grid generation.
+That is right for a machine that would otherwise draw from the grid, and wrong
+for the two most common cases:
+
+| Machine | What it actually displaces |
+|---|---|
+| Electric vehicle | Petrol or diesel — **not** grid generation |
+| Stationary storage | The *difference* between two hours of grid. It consumes energy and is a net emitter unless it shifts clean generation into a dirty hour |
+| Drone, tool, robot | Grid generation. Here the usual comparison is the right one |
+
+The tool picks the basis from what the machine is, says which one it used, and
+flags that the older grid-factor payback figure is the wrong comparison for a
+vehicle rather than silently inheriting it.
+
+### What it is not
+
+A screening estimate, never a declaration. A footprint declared under ISO
+14040/14044 or the EU Battery Regulation is an audited study built on
+supplier-specific data. This is enough to see which decisions matter and
+roughly where you will land — and not enough to put on a document. It says so
+in every run.
+
+---
 
 The same review is an MCP tool — `review_design` — so an assistant reads the
 identical list and is told, in the tool description, to ask you the open
