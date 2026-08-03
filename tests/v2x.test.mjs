@@ -9,7 +9,11 @@ import { ok, near } from './helpers.mjs';
 import { cellById } from '../js/cells.js';
 import { costModel } from '../js/optimizer.js';
 import { co2Model } from '../js/report.js';
-import { V2X_MODES, wearFloorUsdPerKWh, assessV2xMode, v2xPlan } from '../js/v2x.js';
+import {
+  V2X_MODES, wearFloorUsdPerKWh, assessV2xMode, v2xPlan,
+  V2X_PARTS, v2xParts, RESERVE_SOC, exportBudget,
+} from '../js/v2x.js';
+import { releaseChecklist } from '../js/markets.js';
 import { buildChargingPlan } from '../js/charging.js';
 import { buildReportHTML } from '../js/report.js';
 import { needed, stepsFor } from '../js/knowledge.js';
@@ -74,13 +78,83 @@ test('applicability follows the application — storage is not "V2X"', () => {
   ok(!ess.applicable && /PCS/.test(ess.why) && /normal duty/i.test(ess.why),
     'storage: already grid storage through the PCS — said, not mode-listed');
   const ups = v2xPlan({ appId: 'ups', cell: c, cellCount: 16, energyWh: 14336 });
-  ok(!ups.applicable && /PCS/.test(ups.why), 'UPS: same framing');
+  ok(!ups.applicable && ups.native && /normal duty/.test(ups.why), 'UPS: supplying loads IS its job');
+  const ps = v2xPlan({ appId: 'powerstation', cell: c, cellCount: 8, energyWh: 2000 });
+  ok(!ps.applicable && ps.native && /is the product/.test(ps.why),
+    'power station: an inverter with a battery attached — not sold a feature it already is');
+  // Re-derived: an inverter output is an inverter output, whatever it is bolted to.
+  for (const app of ['rv', 'marine']) {
+    const p = v2xPlan({ appId: app, cell: c, cellCount: 16, energyWh: 14336 });
+    ok(p.applicable && p.modes.length === 1 && p.modes[0].id === 'v2l',
+      `${app}: V2L only — it has an inverter, not a grid interconnection`);
+  }
   const w = v2xPlan({ appId: 'wearable', cell: c, cellCount: 1, energyWh: 1 });
   ok(!w.applicable && w.modes.length === 0, 'a watch does not back-feed the grid');
   // No price data → the plan still stands, the note says the ledger is open.
   const noPrice = v2xPlan({ appId: 'ev', cell: { ...c, priceUSD: null }, cellCount: 100, energyWh: 60000 });
   ok(noPrice.applicable && noPrice.wearFloor === null && /cannot be priced/.test(noPrice.wearNote),
     'missing data → honest note, not a fake number');
+});
+
+test('the policy is a design decision: it pulls in parts, not just a label', () => {
+  const c = cellById('samsung-inr21700-50e');
+  const base = { appId: 'ev', cell: c, cellCount: 384, energyWh: 60000, dod: 0.8 };
+  const off = v2xPlan(base);
+  ok(off.policy === 'off' && off.parts.length === 0 && off.budget === null,
+    'default is off: nothing extra designed, bought or certified');
+  ok(/nothing extra is designed/.test(off.policyNote), 'and it says so');
+  for (const id of ['v2l', 'v2h', 'v2g', 'v2v']) {
+    const parts = v2xParts(id);
+    ok(parts.length >= 1 && parts.every((p) => p.part && p.why && p.standard),
+      `${id}: every part names what it is, why, and under which standard`);
+  }
+  const g = v2xPlan({ ...base, policy: 'v2g' });
+  ok(g.policy === 'v2g' && g.gridFacing && g.parts.length === 5, 'V2G: five parts and a grid interconnection');
+  ok(g.parts.some((p) => /Revenue-grade metering/.test(p.part)), 'including the meter nobody remembers to budget');
+  ok(g.parts.some((p) => /anti-islanding|islanding/i.test(p.part + p.why)) === false
+    && v2xParts('v2h').some((p) => /islanding/i.test(p.part)),
+    'islanding belongs to V2H, where the building is the island');
+  const l = v2xPlan({ ...base, policy: 'v2l' });
+  ok(!l.gridFacing && /no grid-interconnection approval/.test(l.policyNote),
+    'V2L is islanded — the tool refuses to imply an interconnection approval it does not need');
+  // A policy this application cannot do is not silently honoured.
+  const bogus = v2xPlan({ appId: 'rv', cell: c, cellCount: 16, energyWh: 14336, policy: 'v2g' });
+  ok(bogus.policy === 'off' && bogus.parts.length === 0, 'an RV cannot be talked into V2G');
+  // Mutating the returned parts must not corrupt the table for everyone else.
+  v2xParts('v2g')[0].part = 'nonsense';
+  ok(V2X_PARTS.v2g[0].part !== 'nonsense', 'the parts table is handed out as copies');
+});
+
+test('the export budget reserves what the machine needs to keep working', () => {
+  // 60 kWh at 100% charge, V2G reserves 30% -> 42 kWh out; at 7.4 kW that is 5.68 h.
+  const b = exportBudget({ modeId: 'v2g', energyWh: 60000, socNow: 1.0, powerKW: 7.4, wearFloor: 0.25 });
+  near(b.exportableWh, 42000, 1e-9, 'exportable = (SoC − reserve) × energy');
+  near(b.hours, 42 / 7.4, 1e-9, 'hours = kWh / kW');
+  near(b.wearCostUSD, 42 * 0.25, 1e-9, 'and the wear floor prices the whole export');
+  ok(RESERVE_SOC.v2g > RESERVE_SOC.v2h, 'grid service reserves more than a home backup — you still have to drive home');
+  // Below the reserve there is nothing to give, and the tool says that plainly.
+  const empty = exportBudget({ modeId: 'v2g', energyWh: 60000, socNow: 0.25, powerKW: 7.4 });
+  ok(empty.exportableWh === 0 && /Nothing to export/.test(empty.note), 'at 25% charge a V2G pack owes nothing');
+  ok(exportBudget({ modeId: 'off', energyWh: 60000 }) === null, 'no mode, no budget');
+  ok(exportBudget({ modeId: 'v2l', energyWh: 0 }) === null, 'no pack, no budget');
+  const noPower = exportBudget({ modeId: 'v2h', energyWh: 20000, socNow: 0.9 });
+  ok(noPower.hours === null && noPower.exportableWh > 0, 'kWh without a power figure still answers, hours does not guess');
+});
+
+test('a grid-facing policy changes what certification will ask for', () => {
+  const plain = releaseChecklist({ market: 'us', application: 'ev', chemistry: 'NMC' });
+  const v2g = releaseChecklist({ market: 'us', application: 'ev', chemistry: 'NMC', v2x: 'v2g' });
+  ok(v2g.items.length > plain.items.length, 'exporting adds items to the release checklist');
+  ok(v2g.items.some((i) => /IEEE 1547/.test(i.code)) && v2g.items.some((i) => /UL 1741/.test(i.code)),
+    'US: the interconnection and inverter standards appear');
+  ok(v2g.items.some((i) => /ISO 15118-20/.test(i.code)), 'and the session protocol travels with them');
+  ok(releaseChecklist({ market: 'eu', application: 'ev', chemistry: 'NMC', v2x: 'v2h' })
+    .items.some((i) => /EN 50549/.test(i.code)), 'EU: the grid-code gate is EN 50549');
+  const v2l = releaseChecklist({ market: 'us', application: 'ev', chemistry: 'NMC', v2x: 'v2l' });
+  ok(v2l.items.length === plain.items.length,
+    'V2L interconnects with nothing, so it adds no interconnection paperwork');
+  ok(releaseChecklist({ market: 'us', application: 'ev', chemistry: 'NMC', v2x: 'off' }).items.length === plain.items.length,
+    'off changes nothing');
 });
 
 test('the knowledge graph gates V2X to vehicles with a bidirectional port', () => {
@@ -128,7 +202,8 @@ test('the report carries the V2X verdicts and the wear floor', () => {
 
 test('the standards V2X names to a customer are cited in REFERENCES.md', () => {
   const refs = readFileSync(new URL('../REFERENCES.md', import.meta.url), 'utf8').replace(/\s+/g, ' ');
-  for (const code of ['ISO 15118-20', 'CHAdeMO', 'IEEE 1547', 'UL 1741', 'UL 9741']) {
+  for (const code of ['ISO 15118-20', 'CHAdeMO', 'IEEE 1547', 'UL 1741', 'UL 9741',
+    'EN 50549', 'IEC 62109', 'IEC 60364-4-41']) {
     ok(refs.includes(code), `${code} cited`);
   }
   ok(/wear floor/i.test(refs) && /nameplate/i.test(refs),

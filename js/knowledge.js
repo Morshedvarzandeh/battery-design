@@ -72,7 +72,9 @@ export const NEEDS = {
   // Feeding power back is a VEHICLE topic (bidirectional charge port).
   // Stationary storage feeds the grid as its normal duty — that is the PCS
   // panel's story, not a V2X edge.
-  'v2x': { classes: [], apps: ['ev', 'ebus'] },
+  // Re-derived: anything with an inverter output can do V2L, so RVs and
+  // boats belong here too. What they cannot do is interconnect with a grid.
+  'v2x': { classes: [], apps: ['ev', 'ebus', 'rv', 'marine'] },
   // Road load applies to machines that actually drive. A drone flies, a
   // humanoid walks, a plant sits still — none of them are road vehicles.
   'vehicle-dynamics': { classes: [], apps: ['ev', 'ebus', 'ebike', 'escooter', 'robot'] },

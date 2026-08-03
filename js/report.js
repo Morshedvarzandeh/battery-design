@@ -182,6 +182,11 @@ export function buildReportHTML(R) {
     row('AC interface (target market)', `${esc(C.iface.connector)} — <span style="font-weight:normal">DC: ${esc(C.iface.dcConnector)} · ${esc(C.iface.comms)}</span>`),
     ...(C.packChargeKW != null ? [row('Pack charge acceptance', `${f1(C.packChargeKW)} kW at the cell's rated charge current — also the DC fast ceiling`)] : []),
     ...(C.strategies.length ? [row('Charging strategy', `${esc(C.strategies[0].name)} — <span style="font-weight:normal">${esc(C.strategies[0].when)}${C.strategies.length > 1 ? ` Alternatives: ${C.strategies.slice(1).map((x) => esc(x.name)).join('; ')}.` : ''}</span>`)] : []),
+    ...(R.v2x?.applicable ? [row('Feed-back policy', R.v2x.chosen
+      ? `<b>${esc(R.v2x.chosen.name)}</b><br><span style="font-weight:normal">${esc(R.v2x.policyNote)}${R.v2x.budget ? ` ${esc(R.v2x.budget.note)}${R.v2x.budget.hours != null ? ` That is about ${f1(R.v2x.budget.hours)} h at ${f1(R.v2x.budget.powerKW)} kW.` : ''}` : ''}</span>`
+      : `<span style="font-weight:normal">${esc(R.v2x.policyNote)}</span>`)] : []),
+    ...(R.v2x?.parts?.length ? [row('Parts this policy adds', R.v2x.parts.map((p) =>
+      `<div style="font-weight:normal">• ${esc(p.part)} — ${esc(p.why)} <i>${esc(p.standard)}</i></div>`).join(''))] : []),
     ...(R.v2x?.applicable ? R.v2x.modes.map((m) =>
       row(m.name.split(' — ')[0], `<b>${esc(m.assessment.verdict)}</b> — <span style="font-weight:normal">${esc(m.assessment.why)}</span>`)) : []),
   ])}

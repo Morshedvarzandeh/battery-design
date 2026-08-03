@@ -33,8 +33,10 @@ test('every standard the release checklist shows a customer is cited', () => {
   const missing = new Set();
   for (const pr of PRESETS) {
     for (const m of MARKETS) {
+      // Including the items a grid-facing feed-back policy adds — those are
+      // shown to customers too, so they are held to the same citation rule.
       const cl = releaseChecklist({
-        market: m.id, application: pr.id, chemistry: pr.preferredChemistries[0],
+        market: m.id, application: pr.id, chemistry: pr.preferredChemistries[0], v2x: 'v2g',
       });
       for (const item of cl.items) {
         // Checklist codes can carry a qualifier ("GB 38031-2025", "ISO 6469-1/-3");

@@ -76,6 +76,7 @@ const state = {
   loopOverride: 'auto',    // thermal loop choice (like BMS topology: an input)
   emsOverride: 'auto',     // EMS architecture (only for EMS-bearing applications)
   driveMode: 'normal',     // Eco | Normal | Sport — the driver, not the machine
+  v2xPolicy: 'off',        // off | v2l | v2h | v2g | v2v — what you actually build
 };
 let customProfile = null;  // uploaded profile (session only)
 
@@ -237,7 +238,12 @@ function renderMarketChecklist() {
     box.innerHTML = '<div class="empty">Pick an application on the Usage tab — the checklist is per application class.</div>';
     return;
   }
-  const cl = releaseChecklist({ market: state.marketId, application: app, chemistry: cell().chemistry });
+  // A grid-facing V2X policy adds interconnection items to this list — the
+  // certification cost of the decision, shown where certification lives.
+  const cl = releaseChecklist({
+    market: state.marketId, application: app, chemistry: cell().chemistry,
+    v2x: state.v2xPolicy,
+  });
   const scopeChip = (s) => ({
     mandatory: '<span class="chip fail">mandatory</span>',
     expected: '<span class="chip warn">expected</span>',
@@ -1938,6 +1944,10 @@ function computeCharging() {
     appId: state.presetId, cell: cell(),
     cellCount: lastSummary.cellCount, energyWh: lastSummary.energyWh,
     dod: currentDod(),
+    // The policy is a design decision the customer makes; the export power
+    // it can actually sustain comes from the charging path already computed.
+    policy: state.v2xPolicy,
+    powerKW: lastCharging?.obc?.acKW ?? lastCharging?.packChargeKW ?? null,
   });
 }
 
@@ -1975,17 +1985,37 @@ function renderCharging() {
   let v2x = '';
   const V = lastV2x;
   if (V?.applicable) {
+    // The policy comes first: what are you actually building? Everything
+    // below is the consequence of that answer.
+    const btn = (id, label) =>
+      `<button data-v2x="${id}"${state.v2xPolicy === id ? ' class="active"' : ''}>${esc(label)}</button>`;
+    const B = V.budget;
     v2x = `<div style="margin-top:10px;border-top:1px solid var(--line);padding-top:8px">
-      <b style="font-size:12px">Feeding power back (V2X)</b>` +
+      <b style="font-size:12px">Feeding power back (V2X)</b>
+      <div class="seg" id="segV2x" style="margin-top:6px">${btn('off', 'Off')}${V.modes.map((m) => btn(m.id, m.id.toUpperCase())).join('')}</div>
+      <div class="hint" style="margin-top:6px">${esc(V.policyNote)}</div>` +
+      (B ? `<div class="stat" style="margin-top:6px"><span>Available to export</span><b style="font-weight:normal;text-align:right">${f1(B.exportableWh / 1000)} kWh${B.hours != null ? ` · about ${f1(B.hours)} h at ${f1(B.powerKW)} kW` : ''}<br><span style="color:var(--muted);font-size:11px">${Math.round(B.reserve * 100)}% reserved so the machine still works${B.wearCostUSD != null ? ` · that export costs about $${f1(B.wearCostUSD)} in battery wear` : ''}</span></b></div>` : '') +
+      (V.parts.length ? `<div style="margin-top:6px"><b style="font-size:11.5px">What this adds to the design</b>` +
+        V.parts.map((p) => `<div style="margin-top:4px;font-size:11.5px">• ${esc(p.part)}<br><span style="color:var(--muted);font-size:11px">${esc(p.why)} <i>${esc(p.standard)}</i></span></div>`).join('') +
+        (V.gridFacing ? `<div class="hint" style="margin-top:5px">Grid-facing: the interconnection standards are now on the Rules tab checklist for your market.</div>` : '') +
+        `</div>` : '') +
       V.modes.map((m) =>
         `<div style="margin-top:5px">${verdictChip(m.assessment.verdict)} <b style="font-size:11.5px">${esc(m.name)}</b><br><span style="font-size:11px;color:var(--muted)">${esc(m.assessment.why)}</span></div>`).join('') +
       `<div class="hint" style="margin-top:6px">${esc(V.wearNote)}</div></div>`;
-  } else if (V && C.arch.kind === 'pcs') {
+  } else if (V && (C.arch.kind === 'pcs' || V.native)) {
     v2x = `<div class="hint" style="margin-top:8px">${esc(V.why)}</div>`;
   }
   $('acBody').innerHTML = rows.join('') +
     (strat ? `<div class="hint" style="margin-top:6px">✓ ${strat.pros.map(esc).join(' · ')}<br>✗ ${strat.cons.map(esc).join(' · ')}</div>` : '') +
     `<div class="hint" style="margin-top:6px">${C.notes.map(esc).join(' ')}</div>` + v2x;
+  // The policy buttons are re-rendered with the panel, so they are re-bound
+  // with it. Choosing one changes parts, budget and the release checklist.
+  $('segV2x')?.querySelectorAll('button').forEach((b) => b.onclick = () => {
+    state.v2xPolicy = b.dataset.v2x;
+    computeCharging();
+    renderCharging();
+    if (document.querySelector('#pane-eu.active')) renderEu();
+  });
 }
 
 function computeSim() {
