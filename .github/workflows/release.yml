@@ -121,10 +121,19 @@ jobs:
       - name: Stage the application
         run: node desktop-app/prepare.mjs
 
-      - name: Complete the icon set
+      # The icon set is committed, so there is nothing to generate here. It
+      # used to be regenerated on every runner, which quietly papered over the
+      # fact that .gitignore's blanket *.png rule had swallowed every icon —
+      # the step failed on all three platforms at once and the real cause was
+      # a repository that had never contained the files.
+      - name: Check the icons the bundler needs are actually present
+        shell: bash
         run: |
-          npm install -g @tauri-apps/cli@^2
-          cd desktop-app/src-tauri && tauri icon icons/icon.png --output icons
+          cd desktop-app/src-tauri/icons
+          for f in icon.ico icon.icns 32x32.png 128x128.png 128x128@2x.png; do
+            [ -f "$f" ] || { echo "missing icon: $f"; exit 1; }
+          done
+          echo "icon set complete"
 
       - uses: tauri-apps/tauri-action@v0
         env:
