@@ -219,3 +219,5 @@ __marimo__/
 
 # Screenshots written by local probe scripts
 *.png
+# ...but the published assets are part of the site (og:image / social preview).
+!assets/*.png
