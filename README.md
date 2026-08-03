@@ -218,6 +218,21 @@ project's provenance-first datasheet pipeline.
   every pass or one charge at base, powered by the cell's own datasheet
   charge rating — so an e-bus route with pantograph top-ups is a scenario
   you can actually run, winter charge-inhibit included.
+- **The same designer without a browser, and for AI systems** — everything the
+  tool knows lives in pure modules, so `js/api.js` exposes it as one call:
+  `designFromSpec(spec)` returns the entire design as JSON, unchanged in a
+  browser or in Node. On top of that sits `desktop/bd.mjs`, a zero-dependency
+  runner for work a browser tab should not do while you wait — sweep the whole
+  cell library ranked by cost per kWh *delivered*, study range across mass ×
+  driving mode, run long missions, or `serve` the same UI offline from your own
+  machine. And `desktop/mcp-server.mjs` lets **Claude or any MCP-speaking agent
+  drive the designer directly** — size a pack, run a mission, compare cells,
+  ask what V2G would cost — so the assistant answers from the design modules
+  instead of guessing about batteries. No MCP client? The Results tab has
+  *"Copy this design for an AI assistant"*: the design as a written brief plus
+  JSON, ready to paste into any chatbot, with your private cell records
+  deliberately left out. Same modules everywhere — there is no second
+  implementation that could disagree with the page.
 - **The vehicle around the pack** — for machines that actually drive, the
   demand is no longer a number you type. Give the vehicle instead — mass
   without the pack, payload, frontal area, drag coefficient, rolling
@@ -377,6 +392,9 @@ is copied into the repository.
 | `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
 | `js/sensors.js` | Sensor plan by level (cell/module/system/cooling), omission-first |
 | `js/charging.js` | The AC side: per-application charging architecture, OBC classes, charge-time math, market connectors, strategies |
+| `js/api.js` | The whole designer as one call — `designFromSpec(spec)` → JSON. Runs in a browser and in Node |
+| `desktop/bd.mjs` | Command-line runner: design, mission, sweep, range study, and the UI served offline |
+| `desktop/mcp-server.mjs` | MCP server so Claude or any agent can drive the designer as tools |
 | `js/vehicle.js` | The machine around the pack: road load, vehicle class defaults, driving modes, speed traces, Wh/km and range |
 | `js/v2x.js` | Feeding power back: V2L/V2H/V2G/V2V modes, per-design verdicts, and the cycle-life wear floor behind the V2G economics |
 | `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
