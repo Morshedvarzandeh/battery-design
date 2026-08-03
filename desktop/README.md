@@ -27,6 +27,9 @@ node desktop/bd.mjs help
 | `sweep` | One variable across a range: every cell, or mass, payload, energy |
 | `search` | The whole design space — every cell × every energy target — ranked |
 | `range` | A drive-cycle study — consumption and range across mass × driving mode |
+| `sim2` | The full model: RC dynamics, entropic heat, per-module temperatures, coolant, aging |
+| `calibrate` | Correct the model against **your** measured data |
+| `params` | Every coefficient, with units, bounds and where its default came from |
 | `apps` / `cells` | The application presets and the cell library |
 | `serve` | The web UI, served from your own machine, offline |
 
@@ -51,6 +54,69 @@ node desktop/bd.mjs design --app ebike --json --out ebike.json
 
 Add `--json` to any command for machine-readable output, `--out FILE` to write
 it to disk.
+
+---
+
+## The level-2 model, and correcting it against your own cell
+
+`js/sim2.js` is the simulation the desktop tier exists for. The browser model
+(level 1) answers *"does this pack survive the duty?"* with one resistance and
+one thermal mass. Every number in it is fixed by the tool, which is fine for a
+first look and useless for an engineering decision.
+
+This one is built the other way round: **every coefficient is a named, bounded,
+documented parameter you can change — and given your measurements, the model
+corrects itself to match them.**
+
+```bash
+node desktop/bd.mjs params --cell eve-lf280k        # every knob, with bounds and sources
+node desktop/bd.mjs sim2 --app ev --modules 8 --ambient 35 --years 8
+node desktop/bd.mjs calibrate --data pulse-test.csv --cell eve-lf280k --s 16 \
+      --fit r0Ref,rc1R,rc1TauS --out my-cell.json
+node desktop/bd.mjs sim2 --app ev --params my-cell.json   # now it is YOUR cell
+```
+
+### What it models
+
+- **Equivalent circuit** — OCV + R0 + two RC branches, with Arrhenius
+  temperature dependence, SoC-dependent resistance rise at both ends of the
+  window, and optional one-state hysteresis (on by default for LFP, whose flat
+  plateau really has it).
+- **Heat** — irreversible I²R in every element *plus* the reversible entropic
+  term I·T·(dU/dT), which cools the pack on charge and warms it on discharge.
+  That term is why measured charge-side data embarrasses I²R-only models.
+- **Thermal network** — a chain of module nodes with conduction between
+  neighbours, convection into a coolant stream that warms as it flows, and
+  loss to ambient. Not one lumped mass: modules reach different temperatures,
+  and the *spread* is usually what limits the design. The coolant uses the
+  ε-NTU effectiveness relation, so a stopped pump removes no heat and a fast
+  one is limited by the cold plate rather than the flow.
+- **Aging** — calendar (√t, Arrhenius, SoC-weighted) and cycle (√throughput,
+  C-rate weighted), reported as a year-by-year capacity and resistance
+  schedule with the year it crosses 80%.
+
+### What it does not model, said plainly
+
+- **No electrochemistry.** This is an equivalent-circuit model, not a
+  Newman/P2D model: no lithium concentration, no particle diffusion, no
+  plating criterion beyond a temperature gate. Every run prints this.
+- **No 3-D fields.** The thermal network is lumped, not CFD. It will tell you
+  a module runs 8 K hotter than its neighbour; it will not tell you which
+  corner of it.
+- **The defaults are class-typical, not your cell.** That is the whole reason
+  `calibrate` exists.
+
+### Calibration, and how it is proved
+
+Give it what you measured — `time_s,current_A,voltage_V[,temp_C]` — and the
+parameters you think are wrong, and a Nelder-Mead simplex searches for the
+values that reproduce your data. It reports the RMSE before and after, how far
+each parameter moved, and flags any that hit their bound (which usually means
+the model is missing an effect, not that your cell is extreme).
+
+The test suite proves this works the only way that means anything: it generates
+measurements from **known** parameters, starts the fitter from the wrong
+defaults, and requires it to recover the truth. It does, to within 0.1%.
 
 ---
 

@@ -218,6 +218,24 @@ project's provenance-first datasheet pipeline.
   every pass or one charge at base, powered by the cell's own datasheet
   charge rating — so an e-bus route with pantograph top-ups is a scenario
   you can actually run, winter charge-inhibit included.
+- **A model you can correct against your own cell** — the browser simulation
+  answers "does this pack survive the duty?" with one resistance and one
+  thermal mass, which is honest for a first look and useless for a decision.
+  The desktop model (`js/sim2.js`) is built the other way round: **every
+  coefficient is a named, bounded, documented parameter you can change, and
+  given your measurements the model corrects itself to match them.** It adds
+  RC dynamics with Arrhenius temperature dependence, the reversible entropic
+  heat term (which cools on charge and warms on discharge — the term whose
+  absence embarrasses I²R-only models against real data), a per-module thermal
+  network with an ε-NTU coolant stream (a stopped pump removes no heat; a fast
+  one is limited by the cold plate), and calendar + cycle aging as a
+  year-by-year capacity and resistance schedule. `calibrate` fits it to your
+  measured `time,current,voltage[,temperature]` and reports how far each
+  parameter moved and whether it hit a bound. The test suite proves the fitter
+  by generating data from *known* parameters and requiring it to recover them
+  — it does, to within 0.1%. What it is **not** is stated on every run: not
+  electrochemical (no P2D, no diffusion), not 3-D (a hot module, not a hot
+  corner), and its defaults are class-typical until you calibrate them.
 - **The same designer without a browser, and for AI systems** — everything the
   tool knows lives in pure modules, so `js/api.js` exposes it as one call:
   `designFromSpec(spec)` returns the entire design as JSON, unchanged in a
@@ -397,6 +415,7 @@ is copied into the repository.
 | `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
 | `js/sensors.js` | Sensor plan by level (cell/module/system/cooling), omission-first |
 | `js/charging.js` | The AC side: per-application charging architecture, OBC classes, charge-time math, market connectors, strategies |
+| `js/sim2.js` | The level-2 model: RC dynamics, entropic heat, per-module thermal network with ε-NTU coolant, aging — every coefficient exposed and calibratable against your own measurements |
 | `js/api.js` | The whole designer as one call — `designFromSpec(spec)` → JSON. Runs in a browser and in Node |
 | `desktop/bd.mjs` | Command-line runner: design, mission, sweep, range study, and the UI served offline |
 | `desktop/mcp-server.mjs` | MCP server so Claude or any agent can drive the designer as tools |
