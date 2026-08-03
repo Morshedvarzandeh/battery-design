@@ -232,6 +232,15 @@ export function driveCyclePower({
   trace, vehicle, mode = 'normal', packMassKg = 0, gradePct = 0, regenCapW = null,
 }) {
   if (!trace?.v?.length || !vehicle) return null;
+  // The gradient may be one number for the whole drive — a stated route
+  // gradient, which is what a synthetic profile can offer — or one per step,
+  // which is what a real recorded route gives. A trace that carries its own
+  // per-step grade wins, because it measured what the scalar can only assume.
+  const gradeAt = Array.isArray(trace.grade) && trace.grade.length
+    ? (i) => trace.grade[Math.min(i, trace.grade.length - 1)]
+    : Array.isArray(gradePct)
+      ? (i) => gradePct[Math.min(i, gradePct.length - 1)]
+      : () => gradePct;
   const M = drivingModeById(mode);
   const dtS = trace.dtS;
   const massKg = totalMassKg({ vehicle, packMassKg });
@@ -254,7 +263,7 @@ export function driveCyclePower({
     // Sport accelerates harder, eco gentler — the same speed change, reached
     // with a different pedal. Braking is left alone: physics, not preference.
     const a = aRaw > 0 ? aRaw * M.accelScale : aRaw;
-    const F = roadLoadN({ vMs: v, aMs2: a, massKg, vehicle, gradePct });
+    const F = roadLoadN({ vMs: v, aMs2: a, massKg, vehicle, gradePct: gradeAt(i) });
     const pWheel = F.total * v;
     let pBatt;
     if (pWheel > 0) {
