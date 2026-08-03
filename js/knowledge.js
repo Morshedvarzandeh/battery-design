@@ -30,6 +30,8 @@ export const CONCEPTS = {
   'release-rules': { label: 'Release rules & market checklist', why: 'What certification will demand in each target market.' },
   'report': { label: 'Report & sensitivity', why: 'The customer document, stress-tested.' },
   'simulation': { label: 'Mission simulation', why: 'The design run through time — SoC, sag and temperature over the real profile.' },
+  'ac-side': { label: 'AC side & charging', why: 'How the pack meets the grid — on-board charger, connectors, charge time.' },
+  'charging-strategy': { label: 'Charging strategy', why: 'Depot vs opportunity vs tariff windows — a pack-sizing decision, not an afterthought.' },
 };
 
 // Edges: which application classes need each concept. Per-app extra edges
@@ -61,6 +63,10 @@ export const NEEDS = {
   'release-rules': { classes: ALL },
   'report': { classes: ALL },
   'simulation': { classes: ALL },
+  // The AC side is a design topic only where the machine owns its charger
+  // (or IS the grid interface) — a gadget's brick or dock needs no design.
+  'ac-side': { classes: ['vehicle', 'auxiliary', 'marine', 'stationary'], apps: ['powerstation'] },
+  'charging-strategy': { classes: ['vehicle', 'industrial', 'stationary', 'marine', 'auxiliary'], apps: [] },
 };
 
 // Does this application need this concept? No app selected -> everything

@@ -154,6 +154,21 @@ export function buildReportHTML(R) {
   <div style="font-size:11px;color:#666;margin-top:4px">${[...(P.notes || []), ...(B.notes || []), A.dcdc.chargingNote, K.lvNote, A.isolation?.groundingNote].filter(Boolean).map(esc).join(' ')}</div>`;
   })() : ''}
 
+  ${R.charging ? (() => {
+    const C = R.charging;
+    const fmtH = (h) => h >= 1 ? `${Math.round(h * 10) / 10} h` : `${Math.round(h * 60)} min`;
+    return `
+  <h2 style="${h2}">Charging &amp; AC side</h2>
+  ${table([
+    row('How it charges', `${esc(C.obc ? C.obc.name : C.arch.name)}<br><span style="font-weight:normal">${esc(C.arch.note)}</span>`),
+    ...(C.t2080 ? [row('Charge time', `20→80% in <b>${fmtH(C.t2080.hours)}</b>${C.t10100 ? ` · 10→100% in ${fmtH(C.t10100.hours)} (CV tail included)` : ''}<br><span style="font-weight:normal">${esc(C.t2080.note)}</span>`)] : []),
+    row('AC interface (target market)', `${esc(C.iface.connector)} — <span style="font-weight:normal">DC: ${esc(C.iface.dcConnector)} · ${esc(C.iface.comms)}</span>`),
+    ...(C.packChargeKW != null ? [row('Pack charge acceptance', `${f1(C.packChargeKW)} kW at the cell's rated charge current — also the DC fast ceiling`)] : []),
+    ...(C.strategies.length ? [row('Charging strategy', `${esc(C.strategies[0].name)} — <span style="font-weight:normal">${esc(C.strategies[0].when)}${C.strategies.length > 1 ? ` Alternatives: ${C.strategies.slice(1).map((x) => esc(x.name)).join('; ')}.` : ''}</span>`)] : []),
+  ])}
+  <div style="font-size:11px;color:#666;margin-top:4px">${C.notes.map(esc).join(' ')}</div>`;
+  })() : ''}
+
   ${R.thermal ? `
   <h2 style="${h2}">Thermal management system</h2>
   ${R.thermPng ? `<img src="${R.thermPng}" style="width:100%;max-width:640px;border:1px solid #ddd" alt="thermal loop diagram">` : ''}

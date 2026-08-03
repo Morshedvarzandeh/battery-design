@@ -102,6 +102,13 @@ than one that prints them.
 | **IEC 61850** | Communication networks and systems for power utility automation | Utility-scale storage interface | `architecture.js` |
 | **NMEA 2000** | Marine electronics network | Marine systems | `architecture.js` |
 | **IEEE 2030.7** | Standard for the specification of microgrid controllers | The three-level (primary / secondary / tertiary) hierarchical EMS architecture and its timescales | `architecture.js` |
+| **IEC 61851-1** | Electric vehicle conductive charging system — Part 1: General requirements (charging modes, control pilot) | The AC charging baseline behind the connector/comms rows | `charging.js` |
+| **IEC 62196-2** | Plugs, socket-outlets, vehicle connectors — Part 2: AC pin and contact-tube accessories (Type 2) | The EU AC connector | `charging.js` |
+| **IEC 62196-3** | Part 3: DC and AC/DC pin and contact-tube vehicle couplers (CCS) | The EU DC fast-charge coupler | `charging.js` |
+| **SAE J1772** | SAE electric vehicle conductive charge coupler | The North American AC connector and pilot | `charging.js` |
+| **SAE J3400** | NACS electric vehicle coupler | The North American NACS connector | `charging.js` |
+| **GB/T 20234** (.2 AC, .3 DC) | Connection set for conductive charging of electric vehicles | The China AC and DC connectors | `charging.js` |
+| **GB/T 27930** | Communication protocols between off-board conductive charger and battery management system | China charge communication | `charging.js` |
 
 ## 6 · Regulation
 
@@ -189,6 +196,9 @@ are exposed as inputs wherever possible, and stated as estimates in the output.
 | Wall thickness | **not prescribed** | No standard specifies a millimetre value. The crash/crush **tests** (ECE R100 Annex 4, GB 38031, UL 2580) prescribe outcomes; the wall must pass them. The tool says this rather than inventing a number |
 | Daisy-chain node limit | 62 nodes | Common AFE-family device limit; treated as a hard architectural limit and named as the reason in the verdict |
 | Temperature-sensor ratio | 1 per 6 cells (1 per 3 for full observability) | Design practice; both figures are reported so the trade-off is visible |
+| OBC efficiency | 93% | Class-typical AC→DC conversion efficiency; exposed as a named input in the workbook and stated wherever charge times are shown |
+| CV taper model | CC to 80% SoC, then 0.45× average rate | A class simplification of the constant-voltage tail — real taper curves are cell-specific and unpublished |
+| Mission charge power | the cell's rated continuous charge current (base charging additionally throttled by the OBC) | Mission-charging power in the simulation comes from the cell's own datasheet rating, not an invented charger |
 | BMS topology crossover | none | No sourced quantitative crossover between centralized / master-slave / wireless exists, so the tool suggests by scale and says openly that the rule is not sourced |
 
 ---

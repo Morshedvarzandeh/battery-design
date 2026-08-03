@@ -686,6 +686,21 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         </details>
         <div id="archBody" style="margin-top:8px"><div class="empty">—</div></div>
       </div>
+      <div class="sec" id="acSec">
+        <h3>Charging</h3>
+        <div id="acSummary" style="font-size:12.5px"></div>
+        <details class="fold" style="margin-top:6px" id="acExpert">
+          <summary class="f" style="cursor:pointer">Expert detail — charger classes, connectors, strategy</summary>
+          <div class="seg" id="segObc" style="margin-top:8px">
+            <button data-obc="auto" class="active">Auto</button>
+            <button data-obc="obc-3k6">3.6 kW</button>
+            <button data-obc="obc-7k4">7.4 kW</button>
+            <button data-obc="obc-11k">11 kW</button>
+            <button data-obc="obc-22k">22 kW</button>
+          </div>
+          <div id="acBody" style="margin-top:6px"></div>
+        </details>
+      </div>
       <div class="sec"><h3>Safety &amp; standards</h3><div id="anSafe"></div><div id="findings"></div></div>
       <div class="sec"><h3>Standards referenced</h3><div id="stdList" style="font-size:11.5px;color:var(--muted)"></div></div>
     </div>
@@ -729,6 +744,17 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           <label class="f" style="flex:1">Start SoC %
             <input type="number" id="simSoC" value="100" min="5" max="100" step="5"></label>
         </div>
+        <label class="f" style="margin-top:8px">Charging in the mission</label>
+        <div style="display:flex;gap:10px;align-items:end">
+          <div class="seg" id="segSimCharge" style="flex:2">
+            <button data-charge="none" class="active">None</button>
+            <button data-charge="topup">Top-ups</button>
+            <button data-charge="base">At base</button>
+          </div>
+          <label class="f" style="flex:1">Minutes
+            <input type="number" id="simChargeMin" value="15" min="1" max="600" step="5"></label>
+        </div>
+        <div class="hint" id="simChargeHint">Top-ups: short charges after every pass (opportunity charging). At base: one charge at the end (depot / overnight). Power comes from the cell's own charge ratings.</div>
         <label class="f" style="margin-top:8px">Mission traces <span style="color:var(--muted)">(tap to enlarge)</span></label>
         <canvas id="simCanvas" height="280" style="width:100%;cursor:zoom-in;border:1px solid var(--line);border-radius:var(--r);margin:4px 0 8px;background:var(--ground)"></canvas>
         <div id="simStats"></div>

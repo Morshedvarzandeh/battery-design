@@ -110,24 +110,41 @@ export function simulateMission(a) {
 
   let soc = Math.min(1, Math.max(0, a.startSoC ?? 1));
   let tC = ambientC;
-  const nSteps = profile.p.length * passes;
+
+  // The mission's step sequence: driving passes from the profile, plus
+  // commanded CHARGE segments — top-ups after every pass (opportunity) or
+  // one charge at the end (depot/base). The physics below treats commanded
+  // charge like any other power demand, so the CV taper, the winter charge
+  // floor and "already full" all fall out of the same code.
+  const stepsW = [], stepKind = [];
+  const ch = a.charge && a.charge.mode && a.charge.mode !== 'none' && a.charge.powerW > 0 ? a.charge : null;
+  const chSteps = ch ? Math.max(1, Math.round(((ch.minutes ?? 15) * 60) / dtProfile)) : 0;
+  for (let pass = 0; pass < passes; pass++) {
+    for (const v of profile.p) { stepsW.push(v * scaleW); stepKind.push('drive'); }
+    if (ch?.mode === 'topup') for (let q = 0; q < chSteps; q++) { stepsW.push(-ch.powerW); stepKind.push('charge'); }
+  }
+  if (ch?.mode === 'base') for (let q = 0; q < chSteps; q++) { stepsW.push(-ch.powerW); stepKind.push('charge'); }
+  const nSteps = stepsW.length;
 
   // Traces (decimated later), extremes, energy books, event bookkeeping.
   const trace = { tS: [], soc: [], vPack: [], pW: [], tC: [], iA: [] };
   let minV = Infinity, maxT = -Infinity, minSoC = soc, peakHeatW = 0;
   let eOutWh = 0, eInWh = 0, lossWh = 0, heatWhSum = 0;
   let unmetWh = 0, regenLostWh = 0, chargeInhibitS = 0, cvTaperS = 0;
+  let chargedWh = 0, chargeRefusedWh = 0;
   let firstEmptyS = null, firstCutoffS = null, firstHotS = null;
 
   for (let k = 0; k < nSteps; k++) {
-    const want = profile.p[k % profile.p.length] * scaleW; // + discharge, − charge
+    const want = stepsW[k]; // + discharge, − charge
+    const kind = stepKind[k];
     let stepP = want;
     // Winter physics: charging below the cell's charge floor is inhibited
     // unless the design carries the heater branch (then the BTMS holds the
     // window — its energy cost is the heater's business, not modeled here).
     if (stepP < 0 && tC < chargeFloorC && !a.hasHeater) {
       chargeInhibitS += dtProfile;
-      regenLostWh += (-stepP * dtProfile) / 3600;
+      if (kind === 'drive') regenLostWh += (-stepP * dtProfile) / 3600;
+      else chargeRefusedWh += (-stepP * dtProfile) / 3600;
       stepP = 0;
     }
     // Empty pack: demand goes unmet from here.
@@ -136,9 +153,10 @@ export function simulateMission(a) {
       unmetWh += (stepP * dtProfile) / 3600;
       stepP = 0;
     }
-    // Full pack: regen has nowhere to go.
+    // Full pack: drive-cycle regen has nowhere to go (a warning); a
+    // commanded charge that reaches full has simply finished (not one).
     if (stepP < 0 && soc >= 1) {
-      regenLostWh += (-stepP * dtProfile) / 3600;
+      if (kind === 'drive') regenLostWh += (-stepP * dtProfile) / 3600;
       stepP = 0;
     }
 
@@ -162,7 +180,10 @@ export function simulateMission(a) {
     // Books.
     const pTerm = v * i;
     if (pTerm > 0) eOutWh += (pTerm * dtProfile) / 3600;
-    else eInWh += (-pTerm * dtProfile) / 3600;
+    else {
+      eInWh += (-pTerm * dtProfile) / 3600;
+      if (kind === 'charge') chargedWh += (-pTerm * dtProfile) / 3600;
+    }
     const heatW = i * i * rOhm;
     lossWh += (heatW * dtProfile) / 3600;
     peakHeatW = Math.max(peakHeatW, heatW);
@@ -233,7 +254,7 @@ export function simulateMission(a) {
     findings.push({
       severity: 'warn', category: 'simulation',
       title: `Charging inhibited for ${fmtT(chargeInhibitS)} — below the ${chargeFloorC} °C charge floor`,
-      detail: `${regenLostWh.toFixed(1)} Wh of charge/regen is refused while the pack sits below the cell's charge window and the design has no heater branch. The Thermal tab adds one when the climate demands it.`,
+      detail: `${(regenLostWh + chargeRefusedWh).toFixed(1)} Wh of charge/regen is refused while the pack sits below the cell's charge window and the design has no heater branch. The Thermal tab adds one when the climate demands it.`,
       ref: 'mission simulation (charge window)',
     });
   } else if (regenLostWh > 0.005) {
@@ -264,6 +285,7 @@ export function simulateMission(a) {
       efficiencyPct: eOutWh + lossWh > 0 ? (eOutWh / (eOutWh + lossWh)) * 100 : null,
       peakHeatW, avgHeatW: durationS > 0 ? (heatWhSum * 3600) / durationS : 0,
       unmetWh, regenLostWh, chargeInhibitS, cvTaperS,
+      chargedWh, chargeRefusedWh, chargeMode: ch?.mode ?? 'none',
       vMinPack, vMaxPack, tempMaxC, chargeFloorC,
       resistanceMOhm: rMOhm, uaWK: ua, thermalMassJK: cth,
     },
