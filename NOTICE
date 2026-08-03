@@ -1,0 +1,46 @@
+battery-design
+Copyright 2026 Morshed Varzandeh
+
+This product includes software developed by Morshed Varzandeh and the
+battery-design contributors.
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file, or
+http://www.apache.org/licenses/LICENSE-2.0
+
+--------------------------------------------------------------------------------
+THIRD-PARTY SOFTWARE
+
+three.js  (vendor/three.module.min.js, vendor/OrbitControls.js)
+  Copyright 2010-2026 three.js authors
+  Licensed under the MIT License. https://threejs.org
+
+--------------------------------------------------------------------------------
+DATA, STANDARDS AND ENGINEERING OUTPUT
+
+Cell, component and standards data
+  The data modules contain factual values transcribed from public manufacturer
+  datasheets and publicly available standards catalogues, together with this
+  project's own curation, classification and notes. The curation is covered by
+  the Apache 2.0 licence above. The underlying facts are not claimed as this
+  project's property.
+
+  No standard is reproduced in this repository. REFERENCES.md *cites* the
+  standards it relies on; the documents themselves must be obtained from the
+  issuing bodies (IEC, ISO, UL, NFPA, UNECE, SAC/GB, CEN, IEEE, SAE).
+
+  Customer-supplied cell data never leaves the user's device and is never
+  published by this project.
+
+Patent landscape
+  The patent module maps designs to families of publicly filed prior art and
+  links to Google Patents for orientation only. It is not, and must not be used
+  as, a freedom-to-operate opinion.
+
+Engineering output
+  This software produces first-order engineering estimates. It is design
+  guidance, not certification, and does not replace testing, homologation or
+  the judgement of a qualified engineer. Assumptions that have no public source
+  are listed openly in REFERENCES.md, section 8.
+
+  Distributed WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND — see the Apache 2.0
+  disclaimer of warranty and limitation of liability.

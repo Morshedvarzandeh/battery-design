@@ -4,6 +4,25 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>battery-design · 3D pack designer</title>
+<meta name="description" content="Design a battery pack from an application and an available space — geometry, electrical architecture, thermal system, mission simulation and the customer report. Runs entirely in your browser. Every number traced to a datasheet or standard.">
+<meta name="author" content="Morshed Varzandeh">
+<meta name="theme-color" content="#0B6E5F">
+<link rel="canonical" href="https://morshedvarzandeh.github.io/battery-design/">
+<!-- Link previews (LinkedIn, Slack, X, WhatsApp): without these a shared link
+     renders as a bare URL. The card is generated from the app itself. -->
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="battery-design">
+<meta property="og:title" content="battery-design — from an application and a space to a simulated battery pack">
+<meta property="og:description" content="Design a battery pack from an application and an available space — geometry, electrical architecture, thermal system, mission simulation and the customer report. Runs entirely in your browser. Every number traced to a datasheet or standard.">
+<meta property="og:url" content="https://morshedvarzandeh.github.io/battery-design/">
+<meta property="og:image" content="https://morshedvarzandeh.github.io/battery-design/assets/social-preview.png">
+<meta property="og:image:width" content="2400">
+<meta property="og:image:height" content="1260">
+<meta property="og:image:alt" content="A 928-cell battery pack rendered in 3D, with its electrical and physical figures alongside.">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="battery-design — from an application and a space to a simulated battery pack">
+<meta name="twitter:description" content="Design a battery pack from an application and an available space — geometry, electrical architecture, thermal system, mission simulation and the customer report. Runs entirely in your browser. Every number traced to a datasheet or standard.">
+<meta name="twitter:image" content="https://morshedvarzandeh.github.io/battery-design/assets/social-preview.png">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='6' y='9' width='22' height='14' rx='2' fill='%230B6E5F'/%3E%3Crect x='2' y='13' width='4' height='6' rx='1' fill='%230B6E5F'/%3E%3Crect x='10' y='12' width='4' height='8' fill='%23E3F0ED'/%3E%3Crect x='16' y='12' width='4' height='8' fill='%23E3F0ED'/%3E%3Crect x='22' y='12' width='3' height='8' fill='%23E3F0ED' opacity='.5'/%3E%3C/svg%3E">
 <style>
 :root{
@@ -823,7 +842,9 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
     <div class="tabpane active" id="statsBody" style="display:block"></div>
   </aside>
 </main>
-<footer>Figures are engineering estimates from nameplate data and class-typical component properties; DCIR is cells-only. Analysis and standards output is guidance, not certification.</footer>
+<footer>Figures are engineering estimates from nameplate data and class-typical component properties; DCIR is cells-only. Analysis and standards output is guidance, not certification.
+  <a href="https://github.com/Morshedvarzandeh/battery-design/blob/main/REFERENCES.md" target="_blank" rel="noopener" style="color:var(--accent)">Sources &amp; standards</a> ·
+  <a href="https://github.com/Morshedvarzandeh/battery-design" target="_blank" rel="noopener" style="color:var(--accent)">Open source (Apache&nbsp;2.0)</a></footer>
 <script type="importmap">{"imports":{"three":"./vendor/three.module.min.js"}}</script>
 <script type="module" src="./js/app.js"></script>
 </body>
