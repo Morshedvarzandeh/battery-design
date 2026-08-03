@@ -29,6 +29,7 @@ import {
 } from '../js/api.js';
 import { CELLS } from '../js/cells.js';
 import { vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm } from '../js/vehicle.js';
+import { runPool, coreCount, PARALLEL_THRESHOLD } from './pool.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -102,38 +103,33 @@ const COMMANDS = {
 
   // Everything the browser should not do while you wait: change one thing at
   // a time across a range and report what it did to the answers that matter.
-  sweep(args) {
+  async sweep(args) {
     const base = specFrom(args);
     const vary = args.vary || 'cell';
-    const rows = [];
+    const jobs = [];
+    const add = (value, spec) => jobs.push({ index: jobs.length, variable: vary, value, spec });
     if (vary === 'cell') {
       // Every cell in the library, on the same duty, sized to the same energy.
       const pool = args.chemistry ? CELLS.filter((c) => c.chemistry === args.chemistry) : CELLS;
-      for (const c of pool) {
-        try {
-          const d = designFromSpec({ ...base, cell: c.id });
-          rows.push(summaryRow({ variable: 'cell', value: c.id, design: d }));
-        } catch (e) { rows.push({ variable: 'cell', value: c.id, error: e.message }); }
-      }
-      rows.sort((a, b) => (a.usdPerKWhDelivered ?? 1e9) - (b.usdPerKWhDelivered ?? 1e9));
+      for (const c of pool) add(c.id, { ...base, cell: c.id });
     } else if (vary === 'mass' || vary === 'payload') {
       const from = num(args.from, 1000), to = num(args.to, 2500), step = num(args.step, 100);
-      for (let v = from; v <= to; v += step) {
-        const d = designFromSpec({ ...base, vehicle: { ...(base.vehicle || {}), [vary === 'mass' ? 'curbKg' : 'payloadKg']: v } });
-        rows.push(summaryRow({ variable: vary, value: v, design: d }));
-      }
+      const field = vary === 'mass' ? 'curbKg' : 'payloadKg';
+      for (let v = from; v <= to; v += step) add(v, { ...base, vehicle: { ...(base.vehicle || {}), [field]: v } });
     } else if (vary === 'energy') {
       const from = num(args.from, 10000), to = num(args.to, 100000), step = num(args.step, 10000);
-      for (let v = from; v <= to; v += step) {
-        const d = designFromSpec({ ...base, energyWh: v });
-        rows.push(summaryRow({ variable: 'energy', value: v, design: d }));
-      }
+      for (let v = from; v <= to; v += step) add(v, { ...base, energyWh: v });
     } else {
       console.error(`Unknown --vary "${vary}". Supported: cell, mass, payload, energy.`);
       process.exit(2);
     }
+    const t0 = Date.now();
+    const { rows, workers, mode } = await runPool(jobs, { jobs: args.jobs != null ? num(args.jobs) : null });
+    const ms = Date.now() - t0;
+    if (vary === 'cell') rows.sort((a, b) => (a.usdPerKWhDelivered ?? 1e9) - (b.usdPerKWhDelivered ?? 1e9));
     const table = [
-      `Sweep over ${vary} — ${rows.length} designs, same duty, same application`,
+      `Sweep over ${vary} — ${rows.length} designs, same duty, same application`
+      + `  [${ms} ms, ${mode}${mode === 'parallel' ? ` on ${workers} threads` : ''}]`,
       pad('value', 26) + pad('kWh', 9) + pad('kg', 8) + pad('$/kWh del.', 12) + pad('Wh/km', 9) + pad('range km', 10) + 'audit',
       ...rows.map((r) => r.error
         ? pad(String(r.value), 26) + `error: ${r.error}`
@@ -198,6 +194,85 @@ const COMMANDS = {
     emit(args, { apiVersion: API_VERSION, application: appId, energyWh, dod, rows }, table);
   },
 
+  // The job the desktop tier exists for: not one design, but the whole space
+  // of them. Every cell against every energy target, each one fully worked —
+  // geometry, architecture, thermal, audit, cost, mission — then ranked by
+  // what you actually care about. Thousands of complete designs, which is
+  // where using all the cores stops being a nicety.
+  async search(args) {
+    const base = specFrom(args);
+    const pool = args.chemistry ? CELLS.filter((c) => c.chemistry === args.chemistry) : CELLS;
+    const from = num(args.from, 20000), to = num(args.to, 100000), step = num(args.step, 2000);
+    const jobs = [];
+    for (const c of pool) {
+      for (let e = from; e <= to; e += step) {
+        jobs.push({
+          index: jobs.length, variable: 'cell×energy',
+          value: `${c.id} @ ${(e / 1000).toFixed(0)} kWh`,
+          meta: { targetWh: e },
+          spec: { ...base, cell: c.id, energyWh: e },
+        });
+      }
+    }
+    const rank = args.rank || 'cost';
+    const KEYS = {
+      cost: ['usdPerKWhDelivered', 1, '$/kWh delivered'],
+      range: ['rangeKm', -1, 'range km'],
+      mass: ['massKg', 1, 'kg'],
+      density: ['whPerKg', -1, 'Wh/kg'],
+      upfront: ['upfrontUSD', 1, '$ upfront'],
+    };
+    if (!KEYS[rank]) { console.error(`Unknown --rank "${rank}". Supported: ${Object.keys(KEYS).join(', ')}.`); process.exit(2); }
+    const [key, dir, unit] = KEYS[rank];
+    console.error(`Searching ${jobs.length.toLocaleString()} complete designs (${pool.length} cells × ${Math.floor((to - from) / step) + 1} energy targets) on ${coreCount()} cores…`);
+    const t0 = Date.now();
+    const { rows, workers, mode } = await runPool(jobs, { jobs: args.jobs != null ? num(args.jobs) : null });
+    const ms = Date.now() - t0;
+    const ok = rows.filter((r) => !r.error && r[key] != null);
+    // A pack is built from whole cells, so it lands NEAR a target, never on
+    // it. But a 302 Ah cell asked for 20 kWh returns 120 kWh — one series
+    // string already overshoots — and ranking that as the cheapest design is
+    // meaningless: it is not the pack anyone asked for. Designs that miss the
+    // target by more than the tolerance are excluded and counted, because
+    // "this cell cannot build a pack that small at this voltage" is a real
+    // answer worth seeing.
+    const tol = num(args.tol, 0.2);
+    const onTarget = ok.filter((r) => r.targetWh > 0 && Math.abs(r.kWh * 1000 - r.targetWh) / r.targetWh <= tol);
+    const missed = ok.length - onTarget.length;
+    // A design with a FAIL finding is not a candidate, whatever it scores.
+    const scored = args.all ? onTarget : onTarget.filter((r) => r.fails === 0);
+    scored.sort((a, b) => (a[key] - b[key]) * dir);
+    // Neighbouring targets round to the SAME whole-cell pack, so an
+    // undeduplicated top-10 is often one design listed ten times. Keep the
+    // first (best-ranked) instance of each distinct pack, so "top 10" means
+    // ten different answers.
+    const seen = new Set();
+    const viable = scored.filter((r) => {
+      const id = `${r.cell}|${r.cellCount}`;
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    const top = viable.slice(0, num(args.top, 12));
+    const table = [
+      `Design search — ${rows.length.toLocaleString()} designs in ${(ms / 1000).toFixed(1)} s `
+      + `(${mode}${mode === 'parallel' ? `, ${workers} threads` : ''}, ${(ms / rows.length).toFixed(2)} ms each)`,
+      `${missed.toLocaleString()} missed their energy target by more than ${Math.round(tol * 100)}% (whole cells only — the cell is too big or too small for that target)`,
+      `${viable.length.toLocaleString()} distinct viable packs${args.all ? '' : ' (designs with a FAIL finding excluded — --all to include)'} — best ${rank} first:`,
+      '',
+      pad('cell', 30) + pad('cells', 8) + pad('kWh', 8) + pad('kg', 8) + pad(unit, 16) + 'audit',
+      ...top.map((r) => pad(r.cell.slice(0, 29), 30) + pad(r.cellCount, 8)
+        + pad(r.kWh?.toFixed(1), 8) + pad(r.massKg?.toFixed(1), 8)
+        + pad(typeof r[key] === 'number' ? (r[key] < 10 ? r[key].toFixed(3) : Math.round(r[key])) : '—', 16)
+        + `${r.fails} fail / ${r.warns} warn`),
+      ...(top.length ? [] : ['', 'Nothing met the target within tolerance. Widen it with --tol 0.4, or check the energy range.']),
+    ].join('\n');
+    emit(args, {
+      apiVersion: API_VERSION, rank, searched: rows.length, missedTarget: missed,
+      viable: viable.length, tolerance: tol, ms, workers, rows: top,
+    }, table);
+  },
+
   apps(args) {
     const list = listApplications();
     emit(args, list, list.map((a) =>
@@ -253,21 +328,6 @@ const COMMANDS = {
   help() { console.log(HELP); },
 };
 
-function summaryRow({ variable, value, design }) {
-  return {
-    variable, value,
-    cell: design.cell.id,
-    kWh: design.pack.energyWh / 1000,
-    massKg: design.pack.massKg,
-    upfrontUSD: design.cost?.upfrontUSD ?? null,
-    usdPerKWhDelivered: design.cost?.usdPerKWhDelivered ?? null,
-    whPerKm: design.vehicle?.drive?.whPerKm ?? null,
-    rangeKm: design.vehicle?.range ?? null,
-    fails: design.findings.filter((f) => f.severity === 'fail').length,
-    warns: design.findings.filter((f) => f.severity === 'warn').length,
-  };
-}
-
 const pad = (v, n) => String(v ?? '—').padEnd(n);
 
 const HELP = `battery-design — desktop runner (API v${API_VERSION})
@@ -275,6 +335,7 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   design    one design, fully worked           --app ev --energy 60000 [--cell ID] [--s N --p N]
   mission   the design driven through time     --app ebus --passes 6 [--charge base --minutes 120]
   sweep     one variable across a range        --vary cell|mass|payload|energy [--from --to --step]
+  search    the whole design space, ranked     --app ev --rank cost|range|mass|density|upfront [--top N]
   range     drive-cycle study, mass × mode     --app ev --energy 60000 [--from --to --step]
   apps      the application presets
   cells     the cell library                   [--chemistry LFP] [--form cylindrical]
@@ -288,6 +349,12 @@ Common flags
   --dod 0.8         usable depth of discharge               --grade PCT   route gradient
   --profile ID      load profile, or "vehicle" for physics  --soc 0.9     mission start SoC
   --json            machine-readable output                 --out FILE    write JSON to a file
+  --jobs N          worker threads (default: every core)     --top N       how many results to show
+  --chemistry LFP   restrict a sweep or search              --all         include designs that FAIL the audit
+
+Big runs use every core. Small ones stay on one thread on purpose: starting a
+worker costs more than the few designs it would have saved. Serial and
+parallel runs return identical rows.
 
 Everything runs locally. No network, no account, no telemetry.`;
 
@@ -300,4 +367,5 @@ if (!fn) {
   console.log(HELP);
   process.exit(2);
 }
-fn(args);
+// Some commands fan out across worker threads and are therefore async.
+await fn(args);

@@ -121,9 +121,13 @@ test('the MCP server speaks the protocol and returns real answers', () => {
 });
 
 test('the MCP server fails safely', () => {
-  const bad = handleMessage({ id: 4, method: 'tools/call', params: { name: 'design_pack', arguments: { application: 'ev', s: -5 } } });
+  // An isolation standard the module refuses to guess at genuinely throws —
+  // unlike a nonsense S/P count, which is clamped WITH a warning.
+  const bad = handleMessage({ id: 4, method: 'tools/call', params: { name: 'design_pack', arguments: { application: 'ev', isolationStandard: 'no-such-standard' } } });
   ok(bad.isError === true && /could not be completed/.test(bad.content[0].text),
     'a failed design is reported as tool output the agent can read, not a silent crash');
+  const clamped = handleMessage({ id: 5, method: 'tools/call', params: { name: 'design_pack', arguments: { application: 'ev', s: -5 } } });
+  ok(!clamped.isError, 'a correctable input still produces a design');
   let threw = false;
   try { handleMessage({ id: 5, method: 'tools/call', params: { name: 'no-such-tool' } }); } catch (e) { threw = e.code === -32601; }
   ok(threw, 'an unknown tool is a protocol error with the right code');

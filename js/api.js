@@ -112,12 +112,23 @@ function defaultCellFor(preset) {
 
 // Series/parallel from intent: series follows the voltage window, parallel
 // follows the energy target. Exactly the arithmetic the UI does.
-function deriveSP(cell, preset, spec) {
+function deriveSP(cell, preset, spec, warnings) {
   const targetV = spec.nominalV ?? preset?.typicalV ?? 48;
-  const s = spec.s ?? Math.max(1, Math.round(targetV / cell.nominalV));
   const targetWh = spec.energyWh ?? preset?.typicalEnergyWh ?? 1000;
-  const perStringWh = s * cell.nominalV * cell.capacityAh;
-  const p = spec.p ?? Math.max(1, Math.round(targetWh / perStringWh));
+  const perStringWh = targetV > 0 ? Math.max(1, Math.round(targetV / cell.nominalV)) * cell.nominalV * cell.capacityAh : 0;
+  const wanted = {
+    s: spec.s ?? Math.max(1, Math.round(targetV / cell.nominalV)),
+    p: spec.p ?? Math.max(1, Math.round(targetWh / (perStringWh || 1))),
+  };
+  // A pack cannot have half a cell or minus one. Clamping is right — doing it
+  // silently is not, since the caller would read the answer as the design
+  // they asked for. Unknown ids already say so; so does this.
+  const s = Math.max(1, Math.round(wanted.s));
+  const p = Math.max(1, Math.round(wanted.p));
+  if (s !== wanted.s || p !== wanted.p) {
+    warnings.push(`Series/parallel counts must be whole numbers of at least 1: `
+      + `${wanted.s}S${wanted.p}P was corrected to ${s}S${p}P.`);
+  }
   return { s, p };
 }
 
@@ -135,7 +146,7 @@ export function designFromSpec(spec = {}) {
   if (spec.cell && !cellById(spec.cell)) {
     warnings.push(`Unknown cell "${spec.cell}" — using ${cell.id} instead. Use listCells() for the real ids.`);
   }
-  const { s, p } = deriveSP(cell, preset, spec);
+  const { s, p } = deriveSP(cell, preset, spec, warnings);
   const appId = preset?.id || 'custom';
   const market = spec.market || 'eu';
   const dod = spec.dod ?? 0.8;

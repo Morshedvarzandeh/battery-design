@@ -222,10 +222,15 @@ project's provenance-first datasheet pipeline.
   tool knows lives in pure modules, so `js/api.js` exposes it as one call:
   `designFromSpec(spec)` returns the entire design as JSON, unchanged in a
   browser or in Node. On top of that sits `desktop/bd.mjs`, a zero-dependency
-  runner for work a browser tab should not do while you wait — sweep the whole
-  cell library ranked by cost per kWh *delivered*, study range across mass ×
-  driving mode, run long missions, or `serve` the same UI offline from your own
-  machine. And `desktop/mcp-server.mjs` lets **Claude or any MCP-speaking agent
+  runner for work a browser tab should not do while you wait — **search the
+  whole design space** (every cell × every energy target, each one fully
+  worked, then ranked by cost per kWh *delivered*, range, mass or density),
+  sweep the cell library, study range across mass × driving mode, run long
+  missions, or `serve` the same UI offline from your own machine. Big runs use
+  every core via worker threads (9,223 complete designs: 31.7 s on one thread,
+  14.8 s on four); small ones stay serial on purpose, because starting a worker
+  costs more than a few hundred designs are worth. Parallel and serial return
+  identical rows — there is a test for exactly that. And `desktop/mcp-server.mjs` lets **Claude or any MCP-speaking agent
   drive the designer directly** — size a pack, run a mission, compare cells,
   ask what V2G would cost — so the assistant answers from the design modules
   instead of guessing about batteries. No MCP client? The Results tab has
