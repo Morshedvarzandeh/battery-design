@@ -233,7 +233,25 @@ and the module carries an explicit disclaimer: this is landscape awareness for
 design conversations, **not** a freedom-to-operate opinion. Get an attorney for
 that.
 
-### 7.5 Market validation anchor
+### 7.5 Circular economy and end of life
+
+| What it governs | Instrument |
+|---|---|
+| Recycling efficiency (65% by mass end-2025, 70% end-2030) | Regulation (EU) 2023/1542, Annex XII Part B |
+| Per-element recovery (Li 50%/80%, Co-Cu-Ni-Pb 90%/95%) | Regulation (EU) 2023/1542, Annex XII Part C |
+| Digital battery passport, from 18 February 2027 | Regulation (EU) 2023/1542, Articles 77–78 |
+| Extended producer responsibility and free take-back | Regulation (EU) 2023/1542, Articles 56–58 |
+| Prohibition on landfill and incineration of waste batteries | Regulation (EU) 2023/1542, Article 61 |
+| Lithium batteries in transport (UN 3480 / UN 3481, Class 9) | UN Model Regulations; ADR / IMDG / IATA-DGR as adopted locally |
+| Damaged or defective cells in transport | UN Model Regulations SP 376/377; packing instructions P908, P911 |
+| Waste batteries crossing a border | Basel Convention, Annex VIII A1170 / Annex IX B1090 |
+| US federal handling of spent lithium batteries | 40 CFR Part 273 (universal waste), plus state EPR statutes |
+| China EV battery traceability and recycling | MIIT interim measures (2018) and the national traceability platform |
+| New-pack price anchor | BloombergNEF annual lithium-ion battery price survey (volume-weighted average pack price) |
+
+---
+
+### 7.6 Market validation anchor
 
 `tools/validate-vs-market.mjs` checks the whole chain against a **production
 pack**: the Tesla Model 3 Long Range (4,416 × 2170 cells, 96S46P, ~78 kWh
@@ -258,6 +276,11 @@ are exposed as inputs wherever possible, and stated as estimates in the output.
 | Chiller COP | 2.5 | Conservative automotive class value; exposed in the thermal model |
 | Coolant properties | 50/50 water-glycol, c_p 3.6 kJ/(kg·K), ρ 1.07 kg/L, design ΔT 5 K | Standard class values; all exposed in the Excel workbook as named inputs |
 | Manufacturing CO₂ footprint | 45–90 kg CO₂e per kWh by chemistry, carried as a 0.6–1.5× range | Literature-class estimates that vary by factory, grid and year by more than the difference between chemistries. Good for comparing options, not an audited LCA — the life-cycle module carries the spread rather than the midpoint and says so |
+| Circular-economy stage values | fractions of new-pack price, e.g. reused 0.35–0.60, repurposed 0.25–0.45, black mass 0.06–0.18 | There is no published price series for a used battery at a stage of life. The ranges are deliberately wide because the real spread is wide, and everything is anchored on the one figure that IS surveyed annually — pack price — so the model moves when that moves instead of going stale |
+| Circular-economy step costs | per kWh of original nameplate: assess 12, repurpose 35, remanufacture 60, shred 22, refine 18 | Class-typical 2024–25 planning inputs for comparing routes against each other, not quotes. Absolute values depend on volume, contract and plant; the relative ordering — that assessment and logistics eat the margin — is the finding worth trusting |
+| Place labour and logistics indices | relative multipliers around 1.0 per market | Relative is defensible from published cost-of-doing-business comparisons; an absolute wage or freight rate with a currency symbol in front of it would claim precision this does not have |
+| Dangerous-goods transport rate | 0.0025 USD/kWh/km sound, 0.010 damaged | The 4× ratio reflects that P908/P911 is a different shipment — individually packed, non-combustible cushioning, no air freight — rather than a surcharge. The absolute rate is a planning figure |
+| Second-life state-of-health thresholds | resale ≥80%, repurpose ≥70%, remanufacture ≥60% | Commonly quoted industry rules of thumb rather than a standard. Real thresholds are set by the receiving application's duty, and the module names the number it applied so it can be argued with |
 | OCV(SoC) curves | chemistry-class shapes (LFP flat plateau, NMC slope, Na-ion near-linear) anchored to each cell's own voltage window | Manufacturers do not publish OCV tables; the simulation states this in its assumptions list on every run |
 | Cell swelling allowance | 10–20% thickness growth over life | Design practice, not a standard requirement |
 | Wall thickness | **not prescribed** | No standard specifies a millimetre value. The crash/crush **tests** (ECE R100 Annex 4, GB 38031, UL 2580) prescribe outcomes; the wall must pass them. The tool says this rather than inventing a number |

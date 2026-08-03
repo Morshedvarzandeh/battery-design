@@ -54,6 +54,9 @@ export const CONCEPTS = {
   'part-swap': { label: 'Fitting a different part', why: 'What one change actually buys and costs, priced before you commit to it rather than after.' },
   showroom: { label: 'The pack in three dimensions', why: 'Standing in front of the thing rather than reading a table about it — the same geometry, at the size it really is.' },
 
+  // --- What happens to it afterwards ---------------------------------------
+  'circular-value': { label: 'Value by life stage and place', why: 'A pack does not have a price — it has a price here, at this point in its life, to someone. The three move independently.' },
+
   // --- How the machine actually moves --------------------------------------
   // Deliberately SEPARATE concepts rather than one 'route simulation', because
   // the physics genuinely differs by domain and a shared node would let road
@@ -99,6 +102,12 @@ export const NEEDS = {
   // size of a stamp until they see them.
   'part-swap': { classes: ALL },
   showroom: { classes: ALL },
+
+  // Every battery ends up somewhere, so the circular view is universal. It is
+  // most consequential for the big ones — an EV pack is the case the EU wrote
+  // the regulation about — but a wearable cell has an end of life too, and
+  // pretending otherwise is how the small ones end up in household waste.
+  'circular-value': { classes: ALL },
 
   // --- How the machine actually moves --------------------------------------
   // The edges that keep road physics away from a boat. Each domain gets the
