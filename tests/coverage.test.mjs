@@ -22,6 +22,19 @@ import { ADDONS, addonsFor, validateAddonConcepts } from '../js/addons.js';
 import { PRESETS } from '../js/presets.js';
 import { appClassOf } from '../js/markets.js';
 
+
+// Comments and string literals are prose, not behaviour. Testing raw source
+// made "temperature window." in a finding read as DOM access and the camera's
+// own pitch read as a cell pitch — false alarms that would have trained the
+// next person to delete the check.
+const strip = (src) => src
+  .replace(/\/\*[\s\S]*?\*\//g, ' ')
+  .replace(/(^|[^:])\/\/[^\n]*/g, '$1 ')
+  .replace(/^\s*#[^\n]*/gm, ' ')
+  .replace(/`(?:[^`\\]|\\.)*`/g, '``')
+  .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
+  .replace(/"(?:[^"\\\n]|\\.)*"/g, '""');
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('the graph is internally consistent', () => {
@@ -134,4 +147,64 @@ test('a shipped add-on names a module that is actually there', () => {
       ok(candidates.some((c) => existsSync(c)), `${a.id}: ${rel} exists`);
     }
   }
+});
+
+test('the engine never depends on the panels', () => {
+  // Modularity, enforced rather than asserted in a README.
+  //
+  // Every module in js/ is either ENGINE (it computes) or SURFACE (it draws).
+  // The rule is one-directional: surface may import engine, engine may never
+  // import surface. It is what makes the headless API, the desktop runner,
+  // the MCP server and now a renderer in another language all the same
+  // designer rather than four that agree by luck.
+  //
+  // It is also the rule that rots first, because importing a formatter from
+  // app.js to print one number is always the shortest path.
+  const SURFACE = new Set([
+    'app.js', 'viewer2d.js', 'viewer3d.js', 'garage-ui.js', 'garage3d-host.js',
+    'cell-picker.js', 'radar.js', 'bay-import.js', 'training.js', 'excel.js',
+    'desktop-link.js',
+    // Browser-only by requirement, not by accident: a customer's own cell data
+    // is stored in THEIR browser and nowhere else, so this module cannot be
+    // made to run headless without breaking the promise that keeps it private.
+    'mycells.js',
+  ]);
+  const files = readdirSync(path.join(ROOT, 'js')).filter((f) => f.endsWith('.js'));
+  for (const f of files) {
+    if (SURFACE.has(f)) continue;
+    const src = readFileSync(path.join(ROOT, 'js', f), 'utf8');
+    const imports = [...src.matchAll(/^import[^;]*?from\s+'\.\/([^']+)'/gm)].map((m) => m[1]);
+    for (const dep of imports) {
+      ok(!SURFACE.has(dep), `${f} imports ${dep}, which draws — the engine must not depend on a panel`);
+    }
+    ok(!/\b(?:document|localStorage|sessionStorage)\.[a-zA-Z]|\bwindow\.(?:addEventListener|document|location)/
+      .test(strip(src)),
+    `${f} touches the DOM — it would stop running in Node, the desktop runner and the tests`);
+  }
+});
+
+test('the 3D renderer is a face, not a second opinion', () => {
+  // The whole safety case for embedding a game engine. GDScript has no access
+  // to the design modules and cannot be tested by this suite, so the boundary
+  // is what gets checked: the renderer may only be handed data, and the file
+  // that hands it over may not compute any of it.
+  const gd = readFileSync(path.join(ROOT, 'garage3d', 'garage.gd'), 'utf8');
+  // Arithmetic that would mean the renderer is deriving pack geometry rather
+  // than reading it. Unit conversion (MM) and camera maths are allowed and
+  // named; anything reaching for a cell pitch, a gap or a count is not.
+  // Terms that could only mean the renderer is deriving pack geometry or
+  // electrical quantities rather than reading them. Deliberately specific:
+  // camera "pitch" and Godot's own "light_energy" are legitimate, and a list
+  // blunt enough to catch those is a list someone will delete.
+  const code = strip(gd);
+  for (const banned of ['spacing_mm', 'wall_mm', 'cell_pitch', 'energy_wh', 'capacity_ah',
+    'nominal_v', 'wh_per', 'series_count', 'parallel_count']) {
+    ok(!code.toLowerCase().includes(banned),
+      `garage.gd computes with "${banned}" — geometry and quantities come from the payload, never from here`);
+  }
+  ok(/scene\.get\(|parsed\.get\(|\.get\("/.test(gd), 'it reads the payload');
+
+  const host = readFileSync(path.join(ROOT, 'js', 'garage3d-host.js'), 'utf8');
+  ok(!/designFromSpec|layoutPack|summarize|analyze/.test(host),
+    'the host posts scenes and nothing else — it must not build one');
 });

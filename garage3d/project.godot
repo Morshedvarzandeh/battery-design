@@ -1,0 +1,28 @@
+; Battery pack garage — the 3D face over the design engine.
+;
+; GL Compatibility, not Forward+: this ships to a browser tab, and the
+; compatibility renderer runs on WebGL 2 everywhere rather than needing
+; features half the machines a customer owns will not have.
+
+config_version=5
+
+[application]
+
+config/name="Battery pack garage"
+run/main_scene="res://main.tscn"
+config/features=PackedStringArray("4.3", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=800
+window/stretch/mode="canvas_items"
+window/per_pixel_transparency/allowed=true
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/vram_compression/import_etc2_astc=true
+anti_aliasing/quality/msaa_3d=1

@@ -11,6 +11,8 @@ import { PRESETS } from '../js/presets.js';
 import { CELLS, cellById } from '../js/cells.js';
 import { summarize, layoutPack, defaultArrangement } from '../js/pack-engine.js';
 import { costModel } from '../js/optimizer.js';
+import { analyze } from '../js/engineering.js';
+import { DEFAULTS_BY_FORM, componentById } from '../js/components.js';
 
 test('a one-field specification produces a complete, honest design', () => {
   const d = designFromSpec({ application: 'ev' });
@@ -29,12 +31,34 @@ test('a one-field specification produces a complete, honest design', () => {
 test('the headless engine agrees with the modules the UI uses', () => {
   const d = designFromSpec({ application: 'ebike', cell: 'samsung-inr21700-50e', s: 13, p: 4 });
   const c = cellById('samsung-inr21700-50e');
-  const direct = summarize(c, 13, 4, layoutPack(c, 13, 4, {
+  const layout = layoutPack(c, 13, 4, {
     arrangement: defaultArrangement(c), spacingMm: 1, wallMm: 2, headroomMm: 8,
-  }));
+  });
+  const direct = summarize(c, 13, 4, layout);
   near(d.pack.energyWh, direct.energyWh, 1e-9, 'same energy as calling the pack engine directly');
-  near(d.pack.massKg, direct.massKg, 1e-9, 'same mass');
+  near(d.pack.massCellsKg, direct.massCellsKg, 1e-9, 'same cell mass');
   near(d.pack.nominalV, direct.nominalV, 1e-9, 'same voltage');
+
+  // Pack mass deliberately does NOT match summarize()'s figure, and that
+  // difference is the agreement being checked. summarize() carries a
+  // placeholder — 8% on the cells plus an aluminium box — because it runs
+  // before any part has been chosen. Once the engine has fitted real busbars,
+  // holders and an enclosure it uses their masses, exactly as the components
+  // tab does. What must hold is that it is analyze()'s number, not a third one.
+  const fitted = Object.fromEntries(Object.entries(DEFAULTS_BY_FORM[c.form])
+    .map(([k, id]) => [k, componentById(k, id)]));
+  const a = analyze({
+    cell: c, s: 13, p: 4, pack: direct, selection: fitted,
+    layout: {
+      arrangement: defaultArrangement(c), orientation: 'upright', spacingMm: 1, wallMm: 2,
+      inner: layout.inner, outer: layout.outer, nx: layout.nx, ny: layout.ny, nz: layout.nz,
+    },
+    usage: { dod: 0.8, cyclesPerYear: null, targetYears: null },
+  });
+  near(d.pack.massKg, a.totals.packMassWithComponentsKg, 5e-3,
+    'mass comes from the parts actually fitted, via analyze(), not a re-derivation');
+  ok(Math.abs(d.pack.massKg - direct.massKg) > 1e-6,
+    'and it is not the pre-selection placeholder — that would mean no component was ever fitted');
   const cost = costModel(c, direct.cellCount, direct.energyWh, { dod: 0.8, cyclesPerYear: d.spec.resolved ? null : null });
   near(d.cost.upfrontUSD, cost.upfrontUSD, 1e-9, 'and the same cost model, not a re-derivation');
 });

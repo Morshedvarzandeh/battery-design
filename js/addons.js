@@ -239,6 +239,20 @@ export const ADDONS = [
     needs: ['a pack layout', 'a cell', 'what sits between the cells'],
     why: 'Relative ordering survives the missing physics because every option is wrong by the same amount; absolute prediction does not. UL 9540A and GB 38031-2025 exist because propagation is settled by burning a real pack.',
   },
+  {
+    id: 'garage', name: 'The garage', tier: 'browser', status: 'shipped',
+    module: 'garage.js + garage-ui.js', concepts: ['part-swap'],
+    what: 'Fit a different part and see what it does. Every option on the shelf is priced BEFORE it is chosen — what it buys, what it costs, whether it breaks anything, and whether it clears a failure the design already had. A part that wins on one number and fails the audit is marked rather than ranked, and a part that does not suit the pack says so instead of quietly reporting no change.',
+    provides: ['every option on a shelf, evaluated', 'what a swap bought and what it cost, side by side', 'failures introduced, cleared, and already-failing ones that moved'],
+    needs: ['a design to compare against'],
+  },
+  {
+    id: 'showroom', name: 'The pack in 3D (Godot)', tier: 'browser', status: 'shipped',
+    module: 'scene3d.js + garage3d/', concepts: ['showroom'],
+    what: 'The pack itself, in a game engine, at the size it really is — every cell where the layout put it, the cooling hardware in the space it reserved, and the audit result on the caption so a failing pack cannot be admired without being told. The renderer computes nothing: it draws a payload the design engine produced, which is what lets a face in another language exist without the tool acquiring a second opinion.',
+    provides: ['the real geometry, walkable', 'parts drawn where they sit', 'the audit alongside the picture'],
+    needs: ['a design', 'the renderer, which CI builds and a plain checkout does not have'],
+  },
 ];
 
 export const addonById = (id) => ADDONS.find((a) => a.id === id) || null;

@@ -808,7 +808,12 @@ export function analyze(ctx) {
       creepageReqMm: round(q.creepageReqMm, 2),
       clearanceReqMm: round(q.clearanceReqMm, 2),
       componentMassKg: q.componentMassKg,
-      packMassWithComponentsKg: round(q.packMassWithComponentsKg, 2),
+      // Two decimals is right for a 300 kg EV pack and destroys a wearable: a
+      // 30 g pack rounds to 0.03 kg, so fitting an 8 g part changes nothing in
+      // the DATA and the garage honestly reports "no measurable change". Tiny
+      // packs are real packs, so the precision follows the scale.
+      packMassWithComponentsKg: round(q.packMassWithComponentsKg,
+        q.packMassWithComponentsKg != null && Math.abs(q.packMassWithComponentsKg) < 1 ? 5 : 2),
     },
   };
 }

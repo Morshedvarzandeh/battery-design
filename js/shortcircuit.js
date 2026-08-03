@@ -292,17 +292,21 @@ export function shortCircuitStudy({
         : ` and nothing here is shown to clear it.`),
     findings: [
       ...faults.filter((f) => f.verdict === 'not-workable').map((f) => ({
+        id: `short-${f.kind.id || f.kind.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         severity: 'fail', category: 'safety',
         title: `Short circuit: ${f.kind.name.toLowerCase()}`, detail: f.why,
       })),
       ...faults.filter((f) => f.verdict === 'workable-with-costs' || f.verdict === 'unproven').map((f) => ({
+        id: `short-${f.kind.id || f.kind.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`,
         severity: 'warn', category: 'safety',
         title: `Short circuit: ${f.kind.name.toLowerCase()}`, detail: f.why,
       })),
       ...(internal.verdict === 'not-workable' ? [{
+        id: 'short-internal-cell',
         severity: 'fail', category: 'safety',
         title: `Internal cell short: ${internal.neighbours} neighbours feed the fault`, detail: internal.why,
       }] : internal.verdict === 'workable-with-costs' ? [{
+        id: 'short-internal-cell',
         severity: 'warn', category: 'safety',
         title: 'Internal cell short: fusible links too slow', detail: internal.why,
       }] : []),

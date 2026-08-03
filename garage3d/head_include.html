@@ -1,0 +1,40 @@
+<!-- The bridge, injected into the Godot shell's <head>.
+
+     The engine registers window.bdReceiveScene once it is up. This listener
+     exists from the first byte of the page, so a scene posted before the
+     engine is ready is QUEUED rather than dropped — otherwise the first
+     design a customer opens is the one that never appears, which is the
+     hardest kind of bug to see and the easiest to ship. -->
+<script>
+(function () {
+  'use strict';
+  var pending = null;
+  function deliver() {
+    if (pending == null || typeof window.bdReceiveScene !== 'function') return;
+    var payload = pending;
+    pending = null;
+    window.bdReceiveScene(payload);
+  }
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (typeof d === 'string') { try { d = JSON.parse(d); } catch (_) { return; } }
+    if (!d || d.type !== 'bd3d:scene') return;
+    pending = JSON.stringify(d.scene);
+    deliver();
+  });
+  // The engine cannot tell us it has installed the hook until it has, so the
+  // queue is drained on a short poll rather than a callback that would need
+  // the very hook we are waiting for.
+  var tries = 0;
+  var timer = setInterval(function () {
+    if (typeof window.bdReceiveScene === 'function') { deliver(); clearInterval(timer); }
+    else if (++tries > 600) clearInterval(timer);      // ~60 s, then stop burning a timer
+  }, 100);
+})();
+</script>
+<style>
+  /* The canvas is the whole frame: it is embedded in a pane that already has
+     its own chrome, so a second set of margins would just waste the space. */
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #0e1512; }
+  #canvas { display: block; width: 100vw; height: 100vh; outline: none; }
+</style>

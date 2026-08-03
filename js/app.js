@@ -3,6 +3,10 @@
 // standards.js; all the rendering in viewer3d.js.
 
 import { CELLS, CHEMISTRIES, cellById, provenance } from './cells.js';
+import { mountGarage } from './garage-ui.js';
+import { designFromSpec, suggestSP, layoutForDesign } from './api.js';
+import { buildScene } from './scene3d.js';
+import { mount3D, rendererAvailable } from './garage3d-host.js';
 import { CellPicker } from './cell-picker.js';
 import { drawRadar, radarTable, missingNotes, SERIES } from './radar.js';
 import { PRESETS } from './presets.js';
@@ -564,6 +568,25 @@ function applyPreset(pr) {
     applyProfileToRequirements();
   }
   renderProfile();
+
+  // Seed the pack from the requirement just stated.
+  //
+  // Until now the preset filled the requirements FORM and left the pack at
+  // whatever series/parallel happened to be there, so choosing "EV — 60 kWh,
+  // 400 V" showed a 13S4P pack: 0.9 kWh and five kilometres of range, sitting
+  // under a label that said car. Every panel downstream was then answering
+  // honestly about the wrong machine.
+  //
+  // The counts come from suggestSP, which is the arithmetic the headless
+  // engine already uses, so the panel and the API agree by construction
+  // rather than by two people writing the same division twice. It is a
+  // STARTING point, not an answer — Suggest designs still refines it, and
+  // the customer can type over both numbers.
+  const sp = suggestSP(cell(), pr);
+  state.s = sp.s;
+  state.p = sp.p;
+  syncInputs();
+  recompute();
 }
 
 // ---------------------------------------------------------------------------
@@ -748,6 +771,7 @@ function bindControls() {
     if (t.dataset.tab === 'therm') renderThermal();
     if (t.dataset.tab === 'sim') renderSim();
     if (t.dataset.tab === 'sensors') renderSensors();
+    if (t.dataset.tab === 'garage') renderGarage();
     updateFlowBar(t.dataset.tab);
   });
   buildFlowBar();
@@ -1856,6 +1880,124 @@ function recompute() {
 // ---------------------------------------------------------------------------
 let lastSensors = null;
 
+
+// ---------------------------------------------------------------------------
+// The garage. Mounted lazily, because evaluating every option on every shelf
+// is a few hundred complete designs and there is no reason to pay for it
+// until someone opens the tab.
+//
+// It is given the SPEC rather than the app's state object, so it talks to the
+// same engine the desktop runner and the report use. That is what stops the
+// garage growing its own opinion about what a design is.
+// ---------------------------------------------------------------------------
+let garage = null;
+// The showroom: the pack itself, in a game engine, on the garage floor.
+//
+// Deliberately opt-in and lazy. The renderer is about 8 MB over the wire —
+// almost all of it the engine's own runtime — and someone sizing an e-bike
+// battery should not pay for that to read a shelf of parts. Nothing is
+// fetched until the button is pressed, and if the build is absent (a plain
+// checkout has no export; CI produces it) it says so rather than showing a
+// frame that will never load.
+let showroom = null;
+let showroomWanted = false;
+let lastShowroomDesign = null;
+
+function showroomFor(design) {
+  lastShowroomDesign = design;
+  if (!showroomWanted || !showroom || !design) return;
+  const layout = layoutForDesign(design);
+  if (!layout) return;
+  showroom.show(buildScene({ design, layout }));
+}
+
+async function openShowroom(floor, button) {
+  const status = $('showroomStatus') || floor.querySelector('.showroom-status');
+  if (!await rendererAvailable()) {
+    status.textContent = 'The 3D renderer is not in this build. It is produced by CI on deploy; '
+      + 'a plain checkout has the source in garage3d/ but not the export.';
+    button.disabled = true;
+    return;
+  }
+  showroomWanted = true;
+  button.textContent = 'Hide the 3D view';
+  button.onclick = () => {
+    showroomWanted = false;
+    showroom?.destroy();
+    showroom = null;
+    floor.querySelector('.garage3d-frame')?.remove();
+    floor.classList.remove('is-open');
+    status.textContent = '';
+    bindShowroomButton(floor, button);
+  };
+  floor.classList.add('is-open');
+  showroom = mount3D({
+    container: floor,
+    onPick: (p) => { status.textContent = `${p.category}: ${p.name}`; },
+    onStatus: (s, detail) => {
+      status.textContent = s === 'loading' ? 'Starting the renderer…'
+        : s === 'ready' ? '' : detail;
+    },
+  });
+  showroomFor(lastShowroomDesign);
+}
+
+function bindShowroomButton(floor, button) {
+  button.textContent = 'Walk around it';
+  button.onclick = () => openShowroom(floor, button);
+}
+
+function renderGarage() {
+  const spec = () => ({
+    application: state.presetId || 'ev',
+    cell: state.cellId,
+    s: state.s, p: state.p,
+    market: state.marketId,
+    isolationStandard: state.archIso,
+  });
+  if (!garage) {
+    garage = mountGarage({
+      pane: $('pane-garage'),
+      getSpec: spec,
+      build: designFromSpec,
+      onDesign: showroomFor,
+      // Fitting a part in the garage changes the real design, so the rest of
+      // the tool moves with it. A garage that only previewed would be a
+      // calculator with extra steps.
+      onFit: (next) => {
+        if (next.cell && next.cell !== state.cellId) { state.cellId = next.cell; onCellChange(); }
+        if (Number.isFinite(next.s)) state.s = next.s;
+        if (Number.isFinite(next.p)) state.p = next.p;
+        // Hardware too, not only cells and counts. Without this the garage
+        // announced a cold plate fitted while the panel beside it still read
+        // 82 mm and 279 kg — the shelf moved and the tool did not, which is
+        // exactly the calculator-with-extra-steps this module exists not to be.
+        if (next.components) {
+          for (const [cat, id] of Object.entries(next.components)) {
+            if (componentById(cat, id)) state.sel[cat] = id;
+          }
+          initComponents();
+        }
+        $('selCell').value = state.cellId;
+        $('inS').value = state.s; $('inP').value = state.p;
+        recompute();
+      },
+    });
+    // The floor and its one button, built once. The renderer itself is not
+    // touched until the button is pressed.
+    const bar = document.createElement('div');
+    bar.className = 'showroom-bar';
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    const status = document.createElement('span');
+    status.className = 'showroom-status muted';
+    status.id = 'showroomStatus';
+    bar.append(btn, status);
+    garage.floor.append(bar);
+    bindShowroomButton(garage.floor, btn);
+  } else garage.refresh();
+}
+
 function renderSensors() {
   const box = $('sensorBody');
   if (!box) return;
@@ -2745,8 +2887,10 @@ function renderStats() {
   const T = lastAnalysis?.totals;
   if (T) {
     rows.push(['sec', 'Components & thermal']);
-    if (T.packMassWithComponentsKg != null) rows.push(['Mass w/ components', `${f1(T.packMassWithComponentsKg)} kg`]);
-    if (T.componentMassKg?.total != null) rows.push(['Component mass', `${f1(T.componentMassKg.total)} kg`]);
+    // fKg, not f1: a 30 g wearable pack reads "0.0 kg" through f1 — the same
+    // number for every part it could conceivably be fitted with.
+    if (T.packMassWithComponentsKg != null) rows.push(['Mass w/ components', fKg(T.packMassWithComponentsKg)]);
+    if (T.componentMassKg?.total != null) rows.push(['Component mass', fKg(T.componentMassKg.total)]);
     if (T.heatContW != null) rows.push(['Heat @ cont. load', `${f1(T.heatContW)} W`]);
     if (T.tempRiseContC != null) rows.push(['Est. temp rise', `${f1(T.tempRiseContC)} °C`]);
     if (T.creepageReqMm != null) rows.push(['Creepage req. (~)', `${f1(T.creepageReqMm)} mm`]);
