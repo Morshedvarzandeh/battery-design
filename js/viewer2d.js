@@ -210,12 +210,14 @@ export class PackViewer2D {
     dim(ox, oy + s(L.outer.y) + 16, ox + s(L.outer.x), oy + s(L.outer.y) + 16, mmTxt(L.outer.x), 'below');
     dim(ox - 16, oy, ox - 16, oy + s(L.outer.y), mmTxt(L.outer.y), 'left');
     // Cell pitch callout (first two cells of a row).
-    if (layer0.length > 1 && layer0[1].y === layer0[0].y) {
-      const pitch = Math.abs(layer0[1].x - layer0[0].x);
-      label(ox + 2, oy + s(L.outer.y) + 40, `pitch ${mmTxt(pitch)} · gap ${mmTxt(L.spacingMm)}`);
-    } else {
-      label(ox + 2, oy + s(L.outer.y) + 40, `gap ${mmTxt(L.spacingMm)} · wall ${mmTxt(L.wallMm)}`);
-    }
+    const topCaption = (layer0.length > 1 && layer0[1].y === layer0[0].y)
+      ? `pitch ${mmTxt(Math.abs(layer0[1].x - layer0[0].x))} · gap ${mmTxt(L.spacingMm)}`
+      : `gap ${mmTxt(L.spacingMm)} · wall ${mmTxt(L.wallMm)}`;
+    label(ox + 2, oy + s(L.outer.y) + 40, topCaption);
+    // Remember where it ends: on a narrow screen the side view's caption has
+    // to know, or the two overprint into nonsense. label() has just set the
+    // font, so this measures the text exactly as drawn.
+    const topCaptionRight = ox + 2 + g.measureText(topCaption).width;
 
     // ── SIDE VIEW (X·Z elevation, drawn as Z·Y panel) ────────────────────
     label(sideX, sideY - 10, 'SIDE · Z');
@@ -245,8 +247,12 @@ export class PackViewer2D {
     }
     dim(sideX, sideY + s(L.outer.y) + 16, sideX + s(L.outer.z), sideY + s(L.outer.y) + 16,
       mmTxt(L.outer.z), 'below');
-    label(sideX + s(L.outer.z) / 2, sideY + s(L.outer.y) + 40,
-      `${L.nz} layer${L.nz > 1 ? 's' : ''} + ${mmTxt(L.headroomMm)} headroom`, 'center');
+    const sideCaption = `${L.nz} layer${L.nz > 1 ? 's' : ''} + ${mmTxt(L.headroomMm)} headroom`;
+    const sideCaptionX = sideX + s(L.outer.z) / 2;
+    // Side by side if there is room, its own line if there is not.
+    const wouldCollide = sideY === oy
+      && sideCaptionX - g.measureText(sideCaption).width / 2 < topCaptionRight + 8;
+    label(sideCaptionX, sideY + s(L.outer.y) + (wouldCollide ? 56 : 40), sideCaption, 'center');
   }
 
   dispose() {
