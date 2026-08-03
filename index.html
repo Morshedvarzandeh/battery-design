@@ -976,20 +976,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           into any chatbot and ask about it. To let an AI drive the designer directly — size a pack, run a
           mission, compare cells — run the included MCP server on your machine (see
           <code>desktop/README.md</code>).</div>
-        <details class="fold" style="margin-top:8px">
-          <summary>Heavier work than a browser tab should do</summary>
-          <div class="hint" style="margin-top:6px">This page runs entirely in your browser, which keeps it
-            instant and private but sets a ceiling: sweeping the whole cell library, mass studies across a
-            range, or long missions at fine resolution are minutes of computation, not milliseconds.
-            The same designer runs on your own machine with that ceiling removed — identical modules, no
-            second implementation to disagree with this one:
-            <div style="margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;background:var(--surface-2);padding:6px;border-radius:var(--r)">
-              node desktop/bd.mjs sweep --app ev --energy 60000 --vary cell<br>
-              node desktop/bd.mjs range --app ev --from 1200 --to 2200<br>
-              node desktop/bd.mjs serve &nbsp;<span style="color:var(--muted)"># this same UI, offline</span>
-            </div>
-            Nothing is uploaded, in either place.</div>
-        </details>
+        <div id="runnerBox" style="margin-top:10px"></div>
       </div>
       <div class="sec" id="reportView" style="font-size:12.5px"></div>
     </div>

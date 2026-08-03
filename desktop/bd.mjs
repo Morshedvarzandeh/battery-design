@@ -452,22 +452,120 @@ const COMMANDS = {
     };
     const server = createServer((req, res) => {
       const url = decodeURIComponent(req.url.split('?')[0]);
-      // The one endpoint the served page gains over the public site: the full
-      // engine, computed here rather than in the tab.
-      if (url === '/api/design' && req.method === 'POST') {
+      const json = (code, obj) => {
+        res.writeHead(code, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(obj));
+      };
+      // Read a JSON body, then hand it to a handler. Every desktop endpoint
+      // answers with either a result or a readable reason — never a stack.
+      const withBody = (handler) => {
         let body = '';
         req.on('data', (c) => { body += c; });
         req.on('end', () => {
+          try { json(200, handler(JSON.parse(body || '{}'))); }
+          catch (e) { json(400, { error: e.message }); }
+        });
+      };
+
+      // The page asks this first. Its answer is what turns the desktop
+      // capabilities on in the interface: same UI, ceiling removed.
+      if (url === '/api/capabilities') {
+        return json(200, {
+          runner: 'battery-design desktop', apiVersion: API_VERSION,
+          cores: coreCount(),
+          capabilities: ADDONS.filter((a) => a.tier === 'desktop' && a.status === 'shipped')
+            .map((a) => ({ id: a.id, name: a.name, what: a.what })),
+          endpoints: ['/api/design', '/api/sim2', '/api/calibrate', '/api/search', '/api/fmu'],
+        });
+      }
+      if (url === '/api/design' && req.method === 'POST') return withBody((spec) => designFromSpec(spec));
+
+      // The advanced electro-thermal model — the one the browser cannot
+      // reasonably run, now reachable from the same panel it belongs in.
+      if (url === '/api/sim2' && req.method === 'POST') {
+        return withBody((body) => {
+          const d = designFromSpec(body.spec || {});
+          const cell = cellById(d.cell.id);
+          // Where the load comes from, in order of how much it knows:
+          // what the caller sent, then the vehicle's own physics, then the
+          // application's characteristic profile. Only if all three are
+          // absent is there genuinely nothing to simulate.
+          const prof = body.profile || (() => {
+            const app = d.spec.resolved.application;
+            const veh = vehicleDefaultsFor(app);
+            if (veh) {
+              const drive = driveCyclePower({
+                trace: traceForApp(app), vehicle: veh,
+                mode: body.driveMode || 'normal', packMassKg: d.pack.massKg,
+              });
+              return { dtS: drive.dtS, w: drive.w };
+            }
+            if (d.simulation?.profile?.id) {
+              const pr = profileById(d.simulation.profile.id);
+              if (pr) {
+                const scale = body.scaleW || d.pack.maxContPowerW || 1000;
+                return { dtS: pr.dtS, w: pr.p.map((x) => x * scale) };
+              }
+            }
+            throw new Error('Nothing to simulate: pick an application on the Usage tab, or send a profile of your own.');
+          })();
+          const r = simulate({
+            cell, s: d.pack.s, p: d.pack.p, params: body.params || null, profile: prof,
+            startSoC: body.startSoC ?? 1, ambientC: body.ambientC ?? 25,
+            nModules: body.nModules ?? 4,
+            years: body.years ?? 8, cyclesPerYear: body.cyclesPerYear ?? 250,
+          });
+          // The full series would be megabytes over the wire for no gain.
+          return { ...r, series: undefined, seriesLength: r.series.t.length };
+        });
+      }
+
+      // Correct the model against measured data, from the browser.
+      if (url === '/api/calibrate' && req.method === 'POST') {
+        return withBody((body) => {
+          const cell = cellById(body.cell) || cellById('samsung-inr21700-50e');
+          return calibrate({
+            cell, s: body.s ?? 1, p: body.p ?? 1, measured: body.measured,
+            params: body.params || null, fit: body.fit || ['r0Ref', 'rc1R', 'rc1TauS'],
+            startSoC: body.startSoC ?? 1, ambientC: body.ambientC ?? 25,
+            nModules: body.nModules ?? 1,
+          });
+        });
+      }
+
+      // Design-space search across every core.
+      if (url === '/api/search' && req.method === 'POST') {
+        let body = '';
+        req.on('data', (c) => { body += c; });
+        req.on('end', async () => {
           try {
-            const d = designFromSpec(JSON.parse(body || '{}'));
-            res.writeHead(200, { 'content-type': 'application/json' });
-            res.end(JSON.stringify(d));
-          } catch (e) {
-            res.writeHead(400, { 'content-type': 'application/json' });
-            res.end(JSON.stringify({ error: e.message }));
-          }
+            const b = JSON.parse(body || '{}');
+            const pool = b.chemistry ? CELLS.filter((c) => c.chemistry === b.chemistry) : CELLS;
+            const from = b.from ?? 20000, to = b.to ?? 100000, step = b.step ?? 5000;
+            const jobs = [];
+            for (const c of pool) {
+              for (let e = from; e <= to; e += step) {
+                jobs.push({
+                  index: jobs.length, variable: 'cell×energy', value: `${c.id} @ ${(e / 1000).toFixed(0)} kWh`,
+                  meta: { targetWh: e }, spec: { ...(b.spec || {}), cell: c.id, energyWh: e },
+                });
+              }
+            }
+            const { rows, workers, mode } = await runPool(jobs);
+            json(200, { searched: rows.length, workers, mode, rows: rows.filter((r) => !r.error) });
+          } catch (e) { json(400, { error: e.message }); }
         });
         return;
+      }
+
+      // Co-simulation export: the FMU as files the page can offer as a download.
+      if (url === '/api/fmu' && req.method === 'POST') {
+        return withBody((body) => {
+          const d = designFromSpec(body.spec || {});
+          const cell = cellById(d.cell.id);
+          return buildFmu({ cell, s: d.pack.s, p: d.pack.p, params: body.params || null,
+            modelName: body.modelName || 'BatteryPack' });
+        });
       }
       let file = path.join(ROOT, url);
       if (!file.startsWith(ROOT)) { res.writeHead(403); res.end(); return; }
@@ -478,7 +576,9 @@ const COMMANDS = {
     });
     server.listen(port, () => {
       console.log(`Battery designer running at http://localhost:${port}`);
-      console.log('Offline, on your machine. Nothing is sent anywhere. Ctrl-C to stop.');
+      console.log(`The full interface, with the desktop capabilities unlocked: `
+        + ADDONS.filter((a) => a.tier === 'desktop' && a.status === 'shipped').map((a) => a.name).join(', ') + '.');
+      console.log(`Using ${coreCount()} cores. Offline, on your machine. Nothing is sent anywhere. Ctrl-C to stop.`);
     });
   },
 
