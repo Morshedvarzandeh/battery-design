@@ -32,6 +32,7 @@ export const CONCEPTS = {
   'simulation': { label: 'Mission simulation', why: 'The design run through time — SoC, sag and temperature over the real profile.' },
   'ac-side': { label: 'AC side & charging', why: 'How the pack meets the grid — on-board charger, connectors, charge time.' },
   'charging-strategy': { label: 'Charging strategy', why: 'Depot vs opportunity vs tariff windows — a pack-sizing decision, not an afterthought.' },
+  'v2x': { label: 'Feeding power back (V2X)', why: 'V2L, V2H, V2G — and the wear floor that decides whether selling energy back ever pays.' },
 };
 
 // Edges: which application classes need each concept. Per-app extra edges
@@ -67,6 +68,10 @@ export const NEEDS = {
   // (or IS the grid interface) — a gadget's brick or dock needs no design.
   'ac-side': { classes: ['vehicle', 'auxiliary', 'marine', 'stationary'], apps: ['powerstation'] },
   'charging-strategy': { classes: ['vehicle', 'industrial', 'stationary', 'marine', 'auxiliary'], apps: [] },
+  // Feeding power back is a VEHICLE topic (bidirectional charge port).
+  // Stationary storage feeds the grid as its normal duty — that is the PCS
+  // panel's story, not a V2X edge.
+  'v2x': { classes: [], apps: ['ev', 'ebus'] },
 };
 
 // Does this application need this concept? No app selected -> everything

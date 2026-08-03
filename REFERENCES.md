@@ -109,6 +109,11 @@ than one that prints them.
 | **SAE J3400** | NACS electric vehicle coupler | The North American NACS connector | `charging.js` |
 | **GB/T 20234** (.2 AC, .3 DC) | Connection set for conductive charging of electric vehicles | The China AC and DC connectors | `charging.js` |
 | **GB/T 27930** | Communication protocols between off-board conductive charger and battery management system | China charge communication | `charging.js` |
+| **ISO 15118-20** | Road vehicles — vehicle to grid communication interface — Part 20: 2nd generation network layer and application protocol requirements | Bidirectional power transfer (BPT) — the charge-session standard behind V2G over CCS | `v2x.js` |
+| **CHAdeMO** | CHAdeMO DC charging protocol (bidirectional since 1.0) | The other established V2G session route | `v2x.js` |
+| **IEEE 1547** | Standard for interconnection and interoperability of distributed energy resources with associated electric power systems interfaces | What the grid-facing inverter must satisfy before a vehicle may export | `v2x.js` |
+| **UL 1741 (+SA/SB)** | Inverters, converters, controllers and interconnection system equipment for use with distributed energy resources | North American certification of the grid-tied inverter path | `v2x.js` |
+| **UL 9741** | Bidirectional electric vehicle charging system equipment | The bidirectional EVSE class behind V2H/V2G installations | `v2x.js` |
 
 ## 6 · Regulation
 
@@ -200,6 +205,7 @@ are exposed as inputs wherever possible, and stated as estimates in the output.
 | CV taper model | CC to 80% SoC, then 0.45× average rate | A class simplification of the constant-voltage tail — real taper curves are cell-specific and unpublished |
 | Mission charge power | the cell's rated continuous charge current (base charging additionally throttled by the OBC) | Mission-charging power in the simulation comes from the cell's own datasheet rating, not an invented charger |
 | BMS topology crossover | none | No sourced quantitative crossover between centralized / master-slave / wireless exists, so the tool suggests by scale and says openly that the rule is not sourced |
+| V2G wear floor | (cell price × count) ÷ (nameplate cycle life × usable energy) | Uses the **nameplate** cycle life — shallow V2G micro-cycling usually ages more gently per kWh, so the floor is a conservative first-order ceiling on wear cost, stated as such wherever it appears |
 
 ---
 

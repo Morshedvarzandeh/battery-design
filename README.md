@@ -218,6 +218,17 @@ project's provenance-first datasheet pipeline.
   every pass or one charge at base, powered by the cell's own datasheet
   charge rating — so an e-bus route with pantograph top-ups is a scenario
   you can actually run, winter charge-inhibit included.
+- **Feeding power back (V2X), priced honestly** — for vehicles with a
+  bidirectional port (EVs; V2G for e-bus depots), the expert fold assesses
+  V2L, V2H, V2G and V2V in the tool's standard verdict vocabulary — and
+  anchors the V2G decision to the **wear floor**: what one delivered kWh
+  costs in cycle life, computed from the same cell price and nameplate
+  cycle life the TCO model already uses. Service revenue below that floor
+  loses money before the bidirectional charger is even bought. V2V is
+  called what it is (no settled public standard — unproven), and stationary
+  storage is *not* dressed up as "V2X": feeding the grid through the PCS is
+  its normal duty, and the panel says exactly that. Standards behind the
+  verdicts: ISO 15118-20 (BPT), CHAdeMO, IEEE 1547, UL 1741, UL 9741.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,
@@ -340,6 +351,7 @@ is copied into the repository.
 | `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
 | `js/sensors.js` | Sensor plan by level (cell/module/system/cooling), omission-first |
 | `js/charging.js` | The AC side: per-application charging architecture, OBC classes, charge-time math, market connectors, strategies |
+| `js/v2x.js` | Feeding power back: V2L/V2H/V2G/V2V modes, per-design verdicts, and the cycle-life wear floor behind the V2G economics |
 | `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
