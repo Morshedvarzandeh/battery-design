@@ -125,10 +125,19 @@ export const ADDONS = [
   },
   {
     id: 'agents', name: 'AI & automation interface', tier: 'desktop', status: 'shipped',
-    module: 'desktop/mcp-server.mjs + api.js', concepts: [],
-    what: 'The whole designer as one JSON call, plus an MCP server so Claude or any agent can size packs, run missions and compare cells by calling the real modules.',
-    provides: ['designFromSpec() JSON', 'MCP tools', 'a design brief for any chatbot'],
+    module: 'desktop/mcp-server.mjs + api.js + brief.js', concepts: [],
+    what: 'The whole designer as one JSON call, plus an MCP server so Claude or any agent can size packs, run missions and compare cells by calling the real modules — and review a design the way an engineer would, with every check read into one list ordered so that what could hurt someone comes before what costs money.',
+    provides: ['designFromSpec() JSON', 'MCP tools', 'a prioritised design review', 'the questions the tool needs answered, ranked by leverage'],
     needs: ['the desktop runner for MCP'],
+    why: 'Keeping a person in the loop needs the tool to say what it is GUESSING, not only what it found. The review returns both, so an assistant asks the three questions worth asking instead of presenting a confident answer built on estimates.',
+  },
+  {
+    id: 'brief', name: 'Design review & briefing', tier: 'core', status: 'shipped',
+    module: 'brief.js', concepts: [],
+    what: 'Fifteen modules answer fifteen questions, each in its own shape. This reads all of them into one prioritised list — safety before cost, failures before warnings, the same problem found twice merged rather than repeated — then says what the tool is still guessing and what it did not check at all.',
+    provides: ['one ordered list of everything found', 'open questions ranked by how much they would change the answer', 'an explicit list of what was NOT checked'],
+    needs: ['a design; the wiring and grounding studies fold in where the desktop tier has run them'],
+    why: 'Written once so the report, the CLI and the assistant read the same translation instead of each growing their own copy of it.',
   },
   {
     id: 'wiring', name: 'Wiring, joints & bill of materials', tier: 'desktop', status: 'shipped',
