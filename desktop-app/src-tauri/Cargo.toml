@@ -1,0 +1,22 @@
+[package]
+name = "battery-design"
+version = "0.1.0"
+description = "Battery pack designer — the whole tool in a window, offline"
+authors = ["Morshed Varzandeh"]
+license = "Apache-2.0"
+edition = "2021"
+rust-version = "1.77"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

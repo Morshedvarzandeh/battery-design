@@ -1,5 +1,35 @@
 # battery-design
 
+
+## Download
+
+| You are on | File |
+|---|---|
+| Windows | `.msi` |
+| macOS, Apple silicon (M1–M4) | `aarch64.dmg` |
+| macOS, Intel | `x64.dmg` |
+| Linux, Debian/Ubuntu | `.deb` |
+| Linux, anything else | `.AppImage` |
+
+**[→ Releases](https://github.com/Morshedvarzandeh/battery-design/releases)**
+
+Nothing to install beyond the app itself — the runtime is bundled, so there is
+no "install Node first" step. No account, no network, nothing uploaded.
+
+Prefer not to install anything? The same designer runs in a browser at
+**[morshedvarzandeh.github.io/battery-design](https://morshedvarzandeh.github.io/battery-design/)**,
+with the heavier studies reserved for the desktop build.
+
+Already have a simulation toolchain? Take `battery-design-ev.fmu.zip` from the
+same release instead. It is an FMI 2.0 co-simulation component that drops into
+ANSYS Twin Builder, Simulink, GT-SUITE or Dymola — your vehicle or plant model
+drives it, and the pack answers each coupling step.
+
+Installers are unsigned, so Windows SmartScreen and macOS Gatekeeper will both
+warn about them. They are right to: signing certificates cost money and this
+project has not bought one. On macOS, right-click the app and choose Open the
+first time.
+
 **Design a battery pack from an application and an available space — geometry,
 electrical architecture, thermal system, mission simulation and the customer
 report — entirely in your browser.**

@@ -1,0 +1,57 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Battery pack designer",
+  "version": "0.1.0",
+  "identifier": "io.github.morshedvarzandeh.batterydesign",
+  "build": {
+    "frontendDist": "../runner",
+    "beforeBuildCommand": "node prepare.mjs"
+  },
+  "app": {
+    "withGlobalTauri": false,
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "msi",
+      "nsis",
+      "deb",
+      "appimage",
+      "dmg"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/bd-runner"
+    ],
+    "resources": {
+      "../runner": "runner"
+    },
+    "copyright": "Copyright (c) Morshed Varzandeh. Apache-2.0.",
+    "category": "Education",
+    "shortDescription": "Battery pack designer",
+    "longDescription": "Design a battery pack and see what it costs you: geometry, electrical architecture, thermal system, conductor sizing, grounding, fault study, life-cycle footprint and the release checklist for your market. Runs entirely on your own machine \u2014 no account, no network, nothing uploaded.",
+    "linux": {
+      "deb": {
+        "depends": []
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "10.15"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser"
+      }
+    }
+  }
+}
