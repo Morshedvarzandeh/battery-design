@@ -36,6 +36,7 @@ node desktop/bd.mjs help
 | `brief` | Every check in one ordered list, plus the questions the tool needs you to answer |
 | `lca` | The whole footprint by phase, each with how well it is actually known |
 | `runaway` | Compare barriers and spacing against each other, and size what you must contain |
+| `swap` | Fixed, swappable or hot-swappable as a policy, with the fleet and connector maths |
 | `addons` | What this tool can do, and what it cannot — including what is planned |
 | `apps` / `cells` | The application presets and the cell library |
 | `serve` | The web UI, served from your own machine, offline |
@@ -224,6 +225,59 @@ question genuinely retires it, which is checked by test rather than promised.
 It also lists **what was not checked**, because a briefing that says what it
 covered without saying what it skipped is the more dangerous of the two
 omissions.
+
+---
+
+## Swappable packs: a policy, not a kind of machine
+
+Swappability is an *attribute*, not an application. An e-bike, a forklift, a
+scooter and a grid cabinet can each be fixed or swappable, and a preset per
+variant would double the picker to express one boolean. So it is a policy that
+cuts across everything — and choosing it changes four things at once, in places
+nobody thinks to look.
+
+```bash
+node desktop/bd.mjs swap --app ebike --policy swappable \
+  --runh 3 --chargeh 4 --machines 20
+```
+
+**The mass stops being an outcome and becomes a requirement.** A fixed pack can
+weigh whatever the machine carries. A hand-swapped one has to be liftable by
+one person, repeatedly, in a hurry. The tool picks the handling method from the
+mass — by hand, two people, a trolley, an automated station — and the moment a
+human cannot lift it you are buying infrastructure. Force `--handling hand` on a
+269 kg EV pack and it is refused, with the way out named: split it into smaller
+swappable units.
+
+**The connector becomes a wear item.** A fixed pack's connector mates once, in a
+factory. A swapped one mates every cycle for the life of the fleet — two swaps a
+day for ten years is **7,300 matings against a typical 5,000-cycle rating**.
+Nobody checks this, and a worn power contact is a resistive joint carrying full
+pack current, which heats, which wears it faster.
+
+**You buy more packs than machines.** Swapping only works if a charged pack is
+waiting. The spare count is a property of the *fleet*, not of each machine:
+
+| Machines | Packs | Per machine |
+|---|---|---|
+| 1 | 2 | 2.00 |
+| 4 | 5 | 1.25 |
+| 50 | 63 | 1.26 |
+
+Sharing spares across a bigger fleet is what makes swapping affordable — and
+faster charging is what takes packs off the shelf.
+
+**The pack has to survive being alone.** Off the machine there is no host BMS,
+no host disconnect, no host enclosure. It is carried, stacked, dropped and
+sometimes shipped. Everything the machine was providing is now the pack's own
+problem — which is why the parts list gains a standalone-safe BMS, a pack-side
+fuse, ingress protection for exposed contacts and a state-of-charge indicator
+someone can read off a shelf.
+
+Hot-swap adds two more, because breaking DC under load is a different problem:
+a DC arc does not self-extinguish the way an AC one does, so the current has to
+reach zero before the contacts part, and something has to carry the load across
+the gap.
 
 ---
 
