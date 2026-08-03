@@ -1,0 +1,167 @@
+# release.yml — the downloads.
+#
+# Everything else in this repository is verified locally before it ships. This
+# cannot be: a Windows installer has to be built on Windows and a .dmg on
+# macOS, so the only honest place to build them is a matrix of real runners.
+#
+# It runs on a tag. Pushing v0.1.0 produces a draft release with an installer
+# per platform plus the FMU, and the draft is published by hand — a release is
+# outward-facing and the last look should be a person's.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # The same three gates the ordinary CI runs. A release that skipped them
+  # would be the one build nobody checked, which is exactly backwards.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - run: node tools/validate.mjs
+      - run: node --test tests/*.test.mjs
+      - run: node tools/validate-vs-market.mjs
+
+  # The FMU is the artefact the battery market actually consumes — it drops
+  # into Twin Builder, Simulink, GT-SUITE or Dymola as a component. It is
+  # platform-independent source, so it is built once.
+  fmu:
+    needs: gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Export the co-simulation FMU
+        run: |
+          node desktop/bd.mjs fmu --app ev --energy 60000 --out ./fmu-ev
+          cd fmu-ev && zip -r ../battery-design-ev.fmu.zip . && cd ..
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fmu
+          path: battery-design-ev.fmu.zip
+
+  desktop:
+    needs: gates
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: macos-13
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      # Tauri on Linux needs the system webview and its build headers. This is
+      # the whole reason the installers are ~10 MB rather than ~150: the
+      # webview belongs to the OS and is not shipped with the app.
+      - name: Linux build dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev build-essential curl wget file
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop-app/src-tauri -> target
+          key: ${{ matrix.target }}
+
+      # The sidecar IS the Node runtime, named with the target triple Tauri
+      # expects. Bundling it is what removes the "install Node first" step
+      # that half of any audience stops at.
+      - name: Stage the Node runtime as the bundled runner
+        shell: bash
+        run: |
+          mkdir -p desktop-app/src-tauri/binaries
+          NODE_BIN="$(command -v node)"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "$NODE_BIN" "desktop-app/src-tauri/binaries/bd-runner-${{ matrix.target }}.exe"
+          else
+            cp "$NODE_BIN" "desktop-app/src-tauri/binaries/bd-runner-${{ matrix.target }}"
+            chmod +x "desktop-app/src-tauri/binaries/bd-runner-${{ matrix.target }}"
+          fi
+          ls -la desktop-app/src-tauri/binaries/
+
+      - name: Stage the application
+        run: node desktop-app/prepare.mjs
+
+      - name: Complete the icon set
+        run: |
+          npm install -g @tauri-apps/cli@^2
+          cd desktop-app/src-tauri && tauri icon icons/icon.png --output icons
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop-app/src-tauri
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Battery pack designer ${{ github.ref_name }}'
+          releaseBody: |
+            Design a battery pack on your own machine. No account, no network, nothing uploaded.
+
+            **Which file do I want?**
+
+            | You are on | Download |
+            |---|---|
+            | Windows | `.msi` (or `.exe` if you prefer the NSIS installer) |
+            | macOS, Apple silicon (M1–M4) | `aarch64.dmg` |
+            | macOS, Intel | `x64.dmg` |
+            | Linux, Debian/Ubuntu | `.deb` |
+            | Linux, anything else | `.AppImage` |
+
+            **Already have a simulation toolchain?** Take `battery-design-ev.fmu.zip`
+            instead. It is an FMI 2.0 co-simulation component: your vehicle or plant
+            model drives it, and the pack answers with voltage, current, temperature
+            and state of charge each coupling step. Works in ANSYS Twin Builder,
+            Simulink, GT-SUITE and Dymola.
+
+            Installers are unsigned. Windows SmartScreen and macOS Gatekeeper will
+            both warn about that, and they are right to — signing certificates cost
+            money and this project has not bought one. On macOS: right-click the app
+            and choose Open the first time.
+
+            Nothing you enter leaves your machine, on any platform.
+          releaseDraft: true
+          prerelease: false
+          args: --target ${{ matrix.target }}
+
+  attach-fmu:
+    needs: [desktop, fmu]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: fmu }
+      - name: Attach the FMU to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ github.ref_name }}" battery-design-ev.fmu.zip \
+            --repo "${{ github.repository }}" --clobber
