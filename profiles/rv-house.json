@@ -1,0 +1,36 @@
+{
+  "id": "rv-house",
+  "name": "RV / van day (cooking peaks, charging while driving)",
+  "appIds": [
+    "rv"
+  ],
+  "dtS": 3600,
+  "note": "24 h at 1 h steps: overnight fridge/heater base, morning cooking peak, alternator + solar CHARGING while driving midday (negative), evening cooking and lights. A vehicle house bank, not a rooftop solar plant.",
+  "source": "built-in",
+  "p": [
+    0.12,
+    0.1,
+    0.1,
+    0.1,
+    0.12,
+    0.15,
+    0.55,
+    1,
+    0.35,
+    -0.45,
+    -0.75,
+    -0.85,
+    -0.8,
+    -0.6,
+    -0.35,
+    0.12,
+    0.2,
+    0.6,
+    0.95,
+    0.85,
+    0.5,
+    0.3,
+    0.18,
+    0.12
+  ]
+}

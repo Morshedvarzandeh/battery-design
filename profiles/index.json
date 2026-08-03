@@ -1,0 +1,143 @@
+{
+  "note": "The load-profile library. Drop a .json file in this folder and add it here to make it available — no code change. A browser cannot list a directory, so this manifest is what both the page and the desktop runner read.",
+  "schema": {
+    "id": "unique id",
+    "name": "what a customer sees",
+    "appIds": "applications it suits, [] for any",
+    "dtS": "seconds per sample",
+    "p": "normalised power, +1 = peak discharge, negative = charge/regen",
+    "note": "what it represents and where it came from",
+    "source": "built-in | contributed | measured",
+    "terrain": "optional: tarmac | gravel | sand | mud | rock | snow"
+  },
+  "profiles": [
+    {
+      "id": "wltp-ev",
+      "name": "WLTP-shaped drive cycle (EV)",
+      "appIds": [
+        "ev"
+      ],
+      "file": "wltp-ev.json"
+    },
+    {
+      "id": "ebike-assist",
+      "name": "Pedal-assist ride (rolling terrain)",
+      "appIds": [
+        "ebike"
+      ],
+      "file": "ebike-assist.json"
+    },
+    {
+      "id": "escooter-urban",
+      "name": "Urban stop-and-go (launch peaks)",
+      "appIds": [
+        "escooter"
+      ],
+      "file": "escooter-urban.json"
+    },
+    {
+      "id": "drone-mission",
+      "name": "Multirotor mission (hover-heavy)",
+      "appIds": [
+        "drone"
+      ],
+      "file": "drone-mission.json"
+    },
+    {
+      "id": "powertool-bursts",
+      "name": "Trigger bursts (low duty factor)",
+      "appIds": [
+        "powertool"
+      ],
+      "file": "powertool-bursts.json"
+    },
+    {
+      "id": "ess-daily",
+      "name": "Daily solar cycle (charge midday, discharge evening)",
+      "appIds": [
+        "solar-ess"
+      ],
+      "file": "ess-daily.json"
+    },
+    {
+      "id": "ebus-route",
+      "name": "City bus route (stop–go, heavy regen, layover)",
+      "appIds": [
+        "ebus"
+      ],
+      "file": "ebus-route.json"
+    },
+    {
+      "id": "rv-house",
+      "name": "RV / van day (cooking peaks, charging while driving)",
+      "appIds": [
+        "rv"
+      ],
+      "file": "rv-house.json"
+    },
+    {
+      "id": "powerstation-trip",
+      "name": "Portable power box (appliance bursts, idle between)",
+      "appIds": [
+        "powerstation"
+      ],
+      "file": "powerstation-trip.json"
+    },
+    {
+      "id": "ups-standby",
+      "name": "Standby with rare full-load event",
+      "appIds": [
+        "ups"
+      ],
+      "file": "ups-standby.json"
+    },
+    {
+      "id": "robot-shift",
+      "name": "AGV / lift truck shift (move–lift–return, opportunity charge)",
+      "appIds": [
+        "robot"
+      ],
+      "file": "robot-shift.json"
+    },
+    {
+      "id": "humanoid-locomotion",
+      "name": "Humanoid robot (balance base + joint bursts)",
+      "appIds": [
+        "humanoid"
+      ],
+      "file": "humanoid-locomotion.json"
+    },
+    {
+      "id": "wearable-day",
+      "name": "Wearable gadget day (milliwatt base, burst peaks, dock charge)",
+      "appIds": [
+        "wearable"
+      ],
+      "file": "wearable-day.json"
+    },
+    {
+      "id": "quadruped-patrol",
+      "name": "Quadruped patrol (stand, trot, obstacle, jump)",
+      "appIds": [
+        "cyberdog"
+      ],
+      "file": "quadruped-patrol.json"
+    },
+    {
+      "id": "robovac-clean",
+      "name": "Robot vacuum run (steady suction, dock recharge)",
+      "appIds": [
+        "robovac"
+      ],
+      "file": "robovac-clean.json"
+    },
+    {
+      "id": "marine-house",
+      "name": "Marine house loads (fridge cycling + windlass peaks)",
+      "appIds": [
+        "marine"
+      ],
+      "file": "marine-house.json"
+    }
+  ]
+}
