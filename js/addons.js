@@ -139,12 +139,12 @@ export const ADDONS = [
     why: 'Grounding, corrosion, runaway propagation and LCA are all views of this one graph. Building it first is what stops each of them reshaping the others\' work.',
   },
   {
-    id: 'grounding', name: 'Grounding & bonding analysis', tier: 'desktop', status: 'planned',
-    module: 'planned — on topology.js', concepts: [],
-    what: 'Bonding paths, equipotential continuity, isolation barriers and where the return current actually flows — read from the same connection graph the wiring uses.',
-    provides: ['bonding path resistance', 'isolation verdict', 'return-path findings'],
-    needs: ['the connection graph'],
-    why: 'The graph and the materials it needs already exist, so this is a reading of them rather than a new model.',
+    id: 'grounding', name: 'Grounding & bonding analysis', tier: 'desktop', status: 'shipped',
+    module: 'grounding.js', concepts: [],
+    what: 'Isolation keeps fault current off the case; bonding decides what happens when isolation fails, and is asked about far less often. Every bonding path is checked three ways — continuity against the 0.1 Ω limit, touch voltage against the 60 V DC boundary, and whether the strap survives the fault current until protection clears. It catches the anodised housing that is not a bonding path however many bolts go through it, the stainless bond chosen for corrosion rather than conduction, and the machine that is conventionally ungrounded and to which none of these rules apply as written.',
+    provides: ['bonding path resistance vs the 0.1 Ω limit', 'touch voltage at the prospective fault current', 'fault survival by the adiabatic rule', 'the ungrounded-system verdict where it applies'],
+    needs: ['the connection graph', 'the bonding scheme (assumed and flagged if not described)', 'a fault current — taken from the short-circuit study'],
+    why: 'The graph, the materials and the fault current already exist, so this is a reading of them rather than a new model.',
   },
   {
     id: 'lca', name: 'Life-cycle assessment', tier: 'desktop', status: 'planned',

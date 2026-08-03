@@ -60,7 +60,7 @@ than one that prints them.
 | **UN ECE R10** | Electromagnetic compatibility | Vehicle and auxiliary classes | `standards.js` |
 | **FMVSS 305 / 305a** | US Federal Motor Vehicle Safety Standard No. 305 — electric-powered vehicles: electrolyte spillage and electrical shock protection (305a is the updated rule) | The US vehicle gate, the counterpart to ECE R100 in the EU checklist | `markets.js` |
 | **ISO 6469-1** | Electrically propelled road vehicles — Safety specifications — Part 1: Rechargeable energy storage system | Vehicle RESS requirements | `standards.js` |
-| **ISO 6469-3** | Part 3: Electrical safety | The **100 Ω/V DC** isolation option — deliberately in conflict with ECE R100's 500 Ω/V, which is why the tool makes the standard an explicit choice and refuses to average them | `architecture.js` |
+| **ISO 6469-3** | Part 3: Electrical safety | The **100 Ω/V DC** isolation option — deliberately in conflict with ECE R100's 500 Ω/V, which is why the tool makes the standard an explicit choice and refuses to average them. Also the **0.1 Ω** continuity limit between exposed conductive parts, measured at ≥0.2 A, which is the bonding check | `architecture.js`, `grounding.js` |
 | **ISO 12405** | Test specification for lithium-ion traction battery packs and systems | Vehicle pack testing | `standards.js` |
 | **ISO 26262** | Road vehicles — Functional safety (ASIL) | BMS functional-safety expectation per hazard analysis | `standards.js`, `architecture.js` |
 | **IEC 61508** | Functional safety of electrical/electronic/programmable electronic safety-related systems | Industrial functional-safety counterpart | `standards.js` |
@@ -140,7 +140,13 @@ than one that prints them.
   depending on the conductor material and what it is insulated with (≈115 for
   PVC-insulated copper, ≈143 for XLPE, ≈226 for bare copper). The tool exposes
   k as an input rather than fixing it, because it is a design choice.
-  → `shortcircuit.js`
+  The standard also gives k itself as a formula rather than a table —
+  k = √( Q<sub>c</sub>/(α₂₀·ρ₂₀) · ln((β+θ<sub>f</sub>)/(β+θ<sub>i</sub>)) ),
+  β = 1/α₂₀ − 20 — and `adiabaticK()` implements it so that a bonding strap
+  which is not copper is judged on its own properties instead of borrowing
+  copper's number. It reproduces all three published copper values (115, 143,
+  228) and the bare-aluminium one (≈148) to within a unit, which is pinned by
+  test. → `shortcircuit.js`, `materials.js`, `grounding.js`
 - **Plett, G. L. (2015).** *Battery Management Systems, Volume I: Battery
   Modeling.* Artech House. — The **equivalent-circuit** model family used by
   the level-2 simulation: OCV plus a series resistance plus N parallel RC
@@ -277,6 +283,8 @@ are exposed as inputs wherever possible, and stated as estimates in the output.
 | End conduction out of a conductor's ends | 4·k·A/L, treating both ends as sinks at ambient over half the run each | A first-order model of the path a short run actually cools through. It assumes the terminals it lands on stay near ambient — optimistic for a busbar bolted to another hot busbar, pessimistic for one landing on a cold plate. Omitting the term, the obvious alternative, is far worse: it overstates a 20 mm run's temperature by orders of magnitude |
 | Conductor surface for the heat balance | square section, radiation not counted | Both deliberately conservative. A square has the least surface of any section at a given area, so a real flat busbar runs cooler than reported, and radiation adds a further margin above roughly 80 °C. Stated in the assumptions of every wiring study |
 | Current-density rules of thumb | 5 A/mm² copper, 3.5 aluminium, 2.5 nickel | Widely taught free-air rules, carried **only** so the tool can show where it disagrees with them. They take no account of length or installation, and the temperature answer overrides them in both directions |
+| Bonding scheme, when it is not described | one representative 250 mm strap of 16 mm² | An illustration, not an answer. Real machines have several bonding paths and the one that fails is the one nobody drew, so the study flags this rather than presenting the single assumed strap as a result |
+| Prospective fault current for bonding | the dead-short prospective current from the fault study | An HV pack floats, so the FIRST isolation fault draws almost nothing — the bond earns its keep on the second. The dead-short current bounds what the pack can drive through anything, which makes it the conservative choice; the real second-fault current depends on where in the string both faults land |
 | Run lengths, when the routing is not given | estimated from the pack envelope | Every wiring number scales with length, so this is the single assumption most worth replacing. Runs derived this way are flagged individually and named in the study's findings, and the CLI takes real lengths (`--pitch`, `--modrun`, `--packrun`) |
 
 ---

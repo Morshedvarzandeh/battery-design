@@ -32,6 +32,7 @@ node desktop/bd.mjs help
 | `params` | Every coefficient, with units, bounds and where its default came from |
 | `fmu` | Export the pack as an FMI 2.0 co-simulation FMU for Twin Builder, Simulink or GT-SUITE |
 | `bom` | Every conductor sized, every joint checked for corrosion, and the bill of materials |
+| `ground` | Isolation, bonding paths, touch voltage, and whether the bond survives the fault |
 | `addons` | What this tool can do, and what it cannot — including what is planned |
 | `apps` / `cells` | The application presets and the cell library |
 | `serve` | The web UI, served from your own machine, offline |
@@ -112,6 +113,71 @@ on a verdict.
 
 `--install` matters nearly as much: the same busbar reaches 91 °C in free air,
 145 °C in a loom, and 42 °C bonded to a cold plate.
+
+---
+
+## Grounding: the half nobody asks about
+
+Isolation gets the attention because it has a number everyone quotes — so many
+megohms between the live parts and the case. `ground` reports that floor, and
+then asks the question that decides the outcome once isolation has *already*
+failed: is every metal part a person can touch tied together well enough?
+
+```bash
+node desktop/bd.mjs ground --app ev --energy 60000
+```
+
+Three checks, and a bond has to pass all of them:
+
+| Check | Limit | Why it is not the other two |
+|---|---|---|
+| Continuity | 0.1 Ω at ≥0.2 A (ISO 6469-3 / ECE R100) | Holds two touchable parts at the same potential |
+| Touch voltage | 60 V DC | A bond inside the continuity limit can still put the case over the shock boundary at kiloamp fault currents |
+| Fault survival | I²t ≤ (k·A)² | A bond that burns open during the fault it exists for is worse than none |
+
+For copper the continuity limit is nearly impossible to fail — 3 m of 1 mm²
+is only 52 mΩ. That is the point: the checks that actually catch things are
+the other two, plus the two ways the question itself goes wrong.
+
+**The surface may not conduct.** Anodising is an excellent insulator, and so
+is paint. A plain bolt through an anodised housing is a mechanical joint, not
+an electrical one, and the ground everybody assumed exists does not — however
+many bolts go through it, and whatever the strap itself measures. Only a
+serrated washer, a masked bonding pad or a weld gets through.
+
+```bash
+node desktop/bd.mjs ground --app ev --finish anodised --bond bolt-plain
+```
+
+**The metal may be structural.** Stainless was chosen for corrosion, not
+conduction: 42× the resistance of copper, and an adiabatic k of 46 against
+copper's 226, so it carries fault current five times worse for the same
+section. It usually becomes the bond because it was the bracket that happened
+to be there. The tool computes k from the strap's own material rather than
+borrowing copper's number — a derivation that reproduces every published
+copper value exactly, which is how you know it is right and not merely
+plausible.
+
+### Where the fault current comes from
+
+Not from you — from the short-circuit study the design already ran, so the two
+answers cannot drift apart. The framing is worth reading, because it is a trap:
+an HV traction pack **floats**. A single isolation fault to the case draws
+almost nothing, which is exactly why isolation monitoring exists — to catch
+that first fault while it is still harmless. The bond earns its keep on the
+**second** fault. That is the current it is sized against.
+
+### When the question does not apply
+
+A boat is not a car. Marine DC is conventionally **ungrounded**, and
+deliberately so: a hull bond in salt water corrodes everything below the
+waterline. Applying automotive bonding rules there is not conservative, it is
+wrong — so the tool says the rule does not govern, names what is required
+instead (insulation monitoring that alarms on the first earth fault), and
+shows the numbers captioned rather than graded.
+
+Below 60 V there is no shock hazard to bond against at all, and it says that
+too rather than demanding a strap for a 48 V pack.
 
 ---
 
