@@ -21,6 +21,12 @@ on:
 permissions:
   contents: write
 
+# On a tag push this is the tag. On a manual run github.ref_name would be the
+# BRANCH — which would have quietly produced a release called "main" — so the
+# dispatch input wins where it is given.
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
 jobs:
   # The same three gates the ordinary CI runs. A release that skipped them
   # would be the one build nobody checked, which is exactly backwards.
@@ -122,8 +128,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: desktop-app/src-tauri
-          tagName: ${{ github.ref_name }}
-          releaseName: 'Battery pack designer ${{ github.ref_name }}'
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: 'Battery pack designer ${{ env.RELEASE_TAG }}'
           releaseBody: |
             Design a battery pack on your own machine. No account, no network, nothing uploaded.
 
@@ -163,5 +169,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ github.ref_name }}" battery-design-ev.fmu.zip \
+          gh release upload "${{ env.RELEASE_TAG }}" battery-design-ev.fmu.zip \
             --repo "${{ github.repository }}" --clobber
