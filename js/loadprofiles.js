@@ -195,6 +195,27 @@ export const LOAD_PROFILES = [
     ],
   },
   {
+    id: 'quadruped-patrol',
+    name: 'Quadruped patrol (stand, trot, obstacle, jump)',
+    appIds: ['cyberdog'],
+    dtS: 5,
+    note: 'A robot dog spends most of its time standing still holding its own weight — cheap but never zero — then trots, climbs an obstacle, and occasionally jumps. The jump is milliseconds of kilowatts: it sizes the pack\'s peak current, while the standing and trotting size its energy.',
+    p: [
+      ...seg(0.06, 40, 5),                    // standing, servos holding posture
+      ...seg(0.30, 60, 5),                    // trot out
+      ...seg(0.55, 30, 5),                    // faster gait
+      ...seg(0.30, 45, 5),
+      1.00, 0.85,                             // jump: 10 s of near-peak draw
+      ...seg(0.35, 40, 5),                    // recover, keep moving
+      ...seg(0.70, 25, 5),                    // stairs / obstacle climb
+      ...seg(0.25, 50, 5),
+      ...seg(0.06, 35, 5),                    // stand and observe
+      ...seg(0.40, 55, 5),                    // trot home
+      1.00,                                   // final hop onto the dock
+      ...seg(0.06, 30, 5),
+    ],
+  },
+  {
     id: 'robovac-clean',
     name: 'Robot vacuum run (steady suction, dock recharge)',
     appIds: ['robovac'],

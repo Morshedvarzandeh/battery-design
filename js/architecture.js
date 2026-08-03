@@ -448,6 +448,11 @@ export const COMMS_BY_APP = {
     alternates: ['SAE J1939 (lift trucks / heavy platforms)', 'EtherCAT (high-rate robotics)'],
     note: 'Industrial AGVs/AMRs standardize on CANopen; counterbalance lift trucks inherit the J1939 truck bus from their diesel ancestors.',
   },
+  cyberdog: {
+    primary: 'CAN FD battery node on the robot bus',
+    alternates: ['proprietary UART to the swappable pack'],
+    note: 'A quadruped runs a high-rate leg bus; the pack reports as a CAN/CAN FD node. Because the pack is hot-swapped by hand, its BMS must be fully autonomous off the robot — protecting, retaining state of charge, and waking on insertion without the robot present.',
+  },
   humanoid: {
     primary: 'CAN FD battery node on the robot bus',
     alternates: ['EtherCAT (joint/actuator bus)'],
@@ -598,6 +603,14 @@ export const SUPERVISORS_BY_APP = {
     detail: {
       functions: ['mission scheduling vs pack state of charge', 'opportunity-charge slotting across the fleet', 'charger allocation'],
       interfaces: ['CANopen to the vehicle', 'WMS/PLC network (fieldbus or Ethernet)'],
+    },
+  },
+  cyberdog: {
+    name: 'Locomotion controller',
+    role: 'The gait controller budgets current per step and refuses moves the pack cannot support — a jump it cannot power is a fall.',
+    detail: {
+      functions: ['per-gait current budgeting', 'refuse high-power moves at low state of charge', 'return-to-dock or swap prompt'],
+      interfaces: ['CAN FD battery node', 'leg/actuator bus alongside'],
     },
   },
   humanoid: {

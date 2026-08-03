@@ -6,6 +6,7 @@ import { CELLS, CHEMISTRIES, cellById, provenance } from './cells.js';
 import { CellPicker } from './cell-picker.js';
 import { drawRadar, radarTable, missingNotes, SERIES } from './radar.js';
 import { PRESETS } from './presets.js';
+import { familyIndex, familyOfApp, presetsInFamily } from './families.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
 import { optimizeSpace, suggestDesigns, maxFill, costModel } from './optimizer.js';
 import { layoutPackBay, polygonBounds } from './bay.js';
@@ -435,21 +436,71 @@ function initCellSelect() {
   sel.value = state.cellId;
 }
 
-function initPresets() {
+// The picker is two steps: what KIND of machine, then which one. Sixteen
+// tiles at once is a scan; eight then three or four is a choice.
+let openFamily = null;
+
+function initPresets() { renderPresets(); }
+
+function renderPresets() {
   const grid = $('presetGrid');
-  for (const pr of PRESETS) {
+  if (!grid) return;
+  grid.innerHTML = '';
+  const back = $('presetBack');
+
+  if (!openFamily) {
+    if (back) back.style.display = 'none';
+    for (const fam of familyIndex()) {
+      const b = document.createElement('button');
+      b.className = 'preset';
+      b.dataset.family = fam.id;
+      const span = fam.energySpanWh;
+      b.innerHTML = `<span class="ico">${fam.icon}</span>${esc(fam.name)}`
+        + `<span style="display:block;font-size:10.5px;color:var(--muted);margin-top:2px">`
+        + `${fam.count} model${fam.count === 1 ? '' : 's'}`
+        + (span ? ` · ${span[0] < 1000 ? `${span[0]} Wh` : `${(span[0] / 1000).toFixed(0)} kWh`}–${span[1] < 1000 ? `${span[1]} Wh` : `${(span[1] / 1000).toFixed(0)} kWh`}` : '')
+        + `</span>`;
+      b.title = fam.what;
+      // A family containing the current design stays marked, so the customer
+      // can see where they are after stepping back out.
+      if (state.presetId && fam.appIds.includes(state.presetId)) b.classList.add('active');
+      b.onclick = () => { openFamily = fam.id; renderPresets(); };
+      grid.appendChild(b);
+    }
+    return;
+  }
+
+  const fam = familyIndex().find((f) => f.id === openFamily);
+  if (back) {
+    back.style.display = '';
+    back.innerHTML = `← All kinds of machine <span style="color:var(--muted)">· ${esc(fam.name)}</span>`;
+    back.onclick = () => { openFamily = null; renderPresets(); };
+  }
+  for (const pr of fam.members) {
     const b = document.createElement('button');
     b.className = 'preset';
     b.dataset.id = pr.id;
-    b.innerHTML = `<span class="ico">${pr.icon}</span>${pr.name}`;
+    b.innerHTML = `<span class="ico">${pr.icon}</span>${esc(pr.name)}`
+      + `<span style="display:block;font-size:10.5px;color:var(--muted);margin-top:2px">`
+      + `${pr.typicalEnergyWh < 1000 ? `${pr.typicalEnergyWh} Wh` : `${(pr.typicalEnergyWh / 1000).toFixed(1)} kWh`}`
+      + ` · ${pr.typicalV} V</span>`;
     b.title = pr.desc;
+    if (state.presetId === pr.id) b.classList.add('active');
     b.onclick = () => applyPreset(pr);
     grid.appendChild(b);
   }
+  const note = document.createElement('div');
+  note.className = 'hint';
+  note.style.cssText = 'grid-column:1/-1;margin-top:2px';
+  note.textContent = fam.what + (fam.mixedClasses
+    ? ` These do not all answer to the same rulebook — the release checklist follows each one's own class.` : '');
+  grid.appendChild(note);
 }
 
 function applyPreset(pr) {
   state.presetId = pr.id;
+  const fam = familyOfApp(pr.id);
+  if (fam && openFamily !== fam.id) { openFamily = fam.id; renderPresets(); }
   document.querySelectorAll('.preset').forEach((el) =>
     el.classList.toggle('active', el.dataset.id === pr.id));
   $('rqVlo').value = pr.systemV[0];

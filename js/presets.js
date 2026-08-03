@@ -181,6 +181,26 @@ export const PRESETS = [
       'high energy density NMC/NCA wins over LFP here.'
   },
   {
+    id: 'cyberdog', name: 'Quadruped robot', icon: '🐕',
+    desc: 'Robot dog — four legs, twelve actuators, hot-swap pack',
+    systemV: [24, 33.6], typicalV: 28.8,      // 8S NMC/NCA class
+    energyWh: [150, 900], typicalEnergyWh: 300,
+    contPowerW: 250, peakPowerW: 2400,
+    maxMassKg: 2.5,
+    maxDimsMm: { x: 220, y: 130, z: 60 },     // estimate: swappable body pack
+    chargeRateC: 1,
+    envTempC: [-10, 40],
+    cyclesPerYear: 400, targetYears: 4,
+    preferredChemistries: ['NMC', 'NCA'],
+    notes: 'Class-estimates anchored to announced 8S / ~300 Wh hot-swap packs on ' +
+      'commercial quadrupeds (Unitree Go2 / CyberDog class). Standing still costs ' +
+      'almost nothing, trotting a few hundred watts, and a jump pulls kilowatts ' +
+      'for a fraction of a second — so the pack is sized by PEAK current and by ' +
+      'the mass it has to carry on the animal\'s own back, not by energy. Packs ' +
+      'are swapped rather than charged in place, which is why cycle count runs ' +
+      'high against a short service life.'
+  },
+  {
     id: 'wearable', name: 'Wearable gadget', icon: '⌚',
     desc: 'Smartwatch / band / earbud case / AR glasses, 1S LiPo',
     systemV: [3.0, 4.4], typicalV: 3.7,      // single-cell "LiPo" systems

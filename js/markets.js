@@ -24,7 +24,7 @@ export const CLASS_OF_APP = {
   'solar-ess': 'stationary', ups: 'stationary',
   rv: 'auxiliary',
   marine: 'marine',
-  robot: 'industrial', humanoid: 'industrial',
+  robot: 'industrial', humanoid: 'industrial', cyberdog: 'industrial',
   drone: 'portable', powertool: 'portable', powerstation: 'portable', robovac: 'portable',
   wearable: 'portable',
 };
