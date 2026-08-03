@@ -386,6 +386,51 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
 @media (max-width:900px) and (orientation:landscape) and (max-height:500px){
   .stage{min-height:60vh;height:60vh}
 }
+
+/* ---- The garage: deltas are the interface ---------------------------- */
+.garage-head h3 { margin: 0 0 4px; }
+.garage-part { border-top: 1px solid var(--line); }
+.garage-part-head { width: 100%; display: flex; justify-content: space-between;
+  align-items: center; background: none; border: 0; padding: 10px 2px;
+  color: inherit; font: inherit; cursor: pointer; text-align: left; }
+.garage-part-head:hover { color: var(--accent); }
+.garage-part-name { font-weight: 600; }
+.garage-part-count { font-size: 11px; opacity: .6; }
+.garage-why { margin: 0 0 8px; font-size: 12px; opacity: .75; line-height: 1.45; }
+.garage-options { display: flex; flex-direction: column; gap: 6px; padding-bottom: 10px; }
+.garage-option { text-align: left; background: var(--bg2, rgba(127,127,127,.06));
+  border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px;
+  cursor: pointer; color: inherit; font: inherit; }
+.garage-option:hover { border-color: var(--accent); }
+/* A broken option must look broken BEFORE it is chosen, not after. */
+.garage-option.is-broken { border-color: var(--bad, #c0392b); opacity: .82; }
+.garage-option-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.garage-option-name { font-weight: 600; font-size: 12.5px; }
+.garage-option-hint { display: block; font-size: 11px; opacity: .6; margin-top: 2px; }
+.garage-flag { font-size: 10.5px; color: var(--bad, #c0392b); font-weight: 700;
+  text-transform: uppercase; letter-spacing: .03em; white-space: nowrap; }
+/* Gains and costs in the SAME size type. A configurator shrinks the cost. */
+.garage-deltas { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 6px; }
+.garage-delta { font-size: 11.5px; font-variant-numeric: tabular-nums; opacity: .8; }
+.garage-delta.up { color: var(--good, #2ea479); opacity: 1; font-weight: 600; }
+.garage-delta.down { color: var(--bad, #c0392b); opacity: 1; font-weight: 600; }
+.garage-broke { margin: 6px 0 0; font-size: 11px; color: var(--bad, #c0392b); line-height: 1.4; }
+.garage-number { padding-bottom: 10px; }
+.garage-number input[type=range] { width: 100%; }
+.garage-number-read { font-weight: 600; font-variant-numeric: tabular-nums; }
+.garage-fit { margin-top: 8px; }
+.garage-result { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-top: 12px; }
+.garage-result.is-broken { border-color: var(--bad, #c0392b); }
+.garage-headline { margin: 4px 0 10px; line-height: 1.5; }
+.garage-broke-list { margin: 4px 0 10px; padding-left: 18px; font-size: 12px; line-height: 1.5; }
+.garage-table { width: 100%; border-collapse: collapse; font-size: 12px;
+  font-variant-numeric: tabular-nums; }
+.garage-table th { text-align: right; font-weight: 600; opacity: .6; padding: 4px 6px; }
+.garage-table th:first-child { text-align: left; }
+.garage-table td { text-align: right; padding: 4px 6px; border-top: 1px solid var(--line); }
+.garage-table td:first-child { text-align: left; }
+.garage-table tr.up td:last-child { color: var(--good, #2ea479); font-weight: 600; }
+.garage-table tr.down td:last-child { color: var(--bad, #c0392b); font-weight: 600; }
 </style>
 </head>
 <body>
@@ -509,6 +554,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       <button class="tab" data-tab="sim">Sim</button>
       <button class="tab" data-tab="sensors">Sensors</button>
       <button class="tab" data-tab="eu">Rules</button>
+      <button class="tab" data-tab="garage">Garage</button>
       <button class="tab" data-tab="results">Results</button>
     </div>
 
@@ -939,6 +985,8 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         <div id="euTimeline" style="font-size:12.5px"></div>
       </div>
     </div>
+
+    <div class="tabpane" id="pane-garage"></div>
 
     <div class="tabpane" id="pane-results">
       <div class="sec">

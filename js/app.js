@@ -3,6 +3,8 @@
 // standards.js; all the rendering in viewer3d.js.
 
 import { CELLS, CHEMISTRIES, cellById, provenance } from './cells.js';
+import { mountGarage } from './garage-ui.js';
+import { designFromSpec } from './api.js';
 import { CellPicker } from './cell-picker.js';
 import { drawRadar, radarTable, missingNotes, SERIES } from './radar.js';
 import { PRESETS } from './presets.js';
@@ -748,6 +750,7 @@ function bindControls() {
     if (t.dataset.tab === 'therm') renderThermal();
     if (t.dataset.tab === 'sim') renderSim();
     if (t.dataset.tab === 'sensors') renderSensors();
+    if (t.dataset.tab === 'garage') renderGarage();
     updateFlowBar(t.dataset.tab);
   });
   buildFlowBar();
@@ -1855,6 +1858,45 @@ function recompute() {
 // Model in js/sensors.js; absent groups are genuinely absent.
 // ---------------------------------------------------------------------------
 let lastSensors = null;
+
+
+// ---------------------------------------------------------------------------
+// The garage. Mounted lazily, because evaluating every option on every shelf
+// is a few hundred complete designs and there is no reason to pay for it
+// until someone opens the tab.
+//
+// It is given the SPEC rather than the app's state object, so it talks to the
+// same engine the desktop runner and the report use. That is what stops the
+// garage growing its own opinion about what a design is.
+// ---------------------------------------------------------------------------
+let garage = null;
+function renderGarage() {
+  const spec = () => ({
+    application: state.presetId || 'ev',
+    cell: state.cellId,
+    s: state.s, p: state.p,
+    market: state.marketId,
+    isolationStandard: state.archIso,
+  });
+  if (!garage) {
+    garage = mountGarage({
+      pane: $('pane-garage'),
+      getSpec: spec,
+      build: designFromSpec,
+      // Fitting a part in the garage changes the real design, so the rest of
+      // the tool moves with it. A garage that only previewed would be a
+      // calculator with extra steps.
+      onFit: (next) => {
+        if (next.cell && next.cell !== state.cellId) { state.cellId = next.cell; onCellChange(); }
+        if (Number.isFinite(next.s)) state.s = next.s;
+        if (Number.isFinite(next.p)) state.p = next.p;
+        $('selCell').value = state.cellId;
+        $('inS').value = state.s; $('inP').value = state.p;
+        recompute();
+      },
+    });
+  } else garage.refresh();
+}
 
 function renderSensors() {
   const box = $('sensorBody');
