@@ -420,6 +420,15 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
 .garage-option.is-refused { opacity: .6; border-style: dashed; }
 .garage-flag-refused { color: var(--muted, #7a7a7a); }
 .garage-flag-fixes { color: var(--good, #2ea479); }
+/* The showroom floor. Collapsed to its one button until asked, because the
+   renderer is ~8 MB and most visits never open it. */
+.garage-floor { margin: 10px 0 4px; }
+.garage-floor.is-open { height: 460px; position: relative; border: 1px solid var(--line);
+  border-radius: 8px; overflow: hidden; background: #0e1512; }
+.garage-floor.is-open .showroom-bar { position: absolute; z-index: 2; right: 8px; top: 8px; }
+.showroom-bar { display: flex; align-items: center; gap: 10px; }
+.showroom-status { font-size: 11.5px; }
+.garage3d-frame { width: 100%; height: 100%; border: 0; display: block; }
 .garage-option.has-fix { border-color: var(--good, #2ea479); }
 .garage-refused { margin: 6px 0 0; font-size: 11px; opacity: .75; line-height: 1.4; }
 .garage-number { padding-bottom: 10px; }

@@ -229,6 +229,31 @@ function deriveSP(cell, preset, spec, warnings) {
 }
 
 /**
+ * The geometry behind a finished design.
+ *
+ * designFromSpec deliberately does not return cell positions: a 250 kWh bus
+ * is fifteen thousand of them, and every caller would carry that whether or
+ * not it ever draws anything. This rebuilds them from the design's OWN
+ * resolved spec — same cell, same counts, same space taken by the cooling
+ * system it actually fitted — so a renderer never has to guess at an
+ * arrangement or re-derive a gap and end up drawing a different pack from
+ * the one the audit is about.
+ */
+export function layoutForDesign(design) {
+  const r = design?.spec?.resolved;
+  if (!r) return null;
+  const cell = cellById(r.cell);
+  if (!cell) return null;
+  const space = componentById('cooling', r.components?.cooling)?.spaceMm
+    || { bottom: 0, side: 0, rowGap: 0 };
+  return layoutPack(cell, r.s, r.p, {
+    arrangement: design.spec?.arrangement || defaultArrangement(cell),
+    spacingMm: 1, wallMm: 2, headroomMm: 8,
+    underMm: space.bottom, rowExtraMm: space.rowGap,
+  });
+}
+
+/**
  * The series/parallel counts an application implies for a given cell.
  *
  * Exported so the panels can start from the same pack the headless engine

@@ -14,6 +14,9 @@ concurrency:
   group: pages
   cancel-in-progress: true
 
+env:
+  GODOT_VERSION: "4.3"
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -22,6 +25,54 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+
+      # The 3D garage is a Godot web export, built here rather than committed.
+      # It is ~35 MB of engine runtime: carrying that in git would dwarf the
+      # rest of the repository and churn on every engine bump. The editor and
+      # its export templates are ~1.1 GB together, so they are cached and the
+      # download only happens when the Godot version changes.
+      - name: Cache Godot editor and export templates
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-web-v1
+
+      - name: Fetch Godot
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          mkdir -p ~/godot "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          curl -fsSL -o /tmp/godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d ~/godot
+          curl -fsSL -o /tmp/templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q /tmp/templates.tpz -d /tmp/tpl
+          # Only the web templates are needed. Copying all of them would put a
+          # gigabyte of Windows and macOS binaries in the cache for targets
+          # that never build here.
+          cp /tmp/tpl/templates/web_nothreads_release.zip \
+             /tmp/tpl/templates/web_release.zip \
+             "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+
+      - name: Build the 3D garage
+        run: |
+          set -euo pipefail
+          godot=$(find ~/godot -name 'Godot_v*_linux.x86_64' | head -1)
+          chmod +x "$godot"
+          cd garage3d
+          mkdir -p build
+          # Import first. Exporting a project Godot has never opened produces a
+          # pack with no resources in it, and no error to say so — the page
+          # loads, the engine starts, and nothing is ever drawn.
+          "$godot" --headless --import . 2>&1 | tail -5
+          "$godot" --headless --export-release "Web" build/index.html 2>&1 | tail -5
+          test -s build/index.wasm || { echo "::error::the web export produced no wasm"; exit 1; }
+          test -s build/index.pck  || { echo "::error::the web export produced no pack"; exit 1; }
+          echo "garage3d build: $(du -sh build | cut -f1)"
+
       - uses: actions/configure-pages@v5
         with:
           # Creates the Pages site on first run so no manual settings step

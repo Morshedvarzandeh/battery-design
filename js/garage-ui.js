@@ -50,16 +50,20 @@ const signed = (v, unit) => (v > 0 ? `+${fmt(v, unit)}` : fmt(v, unit));
  * one into a design. Both are injected so this file never imports the engine
  * directly and cannot end up with a second opinion about anything.
  */
-export function mountGarage({ pane, getSpec, build, onFit = null }) {
+export function mountGarage({ pane, getSpec, build, onFit = null, onDesign = null }) {
   if (!pane) return null;
   let currentSpec = null;
   let baseline = null;
   let openPart = null;
 
   const head = el('div', 'garage-head');
+  // Where the machine itself is shown. It is a hole in this module rather
+  // than something it draws: the renderer is a separate engine and this file
+  // must not acquire an opinion about 3D, or about whether there is any.
+  const floor = el('div', 'garage-floor');
   const shelf = el('div', 'garage-shelf');
   const stage = el('div', 'garage-stage');
-  pane.append(head, shelf, stage);
+  pane.append(head, floor, shelf, stage);
 
   function renderHead() {
     head.replaceChildren();
@@ -215,6 +219,10 @@ export function mountGarage({ pane, getSpec, build, onFit = null }) {
     if (!after) return;
     const c = evaluated?.comparison || compare(baseline, after, { label: part.label });
     renderStage(c, part, value);
+    // The machine on the floor is the machine that was just changed. A
+    // showroom still showing the pack from before the swap is the same lie as
+    // a shelf whose options do nothing.
+    if (onDesign) onDesign(after);
     if (onFit) onFit(next, after, c);
   }
 
@@ -280,10 +288,11 @@ export function mountGarage({ pane, getSpec, build, onFit = null }) {
       return;
     }
     renderShelf();
+    if (onDesign) onDesign(baseline);
   }
 
   refresh();
-  return { refresh };
+  return { refresh, floor };
 }
 
 export { METRICS };

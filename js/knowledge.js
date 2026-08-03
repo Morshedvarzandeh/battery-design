@@ -50,6 +50,10 @@ export const CONCEPTS = {
   swappable: { label: 'Swappable-pack policy', why: 'Fixed, swappable or hot-swappable — a decision that changes the mass, the connector and how many packs you buy.' },
   cosim: { label: 'Co-simulation & model export', why: 'The pack as a component inside the toolchain you already run.' },
 
+  // --- Working on the machine ----------------------------------------------
+  'part-swap': { label: 'Fitting a different part', why: 'What one change actually buys and costs, priced before you commit to it rather than after.' },
+  showroom: { label: 'The pack in three dimensions', why: 'Standing in front of the thing rather than reading a table about it — the same geometry, at the size it really is.' },
+
   // --- How the machine actually moves --------------------------------------
   // Deliberately SEPARATE concepts rather than one 'route simulation', because
   // the physics genuinely differs by domain and a shared node would let road
@@ -88,6 +92,13 @@ export const NEEDS = {
   bonding: { classes: ['vehicle', 'stationary', 'industrial', 'auxiliary', 'marine'] },
   swappable: { classes: ['lmt', 'industrial', 'portable', 'auxiliary'], apps: ['ev', 'ebus'] },
   cosim: { classes: ['vehicle', 'marine', 'industrial', 'stationary'] },
+
+  // Every machine has parts and every part can be changed, so the garage is
+  // universal. The showroom is too — a wearable pack is as worth looking at
+  // as a bus one, and arguably more, since nobody can picture six cells the
+  // size of a stamp until they see them.
+  'part-swap': { classes: ALL },
+  showroom: { classes: ALL },
 
   // --- How the machine actually moves --------------------------------------
   // The edges that keep road physics away from a boat. Each domain gets the

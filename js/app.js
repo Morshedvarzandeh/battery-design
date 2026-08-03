@@ -4,7 +4,9 @@
 
 import { CELLS, CHEMISTRIES, cellById, provenance } from './cells.js';
 import { mountGarage } from './garage-ui.js';
-import { designFromSpec, suggestSP } from './api.js';
+import { designFromSpec, suggestSP, layoutForDesign } from './api.js';
+import { buildScene } from './scene3d.js';
+import { mount3D, rendererAvailable } from './garage3d-host.js';
 import { CellPicker } from './cell-picker.js';
 import { drawRadar, radarTable, missingNotes, SERIES } from './radar.js';
 import { PRESETS } from './presets.js';
@@ -1889,6 +1891,62 @@ let lastSensors = null;
 // garage growing its own opinion about what a design is.
 // ---------------------------------------------------------------------------
 let garage = null;
+// The showroom: the pack itself, in a game engine, on the garage floor.
+//
+// Deliberately opt-in and lazy. The renderer is about 8 MB over the wire —
+// almost all of it the engine's own runtime — and someone sizing an e-bike
+// battery should not pay for that to read a shelf of parts. Nothing is
+// fetched until the button is pressed, and if the build is absent (a plain
+// checkout has no export; CI produces it) it says so rather than showing a
+// frame that will never load.
+let showroom = null;
+let showroomWanted = false;
+let lastShowroomDesign = null;
+
+function showroomFor(design) {
+  lastShowroomDesign = design;
+  if (!showroomWanted || !showroom || !design) return;
+  const layout = layoutForDesign(design);
+  if (!layout) return;
+  showroom.show(buildScene({ design, layout }));
+}
+
+async function openShowroom(floor, button) {
+  const status = $('showroomStatus') || floor.querySelector('.showroom-status');
+  if (!await rendererAvailable()) {
+    status.textContent = 'The 3D renderer is not in this build. It is produced by CI on deploy; '
+      + 'a plain checkout has the source in garage3d/ but not the export.';
+    button.disabled = true;
+    return;
+  }
+  showroomWanted = true;
+  button.textContent = 'Hide the 3D view';
+  button.onclick = () => {
+    showroomWanted = false;
+    showroom?.destroy();
+    showroom = null;
+    floor.querySelector('.garage3d-frame')?.remove();
+    floor.classList.remove('is-open');
+    status.textContent = '';
+    bindShowroomButton(floor, button);
+  };
+  floor.classList.add('is-open');
+  showroom = mount3D({
+    container: floor,
+    onPick: (p) => { status.textContent = `${p.category}: ${p.name}`; },
+    onStatus: (s, detail) => {
+      status.textContent = s === 'loading' ? 'Starting the renderer…'
+        : s === 'ready' ? '' : detail;
+    },
+  });
+  showroomFor(lastShowroomDesign);
+}
+
+function bindShowroomButton(floor, button) {
+  button.textContent = 'Walk around it';
+  button.onclick = () => openShowroom(floor, button);
+}
+
 function renderGarage() {
   const spec = () => ({
     application: state.presetId || 'ev',
@@ -1902,6 +1960,7 @@ function renderGarage() {
       pane: $('pane-garage'),
       getSpec: spec,
       build: designFromSpec,
+      onDesign: showroomFor,
       // Fitting a part in the garage changes the real design, so the rest of
       // the tool moves with it. A garage that only previewed would be a
       // calculator with extra steps.
@@ -1909,11 +1968,33 @@ function renderGarage() {
         if (next.cell && next.cell !== state.cellId) { state.cellId = next.cell; onCellChange(); }
         if (Number.isFinite(next.s)) state.s = next.s;
         if (Number.isFinite(next.p)) state.p = next.p;
+        // Hardware too, not only cells and counts. Without this the garage
+        // announced a cold plate fitted while the panel beside it still read
+        // 82 mm and 279 kg — the shelf moved and the tool did not, which is
+        // exactly the calculator-with-extra-steps this module exists not to be.
+        if (next.components) {
+          for (const [cat, id] of Object.entries(next.components)) {
+            if (componentById(cat, id)) state.sel[cat] = id;
+          }
+          initComponents();
+        }
         $('selCell').value = state.cellId;
         $('inS').value = state.s; $('inP').value = state.p;
         recompute();
       },
     });
+    // The floor and its one button, built once. The renderer itself is not
+    // touched until the button is pressed.
+    const bar = document.createElement('div');
+    bar.className = 'showroom-bar';
+    const btn = document.createElement('button');
+    btn.className = 'btn';
+    const status = document.createElement('span');
+    status.className = 'showroom-status muted';
+    status.id = 'showroomStatus';
+    bar.append(btn, status);
+    garage.floor.append(bar);
+    bindShowroomButton(garage.floor, btn);
   } else garage.refresh();
 }
 
