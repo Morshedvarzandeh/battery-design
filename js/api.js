@@ -25,6 +25,7 @@ import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
 import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
+import { shortCircuitStudy } from './shortcircuit.js';
 import { simulateMission, compareCells } from './sim1d.js';
 import { profileForApp, profileById, profileStats } from './loadprofiles.js';
 import { releaseChecklist, appClassOf } from './markets.js';
@@ -225,6 +226,19 @@ export function designFromSpec(spec = {}) {
     powerKW: charging.obc?.acKW ?? charging.packChargeKW ?? null,
   });
 
+  // 4b · What happens when it fails: the fault study.
+  const shortCircuit = shortCircuitStudy({
+    cell, s, p, summary,
+    busbarMOhm: spec.busbarMOhm ?? 0.5,
+    contactorMOhm: spec.contactorMOhm ?? 0.2,
+    fuseRatingA: spec.fuseRatingA ?? architecture.contactors?.fuseA ?? null,
+    fuseI2t: spec.fuseI2t ?? null,
+    contactorBreakingA: spec.contactorBreakingA ?? null,
+    busbarAreaMm2: spec.busbarAreaMm2 ?? 50,
+    busbarKind: spec.busbarKind ?? 'xlpe-insulated',
+    linkFuseA: spec.linkFuseA ?? null,
+  });
+
   // 5 · The vehicle, when this machine drives.
   let vehicle = null;
   const vehBase = vehicleDefaultsFor(appId);
@@ -315,9 +329,10 @@ export function designFromSpec(spec = {}) {
       ...['mechanical', 'thermal', 'electrical', 'safety']
         .flatMap((k) => analysis?.perspectives?.[k] || []),
       ...(simulation?.findings || []),
+      ...(shortCircuit?.findings || []),
     ],
     analysis: analysis ? { totals: analysis.totals, disclaimer: analysis.disclaimer } : null,
-    architecture, thermal, sensors, charging, v2x, vehicle, simulation,
+    architecture, thermal, sensors, charging, v2x, vehicle, simulation, shortCircuit,
     cost, co2, checklist, comparison,
     concepts: appNeeds(appId),
     warnings,
