@@ -264,3 +264,146 @@ export function tryAll({ spec, part, options, build, rankBy = 'rangeKm' }) {
     broken: sorted.filter((r) => r.comparison?.verdict === 'broke-something'),
   };
 }
+
+// ---------------------------------------------------------------------------
+// Co-design: hold the REQUIREMENT, not the configuration.
+//
+// Everything above compares like for like — same series, same parallel, one
+// part changed. That is the honest answer to "what does this part do", and it
+// is the wrong answer to the question people actually have, which is "what
+// happens if I build my machine with this instead".
+//
+// Nobody wants the same pack with a different cell. They want the same JOB
+// done with a different cell, and that means re-solving the configuration to
+// meet the requirement rather than freezing it.
+//
+// For anything that moves, that re-solve is a LOOP, not a division. The pack
+// carries its own weight: a heavier cell means a heavier pack, which means
+// higher consumption, which means more energy is needed for the same range,
+// which means a heavier pack again. Size it in one pass and the answer is
+// wrong in a direction that always flatters — you compute the energy for the
+// old mass and quietly under-build.
+//
+// So it iterates until the mass stops moving. That convergence is the whole
+// point: it is the difference between a configurator and a design tool, and
+// it is what "co-design" actually means once you take the word seriously —
+// the domains settle against each other rather than one being solved first.
+// ---------------------------------------------------------------------------
+
+/**
+ * Re-solve the pack so the machine still does its job.
+ *
+ * `target` is what must be held: a range in km for anything that travels, or
+ * an energy in Wh for anything that does not. Returns the converged design
+ * plus the trail, because a loop that reports only its answer is asking to be
+ * trusted, and the trail is what makes it checkable.
+ */
+export function solveFor({ spec, build, target, maxPasses = 12, tolerance = 0.005 }) {
+  if (!target?.rangeKm && !target?.energyWh) return null;
+  // The seed matters. Without an explicit energy the first pass builds the
+  // preset's own default, and recording that pass as "energy: null" leaves a
+  // trail whose first entry cannot be compared with anything — the loop still
+  // converges, but its own record of how it got there starts with a hole.
+  let energyWh = target.energyWh ?? spec.energyWh ?? null;
+  if (energyWh == null) {
+    const seed = build(spec);
+    energyWh = seed?.pack?.energyWh ?? null;
+    if (energyWh == null) return null;
+  }
+  const trail = [];
+  let design = null, converged = false;
+
+  for (let pass = 0; pass < maxPasses; pass++) {
+    design = build({ ...spec, energyWh });
+    if (!design) return null;
+    if (target.energyWh) { converged = true; trail.push({ pass, energyWh, note: 'energy is the requirement, so one pass settles it' }); break; }
+
+    const whPerKm = design.vehicle?.drive?.whPerKm;
+    const dod = design.spec?.dod ?? 0.8;
+    if (!(whPerKm > 0)) {
+      // No road model — the requirement cannot be a range, and saying so
+      // beats returning a number that looks like an answer.
+      //
+      // The shape matters as much as the message: an early return that omits
+      // `passes`, `meetsTarget` and the rest hands the caller an object that
+      // looks like the others and answers `undefined` to every question about
+      // it. Same fields, honest values.
+      return {
+        design, converged: false, trail, passes: trail.length,
+        achieved: null, wanted: target.rangeKm, missPct: null, meetsTarget: null,
+        shortfall: null,
+        why: 'This machine has no road-load model, so a range target cannot be solved — it does not travel in a way the tool models. Give an energy target instead.',
+      };
+    }
+    // The energy this range needs AT THE MASS THIS PASS PRODUCED.
+    const needWh = (target.rangeKm * whPerKm) / dod;
+    const drift = Math.abs(needWh - energyWh) / needWh;
+    trail.push({
+      pass, energyWh, whPerKm, packMassKg: design.pack?.massKg,
+      neededWh: needWh, driftPct: drift * 100,
+    });
+    if (drift < tolerance) { converged = true; break; }
+    // Damped, because the mass feedback can oscillate on light machines where
+    // the pack is a large share of the total.
+    energyWh = energyWh + (needWh - energyWh) * 0.7;
+  }
+
+  // Did it actually GET there? The loop converges on the energy it asked for,
+  // and the engine builds the nearest thing an integer series/parallel count
+  // can express — which for a 150 Ah blade cell is a coarse grid. Reporting
+  // convergence without checking the achieved figure is how a design that
+  // misses the target by 12% gets presented as the answer.
+  const achievedKm = typeof design.vehicle?.range === 'number' ? design.vehicle.range : design.vehicle?.range?.km;
+  const achieved = target.rangeKm ? achievedKm : design.pack?.energyWh;
+  const wanted = target.rangeKm ?? target.energyWh;
+  const missBy = achieved != null && wanted ? (achieved - wanted) / wanted : null;
+  const meetsTarget = missBy != null ? missBy >= -0.02 : null;
+
+  return {
+    design, converged, trail,
+    passes: trail.length,
+    achieved, wanted, missPct: missBy != null ? missBy * 100 : null, meetsTarget,
+    shortfall: meetsTarget === false
+      ? `This design reaches ${achieved.toFixed(0)}${target.rangeKm ? ' km' : ' Wh'} against a ${wanted}${target.rangeKm ? ' km' : ' Wh'} target — ${Math.abs(missBy * 100).toFixed(0)}% short. `
+        + 'Series and parallel counts are whole numbers, so a large-format cell can only be built in coarse steps and the nearest one lands under. Either accept the shortfall, change the cell, or accept the next step up in pack size.'
+      : null,
+    why: converged
+      ? `Settled in ${trail.length} pass${trail.length === 1 ? '' : 'es'}. The pack carries its own weight, so sizing it is a loop rather than a division — a single pass computes the energy for the OLD mass and under-builds.`
+      : `Did not settle in ${maxPasses} passes. The pack is a large enough share of the machine that adding energy adds nearly as much consumption, which is itself the finding: this design is close to the point where a bigger battery stops buying range.`,
+  };
+}
+
+/**
+ * The co-design comparison: same job, different part.
+ *
+ * Reports both answers on purpose. The like-for-like delta is what the part
+ * does; the re-solved delta is what the DECISION does, and they can point
+ * opposite ways — a denser cell that looks lighter at fixed configuration can
+ * end up heavier once the pack is resized to restore the range it lost
+ * elsewhere.
+ */
+export function codesign({ spec, build, swap, target, label = 'this change' }) {
+  const before = solveFor({ spec, build, target });
+  const after = solveFor({ spec: applySwap(spec, swap), build, target });
+  if (!before?.design || !after?.design) return null;
+
+  const naive = compare(build(spec), build(applySwap(spec, swap)), { label });
+  const resolved = compare(before.design, after.design, { label });
+
+  // Which numbers reverse once the machine is re-solved. This is the whole
+  // reason to show both, so it is computed rather than left to be noticed.
+  const flipped = (resolved?.changes || []).filter((r) => {
+    const n = naive?.changes?.find((x) => x.id === r.id);
+    return n && Math.sign(n.delta) !== Math.sign(r.delta);
+  });
+
+  return {
+    label, target,
+    beforeSolve: before, afterSolve: after,
+    naive, resolved, flipped,
+    headline: `${label}, with the machine re-solved to the same ${target.rangeKm ? `${target.rangeKm} km` : `${target.energyWh} Wh`}: ${resolved?.headline || 'no measurable change'}`,
+    note: flipped.length
+      ? `${flipped.length} figure${flipped.length === 1 ? '' : 's'} reverse once the pack is resized for the job — ${flipped.map((f) => f.label.toLowerCase()).join(', ')}. Comparing at a fixed configuration would have pointed the other way.`
+      : 'Holding the requirement rather than the configuration did not reverse anything here, so the like-for-like comparison was already telling the truth.',
+  };
+}

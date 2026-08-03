@@ -93,7 +93,12 @@ export const NEEDS = {
   // The edges that keep road physics away from a boat. Each domain gets the
   // ONE that matches how it moves, and nothing else: a drone has no terrain,
   // a ship has no gradient, and a humanoid has neither.
-  'route-road': { classes: ['vehicle', 'lmt', 'auxiliary'], apps: ['robot'] },
+  // NOT 'auxiliary'. An RV house bank does not travel under its own power —
+  // the vehicle carries it while it runs the fridge — so it has no road-load
+  // model and a range target is meaningless for it. The edge was wrong, and
+  // it surfaced as a co-design solver returning a malformed answer rather
+  // than as anything that looked like a graph problem.
+  'route-road': { classes: ['vehicle', 'lmt'], apps: ['robot'] },
   terrain: { classes: ['lmt'], apps: ['ev', 'ebus', 'robot', 'cyberdog'] },
   'hull-resistance': { classes: ['marine'] },
   'flight-weather': { classes: [], apps: ['drone'] },
