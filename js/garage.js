@@ -154,7 +154,14 @@ export function applySwap(spec, { part, value }) {
   const next = { ...spec };
   if (part === 'mass') next.vehicle = { ...(spec.vehicle || {}), curbKg: value };
   else if (part === 'terrain') next.terrain = value;             // read by the caller's vehicle build
-  else next[part] = value;
+  else if (part.startsWith('component:')) {
+    // Hardware goes into the components block the engine reads. Written flat
+    // as "component:cooling" it became a spec key nothing looks at, so every
+    // option on the hardware shelf reported "no measurable change" — eight
+    // cooling systems that all did nothing, which is exactly the failure this
+    // module exists to prevent.
+    next.components = { ...(spec.components || {}), [part.slice('component:'.length)]: value };
+  } else next[part] = value;
   return next;
 }
 
@@ -182,13 +189,36 @@ export function compare(before, after, { label = 'this change' } = {}) {
   }).filter(Boolean);
 
   // The findings each design produced, keyed so they can be set-differenced.
-  const key = (f) => `${f.severity}|${f.title}`;
+  //
+  // Keyed by the CHECK, not by what the check said. Titles carry live values —
+  // "Temperature exceeds the cell rating at 18 min" becomes "…at 21 min" — so
+  // keying on the title made an improvement look like a brand-new failure.
+  // That is not cosmetic: fitting a cold plate to a 60 kWh EV moved the
+  // over-temperature from 18 to 21 minutes and cleared the cooling-adequacy
+  // failure outright, and the garage reported it as BREAKING the design. The
+  // one option a customer should have been steered towards was the one it
+  // steered them away from.
+  const key = (f) => `${f.severity}|${f.id || f.title.toLowerCase()}`;
   const bMap = new Map((before.findings || []).map((f) => [key(f), f]));
   const aMap = new Map((after.findings || []).map((f) => [key(f), f]));
   const appeared = [...aMap.values()].filter((f) => !bMap.has(key(f)));
   const resolved = [...bMap.values()].filter((f) => !aMap.has(key(f)));
   const brokeIt = appeared.filter((f) => f.severity === 'fail');
   const fixedIt = resolved.filter((f) => f.severity === 'fail');
+
+  // Failures the design had before and still has, where the numbers moved.
+  //
+  // Twenty more cells in parallel puts 62 neighbours behind an internal short
+  // instead of 42. That is not a NEW failure — the design already failed that
+  // check — so it belongs in neither appeared nor resolved, and a plain trade
+  // verdict would let it pass in silence behind the extra range. Direction is
+  // deliberately not claimed: the text moved, and which way is a judgement the
+  // detail states and this function cannot read.
+  const stillFailing = [...aMap.values()].filter((f) => {
+    if (f.severity !== 'fail') return false;
+    const was = bMap.get(key(f));
+    return was && (was.detail !== f.detail || was.title !== f.title);
+  }).map((f) => ({ ...f, was: bMap.get(key(f)).detail }));
 
   const bought = changes.filter((c) => c.improved === true);
   const cost = changes.filter((c) => c.improved === false);
@@ -197,12 +227,24 @@ export function compare(before, after, { label = 'this change' } = {}) {
   // it, and the whole point is that the customer weighs the trade themselves —
   // they know whether mass or money matters more on their machine, and the
   // tool does not.
+  // Clearing a failure outranks the metric trade exactly as breaking one does.
+  // Without this tier, fitting a cold plate that clears the cooling-adequacy
+  // failure reads as "costs 12 kg and buys nothing measurable here" — because
+  // safety is not one of the metrics, and the only thing it bought was the
+  // removal of a fail. The mirror of punishing a break is crediting a fix.
   const verdict = brokeIt.length ? 'broke-something'
-    : !changes.length ? 'no-change'
-      : cost.length === 0 ? 'free-win'
-        : bought.length === 0 ? 'pure-cost' : 'trade';
+    : fixedIt.length ? 'fixed-a-failure'
+      : !changes.length ? 'no-change'
+        : cost.length === 0 ? 'free-win'
+          : bought.length === 0 ? 'pure-cost' : 'trade';
 
   const one = (c) => `${c.label.toLowerCase()} ${c.delta > 0 ? '+' : ''}${c.delta.toFixed(c.unit === 'cells' ? 0 : 1)} ${c.unit}`;
+  // What to name in a one-line headline: the biggest movers, and never one
+  // that prints as "-0.0 km". A delta below its own display resolution is
+  // noise, and quoting it makes a real trade look like a rounding error.
+  const worthSaying = (list) => list
+    .filter((c) => Math.abs(c.delta) >= (c.unit === 'cells' ? 0.5 : 0.05))
+    .sort((a, b) => Math.abs(b.pct ?? 0) - Math.abs(a.pct ?? 0));
 
   // A swap the engine could not honour — an unknown cell, a clamped S/P —
   // produces a design that is not the one asked for. Without this the garage
@@ -213,20 +255,27 @@ export function compare(before, after, { label = 'this change' } = {}) {
 
   return {
     label, verdict, changes, bought, cost, notFitted,
-    findings: { appeared, resolved, brokeIt, fixedIt },
+    findings: { appeared, resolved, brokeIt, fixedIt, stillFailing },
     headline: notFitted.length
       ? `${label} was not fitted as asked — ${notFitted[0]}`
       : verdict === 'broke-something'
       ? `${label} breaks something: ${brokeIt[0].title.toLowerCase()}. Whatever it bought, this has to be answered first.`
+      : verdict === 'fixed-a-failure'
+      ? `${label} clears ${fixedIt.length === 1 ? 'a failure' : `${fixedIt.length} failures`} the design had — `
+        + `${fixedIt.slice(0, 2).map((f) => f.title.toLowerCase()).join('; ')}`
+        + `${worthSaying(cost).length ? `, at ${worthSaying(cost).slice(0, 2).map(one).join(' and ')}.` : '.'}`
       : verdict === 'no-change' ? `${label} changed nothing measurable.`
-        : verdict === 'free-win' ? `${label} is free: ${bought.slice(0, 2).map(one).join(', ')}, and nothing got worse.`
-          : verdict === 'pure-cost' ? `${label} costs ${cost.slice(0, 2).map(one).join(', ')} and buys nothing measurable here.`
-            : `${label}: ${bought.slice(0, 2).map(one).join(', ')} — paid for with ${cost.slice(0, 2).map(one).join(', ')}.`,
+        : verdict === 'free-win' ? `${label} is free: ${worthSaying(bought).slice(0, 2).map(one).join(', ')}, and nothing got worse.`
+          : verdict === 'pure-cost' ? `${label} costs ${worthSaying(cost).slice(0, 2).map(one).join(', ')} and buys nothing measurable here.`
+            : `${label}: ${worthSaying(bought).slice(0, 2).map(one).join(', ')} — paid for with ${worthSaying(cost).slice(0, 2).map(one).join(', ')}.`,
     // The sentence that keeps it honest. A free win almost always means the
     // cost is real but not on this list.
-    caveat: verdict === 'free-win'
-      ? 'Nothing on this list got worse, which usually means the cost is somewhere it does not measure — availability, tooling, a supplier who will not quote one reel. Check before believing it.'
-      : fixedIt.length ? `It also cleared ${fixedIt.length} failure${fixedIt.length === 1 ? '' : 's'} the previous design had.` : null,
+    caveat: stillFailing.length
+      ? `A failure the design already had moved with this change: ${stillFailing[0].title.toLowerCase()}. `
+        + 'It was not introduced here and it is not cleared here — read the detail before treating the gain as free.'
+      : verdict === 'free-win'
+        ? 'Nothing on this list got worse, which usually means the cost is somewhere it does not measure — availability, tooling, a supplier who will not quote one reel. Check before believing it.'
+        : fixedIt.length ? `It also cleared ${fixedIt.length} failure${fixedIt.length === 1 ? '' : 's'} the previous design had.` : null,
   };
 }
 

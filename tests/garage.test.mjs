@@ -73,11 +73,22 @@ test('a swap reports what it bought AND what it cost', () => {
   ok(c.bought.length > 0, 'more cells buys something');
   ok(c.cost.length > 0, 'and costs something — a swap with no cost is a toy');
   // Worth stating plainly, because it is the whole argument for this module:
-  // simply making the pack BIGGER introduces a safety failure. Twenty more
-  // cells in parallel puts 62 neighbours behind an internal short instead of
-  // 42. A configurator would have shown more range and stopped there.
-  ok(c.findings.brokeIt.length > 0, 'and here it also breaks something, which a slider would never have said');
-  ok(c.verdict === 'broke-something', 'so that outranks the trade');
+  // simply making the pack BIGGER deepens a safety failure. Twenty more cells
+  // in parallel puts 62 neighbours behind an internal short instead of 42.
+  // The design ALREADY failed that check, so this is not a new failure — and
+  // that is precisely why it is easy to miss. A configurator would have shown
+  // the extra range and stopped; so would a naive set-difference of the
+  // findings, since the check reads "fail" on both sides.
+  ok(c.findings.stillFailing.length > 0,
+    'a failure that was already there and moved is surfaced, not netted out to nothing');
+  ok(c.findings.stillFailing.some((f) => /internal cell short/i.test(f.title)),
+    'and it is the internal short — 42 neighbours became 62');
+  ok(c.findings.stillFailing.every((f) => f.was && f.was !== f.detail),
+    'both readings are kept, so the customer can see which way it moved');
+  ok(/already had moved with this change/.test(c.caveat),
+    'the caveat says so rather than letting the extra range stand alone');
+  ok(c.findings.brokeIt.length === 0,
+    'and it is NOT reported as a new break, because the design was already failing that check');
 
   // A swap that does NOT break anything reports as a plain trade.
   const smaller = designFromSpec({ ...EV, p: Math.max(1, base.pack.p - 10) });
@@ -155,4 +166,66 @@ test('a free win is treated with suspicion, because there usually is a cost', ()
   ok(/somewhere it does not measure/.test(fake.caveat),
     'and the caveat says the cost is probably off this list rather than absent');
   ok(compare(null, base) === null && compare(base, null) === null, 'null-safe');
+});
+
+test('fitting a part off the hardware shelf actually changes the design', () => {
+  // The bug this exists to prevent: applySwap wrote the choice to a spec key
+  // named "component:cooling" that designFromSpec never read, so all eight
+  // cooling systems reported "no measurable change". A shelf of parts that
+  // do nothing is worse than no shelf — it looks live and is not.
+  const spec = { application: 'ev', energyWh: 60000 };
+  const next = applySwap(spec, { part: 'component:cooling', value: 'bottom-cold-plate' });
+  ok(next.components?.cooling === 'bottom-cold-plate', 'the swap lands where the engine reads it');
+  ok(next['component:cooling'] === undefined, 'and not in a key nothing looks at');
+
+  const base = designFromSpec(spec);
+  const after = designFromSpec(next);
+  ok(after.spec.resolved.components.cooling === 'bottom-cold-plate', 'the engine fitted what was asked');
+  const c = compare(base, after, { label: 'cold plate' });
+  ok(c.changes.length > 0, 'and the numbers moved');
+  // Specifically: a cold plate is 8 kg/m2 of aluminium and 10 mm of height.
+  ok(after.pack.massKg > base.pack.massKg, 'a cold plate weighs something');
+  ok(after.pack.dims.z > base.pack.dims.z, 'and takes space out of the envelope, before the box is sized');
+});
+
+test('every option on every hardware shelf either changes something or says why not', () => {
+  // Swept rather than sampled, because the failure was silent and uniform:
+  // one dead spec key killed all six categories at once.
+  const spec = { application: 'ev', energyWh: 60000 };
+  const base = designFromSpec(spec);
+  let moved = 0, refused = 0;
+  for (const part of partsBin('ev').filter((x) => x.id.startsWith('component:'))) {
+    for (const opt of part.options) {
+      const d = designFromSpec(applySwap(spec, { part: part.id, value: opt.value }));
+      const c = compare(base, d, { label: opt.label });
+      const fittedId = d.spec.resolved.components[part.category];
+      if (fittedId === opt.value) {
+        // Fitted as asked. It may legitimately change nothing measurable —
+        // a vent has no mass model — but it must be recorded as fitted.
+        moved += c.changes.length > 0 ? 1 : 0;
+      } else {
+        ok(c.notFitted.length > 0,
+          `${opt.value}: was not fitted, and the garage says so rather than reporting "no change"`);
+        refused += 1;
+      }
+    }
+  }
+  ok(moved >= 10, `${moved} options measurably change the design — the shelf is live, not decorative`);
+  ok(refused > 0, 'and parts that do not suit this pack are refused out loud');
+});
+
+test('a part the customer names is fitted, even when the tool would not have chosen it', () => {
+  // The substitution rule cuts one way only. Defaults may be corrected;
+  // an explicit request never is, because the customer would read the
+  // answer as the design they asked for.
+  const watch = designFromSpec({ application: 'wearable' });
+  ok(watch.spec.resolved.components.cooling === 'passive-air',
+    'a wearable is not given a pumped cold plate by default');
+  ok(watch.warnings.some((w) => /pumped coolant loop/.test(w)),
+    'and the substitution states the rule that fired, not a guess at it');
+
+  const forced = designFromSpec({ application: 'wearable', components: { cooling: 'bottom-cold-plate' } });
+  ok(forced.spec.resolved.components.cooling === 'bottom-cold-plate',
+    'but asking for it explicitly fits it');
+  ok(forced.pack.massKg > watch.pack.massKg, 'and the customer pays for it in mass');
 });

@@ -31,8 +31,10 @@ import { simulateMission, compareCells } from './sim1d.js';
 import { profileForApp, profileById, profileStats } from './loadprofiles.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { co2Model } from './report.js';
-import { appNeeds } from './knowledge.js';
-import { DEFAULTS_BY_FORM, componentById } from './components.js';
+import { appNeeds, needed } from './knowledge.js';
+import {
+  COMPONENTS, COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentById,
+} from './components.js';
 import {
   vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare, modeComparison,
 } from './vehicle.js';
@@ -54,6 +56,7 @@ export const SPEC_FIELDS = {
   ambientC: '[low, high] design ambient (default: the preset\'s)',
   v2xPolicy: 'off | v2l | v2h | v2g | v2v (default off)',
   isolationStandard: 'ece-r100 | iso-6469-dc — the sources conflict, so this is stated, never averaged (default ece-r100)',
+  components: '{ busbar, spacer, vent, cooling, tim, housing } — component ids from listComponents(); anything omitted takes the default for the cell format',
   vehicle: 'overrides for the vehicle model: { curbKg, payloadKg, cd, frontalAreaM2, crr, driveEff, regenFrac, auxW }',
   driveMode: 'eco | normal | sport (default normal)',
   gradePct: 'route gradient in percent (default 0)',
@@ -90,6 +93,97 @@ export function listCells({ chemistry = null, form = null } = {}) {
         sourceNote: prov.detail,
       };
     });
+}
+
+export function listComponents({ category = null, form = null } = {}) {
+  return Object.entries(COMPONENTS)
+    .filter(([cat]) => !category || cat === category)
+    .flatMap(([cat, list]) => list
+      .filter((c) => !form || c.forms.includes(form))
+      .map((c) => ({
+        id: c.id, category: cat, name: c.name, kind: c.kind, forms: c.forms,
+        suppliers: c.suppliers, dataQuality: c.dataQuality,
+        defaultFor: Object.entries(DEFAULTS_BY_FORM)
+          .filter(([, d]) => d[cat] === c.id).map(([f]) => f),
+      })));
+}
+
+// DEFAULTS_BY_FORM picks by cell FORMAT and knows nothing about scale, which
+// is fine for the machines each part was catalogued from and wrong at the
+// extremes. A 1.3 g wearable pouch cell and a 5 kg EV pouch cell are both
+// "pouch", so the wearable was being fitted with a laser-welded pouch tab
+// interconnect board at 25 g per cell — twenty times the mass of the cell it
+// serves — and a pumped glycol cold plate. The 25 g figure is right for the
+// EV modules that entry describes; applying it to a smartwatch is a category
+// error in the picker, not a bad number in the database.
+//
+// Two rules catch it, both grounded rather than tuned:
+//
+//   HARDWARE THAT SERVES A CELL WEIGHS LESS THAN THE CELL. A busbar or holder
+//   heavier than the cell it connects is from another weight class.
+//
+//   A PUMPED LOOP IS NOT A DEFAULT FOR A MACHINE THAT HAS NO LOOP. The
+//   knowledge graph already says which applications carry one; it is asked
+//   rather than second-guessed.
+//
+// Both apply ONLY to defaults. An explicitly requested part is always fitted:
+// substituting what the customer asked for is the one thing worse than
+// fitting something odd, because they would read the answer as their design.
+// Returns null when the part suits this pack, or the reason it does not —
+// the reason travels with the answer so the warning says which rule fired
+// rather than guessing. A cold plate refused for needing a pump must not be
+// reported as being too heavy for the cell.
+function outOfScale(part, key, cell, appId) {
+  if (!part) return 'no part';
+  if (['busbar', 'spacer'].includes(key) && part.massGPerCell != null && cell.massG != null
+      && part.massGPerCell > cell.massG) {
+    return `it is catalogued at ${part.massGPerCell} g per cell, more than the ${cell.massG} g cell it would serve`;
+  }
+  if (key === 'cooling' && part.needsPump && !needed(appId, 'btms-loop')) {
+    return 'it needs a pumped coolant loop, which this machine does not carry';
+  }
+  return null;
+}
+
+// What is actually fitted. Every category is defaulted from the cell format,
+// and a spec may name any of them.
+//
+// Naming a part that does not exist — or one that is not made for this cell
+// format — is reported rather than quietly ignored. The caller would
+// otherwise read the answer as the pack they asked for, and a design whose
+// cooling system was silently swapped is worse than one that refused.
+function resolveComponents(cell, appId, spec, warnings) {
+  const defaults = DEFAULTS_BY_FORM[cell.form] || {};
+  const asked = spec.components && typeof spec.components === 'object' ? spec.components : {};
+  const out = {};
+  for (const { key } of COMPONENT_CATEGORIES) {
+    const wanted = asked[key];
+    let part = wanted ? componentById(key, wanted) : null;
+    if (wanted && !part) {
+      warnings.push(`Unknown ${key} "${wanted}" — fitting the default for a ${cell.form} cell instead. `
+        + 'Use listComponents() for the real ids.');
+    } else if (part && !part.forms.includes(cell.form)) {
+      warnings.push(`${part.name} is not made for ${cell.form} cells — fitting the default ${key} instead.`);
+      part = null;
+    }
+    if (part) { out[key] = part; continue; }                 // asked for, and real: fitted as asked
+
+    let fallback = componentById(key, defaults[key]) || null;
+    const why = fallback ? outOfScale(fallback, key, cell, appId) : null;
+    if (why) {
+      const alt = (COMPONENTS[key] || [])
+        .filter((c) => c.forms.includes(cell.form) && !outOfScale(c, key, cell, appId))
+        .sort((a, b) => (a.massGPerCell ?? 0) - (b.massGPerCell ?? 0))[0] || null;
+      warnings.push(alt
+        ? `${fallback.name} is the usual default for a ${cell.form} cell, but ${why} — fitting ${alt.name} instead. `
+          + `Name a ${key} explicitly to override this.`
+        : `No ${key} in the database suits this pack: the default is ruled out because ${why}, and every other `
+          + `${cell.form} option is too. None is fitted, so its mass is missing — treat the pack mass as a floor.`);
+      fallback = alt;
+    }
+    out[key] = fallback;
+  }
+  return out;
 }
 
 // Pick a cell the preset would actually accept, so a one-field spec still
@@ -135,6 +229,18 @@ function deriveSP(cell, preset, spec, warnings) {
 }
 
 /**
+ * The series/parallel counts an application implies for a given cell.
+ *
+ * Exported so the panels can start from the same pack the headless engine
+ * would build, rather than a second guess at the same arithmetic.
+ */
+export function suggestSP(cell, preset, spec = {}) {
+  const { s, p } = deriveSP(cell, preset, spec, []);
+  const bounded = clampPack(s, p);
+  return { s: bounded.s, p: bounded.p };
+}
+
+/**
  * The whole designer in one call. Returns plain data — no classes, no DOM
  * nodes, nothing that cannot be JSON.stringify'd.
  */
@@ -167,8 +273,18 @@ export function designFromSpec(spec = {}) {
   const ambientC = spec.ambientC || preset?.envTempC || [0, 40];
 
   // 1 · Geometry and the pack itself.
+  //
+  // The parts are chosen BEFORE the box is sized, because some of them take
+  // space: a bottom cold plate wants 10 mm under the cells and a serpentine
+  // ribbon widens every row gap. Sizing the enclosure first and picking the
+  // cooling afterwards produces a pack the cooling does not fit inside.
+  const selection = resolveComponents(cell, appId, spec, warnings);
+  const space = selection.cooling?.spaceMm || { bottom: 0, side: 0, rowGap: 0 };
   const arrangement = spec.arrangement || defaultArrangement(cell);
-  const layout = layoutPack(cell, s, p, { arrangement, spacingMm: 1, wallMm: 2, headroomMm: 8 });
+  const layout = layoutPack(cell, s, p, {
+    arrangement, spacingMm: 1, wallMm: 2, headroomMm: 8,
+    underMm: space.bottom, rowExtraMm: space.rowGap,
+  });
   const summary = summarize(cell, s, p, layout);
   const pack = {
     nominalV: summary.nominalV, vMax: summary.vMax, vMin: summary.vMin,
@@ -179,19 +295,11 @@ export function designFromSpec(spec = {}) {
   };
 
   // 2 · The four engineering perspectives and the standards audit.
-  const selection = Object.fromEntries(
-    Object.entries(DEFAULTS_BY_FORM[cell.form] || {}).map(([k, id]) => [k, componentById(id) || null]));
   const usage = {
     application: appId,
     contPowerW: preset?.contPowerW ?? null, peakPowerW: preset?.peakPowerW ?? null,
     chargeRateC: preset?.chargeRateC ?? null, envTempC: ambientC,
   };
-  const stdCtx = {
-    cell, s, p, pack,
-    layout: { spacingMm: 1, arrangement, wallMm: 2 },
-    usage,
-  };
-  const findings = runChecks(stdCtx);
   let analysis = null;
   try {
     analysis = analyze({
@@ -205,6 +313,28 @@ export function designFromSpec(spec = {}) {
   } catch (e) {
     warnings.push(`Engineering analysis unavailable: ${e.message}`);
   }
+
+  // The mass the pack actually has, now that the parts are known.
+  //
+  // summarize() carries a placeholder — 8% on the cells for interconnect plus
+  // an aluminium box — because it runs before anything has been chosen. Once
+  // real busbars, holders, a cooling system and an enclosure are fitted, their
+  // masses are known, so the placeholder is REPLACED rather than added to.
+  // Everything downstream reads this figure: the lifting verdict, the range,
+  // the mass share of the vehicle. It has to be one number, not two.
+  const withParts = analysis?.totals?.packMassWithComponentsKg;
+  if (withParts != null && withParts > 0) {
+    summary.massKg = withParts;
+    summary.whPerKg = summary.energyWh > 0 ? summary.energyWh / withParts : null;
+    pack.massKg = withParts;
+  }
+
+  const stdCtx = {
+    cell, s, p, pack,
+    layout: { spacingMm: 1, arrangement, wallMm: 2 },
+    usage,
+  };
+  const findings = runChecks(stdCtx);
 
   // 3 · Architecture, thermal system, sensors.
   // The isolation standard is never defaulted silently — ECE R100 and
@@ -328,7 +458,14 @@ export function designFromSpec(spec = {}) {
 
   return {
     apiVersion: API_VERSION,
-    spec: { ...spec, resolved: { application: appId, cell: cell.id, s, p, market, dod } },
+    spec: {
+      ...spec,
+      resolved: {
+        application: appId, cell: cell.id, s, p, market, dod,
+        components: Object.fromEntries(
+          Object.entries(selection).map(([k, c]) => [k, c?.id ?? null])),
+      },
+    },
     application: preset ? { id: preset.id, name: preset.name, class: appClassOf(appId) } : null,
     cell: listCells().find((c) => c.id === cell.id) || { id: cell.id, name: cell.name },
     pack: summary,

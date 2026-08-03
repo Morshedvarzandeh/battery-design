@@ -110,13 +110,37 @@ export function mountGarage({ pane, getSpec, build, onFit = null }) {
 
     for (const r of [...wall.safe, ...wall.broken]) {
       const broke = r.comparison?.verdict === 'broke-something';
-      const opt = el('button', `garage-option${broke ? ' is-broken' : ''}`);
+      // A part the engine would not fit — wrong cell format, out of scale —
+      // must never render as "no measurable change". That reads as "this part
+      // makes no difference" when the truth is "this part was never fitted",
+      // and it is the same inertness the shelf exists to expose.
+      const refused = !broke && (r.comparison?.notFitted?.length > 0);
+      const clears = !broke && !refused && (r.comparison?.findings?.fixedIt?.length > 0);
+      const opt = el('button', `garage-option${broke ? ' is-broken' : ''}`
+        + `${refused ? ' is-refused' : ''}${clears ? ' has-fix' : ''}`);
       const top = el('div', 'garage-option-top');
       top.append(el('span', 'garage-option-name', r.option.label));
       if (broke) top.append(el('span', 'garage-flag', 'breaks the design'));
+      if (refused) top.append(el('span', 'garage-flag garage-flag-refused', 'does not fit this pack'));
+      // Ranking is by the chosen metric, so the option that clears a safety
+      // failure can sit at the BOTTOM of the shelf — it usually costs mass.
+      // Flagging it is what stops the shelf from quietly recommending the
+      // cheapest thing on a design that is failing its thermal audit.
+      const fixes = !broke && !refused ? (r.comparison?.findings?.fixedIt?.length || 0) : 0;
+      if (fixes) {
+        top.append(el('span', 'garage-flag garage-flag-fixes',
+          fixes === 1 ? 'clears a failure' : `clears ${fixes} failures`));
+      }
       opt.append(top);
 
       if (r.option.hint) opt.append(el('span', 'garage-option-hint', r.option.hint));
+
+      if (refused) {
+        opt.append(el('p', 'garage-refused', r.comparison.notFitted[0]));
+        opt.onclick = () => fit(part, r.option.value, r);
+        list.append(opt);
+        continue;
+      }
 
       // The deltas, gains and costs side by side and in the same size type.
       const deltas = el('div', 'garage-deltas');
@@ -214,6 +238,20 @@ export function mountGarage({ pane, getSpec, build, onFit = null }) {
     if (c.findings.fixedIt.length) {
       box.append(el('h5', null, 'What it fixed'),
         el('p', 'muted', c.findings.fixedIt.map((f) => f.title).join(' · ')));
+    }
+    // Neither broken nor fixed: already failing, and the numbers moved. This
+    // is the one a configurator hides, because the check reads "fail" on both
+    // sides and nets out to nothing.
+    if (c.findings.stillFailing?.length) {
+      const ul = el('ul', 'garage-broke-list');
+      for (const f of c.findings.stillFailing) {
+        const li = el('li');
+        li.append(el('strong', null, f.title));
+        li.append(el('span', null, ` — was: ${f.was}`));
+        li.append(el('span', null, ` Now: ${f.detail}`));
+        ul.append(li);
+      }
+      box.append(el('h5', null, 'Already failing, and it moved'), ul);
     }
 
     const table = el('table', 'garage-table');

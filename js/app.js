@@ -4,7 +4,7 @@
 
 import { CELLS, CHEMISTRIES, cellById, provenance } from './cells.js';
 import { mountGarage } from './garage-ui.js';
-import { designFromSpec } from './api.js';
+import { designFromSpec, suggestSP } from './api.js';
 import { CellPicker } from './cell-picker.js';
 import { drawRadar, radarTable, missingNotes, SERIES } from './radar.js';
 import { PRESETS } from './presets.js';
@@ -566,6 +566,25 @@ function applyPreset(pr) {
     applyProfileToRequirements();
   }
   renderProfile();
+
+  // Seed the pack from the requirement just stated.
+  //
+  // Until now the preset filled the requirements FORM and left the pack at
+  // whatever series/parallel happened to be there, so choosing "EV — 60 kWh,
+  // 400 V" showed a 13S4P pack: 0.9 kWh and five kilometres of range, sitting
+  // under a label that said car. Every panel downstream was then answering
+  // honestly about the wrong machine.
+  //
+  // The counts come from suggestSP, which is the arithmetic the headless
+  // engine already uses, so the panel and the API agree by construction
+  // rather than by two people writing the same division twice. It is a
+  // STARTING point, not an answer — Suggest designs still refines it, and
+  // the customer can type over both numbers.
+  const sp = suggestSP(cell(), pr);
+  state.s = sp.s;
+  state.p = sp.p;
+  syncInputs();
+  recompute();
 }
 
 // ---------------------------------------------------------------------------
@@ -2787,8 +2806,10 @@ function renderStats() {
   const T = lastAnalysis?.totals;
   if (T) {
     rows.push(['sec', 'Components & thermal']);
-    if (T.packMassWithComponentsKg != null) rows.push(['Mass w/ components', `${f1(T.packMassWithComponentsKg)} kg`]);
-    if (T.componentMassKg?.total != null) rows.push(['Component mass', `${f1(T.componentMassKg.total)} kg`]);
+    // fKg, not f1: a 30 g wearable pack reads "0.0 kg" through f1 — the same
+    // number for every part it could conceivably be fitted with.
+    if (T.packMassWithComponentsKg != null) rows.push(['Mass w/ components', fKg(T.packMassWithComponentsKg)]);
+    if (T.componentMassKg?.total != null) rows.push(['Component mass', fKg(T.componentMassKg.total)]);
     if (T.heatContW != null) rows.push(['Heat @ cont. load', `${f1(T.heatContW)} W`]);
     if (T.tempRiseContC != null) rows.push(['Est. temp rise', `${f1(T.tempRiseContC)} °C`]);
     if (T.creepageReqMm != null) rows.push(['Creepage req. (~)', `${f1(T.creepageReqMm)} mm`]);

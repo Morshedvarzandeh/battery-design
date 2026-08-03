@@ -222,6 +222,7 @@ export function simulateMission(a) {
   const findings = [];
   if (firstEmptyS != null) {
     findings.push({
+      id: 'sim-empty',
       severity: 'fail', category: 'simulation',
       title: `Pack runs EMPTY at ${fmtT(firstEmptyS)} — ${Math.round(unmetWh)} Wh of the mission unmet`,
       detail: `Starting from ${Math.round((a.startSoC ?? 1) * 100)}% SoC the pack is exhausted before the mission ends. More capacity, a shallower mission, or mid-mission charging is required.`,
@@ -229,6 +230,7 @@ export function simulateMission(a) {
     });
   } else if (firstCutoffS != null) {
     findings.push({
+      id: 'sim-voltage-cutoff',
       severity: 'fail', category: 'simulation',
       title: `Voltage cutoff under load at ${fmtT(firstCutoffS)}`,
       detail: `Sag (I·R) drives the terminal voltage to the ${vMinPack.toFixed(1)} V cutoff during a peak while charge remains — the pack is power-limited, not energy-limited. Lower-DCIR cells or more parallel strings fix this.`,
@@ -236,6 +238,7 @@ export function simulateMission(a) {
     });
   } else if (unmetWh > 0.005) {
     findings.push({
+      id: 'sim-peak-unmet',
       severity: 'warn', category: 'simulation',
       title: `${unmetWh.toFixed(1)} Wh of peak demand not deliverable`,
       detail: 'Moments of the profile exceed what the source impedance can physically deliver (P ≤ OCV²/4R); the simulation clamps them. Check the peaks against the pack\'s pulse rating.',
@@ -244,6 +247,7 @@ export function simulateMission(a) {
   }
   if (firstHotS != null) {
     findings.push({
+      id: 'sim-overtemp',
       severity: 'fail', category: 'simulation',
       title: `Temperature exceeds the cell rating (${tempMaxC} °C) at ${fmtT(firstHotS)}`,
       detail: `Lumped pack temperature reaches ${maxT.toFixed(1)} °C at ${ambientC} °C ambient — the cooling as modeled cannot hold the mission. A stronger loop or a derated mission is needed.`,
@@ -251,6 +255,7 @@ export function simulateMission(a) {
     });
   } else if (ua && maxT > tempMaxC - 5) {
     findings.push({
+      id: 'sim-temp-margin',
       severity: 'warn', category: 'simulation',
       title: `Temperature peaks at ${maxT.toFixed(1)} °C — within 5 °C of the rating`,
       detail: `At ${ambientC} °C ambient the mission ends ${(tempMaxC - maxT).toFixed(1)} °C under the ${tempMaxC} °C limit. A hotter day erases the margin.`,
@@ -259,6 +264,7 @@ export function simulateMission(a) {
   }
   if (chargeInhibitS > 0) {
     findings.push({
+      id: 'sim-charge-inhibited',
       severity: 'warn', category: 'simulation',
       title: `Charging inhibited for ${fmtT(chargeInhibitS)} — below the ${chargeFloorC} °C charge floor`,
       detail: `${(regenLostWh + chargeRefusedWh).toFixed(1)} Wh of charge/regen is refused while the pack sits below the cell's charge window and the design has no heater branch. The Thermal tab adds one when the climate demands it.`,
@@ -266,6 +272,7 @@ export function simulateMission(a) {
     });
   } else if (regenLostWh > 0.005) {
     findings.push({
+      id: 'sim-regen-lost',
       severity: 'warn', category: 'simulation',
       title: `${regenLostWh.toFixed(1)} Wh of regen lost against a full battery`,
       detail: 'Charge arrives while SoC is at 100% (or the CV boundary) and is turned away. Starting the mission below full converts this into recovered energy.',
@@ -274,6 +281,7 @@ export function simulateMission(a) {
   }
   if (!findings.some((f) => f.severity === 'fail')) {
     findings.push({
+      id: 'sim-mission-ok',
       severity: 'pass', category: 'simulation',
       title: `Mission completes: SoC ${Math.round((a.startSoC ?? 1) * 100)}% → ${Math.round(soc * 100)}%`,
       detail: `${passes}× profile (${fmtT(durationS)}): V ≥ ${minV.toFixed(1)} V (cutoff ${vMinPack.toFixed(1)} V)` +
