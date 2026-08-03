@@ -33,6 +33,9 @@ import { runPool, coreCount, PARALLEL_THRESHOLD } from './pool.mjs';
 import { simulate, calibrate, defaultParams, PARAM_SPEC, PARAM_BY_ID } from '../js/sim2.js';
 import { cellById } from '../js/cells.js';
 import { profileById } from '../js/loadprofiles.js';
+import { buildFmu } from '../js/fmi.js';
+import { ADDONS, addonsFor, capabilityReport } from '../js/addons.js';
+import { mkdirSync } from 'node:fs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -383,6 +386,50 @@ const COMMANDS = {
     console.log(lines.join('\n'));
   },
 
+  // Export the pack as an FMI 2.0 co-simulation FMU, so the rest of the
+  // toolchain — ANSYS Twin Builder, Simulink, GT-SUITE, Dymola — can drive it.
+  fmu(args) {
+    const spec = specFrom(args);
+    const d = designFromSpec(spec);
+    const cell = cellById(d.cell.id);
+    const dir = args.out === true || !args.out ? './fmu' : args.out;
+    const built = buildFmu({
+      cell, s: d.pack.s, p: d.pack.p,
+      params: args.params ? loadParams(args.params) : null,
+      modelName: args.name || 'BatteryPack',
+    });
+    for (const [rel, content] of Object.entries(built.files)) {
+      const full = path.join(dir, rel);
+      mkdirSync(path.dirname(full), { recursive: true });
+      writeFileSync(full, content);
+    }
+    console.log([
+      `FMI 2.0 co-simulation FMU for ${d.pack.s}S${d.pack.p}P ${cell.name}`,
+      `  written to ${dir}/`,
+      ...Object.keys(built.files).map((f) => `    ${f}`),
+      `  model ${built.modelName}, guid ${built.guid}`,
+      '',
+      built.note,
+      `Build it with the command in ${dir}/README.md, then load the .fmu in your host tool.`,
+    ].join('\n'));
+  },
+
+  // What can this thing do? Including what it cannot do yet.
+  addons(args) {
+    const rep = capabilityReport(args.app || null);
+    if (args.json || args.out) { emit(args, rep, ''); return; }
+    const line = (a) => `  ${a.status === 'shipped' ? '✓' : '·'} ${pad(a.id, 14)}${pad(a.tier, 9)}${a.name}`
+      + `\n      ${a.what}`
+      + (a.status === 'planned' ? `\n      NOT BUILT YET — ${a.why}` : '');
+    console.log([
+      rep.note, '',
+      'CORE — always present', ...rep.addons.filter((a) => a.tier === 'core').map(line), '',
+      'IN THE PAGE', ...rep.addons.filter((a) => a.tier === 'browser').map(line), '',
+      'DESKTOP RUNNER', ...rep.addons.filter((a) => a.tier === 'desktop').map(line),
+      ...(rep.notRelevant.length ? ['', `NOT FOR THIS APPLICATION: ${rep.notRelevant.map((a) => a.id).join(', ')}`] : []),
+    ].join('\n'));
+  },
+
   apps(args) {
     const list = listApplications();
     emit(args, list, list.map((a) =>
@@ -482,6 +529,8 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   sweep     one variable across a range        --vary cell|mass|payload|energy [--from --to --step]
   search    the whole design space, ranked     --app ev --rank cost|range|mass|density|upfront [--top N]
   range     drive-cycle study, mass × mode     --app ev --energy 60000 [--from --to --step]
+  fmu       export as an FMI 2.0 co-sim FMU    --app ev [--out ./fmu] [--params p.json]
+  addons    what this tool can do, and cannot   [--app ev]
   apps      the application presets
   cells     the cell library                   [--chemistry LFP] [--form cylindrical]
   serve     the web UI from your own machine   [--port 8080]
