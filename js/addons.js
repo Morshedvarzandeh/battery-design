@@ -253,6 +253,13 @@ export const ADDONS = [
     provides: ['the real geometry, walkable', 'parts drawn where they sit', 'the audit alongside the picture'],
     needs: ['a design', 'the renderer, which CI builds and a plain checkout does not have'],
   },
+  {
+    id: 'circular', name: 'Circular economy: value by stage and place', tier: 'browser', status: 'shipped',
+    module: 'circular.js', concepts: ['circular-value'],
+    what: 'What the pack is worth at each point in its life, in the place it is actually standing. Stages are nodes and moving between them is an edge that costs money, takes time, loses some of what you had, and is sometimes not allowed. Regulation is carried as gates rather than averaged into a price — landfill is not expensive in the EU, it is prohibited — and every route reports what stands in the way, not just what it pays.',
+    provides: ['every route out of a stage, priced and gated', 'the regulatory obligations and constraints on each, with the instrument cited', 'where the value actually drains away — usually into testing and freight'],
+    needs: ['an energy figure', 'a place', 'a state of health, if the pack has been measured'],
+  },
 ];
 
 export const addonById = (id) => ADDONS.find((a) => a.id === id) || null;
