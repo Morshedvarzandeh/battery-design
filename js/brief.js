@@ -256,7 +256,8 @@ export function designBrief(design, { wiring = null, grounding = null } = {}) {
       ...(wiring ? [] : ['Conductor sizing — no wiring study was run, so no conductor has been checked against the current it carries.']),
       ...(grounding ? [] : ['Grounding and bonding — no bonding path has been checked for continuity, touch voltage or fault survival.']),
       ...(design.simulation ? [] : ['Mission simulation — the design has not been driven through its duty cycle in time.']),
-      'Thermal runaway propagation, life-cycle assessment and structural analysis are not modelled at all.',
+      'Structural and vibration analysis is not modelled at all — the crash and shock standards prescribe outcomes, and the tool says so rather than inventing a wall thickness.',
+      'Manufacturing process, assembly sequence and test coverage are outside the tool entirely.',
     ],
   };
 }

@@ -40,6 +40,7 @@ import { groundingStudy, faultFromShortCircuit } from '../js/grounding.js';
 import { designBrief } from '../js/brief.js';
 import { lifeCycle } from '../js/lca.js';
 import { propagationStudy, BARRIERS } from '../js/runaway.js';
+import { swapPlan, POLICIES as SWAP_POLICIES } from '../js/swap.js';
 import { layoutPack } from '../js/pack-engine.js';
 import { materialById } from '../js/materials.js';
 import { ADDONS, addonsFor, capabilityReport } from '../js/addons.js';
@@ -693,6 +694,47 @@ const COMMANDS = {
     emit(args, { apiVersion: API_VERSION, runaway: st }, lines.join('\n'));
   },
 
+  // Swappability as a policy that cuts across every application.
+  swap(args) {
+    const d = designFromSpec(specFrom(args));
+    const r = swapPlan({
+      policy: args.policy || 'swappable', pack: d.pack,
+      application: d.spec?.application || args.app,
+      handling: args.handling || null,
+      runHours: num(args.runh), chargeHours: num(args.chargeh),
+      machines: num(args.machines, 1), swapsPerDay: num(args.swaps, 2),
+      years: num(args.years, 10), connectorRatedCycles: num(args.cycles, 5000),
+    });
+    const lines = [
+      `${d.application?.name || 'Custom'} — ${d.pack.s}S${d.pack.p}P, ${d.pack.massKg.toFixed(1)} kg`,
+      '',
+      `POLICY — ${r.policy.name}`,
+      wrap(r.policy.what, 2),
+      '',
+      wrap(r.headline, 2),
+      ...(r.swappable ? [
+        '',
+        `PARTS THE FIXED VERSION DOES NOT NEED (${r.parts.length})`,
+        ...r.parts.map((p) => `  · ${p.name}\n${wrap(p.why, 6)}`),
+        '',
+        'FLEET',
+        wrap(r.fleet.why, 2),
+        '',
+        'CONNECTOR',
+        wrap(r.connector.why, 2),
+      ] : []),
+      '',
+      'FINDINGS',
+      ...(r.findings.length
+        ? r.findings.map((f) => `  ${f.severity === 'fail' ? '✗' : f.severity === 'warn' ? '!' : 'i'} ${f.title}\n${wrap(f.detail, 6)}`)
+        : ['  ✓ Nothing to flag.']),
+      '',
+      'ASSUMPTIONS',
+      ...r.assumptions.map((a) => bullet(a)),
+    ];
+    emit(args, { apiVersion: API_VERSION, swap: r }, lines.join('\n'));
+  },
+
   apps(args) {
     const list = listApplications();
     emit(args, list, list.map((a) =>
@@ -926,6 +968,8 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
             how well each part is known
   runaway   compare barriers and spacing, and    --app ev [--barrier mica] [--gap 2]
             size what you must contain
+  swap      fixed / swappable / hot-swappable    --app ebike --policy swappable
+            as a policy, with the fleet maths     [--runh 3 --chargeh 4 --machines 20]
   ground    isolation, bonding paths and       --app ev [--finish anodised] [--bond bolt-plain]
             whether the bond survives the      [--strap aluminium --strapmm2 25]
             fault it exists for
