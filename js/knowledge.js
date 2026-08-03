@@ -34,6 +34,40 @@ export const CONCEPTS = {
   'charging-strategy': { label: 'Charging strategy', why: 'Depot vs opportunity vs tariff windows — a pack-sizing decision, not an afterthought.' },
   'v2x': { label: 'Feeding power back (V2X)', why: 'V2L, V2H, V2G — and the wear floor that decides whether selling energy back ever pays.' },
   'vehicle-dynamics': { label: 'The vehicle & driving mode', why: 'Mass, drag and the driver decide the demand — and the pack carries its own weight.' },
+
+  // --- What the pack is made of, and what happens when it fails -----------
+  // These arrived module by module and none of them had an edge here, which
+  // meant the graph had quietly stopped covering most of the tool: eight
+  // modules and eleven add-ons were invisible to it. A graph that does not
+  // know a capability exists cannot say who needs it, and the whole point of
+  // this file is that visibility traces to an edge rather than to a guess.
+  conductors: { label: 'Conductor sizing & the connection graph', why: 'Every run has a material, a length and a section — and a temperature that decides whether it survives the current it carries.' },
+  bonding: { label: 'Grounding & bonding', why: 'Isolation keeps fault current off the case; bonding decides what happens once it fails.' },
+  corrosion: { label: 'Galvanic corrosion at joints', why: 'Two metals that must not touch, and the one that dissolves when they do.' },
+  'fault-study': { label: 'Short circuit & fault currents', why: 'The first milliseconds: whether the fuse clears before the busbar fails.' },
+  propagation: { label: 'Runaway propagation', why: 'One cell goes — what the spacing, the barrier and the state of charge do about the next one.' },
+  footprint: { label: 'Life-cycle footprint', why: 'What it costs to build, run and recycle, and which of those you can actually change.' },
+  swappable: { label: 'Swappable-pack policy', why: 'Fixed, swappable or hot-swappable — a decision that changes the mass, the connector and how many packs you buy.' },
+  cosim: { label: 'Co-simulation & model export', why: 'The pack as a component inside the toolchain you already run.' },
+
+  // --- How the machine actually moves --------------------------------------
+  // Deliberately SEPARATE concepts rather than one 'route simulation', because
+  // the physics genuinely differs by domain and a shared node would let road
+  // assumptions reach a boat. A ship is not a slow car.
+  'route-road': { label: 'Route simulation (road)', why: 'A real journey rather than a synthetic cycle: the hill outside town, and what it costs.' },
+  terrain: { label: 'Terrain & off-road surfaces', why: 'Sand is fifteen times the rolling resistance of tarmac, and at low speed that IS the consumption.' },
+  'hull-resistance': { label: 'Hull resistance & sea state', why: 'A boat is not a slow car: resistance rises with the cube of speed, and current and waves decide the crossing.' },
+  'flight-weather': { label: 'Flight physics & weather', why: 'Lift has to be paid for continuously, and wind, air density and temperature change what a flight costs.' },
+  'legged-gait': { label: 'Legged locomotion & gait', why: 'Legs pay for every step and for standing still — a duty cycle that looks nothing like rolling.' },
+
+  // --- The physical simulation package -------------------------------------
+  // The domains a CAE suite sells, and the ones this tool has so far only been
+  // able to point at. It already refuses to invent a wall thickness because
+  // the standards prescribe OUTCOMES rather than millimetres — these are how
+  // it would say something useful about those outcomes instead of stopping.
+  crush: { label: 'Crush & intrusion', why: 'The crash tests prescribe an outcome, not a dimension. This is what the structure does when something presses on it.' },
+  vibration: { label: 'Vibration & shock', why: 'Mount loads and the first natural frequency against what the road, the sea or the airframe actually shakes it with.' },
+  'thermal-field': { label: 'Thermal field across the pack', why: 'Not the loop that removes the heat, but where the heat IS — the gradient that ages one module faster than the rest.' },
 };
 
 // Edges: which application classes need each concept. Per-app extra edges
@@ -41,6 +75,38 @@ export const CONCEPTS = {
 // Classes: vehicle, lmt, stationary, marine, industrial, portable, auxiliary.
 const ALL = ['vehicle', 'lmt', 'stationary', 'marine', 'industrial', 'portable', 'auxiliary'];
 export const NEEDS = {
+  // --- What the pack is made of, and what happens when it fails -----------
+  // Every pack has conductors and joints, so these are universal. Bonding is
+  // not: below 60 V DC there is no shock hazard to bond against, and a boat
+  // is deliberately ungrounded — the grounding module says so itself, and the
+  // graph agrees with it rather than contradicting it.
+  conductors: { classes: ALL },
+  corrosion: { classes: ALL },
+  'fault-study': { classes: ALL },
+  propagation: { classes: ALL },
+  footprint: { classes: ALL },
+  bonding: { classes: ['vehicle', 'stationary', 'industrial', 'auxiliary', 'marine'] },
+  swappable: { classes: ['lmt', 'industrial', 'portable', 'auxiliary'], apps: ['ev', 'ebus'] },
+  cosim: { classes: ['vehicle', 'marine', 'industrial', 'stationary'] },
+
+  // --- How the machine actually moves --------------------------------------
+  // The edges that keep road physics away from a boat. Each domain gets the
+  // ONE that matches how it moves, and nothing else: a drone has no terrain,
+  // a ship has no gradient, and a humanoid has neither.
+  'route-road': { classes: ['vehicle', 'lmt', 'auxiliary'], apps: ['robot'] },
+  terrain: { classes: ['lmt'], apps: ['ev', 'ebus', 'robot', 'cyberdog'] },
+  'hull-resistance': { classes: ['marine'] },
+  'flight-weather': { classes: [], apps: ['drone'] },
+  'legged-gait': { classes: [], apps: ['cyberdog', 'humanoid'] },
+
+  // The simulation package. Crush follows the machines that carry people or
+  // meet crash rules; vibration follows anything that moves at all; the
+  // thermal field matters wherever there is enough pack for a gradient.
+  crush: { classes: ['vehicle', 'lmt', 'marine', 'auxiliary'] },
+  vibration: { classes: ['vehicle', 'lmt', 'marine', 'industrial', 'auxiliary'], apps: ['drone'] },
+  'thermal-field': { classes: ['vehicle', 'stationary', 'marine', 'industrial'] },
+
+
   'duty-economics': { classes: ALL },
   'load-profile': { classes: ALL },
   'space-fill': { classes: ALL },
