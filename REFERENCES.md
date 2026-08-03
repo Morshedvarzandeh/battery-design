@@ -114,6 +114,9 @@ than one that prints them.
 | **IEEE 1547** | Standard for interconnection and interoperability of distributed energy resources with associated electric power systems interfaces | What the grid-facing inverter must satisfy before a vehicle may export | `v2x.js` |
 | **UL 1741 (+SA/SB)** | Inverters, converters, controllers and interconnection system equipment for use with distributed energy resources | North American certification of the grid-tied inverter path | `v2x.js` |
 | **UL 9741** | Bidirectional electric vehicle charging system equipment | The bidirectional EVSE class behind V2H/V2G installations | `v2x.js` |
+| **EN 50549-1/-2** | Requirements for generating plants to be connected in parallel with distribution networks | The EU grid-code gate: exporting makes the machine a generating plant | `v2x.js`, `markets.js` |
+| **IEC 62109** | Safety of power converters for use in photovoltaic power systems | Equipment safety for the inverter behind a V2L output | `v2x.js` |
+| **IEC 60364-4-41** | Low-voltage electrical installations — protection against electric shock | Residual-current protection on a socket that has become a source | `v2x.js` |
 
 ## 6 · Regulation
 

@@ -244,6 +244,17 @@ project's provenance-first datasheet pipeline.
   storage is *not* dressed up as "V2X": feeding the grid through the PCS is
   its normal duty, and the panel says exactly that. Standards behind the
   verdicts: ISO 15118-20 (BPT), CHAdeMO, IEEE 1547, UL 1741, UL 9741.
+  Feeding back is a **policy, not a label**: choose Off / V2L / V2H / V2G and
+  the tool answers with the consequences — the **parts it adds** (bidirectional
+  charger, transfer switch, anti-islanding, revenue-grade metering, aggregator
+  interface, each with the standard it answers to), an **export budget** that
+  reserves state of charge so the machine still does its real job (kWh
+  available, hours of backup, and what that export costs in wear), and the
+  **interconnection items it adds to the release checklist** for your market
+  (IEEE 1547 / UL 1741 / UL 9741 in the US, EN 50549 in the EU). V2L is
+  islanded, so it adds parts but *no* interconnection paperwork — and the tool
+  refuses to imply otherwise. RVs and boats get V2L because they already have
+  the inverter; a portable power station is told it *is* one already.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,

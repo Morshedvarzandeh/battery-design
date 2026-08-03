@@ -204,10 +204,36 @@ function chemistryRules({ market, application, chemistry }) {
 
 // The release checklist for a design: application class + market rules +
 // chemistry gates, ready to render as a to-do list.
-export function releaseChecklist({ market, application, chemistry }) {
+// Deciding to feed power back is not a feature toggle — it drags a second
+// certification path in with it, and the checklist has to say so. These are
+// the items a GRID-FACING design adds on top of its class list. (V2L is an
+// islanded inverter output and does not interconnect, so it adds none.)
+const V2X_ITEMS = {
+  eu: [
+    item('EN 50549-1/-2', 'Generating plants connected in parallel with distribution networks', 'mandatory', 'Exporting makes the vehicle a generating plant — this is the EU grid-code gate.'),
+  ],
+  us: [
+    item('IEEE 1547', 'Interconnection and interoperability of distributed energy resources', 'mandatory', 'The interconnection rules the utility holds you to before any export is permitted.'),
+    item('UL 1741', 'Inverters, converters and interconnection system equipment for DER', 'mandatory', 'Certification of the grid-facing conversion path, including the supplements for bidirectional equipment.'),
+    item('UL 9741', 'Bidirectional electric vehicle charging system equipment', 'expected', 'The equipment standard for the bidirectional charger itself.'),
+  ],
+  cn: [
+    item('GB/T 20234', 'Connection set for conductive charging of electric vehicles', 'mandatory', 'The connector family the bidirectional session runs over in China.'),
+  ],
+  intl: [
+    item('ISO 15118-20', 'Vehicle-to-grid communication interface — bidirectional power transfer', 'expected', 'The charge-session protocol that makes export negotiable at all.'),
+  ],
+};
+
+export function releaseChecklist({ market, application, chemistry, v2x = null }) {
   const cls = CLASS_OF_APP[application] || 'portable';
   const book = CHECKLISTS[cls];
   const items = [...book.common, ...(book[market] || [])];
+  // Grid-facing export only. An islanded V2L socket interconnects with
+  // nothing and must not be made to look as if it does.
+  if (v2x && v2x !== 'off' && v2x !== 'v2l') {
+    items.push(...(V2X_ITEMS[market] || []), ...V2X_ITEMS.intl);
+  }
   const rules = chemistryRules({ market, application, chemistry });
   return {
     applicationClass: cls,
