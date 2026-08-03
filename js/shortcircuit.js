@@ -49,10 +49,16 @@ export const runawayOnsetC = (chemistry) => RUNAWAY_ONSET_C[chemistry] ?? 140;
 // Adiabatic conductor constant k, in A·√s/mm²: a conductor survives a fault
 // if I²t ≤ (k·A)². The value depends on what is touching the busbar, which is
 // a design choice, so it is an input rather than a constant.
+//
+// These are the published COPPER values, kept because they are what an
+// engineer recognises. The temperature pair is what each one encodes — the
+// limit is set by whatever is touching the conductor, not by the copper. For
+// any other metal use `adiabaticK()` in materials.js, which derives k from
+// the material's own properties and reproduces all three of these exactly.
 export const K_ADIABATIC = {
-  'pvc-insulated': 115,   // copper, 70 → 160 °C
-  'xlpe-insulated': 143,  // copper, 90 → 250 °C
-  'bare-copper': 226,     // copper, 30 → 200 °C, nothing meltable nearby
+  'pvc-insulated': 115,   // copper, 70 → 160 °C — the PVC is the limit
+  'xlpe-insulated': 143,  // copper, 90 → 250 °C — the XLPE is the limit
+  'bare-copper': 226,     // copper, 30 → 500 °C — nothing meltable nearby
 };
 
 export const FAULT_KINDS = [

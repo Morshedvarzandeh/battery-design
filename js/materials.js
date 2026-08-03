@@ -121,6 +121,39 @@ export function conductorMassKg({ materialId, lengthM, areaMm2 }) {
   return m.densityKgM3 * lengthM * areaMm2 * 1e-6;
 }
 
+/**
+ * The adiabatic constant k, for "will this conductor survive the fault".
+ *
+ * Over the milliseconds a fault lasts nothing has time to cool, so all the
+ * I²t goes into heating the metal, and a conductor survives while
+ * I²t ≤ (k·A)². Handbooks publish k for a few insulation classes of copper —
+ * 115, 143, 226 — and those three numbers get used for everything, including
+ * conductors that are not copper.
+ *
+ * But k is not a handbook lookup, it is a property of the material and the
+ * two temperatures. The IEC 60949 form is
+ *
+ *     k = √( Qc/(α₂₀·ρ₂₀) · ln((β + θf)/(β + θi)) ),   β = 1/α₂₀ − 20
+ *
+ * and every term is already in the table above. Computing it means a stainless
+ * bonding strap is judged as stainless (k ≈ 46) instead of borrowing copper's
+ * 226 and being declared four times stronger than it is.
+ *
+ * It reproduces the published copper values exactly — 115 for PVC (70→160),
+ * 143 for XLPE (90→250), 228 for bare (30→500) — which is how we know the
+ * derivation is right rather than merely plausible, and it is pinned by test.
+ */
+export function adiabaticK(id, { initialC = 30, finalC = 500 } = {}) {
+  const m = materialById(id);
+  if (!m || !(finalC > initialC)) return null;
+  const volumetricHeat = m.densityKgM3 * m.specificHeatJkgK;   // J/(m³·K)
+  const beta = 1 / m.tempCoPerK - 20;                          // K, reciprocal temp coefficient at 0 °C
+  const k = Math.sqrt(
+    (volumetricHeat / (m.tempCoPerK * m.resistivityOhmM)) * Math.log((beta + finalC) / (beta + initialC)),
+  );
+  return k / 1e6;                                              // A·√s per mm²
+}
+
 // Environment classes for the galvanic rule. The permitted difference in
 // anodic index is what decides whether two metals may touch.
 export const GALVANIC_LIMITS = {

@@ -36,6 +36,8 @@ import { profileById } from '../js/loadprofiles.js';
 import { buildFmu } from '../js/fmi.js';
 import { buildTopology, jointCompatibility, billOfMaterials, materialBreakdown } from '../js/topology.js';
 import { wiringStudy, INSTALLATIONS } from '../js/wiring.js';
+import { groundingStudy, faultFromShortCircuit } from '../js/grounding.js';
+import { materialById } from '../js/materials.js';
 import { ADDONS, addonsFor, capabilityReport } from '../js/addons.js';
 import { mkdirSync } from 'node:fs';
 
@@ -499,6 +501,67 @@ const COMMANDS = {
     }, lines.join('\n'));
   },
 
+  // Bonding: what happens after isolation has already failed.
+  ground(args) {
+    const d = designFromSpec(specFrom(args));
+    const cell = cellById(d.cell.id);
+    const topo = buildTopology({
+      summary: d.pack, partition: d.architecture.partition, cellForm: cell.form,
+      busbarMaterial: args.busbar, cableMaterial: args.cable || 'copper',
+    });
+    // The fault current comes from the short-circuit study the design already
+    // ran. Asking for it twice would let the two answers drift apart.
+    const fault = faultFromShortCircuit(d.shortCircuit) || {};
+    const study = groundingStudy({
+      topology: topo, application: d.spec?.application || args.app,
+      packVMax: d.pack.vMax, isolation: d.architecture?.isolation,
+      faultA: num(args.fault) ?? fault.faultA,
+      clearingS: num(args.clearing) ?? fault.clearingS,
+      faultBasis: fault.basis,
+      finish: args.finish || 'bare',
+      method: args.bond || 'bolt-serrated',
+      strapMaterial: args.strap || 'copper',
+      bonds: args.strapmm2 || args.straplen
+        ? [{
+          id: 'bond-enclosure', from: 'Pack enclosure', to: 'Chassis / vehicle earth',
+          materialId: args.strap || 'copper',
+          lengthMm: num(args.straplen, 250), areaMm2: num(args.strapmm2, 16),
+          finish: args.finish || 'bare', method: args.bond || 'bolt-serrated',
+        }]
+        : null,
+    });
+    const iso = d.architecture?.isolation;
+    const lines = [
+      `${d.application?.name || 'Custom'} — ${d.pack.s}S${d.pack.p}P ${cell.name}, ${d.pack.vMax.toFixed(0)} V max`,
+      '',
+      'ISOLATION — keeping fault current off the case',
+      ...(iso
+        ? [`  ${iso.floorKOhm.toFixed(0)} kΩ floor at ${iso.ohmsPerVolt} Ω/V (${iso.standardLabel})`,
+          `  ${wrap(iso.oemPracticeNote, 2).trimStart()}`]
+        : ['  Below 60 V DC — no isolation-monitoring burden.']),
+      '',
+      'BONDING — what happens when isolation has already failed',
+      `  ${wrap(study.headline, 2).trimStart()}`,
+      study.ungrounded
+        ? `  ${plural(study.totals.pathsChecked, 'path')} measured, against a rule that does not govern this machine`
+        : `  ${plural(study.totals.pathsChecked, 'path')} checked · ${study.totals.failing} inadequate · ${study.totals.costly} marginal`,
+      ...(study.findings.length
+        ? study.findings.map((f) => `  ${f.severity === 'fail' ? '✗' : f.severity === 'warn' ? '!' : 'i'} ${f.title}\n${wrap(f.detail, 6)}`)
+        : ['  ✓ Every bonding path is inside the limit and survives the fault.']),
+      '',
+      'PATHS',
+      pad('  id', 20) + pad('material', 24) + pad('mΩ', 9) + pad('touch V', 10) + 'verdict',
+      ...study.paths.map((b) => pad('  ' + b.id, 20)
+        + pad((materialById(b.materialId)?.name || b.materialId).slice(0, 22), 24)
+        + pad((b.resistanceOhm * 1000).toFixed(2), 9)
+        + pad(b.touchV != null ? b.touchV.toFixed(1) : '—', 10) + b.verdict),
+      '',
+      'ASSUMPTIONS',
+      ...study.assumptions.map((a) => bullet(a)),
+    ];
+    emit(args, { apiVersion: API_VERSION, isolation: iso || null, grounding: study }, lines.join('\n'));
+  },
+
   apps(args) {
     const list = listApplications();
     emit(args, list, list.map((a) =>
@@ -670,6 +733,15 @@ function wrap(text, indent = 0, width = 92) {
   return out.join('\n');
 }
 
+// A wrapped bullet, with its continuation lines indented past the marker so
+// the eye can tell one item from the next.
+const bullet = (text, indent = 2) => {
+  const body = wrap(text, indent + 2);
+  return `${' '.repeat(indent)}· ${body.slice(indent + 2)}`;
+};
+
+const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
 // A parameter file is plain JSON: dump it, edit it in any editor, hand it back.
 function loadParams(file) {
   try {
@@ -717,6 +789,9 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   bom       every conductor sized, every       --app ev [--install bundled] [--env harsh]
             joint checked, and the bill of     [--modrun 300 --packrun 400 --pitch 25]
             materials you hand over
+  ground    isolation, bonding paths and       --app ev [--finish anodised] [--bond bolt-plain]
+            whether the bond survives the      [--strap aluminium --strapmm2 25]
+            fault it exists for
   apps      the application presets
   cells     the cell library                   [--chemistry LFP] [--form cylindrical]
   serve     the web UI from your own machine   [--port 8080]
@@ -741,6 +816,15 @@ Wiring flags (bom)
   --ambient C       ambient the runs sit in (default 25)   --droplimit PCT  voltage budget (default 2)
   --busbar ID --cable ID --plating ID              conductor and plating materials
   --env harsh|normal|dry                           environment for the galvanic check
+
+Grounding flags (ground)
+  --finish bare|conversion-coated|anodised|painted  the enclosure surface the bond lands on.
+                                                    Anodised and painted do not conduct
+  --bond bolt-plain|bolt-serrated|welded|strap-bolted   what makes the connection. Only a
+                                                    serrated washer or a weld cuts a coating
+  --strap ID --strapmm2 MM2 --straplen MM          the bonding strap itself
+  --fault A --clearing S                           override the fault current and clearing
+                                                    time (default: from the short-circuit study)
 
 Big runs use every core. Small ones stay on one thread on purpose: starting a
 worker costs more than the few designs it would have saved. Serial and
