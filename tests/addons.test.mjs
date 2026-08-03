@@ -26,9 +26,18 @@ test('the roadmap is in the product, not in someone\'s head', () => {
   const planned = ADDONS.filter((a) => a.status === 'planned');
   ok(planned.length >= 1, 'unbuilt capabilities are listed rather than implied');
   ok(planned.every((a) => a.why), 'and each explains why it is worth building');
-  ok(planned.some((a) => a.id === 'runaway'), 'runaway propagation is named as the next heavy one');
+  // Deliberately NOT pinned to a particular id being unbuilt: an add-on moving
+  // from planned to shipped is the roadmap working, not a regression, and a
+  // test that fails on progress only teaches people to edit the test.
+  ok(planned.every((a) => a.name && a.what && a.provides?.length),
+    'a planned entry is described as fully as a shipped one, or it is a wish rather than a roadmap');
   const shipped = ADDONS.filter((a) => a.status === 'shipped');
-  ok(shipped.some((a) => a.id === 'cosim'), 'co-simulation ships in this round, so it says shipped');
+  ok(shipped.some((a) => a.id === 'cosim'), 'co-simulation ships, so it says shipped');
+  ok(shipped.length > planned.length, 'and more is built than is promised');
+  for (const a of ADDONS) {
+    ok(['shipped', 'planned'].includes(a.status), `${a.id} has an honest status`);
+    if (a.status === 'shipped') ok(!/^planned/.test(a.module), `${a.id} says shipped, so it names a real module`);
+  }
 });
 
 test('an application sees only the add-ons that are its business', () => {

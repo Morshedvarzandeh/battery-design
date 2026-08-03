@@ -39,6 +39,8 @@ import { wiringStudy, INSTALLATIONS } from '../js/wiring.js';
 import { groundingStudy, faultFromShortCircuit } from '../js/grounding.js';
 import { designBrief } from '../js/brief.js';
 import { lifeCycle } from '../js/lca.js';
+import { propagationStudy, BARRIERS } from '../js/runaway.js';
+import { layoutPack } from '../js/pack-engine.js';
 import { materialById } from '../js/materials.js';
 import { ADDONS, addonsFor, capabilityReport } from '../js/addons.js';
 import { mkdirSync } from 'node:fs';
@@ -652,6 +654,45 @@ const COMMANDS = {
     emit(args, { apiVersion: API_VERSION, lca: r }, lines.join('\n'));
   },
 
+  // Propagation: a COMPARISON of options, never a clearance.
+  runaway(args) {
+    const d = designFromSpec(specFrom(args));
+    const cell = cellById(d.cell.id);
+    const layout = layoutPack(cell, d.pack.s, d.pack.p, { spacingMm: num(args.gap, 1) });
+    if (!layout) { console.error('This cell and pack do not lay out.'); process.exit(2); }
+    const st = propagationStudy({
+      layout, cell, barrier: args.barrier || 'none',
+      barrierThicknessMm: num(args.barriermm, 0.5),
+      soc: num(args.soc, 1), ambientC: num(args.ambient, 25),
+      interconnectWK: num(args.bridge, 0.02),
+    });
+    const lines = [
+      `${d.application?.name || 'Custom'} — ${d.pack.s}S${d.pack.p}P ${cell.name}, ${cell.chemistry}`,
+      '',
+      'WHAT THIS CAN AND CANNOT TELL YOU',
+      wrap('This counts conduction, radiation and the interconnect. Hot gas, burning electrolyte and ejecta — which carry most of a real event — are not modelled, so it UNDER-predicts propagation and can never clear a design. Use the ranking; ignore the absolute numbers.', 2),
+      '',
+      `BARRIER OPTIONS ON THIS GEOMETRY (${st.coupling.gapMm.toFixed(1)} mm gap, ${st.modelled} cells)`,
+      pad('  option', 26) + pad('margin to onset', 18) + pad('neighbour peak', 17) + 'radiation',
+      ...st.ranked.map((r) => pad('  ' + r.label, 26)
+        + pad(`${r.marginK.toFixed(0)} K`, 18)
+        + pad(`${r.peakNeighbourC.toFixed(0)} °C`, 17)
+        + (r.radiates ? 'NOT blocked' : 'blocked')),
+      '',
+      wrap(st.headline, 2),
+      '',
+      'WHAT YOU MUST CONTAIN',
+      wrap(st.containment.note, 2),
+      '',
+      'FINDINGS',
+      ...st.findings.map((f) => `  ${f.severity === 'fail' ? '✗' : f.severity === 'warn' ? '!' : 'i'} ${f.title}\n${wrap(f.detail, 6)}`),
+      '',
+      'ASSUMPTIONS',
+      ...st.assumptions.map((a) => bullet(a)),
+    ];
+    emit(args, { apiVersion: API_VERSION, runaway: st }, lines.join('\n'));
+  },
+
   apps(args) {
     const list = listApplications();
     emit(args, list, list.map((a) =>
@@ -883,6 +924,8 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
             plus what the tool is guessing
   lca       the whole footprint by phase, and   --app ev --energy 60000 [--grid 250]
             how well each part is known
+  runaway   compare barriers and spacing, and    --app ev [--barrier mica] [--gap 2]
+            size what you must contain
   ground    isolation, bonding paths and       --app ev [--finish anodised] [--bond bolt-plain]
             whether the bond survives the      [--strap aluminium --strapmm2 25]
             fault it exists for

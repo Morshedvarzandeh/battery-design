@@ -180,12 +180,12 @@ export const ADDONS = [
     why: 'Swappability is a property, not an application. A preset per swappable variant would double the picker for one attribute.',
   },
   {
-    id: 'runaway', name: 'Runaway propagation', tier: 'desktop', status: 'planned',
-    module: 'planned', concepts: [],
-    what: 'One cell goes into thermal runaway: does it take its neighbours with it? A per-cell thermal network with ignition thresholds, run across the whole pack to find whether the design contains a single-cell failure.',
-    provides: ['propagation or containment verdict', 'time to neighbour ignition', 'the effect of barriers and spacing'],
-    needs: ['the desktop runner', 'per-cell geometry'],
-    why: 'Thousands of cells × thousands of steps × many scenarios. This is the first thing in the tool where a compiled language would earn its cost.',
+    id: 'runaway', name: 'Runaway propagation', tier: 'desktop', status: 'shipped',
+    module: 'runaway.js', concepts: [],
+    what: 'One cell goes — how much does each design decision help? Cell adjacency from the real layout, then conduction, radiation and the interconnect stepped in time with two thermal nodes per cell. It ranks barrier options and spacing against each other, and sizes the energy the enclosure must contain. It does NOT predict whether a pack propagates: the mechanisms that carry a real event are ejecta and flame, which are not modelled, so it under-predicts and can never clear a design.',
+    provides: ['barrier and spacing options ranked against each other', 'MJ per cell and per module to contain', 'the effect of state of charge and of a heat-bridging interconnect'],
+    needs: ['a pack layout', 'a cell', 'what sits between the cells'],
+    why: 'Relative ordering survives the missing physics because every option is wrong by the same amount; absolute prediction does not. UL 9540A and GB 38031-2025 exist because propagation is settled by burning a real pack.',
   },
 ];
 

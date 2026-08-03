@@ -35,6 +35,7 @@ node desktop/bd.mjs help
 | `ground` | Isolation, bonding paths, touch voltage, and whether the bond survives the fault |
 | `brief` | Every check in one ordered list, plus the questions the tool needs you to answer |
 | `lca` | The whole footprint by phase, each with how well it is actually known |
+| `runaway` | Compare barriers and spacing against each other, and size what you must contain |
 | `addons` | What this tool can do, and what it cannot — including what is planned |
 | `apps` / `cells` | The application presets and the cell library |
 | `serve` | The web UI, served from your own machine, offline |
@@ -223,6 +224,60 @@ question genuinely retires it, which is checked by test rather than promised.
 It also lists **what was not checked**, because a briefing that says what it
 covered without saying what it skipped is the more dangerous of the two
 omissions.
+
+---
+
+## Runaway propagation: what this may and may not be used for
+
+`runaway` builds cell adjacency from the real layout, then steps conduction,
+radiation and the interconnect in time with two thermal nodes per cell.
+
+**It does not predict whether your pack propagates, and it will never tell you
+a design is safe.** Real propagation is carried by hot gas, burning electrolyte
+and ejecta. None of that is here. Run the model against a 1 mm air-gapped 18650
+NMC module — which propagates in a real test — and it reports the neighbour
+peaking **46 K below onset**, across every plausible value of its own
+coefficients. The omission is not a correction; it is most of the energy
+transfer.
+
+What it is for is **comparison**:
+
+```
+option                  margin to onset   neighbour peak   radiation
+Aerogel, 1 mm           61 K              74 °C            blocked
+Mica sheet, 0.5 mm      51 K              84 °C            blocked
+Potted                  51 K              84 °C            blocked
+Air gap only            46 K              89 °C            NOT blocked
+```
+
+Every option is wrong by the same missing physics, so the **ordering** survives
+what the magnitudes do not — and the ordering is what the decision needs.
+
+Two results worth knowing. **An air gap does not stop radiation**: air conducts
+poorly, which makes a gap feel like protection, but it is transparent and above
+about 300 °C radiation is the larger path. A mica sheet conducts a little more
+than the air it displaces and still wins, which is why it is in almost every
+pack that has been tested. And a **barrier sits inside the gap, not instead of
+it** — modelled the other way, a 0.5 mm sheet looks worse than a 1 mm gap and
+the tool would tell you to remove it.
+
+### The number that does not depend on the model
+
+```
+One cell releases about 0.09 MJ. If the whole modelled group goes, that is
+9.5 MJ — the number that sizes venting area, enclosure strength and any
+suppression.
+```
+
+That follows from the cell's own stored energy and is unaffected by whether the
+propagation model is right. It is the most trustworthy figure in the study.
+
+```bash
+node desktop/bd.mjs runaway --app ev --energy 60000 --barrier mica --gap 2
+```
+
+UL 9540A and GB 38031-2025 exist because propagation is settled by burning a
+real pack. Nothing here substitutes for that.
 
 ---
 
