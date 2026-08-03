@@ -28,6 +28,7 @@ import { simulateMission, compareCells } from './sim1d.js';
 import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
 import { shortCircuitStudy } from './shortcircuit.js';
+import { renderGuard } from './limits.js';
 import {
   vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare,
   modeComparison, DRIVING_MODES,
@@ -1780,18 +1781,20 @@ function recompute() {
   } else {
     pack3dDirty = true; // pushed lazily when the user switches to 3D
   }
-  runAnalysis();
-  renderStats();
-  renderCompLegend();
-  renderThermal();
-  renderSensors();
-  renderSim();
-  renderCharging();
-  renderVehicle();
-  renderShort();
-  renderCompClasses();
-  if (document.querySelector('#pane-eu.active')) renderEu();
-  saveHash();
+  // Every panel is contained. If one throws, it says so in its own box and
+  // the rest of the design still renders — a blank frozen page helps nobody.
+  renderGuard('The analysis', $('findings'), runAnalysis);
+  renderGuard('The pack summary', $('statsBody'), renderStats);
+  renderGuard('The component legend', null, renderCompLegend);
+  renderGuard('The thermal system', $('thermBody'), renderThermal);
+  renderGuard('The sensor plan', $('sensorBody'), renderSensors);
+  renderGuard('The mission simulation', $('simStats'), renderSim);
+  renderGuard('Charging', $('acBody'), renderCharging);
+  renderGuard('The vehicle model', $('vehSummary'), renderVehicle);
+  renderGuard('The fault study', $('scSummary'), renderShort);
+  renderGuard('Component classes', null, renderCompClasses);
+  if (document.querySelector('#pane-eu.active')) renderGuard('Release rules', $('euBody'), renderEu);
+  renderGuard('Saving the design to the URL', null, saveHash);
 }
 
 // ---------------------------------------------------------------------------

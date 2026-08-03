@@ -81,7 +81,14 @@ function solveCurrent(pDemandW, ocvV, rOhm) {
  *  hasHeater       — the design carries a heater branch (winter charging)
  * @returns simulation result, or { unavailable, why } when inputs are missing.
  */
+import { clampSteps } from './limits.js';
+
 export function simulateMission(a) {
+  // No mission may run forever: bound the work before starting it.
+  {
+    const b = clampSteps({ profileLength: a?.profile?.p?.length || 0, passes: a?.passes ?? 1 });
+    a = { ...a, passes: b.passes, _limitNotes: b.notes };
+  }
   const { cell, s, p, profile, scaleW } = a;
   if (!profile || !profile.p?.length || !(scaleW > 0)) {
     return { unavailable: true, why: 'No load profile applied — pick or upload one on the Usage tab.' };
@@ -291,6 +298,7 @@ export function simulateMission(a) {
     },
     findings,
     assumptions: [
+      ...(a._limitNotes || []),
       `OCV(SoC) is a ${SHAPE_OF_CHEMISTRY[cell.chemistry] || 'sloped'}-class shape anchored to this cell's ${cell.vMin}–${cell.vMax} V window — class-typical, not measured.`,
       `Constant pack resistance ${rMOhm.toFixed(1)} mΩ (no RC dynamics, no temperature dependence).`,
       'Coulomb counting; charge acceptance treated as ideal inside the window.',

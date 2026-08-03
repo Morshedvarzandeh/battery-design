@@ -15,6 +15,7 @@
 // Runs unchanged in a browser and in Node. No DOM, no filesystem, no network.
 
 import { CELLS, cellById, provenance } from './cells.js';
+import { clampPack, clampSteps } from './limits.js';
 import { PRESETS } from './presets.js';
 import { layoutPack, summarize, defaultArrangement } from './pack-engine.js';
 import { costModel } from './optimizer.js';
@@ -138,6 +139,8 @@ function deriveSP(cell, preset, spec, warnings) {
  * nodes, nothing that cannot be JSON.stringify'd.
  */
 export function designFromSpec(spec = {}) {
+  // A null spec is a caller's mistake, not a reason to throw at them.
+  if (spec == null || typeof spec !== 'object') spec = {};
   const warnings = [];
   const preset = PRESETS.find((p) => p.id === spec.application) || null;
   if (spec.application && !preset) {
@@ -147,7 +150,12 @@ export function designFromSpec(spec = {}) {
   if (spec.cell && !cellById(spec.cell)) {
     warnings.push(`Unknown cell "${spec.cell}" — using ${cell.id} instead. Use listCells() for the real ids.`);
   }
-  const { s, p } = deriveSP(cell, preset, spec, warnings);
+  const derived = deriveSP(cell, preset, spec, warnings);
+  // Guard rails before any geometry is attempted: a slipped keystroke must
+  // not become ten billion cells and a frozen application.
+  const bounded = clampPack(derived.s, derived.p);
+  warnings.push(...bounded.notes);
+  const { s, p } = bounded;
   const appId = preset?.id || 'custom';
   const market = spec.market || 'eu';
   const dod = spec.dod ?? 0.8;
