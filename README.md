@@ -5,11 +5,13 @@
 
 | You are on | File |
 |---|---|
-| Windows | `.msi` |
-| macOS, Apple silicon (M1–M4) | `aarch64.dmg` |
-| macOS, Intel | `x64.dmg` |
 | Linux, Debian/Ubuntu | `.deb` |
 | Linux, anything else | `.AppImage` |
+
+Windows and macOS builds are not published yet. An installer nobody has
+launched is not a release, and Linux is the platform this project can install
+and run before publishing. Both other platforms run the designer in a browser
+today, or from a clone with `node desktop/bd.mjs serve`.
 
 **[→ Releases](https://github.com/Morshedvarzandeh/battery-design/releases)**
 

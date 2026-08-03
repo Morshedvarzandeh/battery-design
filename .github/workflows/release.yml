@@ -60,6 +60,18 @@ jobs:
           name: fmu
           path: battery-design-ev.fmu.zip
 
+  # LINUX ONLY, deliberately.
+  #
+  # Windows and macOS installers can only be built on Windows and macOS
+  # runners, and neither can be VERIFIED there — a green build is not a
+  # working application, and nobody here can launch a .dmg to find out. The
+  # first attempt shipped a matrix of four and all of them failed at once on a
+  # missing icon; the fix was real, but confirming it on three platforms
+  # nobody can test would be confirming a build, not a product.
+  #
+  # Linux is the one that can be installed and run here, so it is the one that
+  # ships. The matrix is kept as a list of one so the other platforms are an
+  # entry to add back rather than a rewrite.
   desktop:
     needs: gates
     strategy:
@@ -68,12 +80,6 @@ jobs:
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          - os: macos-13
-            target: x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -149,11 +155,15 @@ jobs:
 
             | You are on | Download |
             |---|---|
-            | Windows | `.msi` (or `.exe` if you prefer the NSIS installer) |
-            | macOS, Apple silicon (M1–M4) | `aarch64.dmg` |
-            | macOS, Intel | `x64.dmg` |
             | Linux, Debian/Ubuntu | `.deb` |
             | Linux, anything else | `.AppImage` |
+
+            **Windows and macOS are not built yet.** They will be, but an
+            installer nobody has launched is not a release — this one was
+            installed and run before it was published. Until then, both
+            platforms can run the designer in a browser at
+            morshedvarzandeh.github.io/battery-design, or from a clone with
+            `node desktop/bd.mjs serve`.
 
             **Already have a simulation toolchain?** Take `battery-design-ev.fmu.zip`
             instead. It is an FMI 2.0 co-simulation component: your vehicle or plant
@@ -161,12 +171,9 @@ jobs:
             and state of charge each coupling step. Works in ANSYS Twin Builder,
             Simulink, GT-SUITE and Dymola.
 
-            Installers are unsigned. Windows SmartScreen and macOS Gatekeeper will
-            both warn about that, and they are right to — signing certificates cost
-            money and this project has not bought one. On macOS: right-click the app
-            and choose Open the first time.
+            The package is unsigned, which some software centres will mention.
 
-            Nothing you enter leaves your machine, on any platform.
+            Nothing you enter leaves your machine.
           releaseDraft: true
           prerelease: false
           args: --target ${{ matrix.target }}
