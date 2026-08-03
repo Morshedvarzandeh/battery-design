@@ -29,6 +29,7 @@ import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
 import { shortCircuitStudy } from './shortcircuit.js';
 import { renderGuard } from './limits.js';
+import { detectRunner, runnerStatusLine, runAdvancedModel, buildFmuOnRunner } from './desktop-link.js';
 import {
   vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare,
   modeComparison, DRIVING_MODES,
@@ -140,6 +141,7 @@ function init() {
   initProfiles();
   bindVehicle();
   bindShort();
+  initRunner();
   bindShort();
   restoreHash();
   initComponents();
@@ -1871,6 +1873,90 @@ let simChargeMode = 'none', simChargeMin = 15;
 // behind the collapsed expert fold. The knowledge graph decides who gets
 // the detail at all.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Where am I running? The same interface either way — the desktop runner just
+// answers questions the browser cannot compute. Probed once, fails soft.
+// ---------------------------------------------------------------------------
+let runnerInfo = null;
+
+async function initRunner() {
+  runnerInfo = await detectRunner();
+  renderRunnerBox();
+}
+
+function renderRunnerBox() {
+  const box = $('runnerBox');
+  if (!box) return;
+  const status = runnerStatusLine(runnerInfo);
+  if (status.here === 'browser') {
+    box.innerHTML = `<div class="hint">${esc(status.text)}</div>`
+      + `<div class="hint" style="margin-top:6px;font-family:ui-monospace,monospace;font-size:11px;`
+      + `background:var(--surface-2);padding:6px;border-radius:var(--r)">node desktop/bd.mjs serve</div>`;
+    return;
+  }
+  box.innerHTML = `<div class="stat"><span>Running on</span><b style="font-weight:normal;text-align:right">`
+    + `your machine · ${runnerInfo.cores} cores</b></div>`
+    + `<div class="hint" style="margin-top:4px">${esc(status.text)}</div>`
+    + `<button class="btn" id="btnAdvModel" style="width:100%;margin-top:8px">Run the advanced electro-thermal model</button>`
+    + `<button class="btn" id="btnFmuExport" style="width:100%;margin-top:6px">Export for co-simulation (FMI 2.0)</button>`
+    + `<div id="runnerOut" style="margin-top:8px"></div>`;
+  $('btnAdvModel').onclick = async () => {
+    const out = $('runnerOut');
+    out.innerHTML = '<div class="hint">Running on your machine…</div>';
+    try {
+      const r = await runAdvancedModel({ spec: currentSpec(), nModules: 6, ambientC: 25 });
+      const q = r.summary;
+      out.innerHTML = `<div class="stat"><span>Peak module</span><b>${f1(q.maxTempC)} °C</b></div>`
+        + `<div class="stat"><span>Module spread</span><b>${f1(q.tempSpreadK)} K</b></div>`
+        + `<div class="stat"><span>Coolant out</span><b>${f1(q.coolantOutC)} °C</b></div>`
+        + `<div class="stat"><span>Efficiency</span><b>${f1(q.efficiencyPct)}%</b></div>`
+        + (r.aging?.schedule?.length
+          ? `<div class="stat"><span>Capacity at year ${r.aging.years}</span><b>${f1(r.aging.schedule[r.aging.schedule.length - 1].remainingPct)}%</b></div>` : '')
+        + `<div class="hint" style="margin-top:6px">${r.assumptions.slice(0, 3).map(esc).join(' ')}</div>`;
+    } catch (e) {
+      out.innerHTML = `<div class="hint">Could not run it: ${esc(e.message)}</div>`;
+    }
+  };
+  $('btnFmuExport').onclick = async () => {
+    const out = $('runnerOut');
+    out.innerHTML = '<div class="hint">Building the FMU…</div>';
+    try {
+      const fmu = await buildFmuOnRunner({ spec: currentSpec() });
+      const names = Object.keys(fmu.files);
+      out.innerHTML = `<div class="hint">Built <b>${esc(fmu.modelName)}</b> (${names.length} files, guid `
+        + `<span style="font-family:ui-monospace,monospace">${esc(fmu.guid)}</span>). `
+        + `Drop it into ANSYS Twin Builder, Simulink, GT-SUITE or Dymola after compiling — `
+        + `the build line is in its README.</div>`;
+      for (const [name, content] of Object.entries(fmu.files)) {
+        saveTextFile(content, name.split('/').pop());
+      }
+    } catch (e) {
+      out.innerHTML = `<div class="hint">Could not build it: ${esc(e.message)}</div>`;
+    }
+  };
+}
+
+// Save a generated file. The export button lives outside the bind closure
+// that owns the report downloader, so it gets its own.
+function saveTextFile(content, filename) {
+  const blob = new Blob([content], { type: 'text/plain' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// The design on screen, as the spec the engine speaks.
+function currentSpec() {
+  return {
+    application: state.presetId || undefined,
+    cell: cell().id, s: state.s, p: state.p,
+    market: state.marketId, dod: currentDod(),
+    v2xPolicy: state.v2xPolicy, driveMode: state.driveMode,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The fault study — what the pack does in the first milliseconds of a short.
 // Model in js/shortcircuit.js. One sentence visible; the race between fuse,

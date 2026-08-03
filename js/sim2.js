@@ -327,11 +327,21 @@ export function agingEstimate({ params, tAvgC = 25, meanSoC = 0.6, efc = 0, year
     const cyc = P.cycA * arr(P.cycEaJ) * crW * Math.sqrt(Math.max(0, efc) * (cyclesPerYear || 0) * y);
     return cal + cyc;
   };
-  const out = { fadePctPerScenario: null, resistanceGrowthPct: null, years: null, schedule: [] };
+  const out = { fadePctPerScenario: null, resistanceGrowthPct: null, years: null, schedule: [], extrapolated: false };
+  // The correlation was fitted around normal operating temperatures. Run it at
+  // 340 °C and the Arrhenius term explodes into numbers like minus a hundred
+  // thousand percent remaining — which is not a pessimistic answer, it is a
+  // meaningless one. Bound the output and SAY the model is outside its range,
+  // rather than printing nonsense with a straight face.
+  const OUTSIDE_RANGE_C = 60;
+  if (tAvgC > OUTSIDE_RANGE_C) out.extrapolated = true;
   if (years > 0) {
     for (let y = 1; y <= Math.ceil(years); y++) {
-      const fade = perYear(y);
-      out.schedule.push({ year: y, capacityFadePct: fade, remainingPct: 100 - fade, resistanceGrowthPct: fade * P.resGrowthK });
+      const fade = Math.min(100, Math.max(0, perYear(y)));
+      out.schedule.push({
+        year: y, capacityFadePct: fade, remainingPct: 100 - fade,
+        resistanceGrowthPct: Math.min(1000, fade * P.resGrowthK),
+      });
     }
     const last = out.schedule[out.schedule.length - 1];
     out.fadePctPerScenario = last.capacityFadePct;
@@ -340,7 +350,10 @@ export function agingEstimate({ params, tAvgC = 25, meanSoC = 0.6, efc = 0, year
     const eol = out.schedule.find((r) => r.remainingPct <= 80);
     out.yearsTo80Pct = eol ? eol.year : null;
   }
-  out.note = 'Square-root calendar and cycle fade with Arrhenius temperature weighting. These coefficients are class estimates (§8) — fit them to your own cycling data before using the numbers for warranty.';
+  out.note = 'Square-root calendar and cycle fade with Arrhenius temperature weighting. These coefficients are class estimates (§8) — fit them to your own cycling data before using the numbers for warranty.'
+    + (out.extrapolated
+      ? ` NOT VALID HERE: the pack averages ${tAvgC.toFixed(0)} °C, far outside the range this correlation describes. At that temperature the design has a thermal problem, not an aging one — fix the cooling and ask again.`
+      : '');
   return out;
 }
 
