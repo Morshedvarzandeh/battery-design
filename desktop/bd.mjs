@@ -34,6 +34,7 @@ import { simulate, calibrate, defaultParams, PARAM_SPEC, PARAM_BY_ID } from '../
 import { cellById } from '../js/cells.js';
 import { profileById } from '../js/loadprofiles.js';
 import { buildFmu } from '../js/fmi.js';
+import { buildTopology, jointCompatibility, billOfMaterials, materialBreakdown } from '../js/topology.js';
 import { ADDONS, addonsFor, capabilityReport } from '../js/addons.js';
 import { mkdirSync } from 'node:fs';
 
@@ -430,6 +431,50 @@ const COMMANDS = {
     ].join('\n'));
   },
 
+  // Wiring, joints and the bill of materials the customer receives.
+  bom(args) {
+    const d = designFromSpec(specFrom(args));
+    const cell = cellById(d.cell.id);
+    const topo = buildTopology({
+      summary: d.pack, partition: d.architecture.partition, cellForm: cell.form,
+      busbarMaterial: args.busbar, cableMaterial: args.cable || 'copper',
+      plating: args.plating || 'tin',
+      lengths: {
+        groupPitchMm: num(args.pitch), moduleRunMm: num(args.modrun), packRunMm: num(args.packrun),
+      },
+    });
+    const env = args.env || 'normal';
+    const joints = jointCompatibility(topo, env);
+    const failing = joints.filter((j) => !j.risk.ok);
+    const bom = billOfMaterials({ topology: topo, summary: d.pack, cell, selection: {} });
+    const t = topo.totals;
+    const lines = [
+      `${d.application?.name || 'Custom'} — ${d.pack.s}S${d.pack.p}P ${cell.name}`,
+      '',
+      'WIRING',
+      `  Interconnect      ${t.interconnectMOhm.toFixed(2)} mΩ total through ${topo.edges.length} runs`,
+      `  At ${Math.round(d.pack.maxContCurrentA)} A continuous   ${t.dropAtContV.toFixed(2)} V dropped, ${t.lossAtContW.toFixed(0)} W lost in the conductors`,
+      `  Conductor mass    ${t.conductorMassKg.toFixed(2)} kg`,
+      ...(topo.estimated ? [`  NOTE  ${topo.notes[0]}`] : []),
+      '',
+      `JOINTS (${env} environment)`,
+      `  ${joints.length} joints, ${failing.length} needing attention`,
+      ...failing.slice(0, 4).map((j) => `  ✗ ${j.id}: ${j.risk.why}`),
+      ...(failing.length === 0 ? ['  ✓ Every joint is galvanically compatible in this environment.'] : []),
+      '',
+      'BILL OF MATERIALS',
+      pad('  group', 14) + pad('item', 34) + pad('qty', 9) + pad('mass kg', 10) + 'cost',
+      ...bom.lines.map((l) => pad('  ' + l.group, 14) + pad(l.item.slice(0, 32), 34)
+        + pad(`${l.qty} ${l.unit}`, 9) + pad(l.massKg != null ? l.massKg.toFixed(2) : '—', 10)
+        + (l.totalCost != null ? `$${Math.round(l.totalCost).toLocaleString()}` : '—')),
+      `  ${'-'.repeat(60)}`,
+      pad('  TOTAL', 48) + pad(bom.totals.massKg.toFixed(1), 10) + `$${Math.round(bom.totals.knownCost).toLocaleString()} of ${bom.totals.pricedLines} priced lines`,
+      '',
+      `  ${bom.note}`,
+    ];
+    emit(args, { apiVersion: API_VERSION, topology: { totals: topo.totals, estimated: topo.estimated }, joints, bom }, lines.join('\n'));
+  },
+
   apps(args) {
     const list = listApplications();
     emit(args, list, list.map((a) =>
@@ -631,7 +676,7 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   range     drive-cycle study, mass × mode     --app ev --energy 60000 [--from --to --step]
   fmu       export as an FMI 2.0 co-sim FMU    --app ev [--out ./fmu] [--params p.json]
   addons    what this tool can do, and cannot   [--app ev]
-  apps      the application presets
+  bom       wiring, joints and the bill of      --app ev [--env harsh] [--busbar aluminium]\n            materials you hand over\n  apps      the application presets
   cells     the cell library                   [--chemistry LFP] [--form cylindrical]
   serve     the web UI from your own machine   [--port 8080]
 
