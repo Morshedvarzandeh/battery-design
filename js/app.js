@@ -25,6 +25,7 @@ import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
 import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
 import { simulateMission, compareCells } from './sim1d.js';
+import { buildChargingPlan } from './charging.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
 import { stepsFor, needed, appNeeds } from './knowledge.js';
@@ -317,6 +318,7 @@ function bindTraining() {
     state.marketId = b.dataset.mkt;
     $('segMarket').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
     renderMarketChecklist();
+    computeCharging(); renderCharging();
   });
   // Diagram lightbox: the side panel is narrow, so both architecture
   // drawings open at reading size on a tap (rendered on the white report
@@ -358,6 +360,21 @@ function bindTraining() {
     $('simSoC').value = simSoC;
     computeSim(); renderSim();
   };
+  $('segSimCharge').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    simChargeMode = b.dataset.charge;
+    $('segSimCharge').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    computeSim(); renderSim();
+  });
+  $('simChargeMin').onchange = () => {
+    simChargeMin = Math.max(1, Math.min(600, Math.round(parseFloat($('simChargeMin').value) || 15)));
+    $('simChargeMin').value = simChargeMin;
+    computeSim(); renderSim();
+  };
+  $('segObc').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    obcSel = b.dataset.obc;
+    $('segObc').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    computeCharging(); renderCharging(); computeSim(); renderSim();
+  });
   $('segLoop').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.loopOverride = b.dataset.loop;
     $('segLoop').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
@@ -1204,6 +1221,7 @@ function currentReportData() {
     })(),
     sim: lastSim && !lastSim.unavailable ? lastSim : null,
     simCompare: lastSimCompare,
+    charging: lastCharging,
     simPng: (() => {
       if (!lastSim || lastSim.unavailable) return null;
       const off = document.createElement('canvas');
@@ -1521,6 +1539,10 @@ function renderCompClasses() {
     if (A.contactors.fuse?.ratingA != null) el.push(row('Main fuse', `${f0(A.contactors.fuse.ratingA)} A`, '≈2× continuous current'));
     el.push(row('DC-DC (LV supply)', `${A.dcdc.lvBusV} V bus`, A.dcdc.auxPowerW != null ? `${f0(A.dcdc.auxPowerW)} W aux budget` : 'size from the LV load list'));
     if (A.comms?.primary) el.push(row('Communication bus', esc(A.comms.primary), 'application-standard interface'));
+    if (lastCharging) {
+      el.push(row('Charging', lastCharging.obc ? esc(lastCharging.obc.name) : esc(lastCharging.arch.name),
+        lastCharging.arch.kind === 'obc' ? 'on-board AC charger' : 'no on-board charger to design'));
+    }
   }
   $('cder-electrical').innerHTML = el.length
     ? `<div class="hint" style="margin-top:6px">Derived by the architecture (Analysis tab) — shown here so the class is complete:</div>${el.join('')}`
@@ -1654,6 +1676,7 @@ function recompute() {
   renderThermal();
   renderSensors();
   renderSim();
+  renderCharging();
   renderCompClasses();
   if (document.querySelector('#pane-eu.active')) renderEu();
   saveHash();
@@ -1725,6 +1748,57 @@ let lastSim = null;
 let lastSimFindings = [];
 let lastSimCompare = null;
 let simSeason = 'design', simPasses = 1, simSoC = 100;
+let simChargeMode = 'none', simChargeMin = 15;
+
+// ---------------------------------------------------------------------------
+// Charging (the AC side, round one). The customer sees ONE plain sentence —
+// how this machine charges and how long it takes; everything else lives
+// behind the collapsed expert fold. The knowledge graph decides who gets
+// the detail at all.
+// ---------------------------------------------------------------------------
+let lastCharging = null;
+let obcSel = 'auto';
+
+function computeCharging() {
+  if (!lastSummary) { lastCharging = null; return; }
+  lastCharging = buildChargingPlan({
+    appId: state.presetId, marketId: state.marketId,
+    energyWh: lastSummary.energyWh, vNomV: lastSummary.nominalV,
+    cell: cell(), obcOverride: obcSel,
+  });
+}
+
+const fmtH = (h) => h >= 1 ? `${(Math.round(h * 10) / 10)} h` : `${Math.round(h * 60)} min`;
+
+function renderCharging() {
+  const sumBox = $('acSummary');
+  if (!sumBox) return;
+  const C = lastCharging;
+  if (!C) { sumBox.innerHTML = '<div class="empty">—</div>'; $('acBody').innerHTML = ''; return; }
+  // The one sentence a customer needs — plain words, no jargon.
+  const how = C.obc ? `${C.obc.acKW} kW on-board charger` : esc(C.arch.name);
+  sumBox.innerHTML = `<b>Charges via:</b> ${how}` +
+    (C.t2080 ? ` · <b>20→80% in ${fmtH(C.t2080.hours)}</b>` : '') +
+    (C.t10100 ? ` <span style="color:var(--muted)">(full charge ${fmtH(C.t10100.hours)})</span>` : '');
+  // Expert fold content.
+  $('segObc').style.display = C.arch.kind === 'obc' ? '' : 'none';
+  const row = (k, v, note) =>
+    `<div class="stat"><span>${esc(k)}</span><b style="font-weight:normal;text-align:right">${v}${note ? `<br><span style="color:var(--muted);font-size:11px">${esc(note)}</span>` : ''}</b></div>`;
+  const rows = [];
+  rows.push(row('Architecture', esc(C.arch.name)));
+  rows.push(row('AC connector (market)', esc(C.iface.connector), `DC: ${C.iface.dcConnector}`));
+  rows.push(row('Charge communication', esc(C.iface.comms)));
+  if (C.packChargeKW != null) rows.push(row('Pack accepts', `${f1(C.packChargeKW)} kW (${(Math.round(C.chargeC * 10) / 10)}C)`, 'from the cell\'s rated charge current — also the DC fast ceiling'));
+  if (C.t2080) rows.push(row('Bottleneck', C.t2080.limitedBy === 'pack' ? 'the pack' : 'the charger', C.t2080.note));
+  const strat = C.strategies[0];
+  if (strat) {
+    rows.push(row('Charging strategy', esc(strat.name),
+      C.strategies.length > 1 ? `alternatives: ${C.strategies.slice(1).map((x) => x.name).join(' · ')}` : null));
+  }
+  $('acBody').innerHTML = rows.join('') +
+    (strat ? `<div class="hint" style="margin-top:6px">✓ ${strat.pros.map(esc).join(' · ')}<br>✗ ${strat.cons.map(esc).join(' · ')}</div>` : '') +
+    `<div class="hint" style="margin-top:6px">${C.notes.map(esc).join(' ')}</div>`;
+}
 
 function computeSim() {
   const prof = currentProfile();
@@ -1748,6 +1822,15 @@ function computeSim() {
   const uaWK = tot?.heatContW > 0 && tot?.tempRiseContC > 0
     ? tot.heatContW / tot.tempRiseContC
     : (d ? (8 * 2 * (d.x * d.y + d.x * d.z + d.y * d.z)) / 1e6 : null);
+  // Mission charging: top-ups use the cell's MAXIMUM charge rating
+  // (opportunity charging is fast by definition); charging at base uses the
+  // standard rate, throttled by the OBC where one exists. Both numbers come
+  // from the datasheet, not from thin air.
+  const chPowerW = simChargeMode === 'topup'
+    ? (lastCharging?.packChargeKW ?? 0) * 1000
+    : simChargeMode === 'base'
+      ? (lastCharging?.t2080?.dcKW ?? lastCharging?.packChargeKW ?? 0) * 1000
+      : 0;
   lastSim = simulateMission({
     cell: cell(), s: state.s, p: state.p,
     profile: prof, scaleW: state.profileScaleW,
@@ -1756,6 +1839,7 @@ function computeSim() {
     resistanceMOhm: lastArch?.resistance?.totalMOhm ?? undefined,
     uaWK, thermalMassJK: (S.massCellsKg ?? S.massKg ?? 1) * 1000,
     hasHeater: !!lastTherm?.heaterNeeded,
+    charge: { mode: simChargeMode, powerW: chPowerW, minutes: simChargeMin },
   });
   lastSimFindings = lastSim.unavailable ? [] : lastSim.findings;
 
@@ -2245,6 +2329,7 @@ function runAnalysis() {
   lastArchFindings = archElectricalFindings();
   computeThermal();
   lastThermFindings = thermFindings();
+  computeCharging();
   computeSim();
 
   const perspectives = lastAnalysis?.perspectives || {};

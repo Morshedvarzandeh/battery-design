@@ -202,6 +202,22 @@ project's provenance-first datasheet pipeline.
   outcome, cost and $/kWh-delivered side by side in the Sim tab and as a
   comparison table in the report, so the value of different cells is weighed
   on results, not datasheets.
+- **The AC side, without the confusion** — a Charging panel that answers a
+  customer's question in one sentence: *how does this machine charge, and
+  how long does it take* (20→80% and full, CC-CV tail included). The
+  charging ARCHITECTURE follows the application instead of bolting an
+  on-board charger onto everything: a real OBC for vehicles and RVs, "the
+  charger is an external brick" for e-bikes and tools, "the PCS IS the AC
+  side" for storage, a dock for robots, the host device for wearables.
+  Everything deeper — OBC power classes (3.6/7.4/11/22 kW), the AC
+  connector and charge comms per target market (Type 2 / J1772·NACS /
+  GB/T), the named bottleneck (charger vs pack), and the charging strategy
+  with its pros and cons — lives behind a collapsed *expert* fold. Depot
+  vs opportunity charging is treated as the pack-SIZING decision it is,
+  and the mission simulation now takes charge segments: top-ups after
+  every pass or one charge at base, powered by the cell's own datasheet
+  charge rating — so an e-bus route with pantograph top-ups is a scenario
+  you can actually run, winter charge-inhibit included.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
   two tracks: Simple (the five clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,
@@ -323,6 +339,7 @@ is copied into the repository.
 | `js/markets.js` | Release checklist per application class × market + chemistry-market gates |
 | `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
 | `js/sensors.js` | Sensor plan by level (cell/module/system/cooling), omission-first |
+| `js/charging.js` | The AC side: per-application charging architecture, OBC classes, charge-time math, market connectors, strategies |
 | `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |

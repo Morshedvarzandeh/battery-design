@@ -83,6 +83,10 @@ export const TRAINING_TRACKS = {
         text: 'The Sim tab drives your pack through the application\'s load profile in time: SoC and voltage sag from an equivalent-circuit model, temperature from a lumped thermal model. Repeat the profile, start below full, or switch to the winter/summer ambient — and see when a pack runs empty, hits the cutoff, overheats or refuses cold charge. Failures land in the Analysis audit like every other finding.',
       },
       {
+        tab: 'analysis', title: '6d · The AC side', concept: 'ac-side',
+        text: 'How does this machine actually charge? The Charging panel answers in one line — on-board charger and 20→80% time for a vehicle, shore power for a boat, "the inverter IS the AC side" for storage — and folds the expert detail (charger classes, connectors per market, depot-vs-opportunity strategy) out of sight until you ask for it.',
+      },
+      {
         tab: 'eu', title: '7 · Release rules before release', concept: 'release-rules',
         text: 'The Rules tab holds the market release checklist per application (pick EU / US / China / International) — including chemistry-market rules like China\'s e-bus exclusion of NMC — and the EU 2023/1542 timeline with what applies to THIS design.',
       },
