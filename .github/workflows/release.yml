@@ -4,9 +4,10 @@
 # cannot be: a Windows installer has to be built on Windows and a .dmg on
 # macOS, so the only honest place to build them is a matrix of real runners.
 #
-# It runs on a tag. Pushing v0.1.0 produces a draft release with an installer
-# per platform plus the FMU, and the draft is published by hand — a release is
-# outward-facing and the last look should be a person's.
+# It runs on a tag, or on a manual dispatch naming one. Either way it produces
+# a DRAFT release with an installer per platform plus the FMU, and the draft is
+# published by hand — a release is outward-facing and the last look should be a
+# person's.
 name: Release
 
 on:
@@ -84,9 +85,11 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # Tauri on Linux needs the system webview and its build headers. This is
-      # the whole reason the installers are ~10 MB rather than ~150: the
-      # webview belongs to the OS and is not shipped with the app.
+      # Tauri on Linux needs the system webview and its build headers. The
+      # webview belongs to the OS and is not shipped with the app, which is
+      # what keeps the application itself around 4 MB. The download is ~48 MB
+      # because the bundled Node runtime is 124 MB on its own — that is the
+      # price of the customer not having to install a toolchain first.
       - name: Linux build dependencies
         if: startsWith(matrix.os, 'ubuntu')
         run: |
