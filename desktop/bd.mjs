@@ -20,7 +20,7 @@
 //   node desktop/bd.mjs serve  --port 8080
 //   node desktop/bd.mjs apps | node desktop/bd.mjs cells --chemistry LFP
 
-import { createReadStream, existsSync, statSync, writeFileSync } from 'node:fs';
+import { createReadStream, existsSync, statSync, writeFileSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -30,6 +30,9 @@ import {
 import { CELLS } from '../js/cells.js';
 import { vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm } from '../js/vehicle.js';
 import { runPool, coreCount, PARALLEL_THRESHOLD } from './pool.mjs';
+import { simulate, calibrate, defaultParams, PARAM_SPEC, PARAM_BY_ID } from '../js/sim2.js';
+import { cellById } from '../js/cells.js';
+import { profileById } from '../js/loadprofiles.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -273,6 +276,113 @@ const COMMANDS = {
     }, table);
   },
 
+  // The level-2 model: every coefficient exposed, nothing hard-coded behind
+  // the user's back.
+  sim2(args) {
+    const spec = specFrom(args);
+    const d = designFromSpec(spec);
+    const cell = cellById(d.cell.id);
+    const params = args.params ? loadParams(args.params) : null;
+    // Drive it with the vehicle's own physics where there is a vehicle,
+    // otherwise the application's load profile.
+    let profile;
+    if (d.vehicle) {
+      const veh = { ...vehicleDefaultsFor(spec.application), ...(spec.vehicle || {}) };
+      const drive = driveCyclePower({ trace: traceForApp(spec.application), vehicle: veh, mode: spec.driveMode || 'normal', packMassKg: d.pack.massKg });
+      profile = { dtS: drive.dtS, w: drive.w };
+    } else if (d.simulation) {
+      const pr = profileById(d.simulation.profile.id);
+      const scale = num(args.scale, d.pack.maxContPowerW);
+      profile = { dtS: pr.dtS, w: pr.p.map((x) => x * scale) };
+    } else { console.error('No load profile for this application — give --profile or --scale.'); process.exit(2); }
+    const r = simulate({
+      cell, s: d.pack.s, p: d.pack.p, params, profile,
+      startSoC: num(args.soc, 1) > 1 ? num(args.soc) / 100 : num(args.soc, 1),
+      ambientC: num(args.ambient, 25), nModules: num(args.modules, 4),
+      years: num(args.years, spec.targetYears ?? 8), cyclesPerYear: num(args.cycles, spec.cyclesPerYear ?? 250),
+    });
+    const q = r.summary;
+    const lines = [
+      `${d.application?.name || 'Custom'} — ${d.pack.s}S${d.pack.p}P ${cell.name}, ${(d.pack.energyWh / 1000).toFixed(1)} kWh, ${q.nModules} modules`,
+      '',
+      'Electrical',
+      `  SoC          ${(q.startSoC * 100).toFixed(0)}% → ${(q.endSoC * 100).toFixed(1)}% (minimum ${(q.minSoC * 100).toFixed(1)}%)`,
+      `  Voltage      minimum ${q.minV.toFixed(1)} V under load`,
+      `  Energy       ${q.energyOutWh.toFixed(0)} Wh out, ${q.energyInWh.toFixed(0)} Wh recovered, ${q.lossWh.toFixed(0)} Wh lost (${q.efficiencyPct?.toFixed(1)}% efficient)`,
+      ...(q.unmetWh > 0 ? [`  UNMET        ${q.unmetWh.toFixed(0)} Wh — the pack could not follow the demand`] : []),
+      '',
+      'Thermal',
+      `  Peak module  ${q.maxTempC.toFixed(1)} °C`,
+      `  Spread       ${q.tempSpreadK.toFixed(2)} K between hottest and coldest module`,
+      `  Coolant      out at ${q.coolantOutC.toFixed(1)} °C`,
+      `  Reversible   ${q.reversibleHeatWh.toFixed(1)} Wh of entropic heat (negative = the pack cooled itself)`,
+      '',
+      'Aging',
+      ...(r.aging.schedule.length
+        ? [...r.aging.schedule.filter((x) => x.year % Math.max(1, Math.round(r.aging.schedule.length / 5)) === 0 || x.year === 1)
+          .map((x) => `  year ${String(x.year).padStart(2)}      ${x.remainingPct.toFixed(1)}% capacity, +${x.resistanceGrowthPct.toFixed(1)}% resistance`),
+        `  reaches 80% ${r.aging.yearsTo80Pct ? `in year ${r.aging.yearsTo80Pct}` : 'beyond the horizon simulated'}`]
+        : ['  (give --years and --cycles for an aging estimate)']),
+      '',
+      ...(r.findings.length ? ['Findings', ...r.findings.map((f) => `  ${f.severity.toUpperCase()}: ${f.title} — ${f.detail}`), ''] : []),
+      'Assumptions',
+      ...r.assumptions.map((a) => `  · ${a}`),
+      ...(r.paramNotes.length ? ['', 'Parameters adjusted:', ...r.paramNotes.map((n) => `  · ${n}`)] : []),
+    ];
+    emit(args, { apiVersion: API_VERSION, design: { cell: d.cell.id, s: d.pack.s, p: d.pack.p }, ...r }, lines.join('\n'));
+  },
+
+  // Correct the model against your own measurements. This is the command
+  // that turns a class-typical model into a model of YOUR cell.
+  calibrate(args) {
+    if (!args.data) { console.error('Give --data FILE.csv with columns: time_s,current_A,voltage_V[,temp_C]'); process.exit(2); }
+    const measured = readMeasuredCsv(args.data);
+    const cell = cellById(args.cell || 'samsung-inr21700-50e');
+    if (!cell) { console.error(`Unknown cell "${args.cell}". Use: cells`); process.exit(2); }
+    const fit = (args.fit === true || !args.fit ? 'r0Ref,rc1R,rc1TauS' : args.fit).split(',').map((x) => x.trim());
+    const unknown = fit.filter((f) => !PARAM_BY_ID[f]);
+    if (unknown.length) { console.error(`Not parameters: ${unknown.join(', ')}. Run: params`); process.exit(2); }
+    const out = calibrate({
+      cell, s: num(args.s, 1), p: num(args.p, 1), measured,
+      params: args.params ? loadParams(args.params) : null,
+      fit, startSoC: num(args.soc, 1) > 1 ? num(args.soc) / 100 : num(args.soc, 1),
+      ambientC: num(args.ambient, 25), nModules: num(args.modules, 1),
+      maxIter: num(args.iter, 300),
+    });
+    const lines = [
+      `Calibrated ${cell.name} against ${measured.i.length} measured points (${args.data})`,
+      `  RMSE ${out.rmseBefore.toFixed(4)} V → ${out.rmseAfter.toFixed(4)} V  (${out.improvementPct.toFixed(1)}% closer, ${out.iterations} iterations)`,
+      '',
+      pad('parameter', 14) + pad('default', 12) + pad('fitted', 12) + pad('change', 12) + 'unit',
+      ...Object.entries(out.fitted).map(([k, f]) => pad(k, 14) + pad(f.from?.toFixed(3), 12) + pad(f.to?.toFixed(3), 12)
+        + pad(f.changedPct != null ? `${f.changedPct > 0 ? '+' : ''}${f.changedPct.toFixed(1)}%` : '—', 12)
+        + f.unit + (f.atBound ? '   ← AT ITS LIMIT' : '')),
+      '',
+      out.note,
+      '',
+      `Save these with --out params.json, then use them everywhere: sim2 --params params.json`,
+    ];
+    emit(args, { apiVersion: API_VERSION, cell: cell.id, ...out }, lines.join('\n'));
+  },
+
+  // Every knob, what it means, and what it is allowed to be.
+  params(args) {
+    const cell = args.cell ? cellById(args.cell) : null;
+    const defs = defaultParams(cell);
+    if (args.json || args.out) { emit(args, defs, ''); return; }
+    let group = null;
+    const lines = [`Model parameters${cell ? ` for ${cell.name}` : ' (generic defaults)'} — every one of these is yours to change:`];
+    for (const s of PARAM_SPEC) {
+      if (s.group !== group) { group = s.group; lines.push('', group.toUpperCase()); }
+      lines.push(`  ${pad(s.id, 17)}${pad(defs[s.id], 11)}${pad(s.unit, 26)}${s.min}…${s.max}`);
+      lines.push(`  ${' '.repeat(17)}${s.why}`);
+      lines.push(`  ${' '.repeat(17)}source: ${s.source}`);
+    }
+    lines.push('', 'Dump them with --json --out params.json, edit, then: sim2 --params params.json');
+    lines.push('Or let your own measurements set them: calibrate --data test.csv --fit r0Ref,rc1R,rc1TauS');
+    console.log(lines.join('\n'));
+  },
+
   apps(args) {
     const list = listApplications();
     emit(args, list, list.map((a) =>
@@ -330,10 +440,45 @@ const COMMANDS = {
 
 const pad = (v, n) => String(v ?? '—').padEnd(n);
 
+// A parameter file is plain JSON: dump it, edit it in any editor, hand it back.
+function loadParams(file) {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch (e) {
+    console.error(`Could not read parameters from ${file}: ${e.message}`);
+    process.exit(2);
+  }
+}
+
+// Measured data: time_s, current_A, voltage_V and optionally temp_C. Header
+// optional, comma or semicolon or tab, because real exports vary.
+function readMeasuredCsv(file) {
+  let text;
+  try { text = readFileSync(file, 'utf8'); } catch (e) { console.error(`Cannot read ${file}: ${e.message}`); process.exit(2); }
+  const rows = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
+    .map((l) => l.split(/[,;\t]/).map((x) => parseFloat(x)))
+    .filter((r) => r.length >= 3 && r.every((x, i) => i > 3 || isFinite(x)));
+  if (rows.length < 3) { console.error(`${file}: need at least 3 rows of time_s,current_A,voltage_V`); process.exit(2); }
+  const dtS = rows.length > 1 ? (rows[1][0] - rows[0][0]) : 1;
+  if (!(dtS > 0)) { console.error(`${file}: the time column must increase.`); process.exit(2); }
+  return {
+    dtS,
+    i: rows.map((r) => r[1]),
+    v: rows.map((r) => r[2]),
+    t: rows.every((r) => isFinite(r[3])) ? rows.map((r) => r[3]) : null,
+  };
+}
+
 const HELP = `battery-design — desktop runner (API v${API_VERSION})
 
   design    one design, fully worked           --app ev --energy 60000 [--cell ID] [--s N --p N]
   mission   the design driven through time     --app ebus --passes 6 [--charge base --minutes 120]
+  sim2      the full model: RC dynamics,       --app ev [--modules 8] [--ambient 35] [--params p.json]
+            entropic heat, per-module
+            temperatures, coolant, aging
+  calibrate correct the model against YOUR     --data test.csv --cell ID [--fit r0Ref,rc1R,rc1TauS]
+            measurements
+  params    every coefficient, with bounds     [--cell ID] [--json --out params.json]
   sweep     one variable across a range        --vary cell|mass|payload|energy [--from --to --step]
   search    the whole design space, ranked     --app ev --rank cost|range|mass|density|upfront [--top N]
   range     drive-cycle study, mass × mode     --app ev --energy 60000 [--from --to --step]

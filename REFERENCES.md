@@ -134,6 +134,38 @@ than one that prints them.
   **MSEC2010-34168**. — Basis for the welding/joining recommendation per cell
   format (resistance spot for cylindrical, laser for prismatic terminals,
   ultrasonic for pouch tabs) and the cautions attached to each. → `architecture.js`
+- **Plett, G. L. (2015).** *Battery Management Systems, Volume I: Battery
+  Modeling.* Artech House. — The **equivalent-circuit** model family used by
+  the level-2 simulation: OCV plus a series resistance plus N parallel RC
+  branches, with state-of-charge and temperature dependence, and the
+  one-state hysteresis treatment. → `sim2.js`
+- **Bernardi, D., Pawlikowski, E., & Newman, J. (1985).** *A General Energy
+  Balance for Battery Systems.* Journal of the Electrochemical Society,
+  132(1), 5–12. — The heat-generation balance the thermal model uses:
+  irreversible I²R plus the **reversible entropic term** I·T·(dU/dT), which
+  changes sign between charge and discharge. Omitting it is why simple models
+  cannot explain measured charge-side cooling. → `sim2.js`
+- **Doyle, M., Fuller, T. F., & Newman, J. (1993).** *Modeling of
+  Galvanostatic Charge and Discharge of the Lithium/Polymer/Insertion Cell.*
+  J. Electrochem. Soc., 140(6), 1526. — The pseudo-two-dimensional (P2D)
+  electrochemical model. Cited for what the tool deliberately does **not**
+  do: there is no concentration or diffusion state anywhere in `sim2.js`, and
+  the assumptions list says so on every run. → not implemented, by choice
+- **Incropera & DeWitt, *Fundamentals of Heat and Mass Transfer*.** — The
+  **ε-NTU** effectiveness relation used for the coolant stream,
+  ε = 1 − exp(−hA/ṁc_p). It is what makes a stopped pump remove no heat and a
+  fast pump be limited by the plate rather than the flow. → `sim2.js`
+- **Nelder, J. A., & Mead, R. (1965).** *A Simplex Method for Function
+  Minimization.* The Computer Journal, 7(4), 308–313. — The **Nelder-Mead**
+  simplex: the derivative-free optimiser behind `calibrate()`, which fits
+  model parameters to the user's own measured current/voltage/temperature
+  data. → `sim2.js`
+- **Wang, J. et al. (2011).** *Cycle-life model for graphite-LiFePO4 cells.*
+  Journal of Power Sources, 196(8), 3942–3948. — The form of the **calendar
+  and cycle aging** law: power-law in time and throughput with Arrhenius
+  temperature weighting. The tool uses this SHAPE with class-typical
+  coefficients, which is why calibration against your own cycling data is the
+  documented route to trustworthy numbers. → `sim2.js`
 - **Gillespie, T. D. (1992).** *Fundamentals of Vehicle Dynamics.* SAE
   International, **R-114**. — The road-load equation the vehicle model
   integrates: rolling resistance, aerodynamic drag, grade and inertial terms,
@@ -226,6 +258,8 @@ are exposed as inputs wherever possible, and stated as estimates in the output.
 | Driving-mode factors | Eco 0.94× speed, 0.80× acceleration, 1.25× regen; Sport 1.06× / 1.40× / 0.85× | A class model of driver behaviour. No standard defines "Sport"; the factors are stated and exposed so the customer can dispute them |
 | Rotating-mass factor ε | 0.02–0.07 by machine | Wheels, gears and rotor inertia add to the effective mass under acceleration; the value is a class estimate |
 | Synthesized WLTP Class 3 trace | matches the published phase durations, distances and peak speeds within ~5% | The phase aggregates are public; the second-by-second homologation trace is not reproduced, and the tool says so wherever the trace is used |
+| Level-2 model coefficients (RC resistances and time constants, Arrhenius activation energies, entropic coefficient, module conduction, current imbalance) | class-typical defaults, all exposed in `PARAM_SPEC` with units and bounds | No datasheet publishes these. They are defaults to start from, not values to quote — which is why `calibrate()` exists: fit them to your own pulse and cycling data, and the tool reports how far each moved and whether it hit a bound |
+| Calendar and cycle aging coefficients | √t and √EFC power laws with Arrhenius weighting (Wang et al. form) | The SHAPE is sourced; the coefficients are class-typical. Aging is cell-, format- and duty-specific, so these must be fitted against your own cycling data before they mean anything for warranty |
 | V2G wear floor | (cell price × count) ÷ (nameplate cycle life × usable energy) | Uses the **nameplate** cycle life — shallow V2G micro-cycling usually ages more gently per kWh, so the floor is a conservative first-order ceiling on wear cost, stated as such wherever it appears |
 
 ---
