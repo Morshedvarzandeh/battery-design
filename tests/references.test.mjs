@@ -4,7 +4,7 @@
 // customer has to appear in REFERENCES.md, and the licence/attribution files
 // have to say what they claim to say.
 import { test } from 'node:test';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { ok } from './helpers.mjs';
 import { STANDARDS_INFO } from '../js/standards.js';
 import { MARKETS, releaseChecklist } from '../js/markets.js';
@@ -78,8 +78,15 @@ test('the page describes itself for link previews and search', () => {
   ok(/<meta name="description"/.test(html), 'meta description present');
   ok(/property="og:title"/.test(html) && /property="og:description"/.test(html),
     'Open Graph title and description present');
-  ok(/property="og:image" content="https:\/\/[^"]+\/assets\/social-preview\.png"/.test(html),
+  const og = html.match(/property="og:image" content="([^"]+)"/);
+  ok(og && og[1].startsWith('https://'),
     'og:image is an absolute URL (relative ones do not resolve for crawlers)');
+  // ...and it must actually exist in the repo. A tag pointing at a missing
+  // file is worse than no tag: the preview silently renders blank. (.gitignore
+  // once swallowed this very file.)
+  const rel = og[1].replace(/^https:\/\/[^/]+\/[^/]+\//, '');
+  ok(existsSync(new URL(`../${rel}`, import.meta.url)),
+    `og:image target is committed to the repo (${rel})`);
   ok(/twitter:card" content="summary_large_image"/.test(html), 'large-image card declared');
   // The footer must keep pointing at the sources and the licence.
   ok(/REFERENCES\.md/.test(html) && /Apache/.test(html),
