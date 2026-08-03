@@ -25,6 +25,7 @@ node desktop/bd.mjs help
 | `design` | One design, fully worked — geometry, architecture, thermal, charging, cost, audit |
 | `mission` | The design driven through time, with optional charging during the run |
 | `sweep` | One variable across a range: every cell, or mass, payload, energy |
+| `search` | The whole design space — every cell × every energy target — ranked |
 | `range` | A drive-cycle study — consumption and range across mass × driving mode |
 | `apps` / `cells` | The application presets and the cell library |
 | `serve` | The web UI, served from your own machine, offline |
@@ -50,6 +51,60 @@ node desktop/bd.mjs design --app ebike --json --out ebike.json
 
 Add `--json` to any command for machine-readable output, `--out FILE` to write
 it to disk.
+
+---
+
+## Speed: what is actually slow, measured
+
+A fair question is whether this should be written in something faster. Here is
+the evidence, measured on a 4-core machine rather than assumed.
+
+| Operation | Cost |
+|---|---|
+| One complete design (geometry, architecture, thermal, audit, cost, mission), warm | **0.63 ms** |
+| Same, plus vehicle physics over the full WLTP trace and a V2G policy | **0.85 ms** |
+| Mission simulation, 360 steps | 0.54 ms — about **670,000 physics steps/second** |
+| E-bus pack, 30,000 cells laid out | 4.8 ms |
+| One design inside a big heterogeneous sweep | ~3.4 ms |
+
+The arithmetic is not the problem. Note the last row: a design costs five times
+more inside a sweep than in a tight loop of identical designs. That gap is
+object allocation and garbage collection, not physics — the engine builds a
+complete result object for every design even when the sweep only reads six
+numbers from it.
+
+**So the first fix was the cores, not the language.** `search` and `sweep` fan
+out across worker threads:
+
+| Job | 1 thread | 4 threads |
+|---|---|---|
+| 943 designs | 3.1 s | 2.0 s (1.6×) |
+| 9,223 designs | 31.7 s | 14.8 s (2.1×) |
+
+Small jobs deliberately stay serial: a worker costs tens of milliseconds to
+start and load modules, which is more than a few hundred designs are worth.
+`--jobs N` sets the thread count, `--jobs 1` forces serial. **Parallel and
+serial return identical rows in identical order** — there is a test for it,
+because a fast answer that disagrees with the slow one is worthless.
+
+### Why not Rust or Java
+
+Java offers nothing here: the same JIT-compiled performance class as V8, plus a
+runtime dependency, minus any way to run in a browser.
+
+Rust is genuinely faster — typically 2–5× on this kind of work, more on tight
+numeric loops. The cost is the thing this project cannot pay: a **second
+implementation of the physics**. The whole point of `desktop/` importing
+`js/api.js` is that the page and the runner cannot disagree. Two codebases in
+two languages will drift, and the first time the site says 135 Wh/km and the
+desktop says 138, every number in both becomes suspect.
+
+If the arithmetic ever does become the wall, the order is: exhaust the cores
+(done), then stop allocating full result objects in sweeps, then move the
+proven hot kernel to **Rust compiled to WebAssembly** — one implementation that
+runs in both the browser and Node, so the web app gets faster too and nothing
+drifts. Rust as a separate native binary buys speed and drift; Rust as WASM
+buys speed without it.
 
 ---
 
