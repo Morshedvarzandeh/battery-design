@@ -218,6 +218,21 @@ project's provenance-first datasheet pipeline.
   every pass or one charge at base, powered by the cell's own datasheet
   charge rating — so an e-bus route with pantograph top-ups is a scenario
   you can actually run, winter charge-inhibit included.
+- **The vehicle around the pack** — for machines that actually drive, the
+  demand is no longer a number you type. Give the vehicle instead — mass
+  without the pack, payload, frontal area, drag coefficient, rolling
+  resistance — pick **Eco / Normal / Sport**, and the load is *calculated*
+  from textbook road load (`F = Crr·m·g·cos θ + ½ρCdAv² + m·g·sin θ +
+  m(1+ε)·a`) at every second of a speed trace. Out come **Wh/km and range**,
+  the numbers customers actually decide on, plus a breakdown of where the
+  energy went (rolling / aerodynamic / acceleration / gradient / auxiliaries,
+  minus what regen took back). Crucially the **pack you designed is part of
+  the mass being carried**, so a heavier pack really does cost range — double
+  the kWh and you get less than double the distance, exactly as in a real
+  vehicle programme. The EV speed trace matches the published WLTP Class 3
+  phase durations, distances and peak speeds within ~5% and says plainly that
+  it is not the homologation data. Non-driving applications never see any of
+  it.
 - **Feeding power back (V2X), priced honestly** — for vehicles with a
   bidirectional port (EVs; V2G for e-bus depots), the expert fold assesses
   V2L, V2H, V2G and V2V in the tool's standard verdict vocabulary — and
@@ -351,6 +366,7 @@ is copied into the repository.
 | `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
 | `js/sensors.js` | Sensor plan by level (cell/module/system/cooling), omission-first |
 | `js/charging.js` | The AC side: per-application charging architecture, OBC classes, charge-time math, market connectors, strategies |
+| `js/vehicle.js` | The machine around the pack: road load, vehicle class defaults, driving modes, speed traces, Wh/km and range |
 | `js/v2x.js` | Feeding power back: V2L/V2H/V2G/V2V modes, per-design verdicts, and the cycle-life wear floor behind the V2G economics |
 | `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |

@@ -60,9 +60,16 @@ test('training steps filter through the graph', () => {
     'an e-bus keeps the full advanced track — EMS, strategy and V2X included');
   ok(stepsFor(TRAINING_TRACKS.advanced, 'ev').some((st) => st.concept === 'v2x'),
     'an EV gets the "Feeding power back" step');
+  // Every track is exactly the steps the application needs — no more, no less.
+  for (const app of ['solar-ess', 'wearable', 'ev', 'ebike']) {
+    const got = stepsFor(TRAINING_TRACKS.advanced, app).map((st) => st.title);
+    const want = TRAINING_TRACKS.advanced.steps
+      .filter((st) => !st.concept || needed(app, st.concept)).map((st) => st.title);
+    ok(got.join('|') === want.join('|'), `${app}: the track IS what the graph says it needs`);
+  }
   const essAdv = stepsFor(TRAINING_TRACKS.advanced, 'solar-ess');
-  ok(essAdv.length === advAll - 1 && !essAdv.some((st) => st.concept === 'v2x'),
-    'storage drops exactly the V2X step — feeding the grid is its day job, not a mode');
+  ok(!essAdv.some((st) => ['v2x', 'vehicle-dynamics'].includes(st.concept)),
+    'storage skips the vehicle-only steps: it never drives, and feeding the grid is its day job');
   ok(stepsFor(TRAINING_TRACKS.simple, 'wearable').length === TRAINING_TRACKS.simple.steps.length,
     'the simple track is universal');
 });

@@ -27,6 +27,10 @@ import { buildSensorPlan } from './sensors.js';
 import { simulateMission, compareCells } from './sim1d.js';
 import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
+import {
+  vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare,
+  modeComparison, DRIVING_MODES,
+} from './vehicle.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
 import { stepsFor, needed, appNeeds } from './knowledge.js';
@@ -71,6 +75,7 @@ const state = {
   marketId: 'eu',          // release-checklist target market
   loopOverride: 'auto',    // thermal loop choice (like BMS topology: an input)
   emsOverride: 'auto',     // EMS architecture (only for EMS-bearing applications)
+  driveMode: 'normal',     // Eco | Normal | Sport — the driver, not the machine
 };
 let customProfile = null;  // uploaded profile (session only)
 
@@ -130,6 +135,7 @@ function init() {
   initCellSelect();
   initPresets();
   initProfiles();
+  bindVehicle();
   restoreHash();
   initComponents();
   bindControls();
@@ -485,6 +491,7 @@ function applyPreset(pr) {
   // Each application carries its OWN characteristic load shape (a truck-like
   // van is not a rooftop solar plant), plus a short list of alternates the
   // customer can switch between — the dropdown regroups per application.
+  fillVehicleInputs(pr.id);
   rebuildProfileSelect(pr.id);
   const prof = profileForApp(pr.id);
   if (prof) {
@@ -501,6 +508,8 @@ function applyPreset(pr) {
 // ---------------------------------------------------------------------------
 function currentProfile() {
   if (state.profileId === 'custom') return customProfile;
+  // The physics-derived profile: built from the vehicle, not stored anywhere.
+  if (state.profileId === 'vehicle') return lastVehicle?.drive?.profile || null;
   return state.profileId ? profileById(state.profileId) : null;
 }
 
@@ -523,6 +532,10 @@ function rebuildProfileSelect(appId) {
     (parent || sel).appendChild(o);
   };
   opt(null, '', 'None — type the power numbers below');
+  // A machine that drives can have its demand DERIVED from its own physics.
+  if (appId && vehicleDefaultsFor(appId)) {
+    opt(null, 'vehicle', 'From your vehicle — derived from mass & driving mode');
+  }
   const rec = appId ? profilesForApp(appId) : [];
   if (rec.length) {
     const appName = PRESETS.find((p) => p.id === appId)?.name || appId;
@@ -543,6 +556,10 @@ function initProfiles() {
   sel.onchange = () => {
     if (sel.value === 'upload') { $('profileFile').click(); return; }
     state.profileId = sel.value || null;
+    if (state.profileId === 'vehicle') {
+      useVehicleProfile();
+      return;
+    }
     if (state.profileId) {
       state.profileScaleW = customScaleOr(parseFloat($('rqPp').value) || 1000);
       applyProfileToRequirements();
@@ -1224,6 +1241,7 @@ function currentReportData() {
     simCompare: lastSimCompare,
     charging: lastCharging,
     v2x: lastV2x,
+    vehicle: lastVehicle,
     simPng: (() => {
       if (!lastSim || lastSim.unavailable) return null;
       const off = document.createElement('canvas');
@@ -1679,6 +1697,7 @@ function recompute() {
   renderSensors();
   renderSim();
   renderCharging();
+  renderVehicle();
   renderCompClasses();
   if (document.querySelector('#pane-eu.active')) renderEu();
   saveHash();
@@ -1758,6 +1777,152 @@ let simChargeMode = 'none', simChargeMin = 15;
 // behind the collapsed expert fold. The knowledge graph decides who gets
 // the detail at all.
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// The vehicle — mass, driving mode, and the demand that follows from physics
+// instead of a typed number. Model in js/vehicle.js.
+// ---------------------------------------------------------------------------
+let lastVehicle = null;
+
+// The vehicle as it stands on screen: application defaults, then whatever the
+// customer changed.
+function vehicleFromInputs() {
+  const base = vehicleDefaultsFor(state.presetId);
+  if (!base) return null;
+  const nv = (id, fb) => { const v = parseFloat($(id)?.value); return isFinite(v) ? v : fb; };
+  return {
+    ...base,
+    curbKg: nv('vehMass', base.curbKg),
+    payloadKg: nv('vehPayload', base.payloadKg),
+    cd: nv('vehCd', base.cd),
+    frontalAreaM2: nv('vehArea', base.frontalAreaM2),
+    crr: nv('vehCrr', base.crr),
+    driveEff: nv('vehEff', base.driveEff),
+    regenFrac: nv('vehRegen', base.regenFrac),
+    auxW: nv('vehAux', base.auxW),
+  };
+}
+
+// Application switch: show the card only for machines that actually drive,
+// and reload that machine's class defaults.
+function fillVehicleInputs(appId) {
+  const d = vehicleDefaultsFor(appId);
+  const sec = $('vehSec');
+  if (!sec) return;
+  sec.style.display = d ? '' : 'none';
+  if (!d) return;
+  $('vehMass').value = d.curbKg;
+  $('vehPayload').value = d.payloadKg;
+  $('vehCd').value = d.cd;
+  $('vehArea').value = d.frontalAreaM2;
+  $('vehCrr').value = d.crr;
+  $('vehEff').value = d.driveEff;
+  $('vehRegen').value = d.regenFrac;
+  $('vehAux').value = d.auxW;
+  $('vehGrade').value = 0;
+}
+
+function computeVehicle() {
+  const vehicle = vehicleFromInputs();
+  const trace = traceForApp(state.presetId);
+  if (!vehicle || !trace) { lastVehicle = null; return; }
+  // The pack the customer just designed is part of the mass the wheels carry.
+  const packMassKg = lastSummary?.massKg ?? 0;
+  const gradeRaw = parseFloat($('vehGrade')?.value);
+  const gradePct = isFinite(gradeRaw) ? gradeRaw : 0;
+  // Regen cannot exceed what the pack will accept — the charging model
+  // already knows that number, so the two stay consistent.
+  const regenCapW = lastCharging?.packChargeKW != null ? lastCharging.packChargeKW * 1000 : null;
+  const drive = driveCyclePower({ trace, vehicle, mode: state.driveMode, packMassKg, gradePct, regenCapW });
+  if (!drive) { lastVehicle = null; return; }
+  const dod = currentDod();
+  const energyWh = lastSummary?.energyWh ?? 0;
+  lastVehicle = {
+    vehicle, trace, drive, packMassKg, gradePct, dod,
+    range: rangeKm({ energyWh, dod, whPerKm: drive.whPerKm }),
+    share: massShare({ vehicle, packMassKg }),
+    modes: energyWh > 0
+      ? modeComparison({ trace, vehicle, packMassKg, gradePct, energyWh, dod, regenCapW })
+      : [],
+  };
+}
+
+function renderVehicle() {
+  const box = $('vehSummary');
+  if (!box) return;
+  const V = lastVehicle;
+  if (!V) { box.innerHTML = ''; if ($('vehBody')) $('vehBody').innerHTML = ''; return; }
+  const D = V.drive;
+  // The plain sentence: what it drinks, and how far this pack takes it.
+  // Range is always the range of the pack ON SCREEN. If that pack is nowhere
+  // near what this application normally needs, say so — otherwise a 5 km
+  // answer reads as a broken tool instead of a tiny pack.
+  const pr = PRESETS.find((p) => p.id === state.presetId);
+  const typicalWh = pr?.typicalEnergyWh;
+  const haveWh = lastSummary?.energyWh;
+  const offBy = typicalWh && haveWh && (haveWh < typicalWh * 0.5 || haveWh > typicalWh * 2);
+  box.innerHTML = `<b>${f1(D.whPerKm)} Wh/km</b> in ${esc(D.mode.name)}` +
+    (V.range != null ? ` · <b>about ${f0(V.range)} km</b> on this pack` : '') +
+    `<div class="hint">${f0(D.massKg)} kg moving, including ${f0(V.packMassKg)} kg of battery. ` +
+    `Peak ${f1(D.peakW / 1000)} kW on the ${esc(V.trace.name.toLowerCase())}.</div>` +
+    (offBy ? `<div class="hint">That range is for the pack currently on the Design tab (${f1(haveWh / 1000)} kWh). ` +
+      `A ${esc(pr.name)} usually needs around ${f0(typicalWh / 1000)} kWh — size it with “From usage” and this updates.</div>` : '');
+  const body = $('vehBody');
+  if (!body) return;
+  const b = D.breakdown;
+  const spent = b.rolling + b.aero + b.grade + b.accel + b.aux;
+  const pct = (x) => spent > 0 ? `${Math.round((x / spent) * 100)}%` : '—';
+  const row = (k, v, note) =>
+    `<div class="stat"><span>${esc(k)}</span><b style="font-weight:normal;text-align:right">${v}${note ? `<br><span style="color:var(--muted);font-size:11px">${esc(note)}</span>` : ''}</b></div>`;
+  const rows = [
+    row('Moving mass', `${f0(D.massKg)} kg`, `${f0(V.vehicle.curbKg)} kg vehicle + ${f0(V.vehicle.payloadKg)} kg payload + ${f0(V.packMassKg)} kg pack`),
+    row('Rolling resistance', `${f0(b.rolling)} Wh (${pct(b.rolling)})`),
+    row('Aerodynamic drag', `${f0(b.aero)} Wh (${pct(b.aero)})`),
+    row('Acceleration', `${f0(b.accel)} Wh (${pct(b.accel)})`, 'ends up in the brakes, minus what regen takes back'),
+    ...(Math.abs(b.grade) > 1 ? [row('Gradient', `${f0(b.grade)} Wh (${pct(b.grade)})`, `${V.gradePct}% climb`)] : []),
+    row('Auxiliaries', `${f0(b.aux)} Wh (${pct(b.aux)})`, `${f0(D.auxW)} W held for the whole ${f0(D.durationS / 60)} min`),
+    row('Recovered by regen', `${f0(b.recovered)} Wh`, D.regenFrac > 0 ? `${Math.round(D.regenFrac * 100)}% of braking energy returns to the pack` : 'no regenerative braking on this machine'),
+    row('Cycle', `${f1(D.distanceKm)} km in ${f0(D.durationS / 60)} min`, `average ${f0(D.avgSpeedKmh)} km/h`),
+  ];
+  // The same vehicle in all three modes — the comparison before choosing a size.
+  const modeTable = V.modes.length
+    ? `<div style="margin-top:8px"><b style="font-size:12px">Same vehicle, three drivers</b>` +
+      V.modes.map((m) => `<div class="stat"><span>${esc(m.mode.name)}${m.mode.id === state.driveMode ? ' (selected)' : ''}</span><b style="font-weight:normal">${f1(m.whPerKm)} Wh/km · ${m.rangeKm != null ? `${f0(m.rangeKm)} km` : '—'}</b></div>`).join('') +
+      `</div>` : '';
+  body.innerHTML = rows.join('') + modeTable +
+    `<div class="hint" style="margin-top:6px">${esc(V.drive.mode.what)} ${esc(V.vehicle.note)}</div>` +
+    `<div class="hint" style="margin-top:4px">${esc(V.trace.note)}</div>`;
+}
+
+// Hand the physics-derived demand to the rest of the tool: it becomes the
+// active load profile, and the scalar requirements follow from it.
+function useVehicleProfile() {
+  computeVehicle();
+  if (!lastVehicle?.drive) return;
+  state.profileId = 'vehicle';
+  state.profileScaleW = lastVehicle.drive.scaleW;
+  const sel = $('selProfile');
+  if (sel && ![...sel.options].some((o) => o.value === 'vehicle')) rebuildProfileSelect(state.presetId);
+  if (sel) sel.value = 'vehicle';
+  applyProfileToRequirements();
+  renderProfile();
+  renderVehicle();
+}
+
+function bindVehicle() {
+  const refresh = () => { computeVehicle(); renderVehicle(); if (state.profileId === 'vehicle') useVehicleProfile(); };
+  for (const id of ['vehMass', 'vehPayload', 'vehCd', 'vehArea', 'vehCrr', 'vehEff', 'vehRegen', 'vehAux', 'vehGrade']) {
+    const el = $(id);
+    if (el) el.onchange = refresh;
+  }
+  $('segDriveMode')?.querySelectorAll('button').forEach((b) => b.onclick = () => {
+    state.driveMode = b.dataset.mode;
+    $('segDriveMode').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    refresh();
+  });
+  const apply = $('btnVehApply');
+  if (apply) apply.onclick = useVehicleProfile;
+}
+
 let lastCharging = null;
 let lastV2x = null;
 let obcSel = 'auto';
@@ -2353,6 +2518,7 @@ function runAnalysis() {
   computeThermal();
   lastThermFindings = thermFindings();
   computeCharging();
+  computeVehicle();
   computeSim();
 
   const perspectives = lastAnalysis?.perspectives || {};
