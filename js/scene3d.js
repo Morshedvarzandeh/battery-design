@@ -19,6 +19,7 @@
 
 import { COMPONENT_CATEGORIES, componentById } from './components.js';
 import { CHEMISTRIES } from './cells.js';
+import { hostFor, packSeat, fitInHost } from './hosts.js';
 
 export const SCENE_VERSION = 1;
 
@@ -82,7 +83,7 @@ const PART_SHAPE = {
  * rather than objects. A 250 kWh bus is 15,000 cells; as objects that is
  * megabytes of JSON crossing a postMessage boundary on every swap.
  */
-export function buildScene({ design, layout, highlight = null } = {}) {
+export function buildScene({ design, layout, highlight = null, showHost = false } = {}) {
   if (!design || !layout) return null;
   const L = layout;
   const cell = L.cell;
@@ -155,6 +156,10 @@ export function buildScene({ design, layout, highlight = null } = {}) {
     },
     cells: { count: L.positions.length, xyz, group, groups: L.s },
     parts,
+    // The machine the pack goes into, when asked for. Off by default: it is a
+    // desktop feature, and more importantly a silhouette is an INDICATIVE
+    // shape that should never turn up unrequested next to numbers that are not.
+    host: showHost ? hostBlock(design, L) : null,
     // What the audit says, so the scene can mark the pack rather than making
     // the customer switch tabs to find out it is failing.
     audit: {
@@ -163,6 +168,24 @@ export function buildScene({ design, layout, highlight = null } = {}) {
       worst: (design.findings || []).find((f) => f.severity === 'fail')?.title || null,
     },
     highlight,
+  };
+}
+
+// The machine, its mounting, and whether the pack fits in it. Metres here
+// rather than millimetres: a bus is 12 m and a wearable pack is 40 mm, and
+// mixing the two scales in one unit is how a decimal point goes missing.
+function hostBlock(design, L) {
+  const host = hostFor(design.spec?.resolved?.application);
+  if (!host) return null;
+  const packM = { x: L.outer.x / 1000, y: L.outer.y / 1000, z: L.outer.z / 1000 };
+  const seat = packSeat(host, packM);
+  const fit = fitInHost(host, packM);
+  return {
+    kind: host.kind, name: host.name,
+    sizeM: host.sizeM, dimsFrom: host.dimsFrom, note: host.note,
+    mount: { id: host.mount.id, name: host.mount.name, what: host.mount.what },
+    seatM: seat,
+    fits: fit?.fits ?? null, over: fit?.over ?? [], fitNote: fit?.note ?? null,
   };
 }
 
