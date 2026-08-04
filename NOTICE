@@ -4,8 +4,22 @@ Copyright 2026 Morshed Varzandeh
 This product includes software developed by Morshed Varzandeh and the
 battery-design contributors.
 
-Licensed under the Apache License, Version 2.0. See the LICENSE file, or
-http://www.apache.org/licenses/LICENSE-2.0
+Licensed under the GNU Affero General Public License, version 3 or later.
+See the LICENSE file, or https://www.gnu.org/licenses/agpl-3.0.html
+
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. It is distributed in the hope that it will be useful, but
+WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for
+more details.
+
+AGPL section 13: if you modify this program and make it available to users over
+a network, you must also make the modified source available to those users.
+
+Earlier releases of this project were made under the Apache License 2.0. That
+remains true of those releases — relicensing is not retroactive.
 
 --------------------------------------------------------------------------------
 THIRD-PARTY SOFTWARE
@@ -14,6 +28,16 @@ three.js  (vendor/three.module.min.js, vendor/OrbitControls.js)
   Copyright 2010-2026 three.js authors
   Licensed under the MIT License. https://threejs.org
 
+Godot Engine  (runtime inside the 3D garage build, garage3d/build/)
+  Copyright (c) 2014-present Godot Engine contributors
+  Copyright (c) 2007-2014 Juan Linietsky, Ariel Manzur
+  Licensed under the MIT License. https://godotengine.org
+  The build is produced by CI from the project sources in garage3d/ and is not
+  committed to this repository. The engine runtime it embeds is Godot's own
+  work under MIT; only the project sources in garage3d/ are this project's and
+  under the AGPL. MIT permits inclusion in an AGPL work and is not changed by
+  it.
+
 --------------------------------------------------------------------------------
 DATA, STANDARDS AND ENGINEERING OUTPUT
 
@@ -21,7 +45,7 @@ Cell, component and standards data
   The data modules contain factual values transcribed from public manufacturer
   datasheets and publicly available standards catalogues, together with this
   project's own curation, classification and notes. The curation is covered by
-  the Apache 2.0 licence above. The underlying facts are not claimed as this
+  the AGPL licence above. The underlying facts are not claimed as this
   project's property.
 
   No standard is reproduced in this repository. REFERENCES.md *cites* the
@@ -42,5 +66,6 @@ Engineering output
   the judgement of a qualified engineer. Assumptions that have no public source
   are listed openly in REFERENCES.md, section 8.
 
-  Distributed WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND — see the Apache 2.0
-  disclaimer of warranty and limitation of liability.
+  Distributed WITHOUT ANY WARRANTY — see sections 15 to 17 of the GNU Affero
+  General Public License for the disclaimer of warranty and the limitation of
+  liability.

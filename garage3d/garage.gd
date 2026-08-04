@@ -39,6 +39,9 @@ var _dragging := false
 var _pickables: Array = []            # [{aabb: AABB, name: String, category: String}]
 var _js_callback                      # kept alive: a freed callback silently stops delivery
 var _have_scene := false
+var _room: Node3D                     # floor, walls, bench, scale reference
+var _bench_top := 0.0                 # where the pack is set down, metres
+var _scale_note := ""                 # which known object is standing beside it
 
 
 func _ready() -> void:
@@ -49,29 +52,42 @@ func _ready() -> void:
 
 
 # ---------------------------------------------------------------------------
-# Stage: camera, lights, ground. None of this describes the pack.
+# Stage: camera, lights, and the room the pack stands in.
+#
+# All of this is set dressing and none of it describes the pack. It earns its
+# place for one reason: a pack floating in a black void has no size. Put it on
+# a bench in a room with a known object beside it and a person can SEE that an
+# EV pack is the size of a mattress and a wearable cell is smaller than a
+# postage stamp — which is a fact the numbers state and nobody feels.
 # ---------------------------------------------------------------------------
+const BENCH_H := 0.85                 # a working bench, roughly hip height
+
 func _build_stage() -> void:
 	var env := Environment.new()
 	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.055, 0.075, 0.070)
+	env.background_color = Color(0.048, 0.062, 0.058)
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.45, 0.52, 0.50)
-	env.ambient_light_energy = 0.55
+	env.ambient_light_color = Color(0.42, 0.48, 0.47)
+	env.ambient_light_energy = 0.42
+	env.fog_enabled = true
+	env.fog_light_color = Color(0.05, 0.07, 0.065)
+	env.fog_density = 0.012
 	var world := WorldEnvironment.new()
 	world.environment = env
 	add_child(world)
 
-	# A garage is lit from above and from one side. Two lights read as a room;
-	# one reads as a product shot, which is the wrong feeling for a workshop.
+	# A workshop is lit from overhead and from one side. Two lights read as a
+	# room; one reads as a product shot, which is the wrong feeling entirely.
 	var key := DirectionalLight3D.new()
-	key.rotation_degrees = Vector3(-55, -40, 0)
-	key.light_energy = 1.1
+	key.rotation_degrees = Vector3(-58, -42, 0)
+	key.light_energy = 1.25
+	key.light_color = Color(1.0, 0.97, 0.92)
+	key.shadow_enabled = true
 	add_child(key)
 	var fill := DirectionalLight3D.new()
-	fill.rotation_degrees = Vector3(-20, 130, 0)
-	fill.light_energy = 0.35
-	fill.light_color = Color(0.75, 0.85, 0.95)
+	fill.rotation_degrees = Vector3(-18, 128, 0)
+	fill.light_energy = 0.3
+	fill.light_color = Color(0.72, 0.83, 0.95)
 	add_child(fill)
 
 	_rig = Node3D.new()
@@ -79,13 +95,124 @@ func _build_stage() -> void:
 	_boom = Node3D.new()
 	_rig.add_child(_boom)
 	_camera = Camera3D.new()
-	_camera.fov = 42.0
+	_camera.fov = 44.0
 	_camera.near = 0.01
-	_camera.far = 200.0
+	_camera.far = 400.0
 	_boom.add_child(_camera)
 
+	_room = Node3D.new()
+	add_child(_room)
 	_pack_root = Node3D.new()
 	add_child(_pack_root)
+
+
+# The room, rebuilt per pack because it has to fit one. A 12-metre bay around
+# a wearable cell would leave the cell invisible; a 2-metre one around a bus
+# pack would have it through the wall.
+func _build_room(span_m: float) -> void:
+	for child in _room.get_children():
+		child.queue_free()
+	var bay: float = clampf(span_m * 5.0, 3.0, 40.0)
+	var wall_h: float = clampf(bay * 0.45, 2.4, 12.0)
+
+	_room.add_child(_slab(Vector3(bay, 0.06, bay), Vector3(0, -0.03, 0),
+			Color(0.115, 0.135, 0.128), 0.92, 0.0))                     # floor
+	_room.add_child(_slab(Vector3(bay, wall_h, 0.08), Vector3(0, wall_h * 0.5, -bay * 0.5),
+			Color(0.145, 0.168, 0.160), 0.95, 0.0))                     # back wall
+	_room.add_child(_slab(Vector3(0.08, wall_h, bay), Vector3(-bay * 0.5, wall_h * 0.5, 0),
+			Color(0.128, 0.150, 0.143), 0.95, 0.0))                     # side wall
+
+	# Overhead shop lights. Cheap to add, and they are most of what makes a
+	# room read as a workshop rather than a rendering of a floor.
+	for i in 2:
+		var x: float = (float(i) - 0.5) * bay * 0.34
+		var tube := _slab(Vector3(bay * 0.34, 0.05, 0.12),
+				Vector3(x, wall_h * 0.86, 0), Color(0.95, 0.96, 0.9), 0.4, 0.0)
+		var m: StandardMaterial3D = (tube.mesh as BoxMesh).surface_get_material(0)
+		m.emission_enabled = true
+		m.emission = Color(1.0, 0.97, 0.88)
+		m.emission_energy_multiplier = 1.6
+		_room.add_child(tube)
+		var lamp := OmniLight3D.new()
+		lamp.position = Vector3(x, wall_h * 0.8, 0)
+		lamp.omni_range = bay * 1.2
+		lamp.light_energy = 1.5
+		lamp.light_color = Color(1.0, 0.96, 0.88)
+		_room.add_child(lamp)
+
+	# The bench. Sized to the pack with a working margin, at hip height, so the
+	# pack is presented the way it would actually be worked on.
+	var bench: float = span_m * 1.5
+	var bench_h: float = minf(BENCH_H, span_m * 0.9)
+	_room.add_child(_slab(Vector3(bench, 0.05, bench), Vector3(0, bench_h, 0),
+			Color(0.20, 0.225, 0.215), 0.7, 0.15))
+	for sx in [-1.0, 1.0]:
+		for sz in [-1.0, 1.0]:
+			_room.add_child(_slab(Vector3(0.05, bench_h, 0.05),
+					Vector3(sx * bench * 0.44, bench_h * 0.5, sz * bench * 0.44),
+					Color(0.16, 0.18, 0.175), 0.8, 0.2))
+	_bench_top = bench_h + 0.025
+	_add_scale_reference(span_m, bench)
+
+
+# The one piece of set dressing that is not decoration.
+#
+# Scale is the thing a table of millimetres cannot convey, so the room puts a
+# KNOWN object next to the pack — and which object depends on how big the pack
+# is, because a person standing next to a wearable cell tells you nothing.
+# The card is ISO/IEC 7810 ID-1, the same 85.60 x 53.98 mm every bank card in
+# the world is cut to, which makes it a genuine reference rather than a prop.
+func _add_scale_reference(span_m: float, bench: float) -> void:
+	var beside: float = bench * 0.5 + 0.35
+	if span_m > 0.5:
+		# A person, 1.75 m — and it has to BE 1.75 m, because that is the entire
+		# job. The three parts stack head to floor without overlapping: legs
+		# 0.00–0.85, torso 0.85–1.50, head 1.50–1.75. Crude on purpose; a
+		# detailed figure invites looking at the figure, and it is here to be a
+		# ruler.
+		_room.add_child(_slab(Vector3(0.34, 0.85, 0.22), Vector3(beside, 0.425, 0),
+				Color(0.20, 0.23, 0.27), 0.85, 0.0))                   # legs
+		_room.add_child(_slab(Vector3(0.42, 0.65, 0.24), Vector3(beside, 1.175, 0),
+				Color(0.26, 0.30, 0.34), 0.85, 0.0))                   # torso
+		_room.add_child(_slab(Vector3(0.19, 0.25, 0.20), Vector3(beside, 1.625, 0),
+				Color(0.30, 0.34, 0.38), 0.85, 0.0))                   # head
+		_scale_note = "beside a 1.75 m person"
+	elif span_m > 0.12:
+		# A 330 ml drink can: 66 mm across, 115 mm tall, known to everyone.
+		var can := MeshInstance3D.new()
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = 0.033
+		cyl.bottom_radius = 0.033
+		cyl.height = 0.115
+		var cm := StandardMaterial3D.new()
+		cm.albedo_color = Color(0.72, 0.74, 0.76)
+		cm.metallic = 0.8
+		cm.roughness = 0.28
+		cyl.surface_set_material(0, cm)
+		can.mesh = cyl
+		can.position = Vector3(beside, _bench_top + 0.0575, 0)
+		_room.add_child(can)
+		_scale_note = "beside a 330 ml can (66 x 115 mm)"
+	else:
+		# ISO/IEC 7810 ID-1 — every bank card on earth, to a tenth of a millimetre.
+		_room.add_child(_slab(Vector3(0.0856, 0.0008, 0.05398),
+				Vector3(beside, _bench_top + 0.0004, 0),
+				Color(0.30, 0.42, 0.52), 0.5, 0.1))
+		_scale_note = "beside a bank card (ISO/IEC 7810 ID-1, 85.6 x 54.0 mm)"
+
+
+func _slab(size: Vector3, at: Vector3, col: Color, rough: float, metal: float) -> MeshInstance3D:
+	var box := BoxMesh.new()
+	box.size = size
+	var m := StandardMaterial3D.new()
+	m.albedo_color = col
+	m.roughness = rough
+	m.metallic = metal
+	box.surface_set_material(0, m)
+	var inst := MeshInstance3D.new()
+	inst.mesh = box
+	inst.position = at
+	return inst
 
 
 func _build_ui() -> void:
@@ -185,10 +312,20 @@ func _render(scene: Dictionary) -> void:
 	else:
 		_status.modulate = Color(1, 1, 1, 0.65)
 
+	# The room is built before the pack so the bench height is known, and the
+	# pack is then SET DOWN on it rather than left hanging at the origin.
+	var outer: Dictionary = pack.get("outer", {})
+	var span: float = maxf(maxf(float(outer.get("x", 200.0)), float(outer.get("y", 200.0))),
+			float(outer.get("z", 200.0))) * MM
+	_build_room(span)
+	_pack_root.position = Vector3(0, _bench_top + float(outer.get("z", 0.0)) * MM * 0.5, 0)
+
 	_add_cells(cell, cells)
 	for part in scene.get("parts", []):
 		_add_part(part)
 
+	if _scale_note != "":
+		_hint.text = "drag to orbit · wheel to zoom · click a part to name it   —   " + _scale_note
 	_frame_on(pack)
 	_have_scene = true
 
@@ -315,8 +452,16 @@ func _frame_on(pack: Dictionary) -> void:
 	var outer: Dictionary = pack.get("outer", {})
 	var span: float = maxf(maxf(float(outer.get("x", 200.0)), float(outer.get("y", 200.0))),
 			float(outer.get("z", 200.0))) * MM
-	_target_distance = max(0.35, span * 1.7)
+	# Far enough back that the scale reference is IN the shot. Framing on the
+	# pack alone crops the person, which throws away the only thing in the
+	# room that tells you how big any of it is.
+	var reference_h: float = 1.75 if span > 0.5 else 0.2
+	_target_distance = maxf(0.35, maxf(span * 2.1, reference_h * 1.9))
 	_distance = _target_distance
+	# Orbit around the pack where it now sits, not around the floor. Circling a
+	# point under the bench puts the subject at the top of the frame and the
+	# concrete in the middle of it.
+	_rig.position = _pack_root.position
 
 
 # ---------------------------------------------------------------------------

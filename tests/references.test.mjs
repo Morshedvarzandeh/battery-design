@@ -91,19 +91,38 @@ test('the page describes itself for link previews and search', () => {
     `og:image target is committed to the repo (${rel})`);
   ok(/twitter:card" content="summary_large_image"/.test(html), 'large-image card declared');
   // The footer must keep pointing at the sources and the licence.
-  ok(/REFERENCES\.md/.test(html) && /Apache/.test(html),
+  ok(/REFERENCES\.md/.test(html) && /AGPL/.test(html),
     'footer links to the sources and states the licence');
 });
 
 test('licence and attribution files are present and consistent', () => {
   const lic = read('LICENSE'), notice = read('NOTICE'), cff = read('CITATION.cff');
-  ok(/Apache License/.test(lic) && /Version 2\.0/.test(lic), 'LICENSE is Apache 2.0');
-  ok(/Grant of Patent License/.test(lic), 'the patent grant clause is intact');
-  ok(/Morshed Varzandeh/.test(lic), 'copyright holder named in the appendix');
+  ok(/GNU AFFERO GENERAL PUBLIC LICENSE/.test(lic) && /Version 3, 19 November 2007/.test(lic),
+    'LICENSE is the AGPL-3.0');
+  // Section 13 is the entire reason to choose this licence over the GPL for a
+  // tool that is deployed as a web page: without it, someone can run a
+  // modified version as a service and owe nobody anything.
+  ok(/13\. Remote Network Interaction/.test(lic), 'the network-use clause is intact');
+  ok(/11\. Patents/.test(lic), 'and the patent section');
+  // The FSF's terms are that the licence text is used VERBATIM. The copyright
+  // holder goes in the notices, not into the licence body — filling in the
+  // appendix template would be modifying the licence.
+  ok(!/Morshed Varzandeh/.test(lic), 'the licence text is unmodified');
+  ok(/Morshed Varzandeh/.test(notice), 'the copyright holder is named in NOTICE instead');
+
   ok(/three\.js/i.test(notice) && /MIT/.test(notice), 'NOTICE attributes the vendored three.js');
+  // The 3D garage embeds Godot's runtime, which is MIT and stays MIT. An AGPL
+  // project may include MIT code; it may not relicense it, and a NOTICE that
+  // failed to say so would be claiming someone else's engine.
+  ok(/Godot/i.test(notice), 'NOTICE attributes the Godot runtime in the 3D build');
   ok(/never leaves the user's device|never leaves/.test(notice.replace(/[’']/g, "'")),
     'NOTICE keeps the customer-data privacy statement');
-  ok(/license: Apache-2\.0/.test(cff), 'CITATION.cff matches the licence');
-  ok(/Apache/.test(README) && /REFERENCES\.md/.test(README),
+
+  ok(/license: AGPL-3\.0-or-later/.test(cff), 'CITATION.cff matches the licence');
+  ok(/AGPL/.test(README) && /REFERENCES\.md/.test(README),
     'README points at both the licence and the references');
+  // Relicensing is not retroactive and saying otherwise would be a false claim
+  // about code other people already hold.
+  ok(/Apache/.test(notice) && /not retroactive|remains true of those releases/.test(notice),
+    'NOTICE says plainly that earlier Apache-2.0 releases stay Apache-2.0');
 });
