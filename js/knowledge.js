@@ -56,6 +56,7 @@ export const CONCEPTS = {
 
   // --- What happens to it afterwards ---------------------------------------
   'circular-value': { label: 'Value by life stage and place', why: 'A pack does not have a price — it has a price here, at this point in its life, to someone. The three move independently.' },
+  'host-machine': { label: 'The machine it goes into', why: 'Does it fit, and where does it go — the first question anyone asks, and the one a table of millimetres has never answered.' },
 
   // --- How the machine actually moves --------------------------------------
   // Deliberately SEPARATE concepts rather than one 'route simulation', because
@@ -108,6 +109,11 @@ export const NEEDS = {
   // the regulation about — but a wearable cell has an end of life too, and
   // pretending otherwise is how the small ones end up in household waste.
   'circular-value': { classes: ALL },
+
+  // Every application is some machine, including the ones that do not move:
+  // a cabinet is as much a host as a car, and where the pack sits in it is
+  // still a real decision.
+  'host-machine': { classes: ALL },
 
   // --- How the machine actually moves --------------------------------------
   // The edges that keep road physics away from a boat. Each domain gets the

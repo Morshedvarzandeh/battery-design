@@ -254,6 +254,13 @@ export const ADDONS = [
     needs: ['a design', 'the renderer, which CI builds and a plain checkout does not have'],
   },
   {
+    id: 'showroom-machine', name: 'The machine around the pack', tier: 'desktop', status: 'shipped',
+    module: 'hosts.js', concepts: ['host-machine'],
+    what: 'The pack shown inside the thing it powers — under the floor of a car, on the roof of a bus, in the hull of a boat, in the torso of a humanoid. Sixteen machines, each with its own shape and its own mounting, because those are four different design problems and the tool has always modelled them separately without ever showing them. The silhouette is a massing block: its cross-section comes from a measured frontal area where the application has one, its length is class-typical, and the scene says which. The PACK inside it is at true scale, so an oversized one visibly bursts out of the machine instead of the machine quietly growing to fit.',
+    provides: ['which machine, and where the pack mounts in it', 'whether the pack fits the indicative envelope', 'the pack at true scale inside it'],
+    needs: ['a design', 'the desktop runner — a silhouette is indicative where the rest of the tool is measured'],
+  },
+  {
     id: 'circular', name: 'Circular economy: value by stage and place', tier: 'browser', status: 'shipped',
     module: 'circular.js', concepts: ['circular-value'],
     what: 'What the pack is worth at each point in its life, in the place it is actually standing. Stages are nodes and moving between them is an edge that costs money, takes time, loses some of what you had, and is sometimes not allowed. Regulation is carried as gates rather than averaged into a price — landfill is not expensive in the EU, it is prohibited — and every route reports what stands in the way, not just what it pays.',

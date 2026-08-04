@@ -34,7 +34,7 @@ import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
 import { shortCircuitStudy } from './shortcircuit.js';
 import { renderGuard } from './limits.js';
-import { detectRunner, runnerStatusLine, runAdvancedModel, buildFmuOnRunner } from './desktop-link.js';
+import { detectRunner, knownRunner, runnerStatusLine, runAdvancedModel, buildFmuOnRunner } from './desktop-link.js';
 import {
   vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare,
   modeComparison, DRIVING_MODES,
@@ -1908,7 +1908,12 @@ function showroomFor(design) {
   if (!showroomWanted || !showroom || !design) return;
   const layout = layoutForDesign(design);
   if (!layout) return;
-  showroom.show(buildScene({ design, layout }));
+  // The machine around the pack is a DESKTOP feature. Not for want of
+  // performance — it is a handful of blocks — but because the silhouette is
+  // indicative where everything else in this tool is measured, and it belongs
+  // where the customer has already opted into the heavier, more exploratory
+  // half of the product rather than on the page a stranger opens first.
+  showroom.show(buildScene({ design, layout, showHost: !!knownRunner() }));
 }
 
 async function openShowroom(floor, button) {

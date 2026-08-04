@@ -18,6 +18,8 @@ import { layoutPack, defaultArrangement } from '../js/pack-engine.js';
 import { cellById, CHEMISTRIES } from '../js/cells.js';
 import { componentById } from '../js/components.js';
 import { PRESETS } from '../js/presets.js';
+import { hostFor, packSeat, fitInHost } from '../js/hosts.js';
+import { vehicleDefaultsFor } from '../js/vehicle.js';
 
 // Build a design and the layout that goes with it, the way the app does:
 // the cooling system is chosen first because it takes space out of the box.
@@ -143,4 +145,77 @@ test('buildScene refuses to guess', () => {
   ok(buildScene({}) === null, 'no design, no scene');
   ok(buildScene({ design: designFromSpec({ application: 'ev' }) }) === null, 'no layout, no scene');
   ok(buildScene() === null, 'and no arguments at all is not a crash');
+});
+
+test('the machine is off unless asked for, and desktop is what asks', () => {
+  // A silhouette is INDICATIVE where everything else in this tool is measured.
+  // Turning up unrequested next to numbers that are not indicative is how a
+  // massing block ends up in somebody's slide deck as a vehicle drawing.
+  const { design, layout } = sceneFor({ application: 'ev' });
+  ok(buildScene({ design, layout }).host === null, 'off by default');
+  ok(buildScene({ design, layout, showHost: true }).host !== null, 'on when asked');
+});
+
+test('every application that is a machine says which machine, and where the pack goes', () => {
+  for (const p of PRESETS) {
+    const h = hostFor(p.id);
+    if (!h) continue;                       // a real answer: not every preset is a vehicle
+    ok(h.kind && h.name, `${p.id}: names its machine`);
+    ok(h.sizeM.x > 0 && h.sizeM.y > 0 && h.sizeM.z > 0, `${p.id}: has an envelope`);
+    ok(h.mount?.id && h.mount.what, `${p.id}: says where the pack goes and why that matters`);
+    ok(['frontal-area', 'class-typical'].includes(h.dimsFrom), `${p.id}: says how it was sized`);
+    ok(h.note, `${p.id}: and admits which half of that is a guess`);
+  }
+  // Filtering has to bite: if every machine were the same shape the whole
+  // module would be decoration.
+  const kinds = new Set(PRESETS.map((p) => hostFor(p.id)?.kind).filter(Boolean));
+  ok(kinds.size >= 8, `${kinds.size} distinct machine shapes across the presets`);
+  const mounts = new Set(PRESETS.map((p) => hostFor(p.id)?.mount?.id).filter(Boolean));
+  ok(mounts.size >= 6, `${mounts.size} distinct mountings — a bus roof is not a car floor`);
+});
+
+test('a measured frontal area beats a class-typical guess, and says so', () => {
+  // Five applications have a vehicle model with a measured frontal area. Those
+  // silhouettes carry at least one number that is not invented, and the scene
+  // has to distinguish them from the ones that do not.
+  const car = hostFor('ev');
+  ok(car.dimsFrom === 'frontal-area', 'a car is sized from its measured frontal area');
+  ok(/frontal area/.test(car.note), 'and the note says which number did it');
+  const veh = vehicleDefaultsFor('ev');
+  // Cross-section reproduces the frontal area it came from, within the fill
+  // factor. If this drifts, the silhouette is no longer derived from anything.
+  near(car.sizeM.x * car.sizeM.z * 0.85, veh.frontalAreaM2, 0.01,
+    'width x height x fill returns the frontal area it was derived from');
+
+  const boat = hostFor('marine');
+  ok(boat.dimsFrom === 'class-typical', 'a boat has no vehicle model, so it is class-typical');
+  ok(/§8|class-typical/.test(boat.note), 'and says so rather than implying measurement');
+});
+
+test('an oversized pack bursts out of the machine instead of quietly rescaling it', () => {
+  // The failure this whole idea has to avoid: a silhouette that grows to fit
+  // whatever pack it is given would make every design look like it fits.
+  const host = hostFor('ev');
+  const huge = fitInHost(host, { x: 3.0, y: 6.0, z: 0.4 });
+  ok(huge.fits === false, 'a pack bigger than the car does not fit the car');
+  ok(huge.over.includes('x') && huge.over.includes('y'), 'and it names the axes');
+  ok(/not a measurement/.test(huge.note), 'while admitting the silhouette is indicative');
+  const fine = fitInHost(host, { x: 1.2, y: 1.2, z: 0.1 });
+  ok(fine.fits === true && fine.note === null, 'a pack that fits says nothing');
+
+  // Roof and belly mounts sit OUTSIDE the body, so height cannot constrain them.
+  const bus = hostFor('ebus');
+  ok(bus.mount.id === 'roof', 'a city bus carries its pack on the roof');
+  ok(fitInHost(bus, { x: 1, y: 1, z: 99 }).over.includes('z') === false,
+    'a roof pack is not limited by the height of the bus under it');
+});
+
+test('the seat comes from the mounting, so the pack moves and the machine does not', () => {
+  const car = hostFor('ev');
+  const small = packSeat(car, { x: 1, y: 1, z: 0.1 });
+  const tall = packSeat(car, { x: 1, y: 1, z: 0.3 });
+  ok(tall.z > small.z, 'a taller pack sits higher off the car floor, as it must');
+  const bus = hostFor('ebus');
+  ok(packSeat(bus, { x: 1, y: 1, z: 0.2 }).z > bus.sizeM.z / 2, 'a roof pack sits above the roof');
+  ok(packSeat(hostFor('drone'), { x: 0.2, y: 0.2, z: 0.05 }).z < 0, 'a belly pack hangs below');
 });
