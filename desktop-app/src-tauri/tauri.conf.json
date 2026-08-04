@@ -36,7 +36,7 @@
     "resources": {
       "../runner": "runner"
     },
-    "copyright": "Copyright (c) Morshed Varzandeh. Apache-2.0.",
+    "copyright": "Copyright (c) Morshed Varzandeh. AGPL-3.0-or-later.",
     "category": "Education",
     "shortDescription": "Battery pack designer",
     "longDescription": "Design a battery pack and see what it costs you: geometry, electrical architecture, thermal system, conductor sizing, grounding, fault study, life-cycle footprint and the release checklist for your market. Runs entirely on your own machine \u2014 no account, no network, nothing uploaded.",

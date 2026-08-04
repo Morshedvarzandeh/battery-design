@@ -36,7 +36,7 @@ first time.
 electrical architecture, thermal system, mission simulation and the customer
 report — entirely in your browser.**
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-0b6e5f.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-0b6e5f.svg)](LICENSE)
 [![CI](https://github.com/Morshedvarzandeh/battery-design/actions/workflows/ci.yml/badge.svg)](https://github.com/Morshedvarzandeh/battery-design/actions/workflows/ci.yml)
 [![References](https://img.shields.io/badge/sources-REFERENCES.md-0b6e5f.svg)](REFERENCES.md)
 
@@ -509,10 +509,21 @@ naming the standard and the edition.
 
 ## Licence
 
-Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). You can use
-this commercially, modify it and redistribute it; the licence includes an
-express patent grant, and requires you to keep the notices and state your
-changes.
+GNU Affero General Public License v3.0 or later — see [LICENSE](LICENSE) and
+[NOTICE](NOTICE). You can use it, study it, modify it and redistribute it,
+commercially included. What you cannot do is take it private: any derivative
+you distribute must also be AGPL, and — this is the clause that matters for a
+tool like this one — **if you run a modified version as a network service, you
+must offer its source to the people using it** (AGPL §13). Running the
+*unmodified* tool, or using its output, carries no such obligation: the
+engineering answers it produces are yours.
+
+Vendored third-party code keeps its own licence. three.js (`vendor/`) and the
+Godot engine runtime inside the 3D garage build are MIT, which is compatible
+with the AGPL and is not relicensed by this project — see [NOTICE](NOTICE).
+
+Previously released under Apache-2.0. That does not retroactively change:
+anything obtained under Apache-2.0 stays available on those terms.
 
 The engineering output is **first-order guidance, not certification**, and is
 provided without warranty. It does not replace CAD, validation testing,
