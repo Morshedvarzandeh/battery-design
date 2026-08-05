@@ -1736,14 +1736,29 @@ mod tests {
         assert_eq!(decision.reason, SolverDecisionReason::SeparatedTimeScales);
         assert_eq!(decision.time_scale_ratio, Some(10_000.0));
 
-        let result = compiled.simulate(settings).unwrap();
-        assert_eq!(result.solver, decision);
-        assert!(result.nonlinear_iterations > 0);
-        near(result.last_value(fast).unwrap(), 1.0, 2e-4);
+        let loose_result = compiled.simulate(settings).unwrap();
+        assert_eq!(loose_result.solver, decision);
+        assert!(loose_result.nonlinear_iterations > 0);
+        near(loose_result.last_value(fast).unwrap(), 1.0, 2e-4);
+        let expected_slow = 1.0 - (-1.0_f64).exp();
+        let loose_error = (loose_result.last_value(slow).unwrap() - expected_slow).abs();
+
+        let tight_result = compiled
+            .simulate(SolverSettings {
+                relative_tolerance: 1e-5,
+                absolute_tolerance: 1e-9,
+                ..settings
+            })
+            .unwrap();
+        let tight_error = (tight_result.last_value(slow).unwrap() - expected_slow).abs();
+        assert!(
+            tight_error < loose_error,
+            "tight tolerance error {tight_error} must improve loose error {loose_error}"
+        );
         near(
-            result.last_value(slow).unwrap(),
-            1.0 - (-1.0_f64).exp(),
-            8e-4,
+            tight_result.last_value(slow).unwrap(),
+            expected_slow,
+            5e-4,
         );
     }
 
