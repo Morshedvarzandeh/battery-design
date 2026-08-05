@@ -227,6 +227,15 @@ export function propagation({
   // The trigger is the most-enclosed cell — the one with the most neighbours
   // — because that is the worst case and the one worth designing against.
   const seed = nb.reduce((best, list, i) => (list.length > nb[best].length ? i : best), 0);
+  const seedCell = pos[seed];
+  // layoutPack stores cell centers around the inner-volume origin.  Vent
+  // placement uses an enclosure coordinate system whose origin is the
+  // lower/front/left outer corner, so preserve the exact translation here.
+  const gasSourceMm = {
+    x: seedCell.x + layout.outer.x / 2,
+    y: seedCell.y + layout.outer.y / 2,
+    z: seedCell.z + layout.inner.z / 2 + layout.wallMm + layout.underMm,
+  };
   triggeredAt[seed] = 0;
 
   let t = 0, peakC = ambientC, peakNeighbourC = ambientC;
@@ -324,6 +333,9 @@ export function propagation({
   return {
     verdict, spread, gone, modelled, truncated, fraction,
     onsetC, peakC, peakNeighbourC,
+    seedCellIndex: seed,
+    gasSourceMm,
+    enclosureMm: { ...layout.outer },
     // How close the nearest neighbour came to going. This is a COMPARATIVE
     // figure, not a safety margin — see propagationStudy().
     marginK: onsetC - peakNeighbourC,

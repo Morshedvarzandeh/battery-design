@@ -54,6 +54,10 @@ test('vent sizing and loop verification are separate and plainly bounded', () =>
   assert.match(studio, /Gas low \(L\/cell\)/);
   assert.match(studio, /Conditional vent-area screen/);
   assert.match(studio, /not NFPA 68 deflagration sizing/);
+  assert.match(studio, /Supplier vent and market constraint/);
+  assert.match(studio, /Human-screened discharge faces/);
+  assert.match(studio, /Provisional vent coordinates/);
+  assert.match(studio, /Required quantity/);
   assert.match(html, /Software-in-the-Loop/);
   assert.match(html, /Hardware-in-the-Loop/);
   assert.match(html, /Only measured target evidence can pass it/);

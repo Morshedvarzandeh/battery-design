@@ -433,6 +433,11 @@ function renderScenarioInspector() {
   if (!runawayModule && !ventModule) return;
   const p = runawayModule?.parameters;
   const v = ventModule?.parameters;
+  const ventProfile = graph.market === 'road' ? 'road-pack'
+    : graph.segment === 'home' ? 'grid-home-pack'
+      : graph.segment === 'small-company' ? 'grid-commercial-cabinet'
+        : 'grid-industrial-enclosure';
+  const selectedVentFaces = new Set(String(v?.allowedVentFaces || '').split(',').map((face) => face.trim()).filter(Boolean));
   const inputValue = (value) => value == null ? '' : esc(value);
   $('scenarioInspector').innerHTML = `
     ${runawayModule ? `<div class="scenario-module"><h3>Propagation and heat paths</h3>
@@ -458,8 +463,26 @@ function renderScenarioInspector() {
         <div class="field-grid scenario-grid"><label>Allowable gauge pressure (kPa)<input type="number" min="0.001" step="any" data-vent="allowableGaugePressureKPa" value="${inputValue(v.allowableGaugePressureKPa)}"></label><label>Vent-gas temperature (°C)<input type="number" min="-273" step="any" data-vent="ventGasTemperatureC" value="${inputValue(v.ventGasTemperatureC)}"></label></div>
         <div class="field-grid scenario-grid"><label>Discharge coefficient<input type="number" min="0.01" max="1" step="0.01" data-vent="dischargeCoefficient" value="${inputValue(v.dischargeCoefficient)}"></label><label>Gas γ<input type="number" min="1.01" step="0.01" data-vent="gamma" value="${inputValue(v.gamma)}"></label></div>
         <label>Specific gas constant (J/kg·K)<input type="number" min="0.001" step="any" data-vent="specificGasConstantJPerKgK" value="${inputValue(v.specificGasConstantJPerKgK)}"></label>
+        <div class="vent-hardware-fields">
+          <h4>Supplier vent and market constraint</h4>
+          <p class="muted">This workspace requires <b>${esc(ventProfile)}</b>. The supplier record must explicitly include that profile; product outside dimensions are never treated as free area.</p>
+          <div class="field-grid scenario-grid"><label>Supplier<input type="text" data-vent-text="ventSupplier" value="${inputValue(v.ventSupplier)}" placeholder="manufacturer"></label><label>Part number<input type="text" data-vent-text="ventPartNumber" value="${inputValue(v.ventPartNumber)}" placeholder="verified part"></label></div>
+          <div class="field-grid scenario-grid"><label>Vent record id<input type="text" data-vent-text="ventUnitId" value="${inputValue(v.ventUnitId)}" placeholder="supplier catalog id"></label><label>Vent name<input type="text" data-vent-text="ventUnitName" value="${inputValue(v.ventUnitName)}" placeholder="customer label"></label></div>
+          <div class="field-grid scenario-grid"><label>Unobstructed free area (cm²)<input type="number" min="0.001" step="any" data-vent="ventUnitFreeAreaCm2" value="${inputValue(v.ventUnitFreeAreaCm2)}" placeholder="supplier flow data"></label><label>Footprint W × H (mm)<span class="inline-inputs"><input type="number" min="0.001" step="any" data-vent="ventUnitWidthMm" value="${inputValue(v.ventUnitWidthMm)}" aria-label="Vent footprint width"><input type="number" min="0.001" step="any" data-vent="ventUnitHeightMm" value="${inputValue(v.ventUnitHeightMm)}" aria-label="Vent footprint height"></span></label></div>
+          <label>Mechanism<select data-vent-text="ventUnitMechanism"><option value="">Choose verified mechanism</option>${['pressure-relief-device', 'burst-opening', 'directed-duct-exit'].map((id) => `<option value="${id}" ${v.ventUnitMechanism === id ? 'selected' : ''}>${id.replaceAll('-', ' ')}</option>`).join('')}</select></label>
+          <label>Supplier-declared market profiles<input type="text" data-vent-text="ventUnitMarketProfiles" value="${inputValue(v.ventUnitMarketProfiles)}" placeholder="${esc(ventProfile)}"></label>
+          <label>Supplier evidence basis<input type="text" data-vent-text="ventUnitEvidenceBasis" value="${inputValue(v.ventUnitEvidenceBasis)}" placeholder="datasheet revision, drawing and flow curve"></label>
+        </div>
+        <div class="vent-placement-fields">
+          <h4>Permitted placement</h4>
+          <p class="muted">Choose only faces already screened for a safe external discharge path. The algorithm will not decide that a passenger, egress, intake, responder or ignition-facing surface is safe.</p>
+          <fieldset class="face-picker"><legend>Human-screened discharge faces</legend>${['top', 'bottom', 'front', 'rear', 'left', 'right'].map((face) => `<label><input type="checkbox" data-vent-face="${face}" ${selectedVentFaces.has(face) ? 'checked' : ''}>${face}</label>`).join('')}</fieldset>
+          <label>Preferred face<select data-vent-text="preferredVentFace"><option value="">Nearest permitted face</option>${['top', 'bottom', 'front', 'rear', 'left', 'right'].filter((face) => selectedVentFaces.has(face)).map((face) => `<option value="${face}" ${v.preferredVentFace === face ? 'selected' : ''}>${face}</option>`).join('')}</select></label>
+          <div class="field-grid scenario-grid"><label>Edge clearance (mm)<input type="number" min="0" step="any" data-vent="edgeClearanceMm" value="${inputValue(v.edgeClearanceMm)}" placeholder="reviewed CAD constraint"></label><label>Between vents (mm)<input type="number" min="0" step="any" data-vent="minimumVentSpacingMm" value="${inputValue(v.minimumVentSpacingMm)}" placeholder="reviewed CAD constraint"></label></div>
+          <label>Maximum permitted vent count<input type="number" min="1" step="1" data-vent="maxVentCount" value="${inputValue(v.maxVentCount)}"></label>
+        </div>
       </div>
-      <p class="muted"><b>Boundary:</b> pressure-relief orifice screening, not NFPA 68 deflagration sizing. The production vent, duct, enclosure and fire scenario still require physical tests.</p></div>` : ''}`;
+      <p class="muted"><b>Boundary:</b> pressure-relief orifice and geometric placement screening, not NFPA 68 deflagration sizing. The production vent, duct, enclosure, external safe zone and fire scenario still require physical tests and qualified review.</p></div>` : ''}`;
   $('scenarioInspector').querySelectorAll('[data-runaway]').forEach((input) => {
     input.onchange = () => {
       const key = input.dataset.runaway;
@@ -489,6 +512,17 @@ function renderScenarioInspector() {
       v[input.dataset.ventText] = input.value.trim();
       graph = withHumanEdit({ ...graph, analysisModules: [...graph.analysisModules] },
         'vent-scenario-changed', `Changed vent-sizing evidence ${input.dataset.ventText}.`);
+      renderAll();
+    };
+  });
+  $('scenarioInspector').querySelectorAll('[data-vent-face]').forEach((input) => {
+    input.onchange = () => {
+      const faces = [...$('scenarioInspector').querySelectorAll('[data-vent-face]:checked')]
+        .map((item) => item.dataset.ventFace);
+      v.allowedVentFaces = faces.join(',');
+      if (v.preferredVentFace && !faces.includes(v.preferredVentFace)) v.preferredVentFace = '';
+      graph = withHumanEdit({ ...graph, analysisModules: [...graph.analysisModules] },
+        'vent-placement-changed', 'Changed the human-screened vent discharge faces.');
       renderAll();
     };
   });
@@ -724,10 +758,23 @@ function renderVentSafetyResult(result) {
       <p><b>Why:</b> gas yield and release rate vary by actual cell, state of charge, age and abuse method; NMC, LFP or LTO alone is not enough.</p>
       <p><b>Boundary:</b> ${esc(result.limitations[0])}</p>
     </div>`;
+  if (result.status === 'needs-hardware') {
+    const vent = result.evidence;
+    return `<div class="safety-card">
+      <h3>Vent hardware and placement — evidence required</h3>
+      <p>${esc(result.headline)}</p>
+      <div class="vent-range"><div><span>Low case</span><b>${vent.low.areaCm2.toFixed(1)} cm²</b></div><div><span>High case</span><b>${vent.high.areaCm2.toFixed(1)} cm²</b></div></div>
+      <p><b>Still needed:</b> ${result.missingHardwareInputs.map(esc).join(', ')}.</p>
+      <p><b>Customer meaning:</b> the pressure equation is available, but the software will not invent a supplier vent, quantity, compatible market or safe discharge face.</p>
+      <p><b>Boundary:</b> ${esc(result.limitations[0])}</p>
+    </div>`;
+  }
   const vent = result.evidence;
+  const layout = vent.hardwareLayout;
+  const placementRows = layout.placements.map((item) => `<tr><td>${esc(item.id)}</td><td>${esc(item.face)}</td><td>${item.centerMm.x.toFixed(1)}, ${item.centerMm.y.toFixed(1)}, ${item.centerMm.z.toFixed(1)} mm</td><td>${item.footprintMm.width.toFixed(1)} × ${item.footprintMm.height.toFixed(1)} mm${item.rotated ? ' · rotated' : ''}</td><td>${item.dischargeDirection.x}, ${item.dischargeDirection.y}, ${item.dischargeDirection.z}</td></tr>`).join('');
   return `
-    <div class="safety-card">
-      <h3>Conditional vent-area screen</h3>
+    <div class="safety-card ${result.status === 'fail' ? 'fail' : ''}">
+      <h3>${result.status === 'fail' ? 'Vent layout blocked' : 'Conditional vent-area screen and hardware layout'}</h3>
       <p>${esc(result.headline)}</p>
       <div class="vent-range"><div><span>Low case</span><b>${vent.low.areaCm2.toFixed(1)} cm²</b><small>Ø ${vent.low.equivalentDiameterMm.toFixed(0)} mm equivalent</small></div><div><span>High case</span><b>${vent.high.areaCm2.toFixed(1)} cm²</b><small>Ø ${vent.high.equivalentDiameterMm.toFixed(0)} mm equivalent</small></div></div>
       <table class="barrier-table"><thead><tr><th>Calculation input</th><th>Declared range / value</th></tr></thead><tbody>
@@ -739,7 +786,21 @@ function renderVentSafetyResult(result) {
         <tr><td>Flow regime</td><td>${esc(vent.low.regime)} to ${esc(vent.high.regime)}</td></tr>
         <tr><td>Evidence basis</td><td>${esc(vent.inputs.gasDataBasis)}</td></tr>
       </tbody></table>
-      <p><b>Customer meaning:</b> the high-case area is the minimum unobstructed opening predicted by this declared gas-release screen. A catalogue vent with the same outside diameter may have less free area.</p>
+      <h3>Market-bounded hardware selection</h3>
+      <table class="barrier-table"><tbody>
+        <tr><td>Market profile</td><td>${esc(layout.marketProfile.label)} · ${esc(layout.marketProfile.id)}</td></tr>
+        <tr><td>Supplier unit</td><td>${esc(layout.unit.supplier)} ${esc(layout.unit.partNumber)} · ${esc(layout.unit.name)}</td></tr>
+        <tr><td>Required quantity</td><td><b>${layout.requiredQuantity}</b> × ${layout.unit.freeAreaCm2.toFixed(1)} cm² free area</td></tr>
+        <tr><td>Total declared free area</td><td>${layout.totalDeclaredFreeAreaCm2.toFixed(1)} cm²${layout.status === 'provisional' ? ` · ${layout.freeAreaMarginCm2.toFixed(1)} cm² above high case` : ''}</td></tr>
+        <tr><td>Supplier evidence</td><td>${esc(layout.unit.evidenceBasis)}</td></tr>
+      </tbody></table>
+      ${layout.status === 'blocked' ? `<p><b>Why blocked:</b> ${esc(layout.headline)}</p><ul>${layout.correctiveActions.map((item) => `<li>${esc(item)}</li>`).join('')}</ul>` : `
+      <h3>Provisional vent coordinates</h3>
+      <p>Enclosure X/Y/Z: ${layout.enclosureMm.x.toFixed(1)} × ${layout.enclosureMm.y.toFixed(1)} × ${layout.enclosureMm.z.toFixed(1)} mm. Gas source: ${layout.gasSourceMm.x.toFixed(1)}, ${layout.gasSourceMm.y.toFixed(1)}, ${layout.gasSourceMm.z.toFixed(1)} mm.</p>
+      <table class="barrier-table vent-placement-table"><thead><tr><th>Vent</th><th>Face</th><th>Center X/Y/Z</th><th>Footprint</th><th>Outward vector</th></tr></thead><tbody>${placementRows}</tbody></table>
+      <p>${esc(layout.placementBasis)}</p>
+      <details class="evidence-fold"><summary>Show placement approval checklist</summary><ul>${layout.approvalChecklist.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></details>`}
+      <p><b>Customer meaning:</b> the high-case area sets the minimum unobstructed opening. The quantity uses supplier-declared free area, not outside diameter, and the coordinates use only faces a human marked as externally safe.</p>
       <details class="evidence-fold"><summary>Show vent equations and required tests</summary><div>${Object.entries(vent.equations).map(([name, equation]) => `<p><b>${esc(name)}</b><br><code>${esc(equation)}</code></p>`).join('')}<h4>Required physical evidence</h4><ul>${vent.requiredTests.map((item) => `<li>${esc(item)}</li>`).join('')}</ul></div></details>
       <p><b>Boundary:</b> ${esc(result.limitations[0])}</p>
     </div>`;

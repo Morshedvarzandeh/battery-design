@@ -498,6 +498,7 @@ is copied into the repository.
 | `js/cosim-studio.js` | Guided/manual/automatic visual block canvas and live Rust trace playback |
 | `js/cosim-analysis.js` | Attached specialist simulations, including thermal-runaway propagation screening with a never-certify boundary |
 | `js/venting.js` | Conditional emergency pressure-relief free-area range from explicit gas-release evidence and compressible flow |
+| `js/vent-layout.js` | Market-isolated supplier vent quantity, enclosure-fit constraint and provisional multi-face coordinates from the calculated high-case area |
 | `js/loop-testing.js` | Executable SIL calculation plans plus HIL I/O/timing/fault contracts and measured-evidence evaluation |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
@@ -539,7 +540,13 @@ interconnect and radiation heat paths, including the equations and a plain
 language interpretation. Emergency vent sizing is attached separately: it
 requires visible gas-volume and release-time evidence, calculates both choked
 and subcritical compressible-flow cases, and returns a conditional free-area
-range—not a deflagration approval. SIL and HIL are likewise separate add-ons:
+range—not a deflagration approval. A second governed layer then requires a
+supplier part's free area, footprint, market compatibility and evidence;
+selects multiple units when one is insufficient; checks the units against the
+actual enclosure faces and declared clearances; and returns provisional
+coordinates only on faces a human has marked as externally safe. It blocks an
+unfit layout instead of silently raising the allowable pressure. See
+[`docs/VENT_LAYOUT.md`](docs/VENT_LAYOUT.md). SIL and HIL are likewise separate add-ons:
 SIL executes the exact software model against independent numeric ranges;
 the HIL module freezes I/O, sample time, faults, overruns and safe state and
 can only pass when measured target evidence is supplied. See
