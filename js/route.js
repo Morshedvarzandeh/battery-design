@@ -72,7 +72,7 @@ export function bearingDeg(a, b) {
  * window, and the raw figure is kept beside it so nobody has to take the
  * smoothing on trust.
  */
-export function buildRoute({ points, name = 'Route', smoothMetres = 60 }) {
+export function buildRoute({ points, name = 'Route', smoothMetres = 60, source = 'points' }) {
   if (!Array.isArray(points) || points.length < 2) return null;
   const clean = points.filter((p) => Number.isFinite(p?.lat) && Number.isFinite(p?.lon));
   if (clean.length < 2) return null;
@@ -135,7 +135,7 @@ export function buildRoute({ points, name = 'Route', smoothMetres = 60 }) {
   const grades = segments.map((s) => s.gradePct);
 
   return {
-    name, points: clean, segments,
+    name, source, points: clean, segments,
     hasElevation, timed,
     totals: {
       distanceM: cumM, distanceKm: cumM / 1000,
@@ -192,7 +192,7 @@ export function parseGpx(xml) {
   // Timestamps are absolute; the models want seconds from the start.
   const t0 = points.find((p) => Number.isFinite(p.tS))?.tS;
   if (t0 != null) for (const p of points) if (Number.isFinite(p.tS)) p.tS -= t0;
-  return buildRoute({ points, name });
+  return buildRoute({ points, name, source: 'gpx' });
 }
 
 /**
@@ -204,8 +204,37 @@ export function parseGpx(xml) {
  * are what was actually driven. Where it was not, a target speed is applied
  * and the answer is what the route WOULD cost.
  */
-export function routeToTrace(route, { targetKph = null, dtS = 1 } = {}) {
+export function routeToTrace(route, { targetKph = null, dtS = 1, speedTrace = null } = {}) {
   if (!route?.segments?.length) return null;
+
+  // A planned route has geometry but no timestamps. Repeating the
+  // application's standard speed trace preserves real stops, acceleration
+  // and regeneration instead of pretending a bus travels at one constant
+  // speed between the first and last point. A measured/timed GPX still wins.
+  if (!route.timed && speedTrace?.v?.length && speedTrace.dtS > 0) {
+    const v = [], grade = [];
+    let travelledM = 0, step = 0, segIndex = 0;
+    const maxSteps = 100000;
+    while (travelledM < route.totals.distanceM && step < maxSteps) {
+      const sourceIndex = Math.floor((step * dtS) / speedTrace.dtS) % speedTrace.v.length;
+      const kph = Math.max(0, speedTrace.v[sourceIndex] || 0);
+      while (segIndex < route.segments.length - 1
+        && travelledM > route.segments[segIndex].cumulativeM) segIndex++;
+      v.push(kph);
+      grade.push(route.segments[segIndex]?.gradePct || 0);
+      travelledM += (kph / 3.6) * dtS;
+      step++;
+    }
+    if (v.length && travelledM > 0) {
+      return {
+        id: 'route', name: route.name, dtS, v, grade,
+        distanceM: route.totals.distanceM,
+        estimated: true,
+        speedBasis: speedTrace.id || speedTrace.name || 'application trace',
+      };
+    }
+  }
+
   const v = [], grade = [];
   for (const seg of route.segments) {
     const mps = route.timed && seg.speedMps != null

@@ -152,6 +152,20 @@ than one that prints them.
   the level-2 simulation: OCV plus a series resistance plus N parallel RC
   branches, with state-of-charge and temperature dependence, and the
   one-state hysteresis treatment. → `sim2.js`
+- **Ionworks Technologies (2024).** [*How to debug your battery
+  design*](https://github.com/ionworks/how-to-debug-your-battery), MIT
+  licensed. — The measurement-led sequence behind `batteryDiagnosticPlan()`:
+  establish OCV first, separate the instantaneous voltage step from slower
+  relaxation, and only then interpret the remaining model mismatch. The
+  repository is cited as background; its notebook code and PyBaMM model are
+  not copied or vendored. → `diagnostics.js`
+- **Hymel, S.** [*TinyML example: anomaly
+  detection*](https://github.com/ShawnHymel/tinyml-example-anomaly-detection).
+  — Demonstrates collecting healthy vibration across normal operating modes,
+  extracting small edge features, starting with Mahalanobis distance and
+  evaluating an autoencoder only when data supports it. The project describes
+  its code as Beerware, so this project copies no source; it uses only the
+  general method and provides its own implementation guidance. → `diagnostics.js`
 - **Bernardi, D., Pawlikowski, E., & Newman, J. (1985).** *A General Energy
   Balance for Battery Systems.* Journal of the Electrochemical Society,
   132(1), 5–12. — The heat-generation balance the thermal model uses:

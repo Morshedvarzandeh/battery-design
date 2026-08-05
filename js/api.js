@@ -31,15 +31,23 @@ import { simulateMission, compareCells } from './sim1d.js';
 import { profileForApp, profileById, profileStats } from './loadprofiles.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { co2Model } from './report.js';
-import { appNeeds, needed } from './knowledge.js';
+import {
+  appNeeds, needed, primarySizingDecision, sizingOptionsFor, defaultSizingOption, sizingInputsForApp,
+} from './knowledge.js';
 import {
   COMPONENTS, COMPONENT_CATEGORIES, DEFAULTS_BY_FORM, componentById,
 } from './components.js';
 import {
   vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare, modeComparison,
 } from './vehicle.js';
+import { buildRoute, routeToTrace, validateRoute } from './route.js';
+import { batteryProfileForPolicy } from './operating-policy.js';
+import { marineDuty } from './marine.js';
+import { flightDuty } from './flight.js';
+import { roundTripPlan } from './efficiency.js';
+import { buildEngineeringDiagnostics } from './diagnostics.js';
 
-export const API_VERSION = '1.0';
+export const API_VERSION = '1.1';
 
 // What a specification may contain. Everything except `application` has a
 // defensible default, so the smallest useful call is one field.
@@ -59,8 +67,15 @@ export const SPEC_FIELDS = {
   components: '{ busbar, spacer, vent, cooling, tim, housing } — component ids from listComponents(); anything omitted takes the default for the cell format',
   vehicle: 'overrides for the vehicle model: { curbKg, payloadKg, cd, frontalAreaM2, crr, driveEff, regenFrac, auxW }',
   driveMode: 'eco | normal | sport (default normal)',
+  policyId: 'EMS/PMS operating policy id for applications that expose one; converted to a battery sizing profile',
+  diagnostics: '{ rest, pulse, relaxation, thermal, aging } booleans describing available battery-model measurements',
+  conditionMonitoring: '{ baselineWindows, operatingModes, samplingHz } for engineering vibration anomaly monitoring',
+  marine: 'vessel mission overrides: { referenceMassKg, payloadKg, designSpeedKn, serviceSpeedKn, headCurrentKn, headwindKn, propulsionAtDesignW, hotelW, durationH, seaState }',
+  flight: 'multirotor mission overrides: { emptyMassKg, payloadKg, rotorCount, rotorDiameterM, flightMinutes, cruiseSpeedMps, headwindMps, altitudeM, temperatureC, propulsiveEfficiency, auxiliaryW, hoverFraction }',
+  efficiency: 'round-trip chain overrides: { chargeEff, batteryEff, dischargeEff, auxiliaryW, cycleHours }; all efficiencies are 0–1',
   gradePct: 'route gradient in percent (default 0)',
-  profileId: 'load profile id, or "vehicle" to derive it from the vehicle model',
+  route: '{ points: [{ lat, lon, eleM?, tS? }], name?, targetKph? } — local or client-supplied route for road sizing',
+  profileId: 'battery/load profile id, or "vehicle" to derive it from vehicle physics (kept for backward compatibility)',
   mission: '{ passes, startSoC, ambientC, charge: { mode, powerW, minutes } }',
   compareCellIds: 'cell ids to run against the same mission for comparison',
 };
@@ -73,6 +88,14 @@ export function listApplications() {
     contPowerW: p.contPowerW, peakPowerW: p.peakPowerW,
     preferredChemistries: p.preferredChemistries,
     concepts: appNeeds(p.id),
+    sizing: {
+      decision: primarySizingDecision(p.id),
+      defaultPolicyId: defaultSizingOption(p.id, 'energy-policy'),
+      policyIds: sizingOptionsFor(p.id, 'energy-policy'),
+      driveModes: sizingOptionsFor(p.id, 'driving-mode'),
+      profileIds: sizingOptionsFor(p.id, 'load-profile'),
+      inputs: sizingInputsForApp(p.id),
+    },
   }));
 }
 
@@ -373,9 +396,14 @@ export function designFromSpec(spec = {}) {
     heatContW: analysis?.totals?.heatContW ?? null,
     ambientC, cooling: selection.cooling || null, cell, override: 'auto', appId,
   });
+  const diagnostics = buildEngineeringDiagnostics({
+    appId, chemistry: cell.chemistry,
+    measurements: spec.diagnostics || {},
+    conditionMonitoring: spec.conditionMonitoring || {},
+  });
   const sensors = buildSensorPlan({
     cell, s, p, summary, partition: architecture.partition, bms: architecture.bms,
-    therm: thermal, selection,
+    therm: thermal, selection, conditionMonitoring: diagnostics.conditionMonitoring,
   });
 
   // 4 · The AC side, and what feeding power back would cost.
@@ -404,10 +432,30 @@ export function designFromSpec(spec = {}) {
 
   // 5 · The vehicle, when this machine drives.
   let vehicle = null;
+  let vehicleTrace = null;
+  let routeSummary = null;
   const vehBase = vehicleDefaultsFor(appId);
   if (vehBase) {
     const veh = { ...vehBase, ...(spec.vehicle || {}) };
-    const trace = traceForApp(appId);
+    let route = null;
+    if (spec.route?.points) {
+      route = buildRoute({ points: spec.route.points, name: spec.route.name || 'Selected route' });
+      const routeErrors = validateRoute(route);
+      if (!route || routeErrors.length) {
+        warnings.push(`Route could not be used${routeErrors.length ? `: ${routeErrors.join(' ')}` : '.'}`);
+        route = null;
+      }
+    }
+    const routeTargetKph = { ebike: 20, escooter: 25, robot: 15, ebus: 30, ev: 50 }[appId] || 50;
+    const fromRoute = route
+      ? routeToTrace(route, {
+        targetKph: spec.route.targetKph ?? routeTargetKph, dtS: 5,
+        speedTrace: traceForApp(appId),
+      })
+      : null;
+    const trace = fromRoute ? { ...fromRoute, note: route.notes.join(' ') } : traceForApp(appId);
+    vehicleTrace = trace;
+    routeSummary = route ? { name: route.name, ...route.totals, estimated: !route.timed } : null;
     const gradePct = spec.gradePct ?? 0;
     const regenCapW = charging.packChargeKW != null ? charging.packChargeKW * 1000 : null;
     const drive = driveCyclePower({
@@ -416,7 +464,7 @@ export function designFromSpec(spec = {}) {
     });
     if (drive) {
       vehicle = {
-        vehicle: veh, trace: { id: trace.id, name: trace.name, note: trace.note },
+        vehicle: veh, trace: { id: trace.id, name: trace.name, note: trace.note }, route: routeSummary,
         drive: { ...drive, w: undefined, profile: undefined }, // the trace itself stays out of the summary
         packMassKg: summary.massKg, gradePct, dod,
         range: rangeKm({ energyWh: summary.energyWh, dod, whPerKm: drive.whPerKm }),
@@ -429,18 +477,41 @@ export function designFromSpec(spec = {}) {
     }
   }
 
+  // The two other movement domains. They deliberately do not pass through
+  // vehicle.js: a hull works against water and a multirotor must continuously
+  // buy lift. Both still end at the same profile seam as every other duty.
+  const marine = appId === 'marine' ? marineDuty(spec.marine || {}) : null;
+  const flight = appId === 'drone' ? flightDuty(spec.flight || {}) : null;
+
   // 6 · The mission over time.
-  const profile = spec.profileId === 'vehicle' && vehicle
+  let policyProfileId = null;
+  if (spec.policyId) {
+    const allowed = sizingOptionsFor(appId, 'energy-policy');
+    if (allowed.includes(spec.policyId)) policyProfileId = spec.policyId;
+    else warnings.push(`Policy "${spec.policyId}" is not available for ${appId}; using the knowledge-graph default instead.`);
+  }
+  const defaultPolicyId = defaultSizingOption(appId, 'energy-policy');
+  const selectedProfileId = policyProfileId || spec.profileId;
+  const generatedPolicyId = policyProfileId || (!spec.profileId ? defaultPolicyId : null);
+  const profile = selectedProfileId === 'vehicle' && vehicle
     ? driveCyclePower({
-      trace: traceForApp(appId), vehicle: { ...vehBase, ...(spec.vehicle || {}) },
+      trace: vehicleTrace || traceForApp(appId), vehicle: { ...vehBase, ...(spec.vehicle || {}) },
       mode: spec.driveMode || 'normal', packMassKg: summary.massKg, gradePct: spec.gradePct ?? 0,
     }).profile
-    : (spec.profileId ? profileById(spec.profileId) : profileForApp(appId));
+    : generatedPolicyId && marine
+      ? batteryProfileForPolicy(generatedPolicyId, { demandProfile: marine.profile })
+      : (!spec.profileId && flight)
+        ? flight.profile
+        : (selectedProfileId ? profileById(selectedProfileId) : profileForApp(appId));
   let simulation = null;
   if (profile) {
-    const scaleW = spec.profileId === 'vehicle' && vehicle
+    const scaleW = selectedProfileId === 'vehicle' && vehicle
       ? vehicle.drive.peakW
-      : (preset?.peakPowerW ?? summary.maxContPowerW);
+      : generatedPolicyId && marine
+        ? marine.scaleW * (profile.sourceScaleFactor || 1)
+        : (!spec.profileId && flight)
+          ? flight.scaleW
+          : (preset?.peakPowerW ?? summary.maxContPowerW);
     const m = spec.mission || {};
     const sim = simulateMission({
       cell, s, p, profile, scaleW,
@@ -453,13 +524,22 @@ export function designFromSpec(spec = {}) {
     });
     simulation = {
       summary: sim.summary, findings: sim.findings, assumptions: sim.assumptions,
-      profile: { id: profile.id, name: profile.name, dtS: profile.dtS, note: profile.note },
+      profile: {
+        id: profile.id, name: profile.name, dtS: profile.dtS, note: profile.note,
+        kind: profile.kind || 'duty', policyId: profile.policyId || null,
+        sourceProfileId: profile.sourceProfileId || null,
+      },
       stats: profileStats(profile, scaleW),
     };
   }
 
   // 7 · Money, carbon, and what release will ask for.
   const cost = costModel(cell, summary.cellCount, summary.energyWh, usageCtx);
+  const energyPerformance = roundTripPlan({
+    application: appId,
+    deliveredWh: spec.deliveredWh ?? spec.energyWh ?? preset?.typicalEnergyWh ?? summary.energyWh * dod,
+    ...(spec.efficiency || {}),
+  });
   const co2 = co2Model({
     cell, energyWh: summary.energyWh,
     cyclesPerYear: usageCtx.cyclesPerYear, targetYears: usageCtx.targetYears,
@@ -487,6 +567,12 @@ export function designFromSpec(spec = {}) {
       ...spec,
       resolved: {
         application: appId, cell: cell.id, s, p, market, dod,
+        sizing: {
+          decision: primarySizingDecision(appId),
+          profileId: profile?.id || null,
+          policyId: profile?.policyId || null,
+          driveMode: vehicle ? (spec.driveMode || 'normal') : null,
+        },
         components: Object.fromEntries(
           Object.entries(selection).map(([k, c]) => [k, c?.id ?? null])),
       },
@@ -502,7 +588,8 @@ export function designFromSpec(spec = {}) {
       ...(shortCircuit?.findings || []),
     ],
     analysis: analysis ? { totals: analysis.totals, disclaimer: analysis.disclaimer } : null,
-    architecture, thermal, sensors, charging, v2x, vehicle, simulation, shortCircuit,
+    architecture, thermal, sensors, diagnostics, charging, v2x, vehicle, marine, flight,
+    energyPerformance, simulation, shortCircuit,
     cost, co2, checklist, comparison,
     concepts: appNeeds(appId),
     warnings,

@@ -10,6 +10,7 @@ import { cellById } from '../js/cells.js';
 import { layoutPack, summarize } from '../js/pack-engine.js';
 import {
   CONCEPTS, NEEDS, needed, appNeeds, stepsFor, validateGraph,
+  primarySizingDecision, sizingOptionsFor, defaultSizingOption, sizingInputsForApp,
 } from '../js/knowledge.js';
 import { TRAINING_TRACKS } from '../js/training.js';
 import { COMPONENT_CATEGORIES, COMPONENT_CLASSES } from '../js/components.js';
@@ -43,6 +44,26 @@ test('who needs what: the wearable is the acid test', () => {
   ok(!appNeeds('wearable').includes('stacks-racks'), 'appNeeds traces the same answer');
 });
 
+test('sizing exposes one simple decision while keeping the internal layers separate', () => {
+  ok(primarySizingDecision('marine') === 'energy-policy', 'marine customer chooses an operating goal');
+  ok(primarySizingDecision('solar-ess') === 'energy-policy', 'grid customer chooses an operating goal');
+  ok(primarySizingDecision('ev') === 'driving-mode', 'road customer chooses a driving mode');
+  ok(primarySizingDecision('wearable') === 'load-profile', 'simple device customer chooses only its duty');
+  ok(sizingOptionsFor('marine', 'energy-policy').length === 7, 'marine keeps its seven PMS goals');
+  ok(sizingOptionsFor('solar-ess', 'energy-policy').includes('grid-peak-shaving'), 'grid includes peak shaving');
+  ok(sizingOptionsFor('solar-ess', 'energy-policy').includes('grid-load-shifting'), 'grid includes load shifting');
+  ok(defaultSizingOption('ev', 'driving-mode') === 'normal', 'normal is the customer sizing default');
+  ok(sizingInputsForApp('ebus').includes('route') && sizingInputsForApp('ebus').includes('payload'),
+    'bus sizing includes route and passenger/cargo mass');
+  ok(sizingInputsForApp('marine').includes('voyage') && sizingInputsForApp('marine').includes('sea-conditions'),
+    'marine sizing gets voyage and sea conditions, not road inputs');
+  ok(sizingInputsForApp('drone').includes('flight-mission') && sizingInputsForApp('drone').includes('flight-weather'),
+    'drone sizing gets flight mission and weather');
+  ok(sizingInputsForApp('solar-ess').includes('round-trip-efficiency'),
+    'stationary customers see the RTE that controls bought versus delivered energy');
+  ok(!sizingInputsForApp('wearable').includes('route'), 'a wearable never sees route inputs');
+});
+
 test('training steps filter through the graph', () => {
   for (const track of Object.values(TRAINING_TRACKS)) {
     for (const st of track.steps) {
@@ -56,8 +77,11 @@ test('training steps filter through the graph', () => {
     'wearable never meets stacks/EMS/thermal-loop steps');
   wAdv.forEach((st, i) => ok(st.index === i + 1 && st.of === wAdv.length,
     `wearable numbering stays consecutive (${st.index}/${st.of})`));
-  ok(stepsFor(TRAINING_TRACKS.advanced, 'ebus').length === advAll,
-    'an e-bus keeps the full advanced track — EMS, strategy and V2X included');
+  const busAdv = stepsFor(TRAINING_TRACKS.advanced, 'ebus');
+  ok(busAdv.some((st) => st.concept === 'ems-arch') && busAdv.some((st) => st.concept === 'vehicle-dynamics'),
+    'an e-bus keeps its EMS and vehicle steps');
+  ok(!busAdv.some((st) => st.concept === 'energy-policy'),
+    'an e-bus does not inherit stationary/marine dispatch policies');
   ok(stepsFor(TRAINING_TRACKS.advanced, 'ev').some((st) => st.concept === 'v2x'),
     'an EV gets the "Feeding power back" step');
   // Every track is exactly the steps the application needs — no more, no less.

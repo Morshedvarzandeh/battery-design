@@ -34,7 +34,7 @@ function runawaySensorWarranted({ energyWh, chemistry, vMaxV }) {
 // Returns { groups: [{ level, sensors: [{name, count, note}] }], notes }.
 // Groups a design does not need are absent, not empty.
 // ---------------------------------------------------------------------------
-export function buildSensorPlan({ cell, s, p, summary, partition, bms, therm, selection }) {
+export function buildSensorPlan({ cell, s, p, summary, partition, bms, therm, selection, conditionMonitoring = null }) {
   const groups = [];
   const notes = [];
   const hv = (summary?.vMax ?? 0) > 60;
@@ -134,5 +134,5 @@ export function buildSensorPlan({ cell, s, p, summary, partition, bms, therm, se
 
   notes.push('Only the sensors THIS design needs are listed — absent groups mean the system genuinely has nothing to instrument there, not an omission.');
   notes.push('Counts feed the connector pin-out and harness budget; sensor class names only — pick suppliers at sourcing, not here.');
-  return { groups, notes };
+  return { groups, notes, conditionMonitoring };
 }

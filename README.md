@@ -216,13 +216,23 @@ project's provenance-first datasheet pipeline.
   chains recompute in Excel/LibreOffice; a "Your value" column and the
   Feedback sheet invite corrections back by email — the feedback loop that
   teaches the tool.
-- **Application-scoped load profiles** — a separate Load profile step shows
-  only the duty shapes matched to the selected application; unrelated shapes
-  and measured CSV upload stay in an expert fold. Marine users get seven
-  explicit battery operating modes: full electric, load levelling, boost,
-  spinning reserve, peak shaving, load smoothing and ramp support. Their
-  traces model battery duty directly, so positive power is discharge and
-  negative power is charging.
+- **One simple Sizing step, three internal paths** — the customer answers
+  “What should the battery do?” and sees required energy, continuous power
+  and peak power. The knowledge graph decides whether the relevant cards are
+  a raw duty, an EMS/PMS operating policy, or Eco/Normal/Sport. Grid storage
+  includes solar self-consumption, peak shaving and load shifting; marine
+  includes full electric, load levelling, boost, spinning reserve, peak
+  shaving, load smoothing and ramp support. The generated battery trace and
+  measured CSV tools stay under Engineering details.
+- **Stable software surface** — `designFromSpec` and MCP keep the existing
+  `profileId` input and add an explicit `policyId`. Responses record the
+  resolved sizing decision, generated profile, source demand and driving
+  mode so software teams can automate the same engine without screen logic.
+- **Bus service inputs** — e-bus sizing includes empty, typical and full
+  passenger-load cases plus the standard stop–go cycle or a locally processed
+  GPX route. Route distance, speed, stops, elevation and passenger/cargo mass
+  feed the existing road-physics model; API/MCP clients can pass route points
+  and payload directly.
 - **Mission simulation (level 1)** — the Sim tab runs the design through
   TIME: the application's load profile drives an equivalent-circuit model
   of the pack (chemistry-class OCV(SoC) − I·R, coulomb counting) coupled to
@@ -275,6 +285,14 @@ project's provenance-first datasheet pipeline.
   — it does, to within 0.1%. What it is **not** is stated on every run: not
   electrochemical (no P2D, no diffusion), not 3-D (a hot module, not a hot
   corner), and its defaults are class-typical until you calibrate them.
+
+  The engineering-only diagnostic ladder says which measurement should come
+  next—rested OCV, pulse resistance, relaxation, thermal balance, then ageing—
+  so calibration does not let one wrong parameter hide another. Applications
+  that the knowledge graph marks as vibration-exposed also receive an optional
+  condition-monitoring plan. It requires a healthy baseline across normal
+  operating modes and starts with a transparent distance detector; it never
+  treats an anomaly score as a battery-safety trip or a root-cause diagnosis.
 - **The same designer without a browser, and for AI systems** — everything the
   tool knows lives in pure modules, so `js/api.js` exposes it as one call:
   `designFromSpec(spec)` returns the entire design as JSON, unchanged in a
@@ -354,7 +372,7 @@ where you are at every step.
 
 ```mermaid
 flowchart LR
-  A["1 · Application & requirements\nvoltage window · energy\ncycles/year · years"] --> L["2 · Load profile\napplication-relevant duty\nRMS · peak · energy/pass"]
+  A["1 · Application & requirements\nvoltage window · energy\ncycles/year · years"] --> L["2 · Sizing\nplain operating goal\nrequired kWh · continuous/peak kW"]
   L --> B["3 · Space & boundaries\nbay shape (box/round/L/stepped/drawn)\nwalls · spacers · cooling space\nintegration allowance"]
   B --> C["4 · Scenario generation\nmax-fill every cell\nbest S×P in the window"]
   C --> D["5 · Multi-objective selection\nenergy · TCO/upfront cost · weight\nPareto front · sensitivity · robustness"]
@@ -434,6 +452,8 @@ is copied into the repository.
 |---|---|
 | [Battery Design](https://batterydesign.net/) | Working reference on cell formats, pack architecture, thermal and electrical design; broad and practical |
 | [battery-data](https://github.com/Morshedvarzandeh/battery-data) | The companion repo: extracted datasheet facts with conditions, page numbers and quotes. `basis: 'contrib'` records here point into it |
+| [Ionworks: How to debug your battery design](https://github.com/ionworks/how-to-debug-your-battery) | Measurement-led separation of OCV, instantaneous resistance and relaxation effects; adapted as an engineering diagnostic ladder, with no notebook code copied |
+| [TinyML anomaly-detection example](https://github.com/ShawnHymel/tinyml-example-anomaly-detection) | Healthy vibration baselines and simple distance-based edge detection; adapted as optional condition-monitoring guidance, with no source code copied |
 
 ## Architecture
 
@@ -454,6 +474,7 @@ is copied into the repository.
 | `js/markets.js` | Release checklist per application class × market + chemistry-market gates |
 | `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
 | `js/sensors.js` | Sensor plan by level (cell/module/system/cooling), omission-first |
+| `js/diagnostics.js` | Engineering-only battery-model diagnostic ladder and knowledge-graph-gated condition-monitoring plan |
 | `js/charging.js` | The AC side: per-application charging architecture, OBC classes, charge-time math, market connectors, strategies |
 | `js/sim2.js` | The level-2 model: RC dynamics, entropic heat, per-module thermal network with ε-NTU coolant, aging — every coefficient exposed and calibratable against your own measurements |
 | `js/api.js` | The whole designer as one call — `designFromSpec(spec)` → JSON. Runs in a browser and in Node |
