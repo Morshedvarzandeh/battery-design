@@ -33,7 +33,8 @@ import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
 import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
 import { buildEngineeringDiagnostics } from './diagnostics.js';
-import { simulateMission, compareCells } from './sim1d.js';
+import { runSimulationJob } from './simulation-jobs.js';
+import { SimulationWorkerClient, shouldUseSimulationWorker } from './simulation-client.js';
 import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
 import { shortCircuitStudy } from './shortcircuit.js';
@@ -2373,6 +2374,8 @@ let lastSimFindings = [];
 let lastSimCompare = null;
 let simSeason = 'design', simPasses = 1, simSoC = 100;
 let simChargeMode = 'none', simChargeMin = 15;
+const simulationWorker = new SimulationWorkerClient();
+let simulationGeneration = 0;
 
 // ---------------------------------------------------------------------------
 // Charging (the AC side, round one). The customer sees ONE plain sentence —
@@ -2789,11 +2792,14 @@ function renderCharging() {
 }
 
 function computeSim() {
+  const generation = ++simulationGeneration;
   const prof = currentProfile();
   const S = lastSummary;
   if (!S || !prof || !state.profileScaleW) {
+    simulationWorker.cancel();
     lastSim = { unavailable: true, why: 'No sizing duty applied — choose one on the Sizing tab.' };
     lastSimFindings = [];
+    lastSimCompare = null;
     return;
   }
   // Scenario ambient: the design window's hot end by default; the winter /
@@ -2819,7 +2825,7 @@ function computeSim() {
     : simChargeMode === 'base'
       ? (lastCharging?.t2080?.dcKW ?? lastCharging?.packChargeKW ?? 0) * 1000
       : 0;
-  lastSim = simulateMission({
+  const input = {
     cell: cell(), s: state.s, p: state.p,
     profile: prof, scaleW: state.profileScaleW,
     passes: simPasses, startSoC: simSoC / 100,
@@ -2828,8 +2834,7 @@ function computeSim() {
     uaWK, thermalMassJK: (S.massCellsKg ?? S.massKg ?? 1) * 1000,
     hasHeater: !!lastTherm?.heaterNeeded,
     charge: { mode: simChargeMode, powerW: chPowerW, minutes: simChargeMin },
-  });
-  lastSimFindings = lastSim.unavailable ? [] : lastSim.findings;
+  };
 
   // Comparison: the compare ticks in the cell picker (the same selection
   // that drives the radar) run the IDENTICAL mission as equivalent packs —
@@ -2838,20 +2843,57 @@ function computeSim() {
   const compCells = ids.map(cellFind).filter(Boolean).slice(0, 4);
   const cur = cell();
   if (compCells.length && !compCells.some((c) => c.id === cur.id)) compCells.unshift(cur);
-  if (compCells.length >= 2) {
-    const cmp = compareCells({
+  const compareInput = compCells.length >= 2
+    ? {
       cells: compCells, targetVNom: S.nominalV, targetEnergyWh: S.energyWh,
       profile: prof, scaleW: state.profileScaleW, passes: simPasses, startSoC: simSoC / 100,
       ambientC, interconnectMOhm: lastArch?.resistance?.interconnectMOhm ?? 0,
       uaWK, hasHeater: !!lastTherm?.heaterNeeded, currentId: cur.id,
-    });
+    }
+    : null;
+  const usage = { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr'), dod: currentDod() };
+  const job = { kind: 'mission', input, compareInput };
+
+  const applyResult = ({ mission, comparison }) => {
+    if (generation !== simulationGeneration) return;
+    lastSim = mission;
+    lastSimFindings = lastSim.unavailable ? [] : lastSim.findings;
+    lastSimCompare = comparison;
     // The VALUE side of the comparison: same duty, each cell's lifetime cost.
-    const usage = { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr'), dod: currentDod() };
-    for (const r of cmp.rows) r.cost = costModel(r.cell, r.s * r.p, r.energyWh, usage);
-    lastSimCompare = cmp;
-  } else {
+    for (const r of lastSimCompare?.rows || []) {
+      r.cost = costModel(r.cell, r.s * r.p, r.energyWh, usage);
+    }
+  };
+
+  // Worker startup is slower than an ordinary short mission, so only deep
+  // profiles or multi-cell comparisons leave the UI thread. The same pure
+  // dispatcher runs both paths and the tests require byte-for-byte parity.
+  if (simulationWorker.available
+      && shouldUseSimulationWorker(input, compareInput ? compCells.length : 0)) {
+    lastSim = { unavailable: true, pending: true, why: 'Calculating the full time-series profile…' };
+    lastSimFindings = [];
     lastSimCompare = null;
+    simulationWorker.runLatest(job).then((result) => {
+      applyResult(result);
+      if (generation !== simulationGeneration) return;
+      refreshStatusBadge();
+      renderGuard('The mission simulation', $('simStats'), renderSim);
+      if (document.querySelector('#pane-results.active')) renderGuard('The customer result', $('customerResultReport'), renderResults);
+    }).catch((error) => {
+      if (generation !== simulationGeneration || error?.name === 'AbortError') return;
+      // A worker can be blocked by an old browser or a restrictive host. The
+      // calculation still completes synchronously and the customer keeps the
+      // product rather than an infrastructure error.
+      console.warn('simulation worker unavailable; using the main thread', error);
+      applyResult(runSimulationJob(job));
+      refreshStatusBadge();
+      renderGuard('The mission simulation', $('simStats'), renderSim);
+    });
+    return;
   }
+
+  simulationWorker.cancel();
+  applyResult(runSimulationJob(job));
 }
 
 // The loop choice's consequences belong in the Analysis, not only the tab:
@@ -3395,14 +3437,7 @@ function runAnalysis() {
   computeSim();
 
   const perspectives = lastAnalysis?.perspectives || {};
-  const engFindings = ['mechanical', 'thermal', 'electrical', 'safety']
-    .flatMap((k) => perspectives[k] || []);
-  const all = [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastSimFindings, ...(lastShort?.findings || []), ...lastFindings];
-  const nFail = all.filter((x) => x.severity === 'fail').length;
-  const nWarn = all.filter((x) => x.severity === 'warn').length;
-  const badge = $('stdBadge');
-  badge.textContent = nFail ? `${nFail}!` : (nWarn ? `${nWarn}` : '✓');
-  badge.className = `chip ${nFail ? 'fail' : (nWarn ? 'warn' : 'pass')}`;
+  refreshStatusBadge();
 
   $('stdDisclaimer').textContent = `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`;
   const findingHtml = (x) => `
@@ -3434,6 +3469,29 @@ function runAnalysis() {
       `<div style="margin-bottom:4px"><b>${esc(s.code)}</b> — ${esc(s.title)}</div>`).join('');
   renderSeasonTable();
   renderCustomerResult();
+}
+
+// Deep browser simulations finish asynchronously. Keep the global readiness
+// signal aligned with the newly arrived findings without rerunning the whole
+// analysis (which would immediately schedule the same simulation again).
+function refreshStatusBadge() {
+  const perspectives = lastAnalysis?.perspectives || {};
+  const engineering = ['mechanical', 'thermal', 'electrical', 'safety']
+    .flatMap((key) => perspectives[key] || []);
+  const all = [
+    ...engineering,
+    ...lastArchFindings,
+    ...lastThermFindings,
+    ...lastSimFindings,
+    ...(lastShort?.findings || []),
+    ...lastFindings,
+  ];
+  const nFail = all.filter((finding) => finding.severity === 'fail').length;
+  const nWarn = all.filter((finding) => finding.severity === 'warn').length;
+  const badge = $('stdBadge');
+  if (!badge) return;
+  badge.textContent = nFail ? `${nFail}!` : (nWarn ? `${nWarn}` : '✓');
+  badge.className = `chip ${nFail ? 'fail' : (nWarn ? 'warn' : 'pass')}`;
 }
 
 // The architecture seen through the Electrical perspective: droop with the

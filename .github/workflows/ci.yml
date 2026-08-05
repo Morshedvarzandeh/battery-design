@@ -19,5 +19,7 @@ jobs:
       # and the result must still match production packs (validate-vs-market)
       # before a change can merge.
       - run: node tools/validate.mjs
+      - run: npm ci
+      - run: npm run typecheck
       - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs

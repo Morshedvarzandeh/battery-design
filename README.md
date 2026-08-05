@@ -313,6 +313,12 @@ project's provenance-first datasheet pipeline.
   JSON, ready to paste into any chatbot, with your private cell records
   deliberately left out. Same modules everywhere — there is no second
   implementation that could disagree with the page.
+
+  The browser now applies the same measured rule to mission work: short runs
+  stay synchronous, while deep time-series profiles and multi-cell comparisons
+  run in a module worker so controls, navigation and progress feedback remain
+  responsive. Changing an input cancels stale work, and browsers that cannot
+  start a worker fall back to the identical main-thread calculation.
 - **The vehicle around the pack** — for machines that actually drive, the
   demand is no longer a number you type. Give the vehicle instead — mass
   without the pack, payload, frontal area, drag coefficient, rolling
@@ -493,17 +499,21 @@ scripts, tests) without a browser.
 
 ## Tests
 
-The suites live in `tests/*.test.mjs` and run on Node's built-in test
-runner — no dependencies, named `test()` blocks, shared assertions from
+The runtime suites live in `tests/*.test.mjs` and run on Node's built-in test
+runner with no runtime dependencies. Strict TypeScript is a development-only
+contract gate for cell records, pack layouts and both simulation levels. The
+tests use named `test()` blocks and shared assertions from
 `tests/helpers.mjs`:
 
 ```bash
-node --test tests/*.test.mjs   # every suite
+node --test tests/*.test.mjs   # every runtime suite
 node --test tests/btms.test.mjs  # one area
+npm ci && npm run typecheck    # strict TypeScript contracts for the core
 ```
 
-CI runs three gates on every change: `tools/validate.mjs` (data contracts),
-the full test run, and `tools/validate-vs-market.mjs` (the result must still
+CI runs four gates on every change: `tools/validate.mjs` (data contracts),
+strict TypeScript contract checking, the full test run, and
+`tools/validate-vs-market.mjs` (the result must still
 match production packs).
 
 ## References and sources
