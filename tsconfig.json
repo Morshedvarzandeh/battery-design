@@ -18,6 +18,7 @@
     "types/**/*.ts",
     "js/*.d.ts",
     "js/profile-kernel.js",
+    "js/governance.js",
     "js/simulation-client.js",
     "js/simulation-jobs.js",
     "js/simulation-worker.js",

@@ -218,10 +218,10 @@ export const ADDONS = [
   {
     id: 'cosim', name: 'Co-simulation (FMI)', tier: 'desktop', status: 'shipped',
     module: 'fmi.js', concepts: ['cosim'],
-    what: 'Export the pack as a standard FMI 2.0 co-simulation FMU so it runs as a component inside ANSYS Twin Builder, Simulink, GT-SUITE or Dymola — your vehicle or plant model drives it, and the pack answers with voltage, current, temperature and state of charge each coupling step.',
-    provides: ['an .fmu the rest of your toolchain can load', 'a documented coupling interface'],
+    what: 'Generate a reproducible FMI 2.0 source-FMU export kit for ANSYS Twin Builder, Simulink, GT-SUITE or Dymola — model description, complete C stepping source and build instructions. This is the compatibility export, not the future block-based Rust solver studio.',
+    provides: ['a source-FMU kit that becomes a loadable .fmu after platform compilation', 'a documented coupling interface'],
     needs: ['a C toolchain to compile the FMU binary'],
-    why: 'FMI is the one interface every major suite already speaks, so it beats writing a bridge per tool. The stepping code is C, which is also where a compiled language genuinely belongs.',
+    why: 'FMI is the interface the major suites already speak, so it beats writing a bridge per tool. Keeping this exporter explicit prevents a source kit from being mistaken for the authoritative Rust equation solver that is being built separately.',
   },
   {
     id: 'swap', name: 'Swappable-pack policy', tier: 'desktop', status: 'shipped',

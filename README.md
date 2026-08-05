@@ -491,6 +491,7 @@ is copied into the repository.
 | `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
 | `rust-core/` | Dependency-free numerical kernels tested natively and compiled to WebAssembly for web and desktop-webview builds; the same crate is ready for direct native linking as kernels migrate |
 | `js/wasm-core.js` | Typed Rust/Wasm loader, memory boundary and exact JavaScript fallback |
+| `js/governance.js` | Market scope, role-based progressive disclosure, human approval gates, immutable project history and per-person history projections |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |
@@ -498,6 +499,17 @@ is copied into the repository.
 
 The data modules are import-free so they can be consumed by tooling (node
 scripts, tests) without a browser.
+
+The product-control layer keeps one design record behind every audience. A
+manager receives five guided decision sections; an application engineer may
+open the block graph and evidence; a simulation specialist may open solver
+controls. Draft, validated, reviewed, approved and released are distinct
+states. Review, approval and release require named humans with explicit
+organization, market access and authority, while any material change creates
+a new draft version. Grid
+projects are additionally segmented into Home, Small Company and Industrial
+question sets, each including outage duration, dependable outage-time solar
+and inverter/islanding checks without borrowing vehicle or marine concepts.
 
 ## Tests
 

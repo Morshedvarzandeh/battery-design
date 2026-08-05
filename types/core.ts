@@ -332,3 +332,76 @@ export interface WorkerRequest {
 export type WorkerReply =
   | { id: number; ok: true; result: unknown }
   | { id: number; ok: false; error: string };
+
+// Product governance is deliberately separate from the numerical model. The
+// same design can be shown through a guided, engineering, expert or API view,
+// but it keeps one approval state and one immutable history underneath.
+export type ProductRole =
+  | 'manager'
+  | 'application-engineer'
+  | 'simulation-specialist'
+  | 'integration-client';
+
+export type AudienceMode = 'guided' | 'engineering' | 'expert' | 'integration';
+export type ProductDomain =
+  | 'road'
+  | 'grid'
+  | 'marine'
+  | 'aerial'
+  | 'robotics'
+  | 'light-mobility'
+  | 'portable'
+  | 'auxiliary';
+export type GridCustomerSegment = 'home' | 'small-company' | 'industrial';
+
+export interface ProjectScope {
+  readonly application: string;
+  readonly domain: ProductDomain;
+  readonly gridSegment?: GridCustomerSegment;
+}
+
+export interface GridCustomerQuestion {
+  readonly id: string;
+  readonly label: string;
+  readonly why: string;
+}
+
+export type ActorKind = 'human' | 'ai' | 'system';
+export type WorkflowAuthority = 'validate' | 'review' | 'approve' | 'release';
+
+export interface WorkflowActor {
+  readonly id: string;
+  readonly kind: ActorKind;
+  readonly role: string;
+  readonly organization: string;
+  readonly marketAccess: readonly ProductDomain[];
+  readonly authorities?: readonly WorkflowAuthority[];
+}
+
+export type DesignState = 'draft' | 'validated' | 'reviewed' | 'approved' | 'released';
+export type DesignHistoryAction = 'created' | 'validated' | 'reviewed' | 'approved' | 'released' | 'material-change';
+
+export interface DesignHistoryEvent {
+  readonly id: string;
+  readonly action: DesignHistoryAction;
+  readonly actorId: string;
+  readonly actorKind: ActorKind;
+  readonly actorRole: string;
+  readonly actorOrganization: string;
+  readonly actorAuthorities: readonly WorkflowAuthority[];
+  readonly fromState: DesignState | null;
+  readonly toState: DesignState;
+  readonly fromVersion: string | null;
+  readonly toVersion: string;
+  readonly reason: string;
+  readonly at: string;
+  readonly evidence: string | null;
+}
+
+export interface DesignRecord {
+  readonly projectId: string;
+  readonly scope: ProjectScope;
+  readonly state: DesignState;
+  readonly version: string;
+  readonly history: readonly DesignHistoryEvent[];
+}
