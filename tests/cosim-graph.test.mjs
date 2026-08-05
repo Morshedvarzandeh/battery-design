@@ -21,7 +21,7 @@ import {
   recommendBlockPlan,
   validateStudioGraph,
 } from '../js/cosim-graph.js';
-import { runRunawayPropagationModule } from '../js/cosim-analysis.js';
+import { runRunawayPropagationModule, runVentSizingModule } from '../js/cosim-analysis.js';
 
 const HUMAN = {
   id: 'engineer-1', kind: 'human', role: 'application-engineer', authorities: ['edit-graph'],
@@ -32,7 +32,7 @@ test('every first-release template is valid and transportable to Rust', () => {
     const graph = template.build({ segment: 'home' });
     assert.equal(graph.schema, GRAPH_SCHEMA);
     assert.equal(graph.catalogVersion, BLOCK_CATALOG_VERSION);
-    assert.deepEqual(validateStudioGraph(graph), [], template.id);
+    assert.equal(validateStudioGraph(graph).filter((item) => item.severity === 'fail').length, 0, template.id);
     const encoded = encodeGraphTransport(graph);
     assert.equal(encoded.values[0], GRAPH_TRANSPORT_MAGIC);
     assert.equal(encoded.values.length,
@@ -85,6 +85,8 @@ test('thermal-runaway requests attach the specialized safety module', () => {
   }, createStudioGraph({ market: 'road' }));
   assert.equal(proposal.title, 'Thermal-runaway propagation screening');
   assert.equal(proposal.draftGraph.analysisModules[0].type, 'runaway-propagation');
+  assert.equal(proposal.draftGraph.analysisModules[1].type, 'vent-sizing');
+  assert.ok(validateStudioGraph(proposal.draftGraph).some((item) => item.code === 'analysis.vent_test_data_required'));
   assert.ok(proposal.evidence.some((item) => /9540A|38031/.test(item)));
 
   const gridProposal = recommendBlockPlan({
@@ -94,6 +96,7 @@ test('thermal-runaway requests attach the specialized safety module', () => {
   assert.equal(gridProposal.draftGraph.market, 'grid');
   assert.equal(gridProposal.draftGraph.segment, 'home');
   assert.equal(gridProposal.draftGraph.analysisModules[0].type, 'runaway-propagation');
+  assert.equal(gridProposal.draftGraph.analysisModules[1].type, 'vent-sizing');
 });
 
 test('assistant and debugger proposals require named human graph authority', () => {
@@ -159,4 +162,28 @@ test('runaway simulation can reject or compare but never reports a safety pass',
   assert.ok(byChemistry.LFP.releaseMultiple > byChemistry.LTO.releaseMultiple);
   assert.ok(result.evidence.chemistryComparison.every((row) => ['fail', 'unproven'].includes(row.outcome)));
   assert.match(result.evidence.chemistryComparisonBasis, /only the chemistry-class onset and release multiple change/i);
+  assert.ok(result.evidence.heatPaths.spacerWPerK > 0, 'the selected physical spacer is calculated');
+  assert.ok(Math.abs(result.evidence.heatPaths.totalWPerK
+      - result.evidence.heatPaths.gapWPerK
+      - result.evidence.heatPaths.spacerWPerK
+      - result.evidence.heatPaths.interconnectWPerK) < 1e-12);
+  assert.ok(result.evidence.rankedSpacers.length >= 5);
+  assert.match(result.evidence.equations.spacer, /contact_fraction/);
+});
+
+test('vent sizing is separate, asks for measured gas data and remains conditional', () => {
+  const graph = MODEL_TEMPLATES['road-runaway'].build();
+  const module = graph.analysisModules.find((item) => item.type === 'vent-sizing');
+  const missing = runVentSizingModule(module);
+  assert.equal(missing.status, 'needs-input');
+  assert.match(missing.headline, /not calculated/i);
+  Object.assign(module.parameters, {
+    gasVolumeLowLPerCell: 5, gasVolumeHighLPerCell: 12,
+    releaseDurationLowS: 1.5, releaseDurationHighS: 4,
+    gasDataBasis: 'Cell abuse report TR-99, 100% SOC',
+  });
+  const result = runVentSizingModule(module);
+  assert.equal(result.status, 'conditional');
+  assert.ok(result.evidence.high.areaCm2 > result.evidence.low.areaCm2);
+  assert.match(result.limitations[0], /not NFPA 68/i);
 });

@@ -50,6 +50,39 @@ state of charge remain identical; only the chemistry-class onset and release
 multiple change. This makes the behavioral difference visible without
 pretending that chemistry class replaces actual-cell ARC and propagation data.
 
+The propagation evidence also keeps every inter-cell heat path separate:
+
+\[
+G_{gap}=\left(\frac{L_{barrier}}{k_{barrier}A}
+ +\frac{L_{air}}{k_{air}A}\right)^{-1},\qquad
+G_{spacer}=\frac{k_{spacer}f_{contact}A}{L_{spacer}}
+\]
+
+and `G_between = G_gap + G_spacer + G_interconnect`. Radiation is added with
+the nonlinear Stefan–Boltzmann term only when an opaque barrier does not block
+it. Spacer conductivity comes from the component library; contact fraction
+and heat-path length remain visible geometry assumptions that must be checked
+against the actual holder drawing. The customer receives this path breakdown,
+a spacer/holder comparison and the equations—not only a temperature graph.
+
+Emergency vent sizing is a second attached module rather than a hidden term
+inside propagation. `js/venting.js` converts the declared low/high gas volume
+and release-duration ranges to mass flow, evaluates the isentropic
+subcritical or choked opening mass flux, and returns unobstructed free area
+and equivalent diameter. It deliberately supplies no gas-yield default:
+representative cell/module gas volume, composition, temperature and release
+rate must be measured for the actual cell, SOC, age and abuse condition. The
+screen does not model flame, combustion, vent opening dynamics, ducts,
+ejecta, enclosure response or exclusion zones, and is not NFPA 68 sizing.
+
+Calculation verification is split again from the physical model. The SIL
+runner executes the versioned software adapter against independent numeric
+oracles while checking graph/model/solver identity, units and exact
+repeatability. The HIL module defines the fixed-period I/O, fault, overrun and
+safe-state contract and evaluates measured hardware evidence. A generated HIL
+contract without target evidence remains Unproven; browser playback is never
+described as HIL. The full boundary is in `docs/LOOP_TESTING.md`.
+
 This is a real solver, but it is not yet a general industrial DAE platform.
 The following remain explicitly unshipped:
 

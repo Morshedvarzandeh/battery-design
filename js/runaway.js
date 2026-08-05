@@ -35,6 +35,7 @@
 
 import { runawayOnsetC } from './shortcircuit.js';
 import { MAX_SIM_STEPS } from './limits.js';
+import { componentById } from './components.js';
 
 // Stefan-Boltzmann, and the emissivity of a cell can — a painted or wrapped
 // steel can is close to a black body, which is why radiation dominates once a
@@ -73,6 +74,29 @@ export const BARRIERS = {
     kWmK: 15, blocksRadiation: true, name: 'Cells touching',
     what: 'No gap at all. Best for volumetric density, and it hands every neighbour a direct conduction path — which is why it keeps getting chosen and keeps needing a barrier added later.',
   },
+};
+
+// A mechanical holder is not the same thing as a thermal barrier. It occupies
+// only part of the facing area and therefore forms a PARALLEL heat bridge
+// around the air/barrier stack. Conductivity comes from the component library;
+// contact fraction and path length are visible geometry assumptions. "None"
+// is a thermal reference only, not a mechanically buildable recommendation.
+const spacerPath = (componentId, name, contactFraction, pathLengthMm, what) => ({
+  componentId, name, contactFraction, pathLengthMm,
+  kWmK: componentId ? componentById('spacer', componentId)?.thermalCondWmK : 0,
+  what,
+});
+export const SPACERS = {
+  none: spacerPath(null, 'No structural bridge (thermal reference)', 0, 1,
+    'Reference case with no holder touching both cells. It is not a mechanical design.'),
+  'pp-holder': spacerPath('pp-honeycomb-holder', 'Molded PP holder', 0.03, 2,
+    'Small PP ribs bridge about 3% of the facing wall while fixing the cell pitch.'),
+  'silicone-pad': spacerPath('silicone-spacer-pad', 'Silicone spacer pad', 0.15, 1,
+    'A compliant pad touches more area than a holder rib and becomes a larger parallel heat path.'),
+  'compression-pad': spacerPath('compression-foam-pad', 'Compression foam pad', 0.35, 2,
+    'A broad low-conductivity pad maintains pouch-stack pressure while bridging a substantial face area.'),
+  'structural-adhesive': spacerPath('direct-bond-none', 'Structural adhesive / direct bond', 1, 0.5,
+    'A full-area direct bond is the strongest structural heat bridge and removes the benefit of a free gap.'),
 };
 
 // How much heat a cell in runaway actually releases, as a multiple of the
@@ -123,7 +147,7 @@ export function neighbours(positions, cellDiameterMm, reach = 1.35) {
 export function propagation({
   layout, cell, chemistry = null, barrier = 'none',
   barrierThicknessMm = 0.5, ambientC = 25, soc = 1,
-  interconnectWK = 0.02, maxCells = 400, dtS = 0.05,
+  spacer = 'none', interconnectWK = 0.02, maxCells = 400, dtS = 0.05,
   couplingFrac = 0.2, releaseSeconds = RELEASE_SECONDS,
   surfaceFrac = 0.15, coreToSurfaceWK = 0.5,
 }) {
@@ -132,6 +156,7 @@ export function propagation({
   const chem = chemistry || cell.chemistry;
   const onsetC = runawayOnsetC(chem);
   const bar = BARRIERS[barrier] || BARRIERS.none;
+  const spacerPath = SPACERS[spacer] || SPACERS.none;
 
   // A propagation study is a MODULE question, not a pack question — the
   // answer is decided by the first few rings of neighbours, and stepping
@@ -169,9 +194,15 @@ export function propagation({
   const rBar = barMm > 0 ? (barMm / 1000) / (bar.kWmK * faceAreaM2) : 0;
   const rAir = airMm > 0 ? (airMm / 1000) / (AIR_K * faceAreaM2) : 0;
   const gapWK = rBar + rAir > 0 ? 1 / (rBar + rAir) : (bar.kWmK * faceAreaM2) / 0.00005;
+  // The holder/pad touches only part of the face and conducts in parallel
+  // with the air/barrier path, rather than replacing either one.
+  const spacerAreaM2 = faceAreaM2 * spacerPath.contactFraction;
+  const spacerLengthM = Math.max(0.05, spacerPath.pathLengthMm) / 1000;
+  const spacerWK = spacerPath.kWmK > 0
+    ? (spacerPath.kWmK * spacerAreaM2) / spacerLengthM : 0;
   // Plus the interconnect, which is a heat bridge whether or not it was
   // thought of as one.
-  const conductionWK = gapWK + interconnectWK;
+  const conductionWK = gapWK + spacerWK + interconnectWK;
   // A barrier only blocks radiation if one is actually there.
   const radiates = !(barMm > 0 && bar.blocksRadiation);
 
@@ -299,22 +330,43 @@ export function propagation({
     secondsToSecondCell: secondAt,
     totalSeconds: t,
     energy: { perCellJ: releaseJ, storedJ, multiple: releaseMultiple(chem), releaseW, moduleJ: releaseJ * modelled },
-    coupling: { gapMm, barrier: bar.name, conductionWK, gapWK, interconnectWK, radiates, barrierMm: barMm, airMm },
+    coupling: {
+      gapMm, barrier: bar.name, spacer: spacerPath.name,
+      conductionWK, gapWK, spacerWK, interconnectWK, radiates,
+      barrierMm: barMm, airMm, spacerAreaM2, spacerLengthMm: spacerPath.pathLengthMm,
+      spacerContactFraction: spacerPath.contactFraction,
+    },
+    equations: {
+      scope: 'post-trigger propagation: the seed cell is triggered at t=0; actual-cell ARC/DSC kinetics are not inferred',
+      release: 'Q_release = E_electrical × SoC × chemistry_release_multiple; q_release = Q_release / release_time',
+      gap: 'G_gap = 1 / (L_barrier/(k_barrier·A_face) + L_air/(k_air·A_face))',
+      spacer: 'G_spacer = k_spacer·(contact_fraction·A_face) / L_spacer',
+      totalConduction: 'G_between = G_gap + G_spacer + G_interconnect',
+      radiation: 'q_radiation = ε·σ·A_face·(T_neighbour⁴ − T_surface⁴), unless an opaque barrier blocks it',
+      core: 'C_core·dT_core/dt = q_release − G_core-shell·(T_core − T_surface)',
+      surface: 'C_surface·dT_surface/dt = q_core-shell + q_between + q_radiation − G_ambient·(T_surface − T_ambient)',
+      trigger: 'trigger the next cell when T_surface ≥ chemistry-class runaway onset',
+    },
+    kineticsBoundary: {
+      model: 'bounded chemistry-class heat release after trigger',
+      requiredForMeasuredKinetics: ['actual-cell ARC onset', 'total heat release', 'heat-release rate versus temperature/time', 'state-of-charge dependence'],
+    },
     history,
     headline: spread
       ? `One cell takes ${gone === modelled ? 'the whole module' : `${gone} of ${modelled} cells`} with it, the second going ${secondAt != null ? `${secondAt.toFixed(0)} s` : 'soon'} after the first — and this model under-predicts, so the real case is worse.`
       : `On conduction and radiation alone the nearest neighbour peaks at ${peakNeighbourC.toFixed(0)} °C, ${(onsetC - peakNeighbourC).toFixed(0)} K under the ${onsetC} °C onset. That is NOT a safety margin — it is a comparison figure, because the mechanisms that actually carry propagation are not in this model.`,
     findings,
-    assumptions: ASSUMPTIONS(chem, onsetC, releaseJ, soc, releaseSeconds, couplingFrac),
+    assumptions: ASSUMPTIONS(chem, onsetC, releaseJ, soc, releaseSeconds, couplingFrac, spacerPath),
   };
 }
 
-const ASSUMPTIONS = (chem, onsetC, releaseJ, soc, releaseSeconds, couplingFrac) => [
+const ASSUMPTIONS = (chem, onsetC, releaseJ, soc, releaseSeconds, couplingFrac, spacerPath) => [
   'CONDUCTION, RADIATION AND THE INTERCONNECT ONLY. Hot gas, burning electrolyte, flame and ejecta — the mechanisms that dominate a real event — are NOT modelled. Against a module that propagates in a real test, this model reports the neighbour peaking tens of kelvin BELOW onset, and it does so across every plausible value of its own coefficients. Use it to rank options, never to clear one.',
   `Onset at ${onsetC} °C for ${chem}, a chemistry-class figure that depends on state of charge and cell design. Replace it with ARC data for your actual cell before relying on any number here.`,
   `Heat release taken as ${releaseMultiple(chem)}x the stored electrical energy (${(releaseJ / 1000).toFixed(0)} kJ per cell at ${(soc * 100).toFixed(0)}% SoC), spread over ${releaseSeconds} s. No datasheet publishes this; it varies more between cell designs than between chemistries.`,
   `Two thermal nodes per cell — a core holding the mass and a thin shell that outside heat arrives at. One node per cell cannot propagate correctly, because it averages the arriving heat over a mass roughly seven times the shell that actually reaches onset first.`,
   `Neighbour coupling over ${(couplingFrac * 100).toFixed(0)}% of the facing wall. Cylinders touch along a line rather than a face, so this is a class estimate and it scales the whole conduction path.`,
+  `${spacerPath.name}: thermal conductivity ${spacerPath.kWmK} W/mK from the component library, modelled over ${(spacerPath.contactFraction * 100).toFixed(0)}% contact area and ${spacerPath.pathLengthMm} mm path length. Confirm both geometry assumptions against the actual holder drawing.`,
   'Passing this is not passing a test. UL 9540A and GB 38031-2025 exist because propagation is settled by burning a real pack.',
 ];
 
@@ -326,7 +378,7 @@ const ASSUMPTIONS = (chem, onsetC, releaseJ, soc, releaseSeconds, couplingFrac) 
  * ORDER survives even though the magnitudes do not — and the order is what
  * the decision needs.
  */
-export function propagationStudy({ layout, cell, options = null, ...rest }) {
+export function propagationStudy({ layout, cell, options = null, spacerOptions = null, ...rest }) {
   const base = propagation({ layout, cell, ...rest });
   if (!base) return null;
   const trials = options || [
@@ -347,12 +399,32 @@ export function propagationStudy({ layout, cell, options = null, ...rest }) {
     .filter(Boolean)
     .sort((a, b) => b.marginK - a.marginK);
 
+  const spacerTrials = spacerOptions || [
+    { spacer: 'none', label: 'No holder bridge (reference only)' },
+    { spacer: 'pp-holder', label: 'Molded PP holder' },
+    { spacer: 'silicone-pad', label: 'Silicone spacer pad' },
+    { spacer: 'compression-pad', label: 'Compression foam pad' },
+    { spacer: 'structural-adhesive', label: 'Structural adhesive / direct bond' },
+  ];
+  const spacerRanked = spacerTrials
+    .map((o) => {
+      const r = propagation({ layout, cell, ...rest, ...o });
+      return r && {
+        label: o.label || o.spacer, spacer: o.spacer,
+        marginK: r.marginK, spread: r.spread,
+        spacerWK: r.coupling.spacerWK, totalConductionWK: r.coupling.conductionWK,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.marginK - a.marginK);
+
   const best = ranked[0], worst = ranked[ranked.length - 1];
   const moduleMJ = base.energy.moduleJ / 1e6;
 
   return {
     ...base,
     ranked,
+    spacerRanked,
     headline: `${best.label} buys ${(best.marginK - worst.marginK).toFixed(0)} K more margin than ${worst.label.toLowerCase()} on this geometry. `
       + `That ORDERING is the usable result; the absolute numbers are not, because the mechanisms that carry real propagation are missing from all of them.`,
     containment: {

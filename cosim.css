@@ -120,6 +120,9 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .inspector-title { display:flex; justify-content:space-between; gap:8px; align-items:center; }
 .inspector-title h3 { margin:5px 0; font-size:15px; }
 .inspector-form { display:grid; gap:8px; margin-top:10px; }
+.scenario-grid { grid-template-columns:1fr 1fr; margin:0; }
+.scenario-module+.scenario-module { margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }
+.scenario-module h3 { margin:0 0 6px; font-size:13px; }
 .inspector-form label { font-size:10.5px; }
 .remove-block { color:var(--fail); margin-top:12px; font-size:11px; }
 #traceChart { width:100%; height:auto; border:1px solid var(--line); border-radius:8px; background:var(--ground); margin:10px 0; }
@@ -142,6 +145,14 @@ button:disabled { opacity:.45; cursor:not-allowed; }
 .chemistry-table td { vertical-align:top; }
 .chemistry-table th:nth-child(4),.chemistry-table td:nth-child(4) { min-width:150px; }
 .chemistry-table .status-chip { display:inline-block; margin-top:3px; }
+.vent-range { display:grid; grid-template-columns:1fr 1fr; gap:7px; margin:9px 0; }
+.vent-range>div { padding:8px; border:1px solid color-mix(in srgb,var(--warn) 35%,transparent); border-radius:7px; background:var(--surface); }
+.vent-range span,.vent-range small { display:block; color:var(--muted); font-size:9.5px; }
+.vent-range b { display:block; font:650 15px var(--mono); margin:2px 0; }
+.loop-card { margin-top:10px; padding:10px; border:1px solid var(--line); border-radius:8px; background:var(--ground); }
+.loop-card h3 { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:0 0 5px; font-size:12px; }
+.loop-card p { margin:5px 0 9px; color:var(--muted); font-size:10.5px; }
+.loop-card label { display:block; font-size:10.5px; }
 footer { min-height:34px; padding:8px 16px; background:var(--surface); border-top:1px solid var(--line); color:var(--muted); font-size:10.5px; }
 .sr-only { position:absolute!important; width:1px!important; height:1px!important; overflow:hidden!important; clip:rect(0,0,0,0)!important; white-space:nowrap!important; }
 @media (max-width:1120px) {

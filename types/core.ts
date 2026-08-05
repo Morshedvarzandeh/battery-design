@@ -452,9 +452,58 @@ export interface EquationSolverSettings {
 
 export interface EquationAnalysisModule {
   id: string;
-  type: 'runaway-propagation';
+  type: 'runaway-propagation' | 'vent-sizing';
   enabled: boolean;
-  parameters: Record<string, string | number>;
+  parameters: Record<string, string | number | null>;
+}
+
+export interface SilExpectedValue {
+  outputPath: string;
+  unit: string;
+  min: number;
+  max: number;
+}
+
+export interface SilTestCase {
+  id: string;
+  purpose: string;
+  inputs: Record<string, unknown>;
+  runOptions: Record<string, unknown>;
+  expected: SilExpectedValue;
+  repeat: boolean;
+}
+
+export interface SilTestPlan {
+  schema: 'battery-design/sil-test-plan@1';
+  modelId: string;
+  modelVersion: string;
+  graphChecksum: string;
+  solver: string;
+  deterministicSeed: number;
+  cases: SilTestCase[];
+}
+
+export interface HilChannel {
+  id: string;
+  quantity: string;
+  unit: string;
+  min: number;
+  max: number;
+  safeValue?: number;
+}
+
+export interface HilTestContract {
+  schema: 'battery-design/hil-test-contract@1';
+  targetId: string;
+  modelId: string;
+  modelVersion: string;
+  graphChecksum: string;
+  samplePeriodUs: number;
+  durationS: number;
+  inputs: HilChannel[];
+  outputs: HilChannel[];
+  requiredFaults: string[];
+  status: 'contract-ready-hardware-run-required';
 }
 
 export interface EquationGraphDocument {

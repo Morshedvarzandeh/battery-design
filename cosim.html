@@ -113,6 +113,30 @@
         <div id="blockInspector"></div>
       </section>
 
+      <section id="scenarioSection" hidden>
+        <p class="eyebrow">Safety scenario inputs</p>
+        <div id="scenarioInspector"></div>
+      </section>
+
+      <section id="loopSection">
+        <p class="eyebrow">Verification add-ons</p>
+        <h2>Software or hardware loop?</h2>
+        <div class="loop-card">
+          <h3>Software-in-the-Loop <span class="status-chip pass">Executable</span></h3>
+          <p>Run this exact software model repeatedly against an independent numeric acceptance range.</p>
+          <label>Output under test<select id="silOutputSelect"></select></label>
+          <div class="field-grid scenario-grid"><label>Minimum<input id="silMinimum" type="number" step="any" placeholder="independent limit"></label><label>Maximum<input id="silMaximum" type="number" step="any" placeholder="independent limit"></label></div>
+          <button type="button" id="runSilButton" class="secondary wide">Run SIL calculation test</button>
+        </div>
+        <div class="loop-card">
+          <h3>Hardware-in-the-Loop <span class="status-chip neutral">Contract first</span></h3>
+          <p>Generate the fixed-period I/O, fault, overrun and safe-state contract. Only measured target evidence can pass it.</p>
+          <label>Target sample period (µs)<input id="hilSamplePeriod" type="number" min="1" step="1" value="1000"></label>
+          <button type="button" id="prepareHilButton" class="secondary wide">Prepare HIL test contract</button>
+        </div>
+        <div id="loopResults" class="diagnostic-list"><p class="muted">No loop test prepared for this graph version.</p></div>
+      </section>
+
       <section id="resultSection" hidden>
         <p class="eyebrow">Live result</p>
         <div id="resultSummary"></div>
@@ -132,7 +156,7 @@
   </main>
 
   <footer>
-    Live Playback streams a completed numerical trace; it is not deterministic HIL real-time. Thermal-runaway propagation is a comparative screening model and never certifies safety.
+    Live Playback is not deterministic HIL real-time. SIL executes the software model; HIL needs measured target timing and I/O evidence. Thermal-runaway propagation is a comparative screening model and never certifies safety; vent sizing is conditional too.
   </footer>
   <script type="module" src="./js/cosim-studio.js"></script>
 </body>

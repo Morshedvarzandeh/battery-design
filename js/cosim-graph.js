@@ -131,6 +131,12 @@ export const ANALYSIS_MODULE_CATALOG = Object.freeze({
     summary: 'Compares cell spacing and barrier options after one cell is triggered.',
     limitation: 'Screening comparison only: hot gas, flame, electrolyte and ejecta are not modelled, so it can reject a design but never clear one.',
   }),
+  'vent-sizing': Object.freeze({
+    id: 'vent-sizing', name: 'Emergency pressure-relief sizing', markets: ['road', 'grid'],
+    solver: 'js/venting.sizeEmergencyVent@1',
+    summary: 'Calculates a conditional free-flow area range from measured gas release and a declared enclosure pressure.',
+    limitation: 'Compressible-orifice screening only: measured gas-release data and production enclosure/vent tests are required; it is not NFPA 68 deflagration sizing or a safety approval.',
+  }),
 });
 
 const DEFAULT_SETTINGS = Object.freeze({
@@ -273,9 +279,35 @@ export function validateStudioGraph(graph) {
       || !Number.isInteger(p.parallel) || p.parallel < 2
       || !Number.isFinite(p.spacingMm) || p.spacingMm < 0
       || !['none', 'mica', 'aerogel', 'potting', 'contact'].includes(p.barrier)
+      || !['none', 'pp-holder', 'silicone-pad', 'compression-pad', 'structural-adhesive'].includes(p.spacer)
       || !Number.isFinite(p.soc) || p.soc <= 0 || p.soc > 1
     )) diagnostics.push(diag('analysis.invalid_parameter', 'fail', 'The runaway study has invalid scenario inputs.',
       'Choose a real cell, at least two neighbouring cells, non-negative spacing, a listed barrier and 0–100% state of charge.', { moduleId: module.id }));
+    if (module.type === 'vent-sizing') {
+      const requiredTestData = [p.gasVolumeLowLPerCell, p.gasVolumeHighLPerCell,
+        p.releaseDurationLowS, p.releaseDurationHighS];
+      const missingTestData = requiredTestData.some((value) => value == null || value === '');
+      if (missingTestData || !String(p.gasDataBasis || '').trim()) diagnostics.push(diag(
+        'analysis.vent_test_data_required', 'warn', 'Vent sizing needs representative gas-release test data.',
+        'Enter the low/high gas volume per cell, release-duration range and the measurement or scenario basis. Chemistry alone is not a gas-yield input.',
+        { moduleId: module.id },
+      ));
+      const finitePositive = (value) => Number.isFinite(value) && value > 0;
+      if (!Number.isInteger(p.ventingCells) || p.ventingCells < 1
+        || (!missingTestData && (!requiredTestData.every(finitePositive)
+          || p.gasVolumeHighLPerCell < p.gasVolumeLowLPerCell
+          || p.releaseDurationHighS < p.releaseDurationLowS))
+        || !finitePositive(p.allowableGaugePressureKPa)
+        || !finitePositive(p.ambientPressureKPa)
+        || !Number.isFinite(p.ventGasTemperatureC) || p.ventGasTemperatureC <= -273.15
+        || !finitePositive(p.dischargeCoefficient) || p.dischargeCoefficient > 1
+        || !finitePositive(p.specificGasConstantJPerKgK)
+        || !Number.isFinite(p.gamma) || p.gamma <= 1) diagnostics.push(diag(
+        'analysis.invalid_parameter', 'fail', 'The vent-sizing scenario has invalid inputs.',
+        'Use positive ordered gas/release ranges, absolute-valid temperature, 0 < discharge coefficient ≤ 1 and γ > 1.',
+        { moduleId: module.id },
+      ));
+    }
   }
   const nodes = new Map();
   for (const node of graph.nodes || []) {
@@ -466,12 +498,27 @@ function runawayTemplate(options = {}) {
   const graph = market === 'grid' ? gridBackupTemplate(options) : electrothermalTemplate(options);
   graph.id = `${market}-runaway-propagation`;
   graph.title = 'Cell heating and runaway propagation screening';
+  const runawayCellId = market === 'grid' ? 'eve-lf280k' : 'lg-inr18650-mj1';
+  const ventingCells = market === 'grid' ? 4 : 8;
   graph.analysisModules = [{
     id: 'runaway-screening', type: 'runaway-propagation', enabled: true,
     parameters: {
-      cellId: market === 'grid' ? 'eve-lf280k' : 'lg-inr18650-mj1',
+      cellId: runawayCellId,
       series: market === 'grid' ? 16 : 13, parallel: market === 'grid' ? 4 : 8, spacingMm: 1,
-      barrier: 'mica', barrierThicknessMm: 0.5, soc: 1, ambientC: 25,
+      barrier: 'mica', barrierThicknessMm: 0.5,
+      spacer: market === 'grid' ? 'compression-pad' : 'pp-holder',
+      soc: 1, ambientC: 25,
+    },
+  }, {
+    id: 'emergency-vent-screening', type: 'vent-sizing', enabled: true,
+    parameters: {
+      cellId: runawayCellId, ventingCells,
+      gasVolumeLowLPerCell: null, gasVolumeHighLPerCell: null,
+      releaseDurationLowS: null, releaseDurationHighS: null,
+      gasDataBasis: '', allowableGaugePressureKPa: 10,
+      ambientPressureKPa: 101.325, ventGasTemperatureC: 400,
+      referenceTemperatureC: 20, referencePressureKPa: 101.325,
+      dischargeCoefficient: 0.7, specificGasConstantJPerKgK: 287, gamma: 1.3,
     },
   }];
   return graph;

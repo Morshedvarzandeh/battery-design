@@ -497,6 +497,8 @@ is copied into the repository.
 | `js/cosim-graph.js` | Approved block manifest, canonical graph document, market-isolated templates, assistant proposals, debugging and human-approved repairs |
 | `js/cosim-studio.js` | Guided/manual/automatic visual block canvas and live Rust trace playback |
 | `js/cosim-analysis.js` | Attached specialist simulations, including thermal-runaway propagation screening with a never-certify boundary |
+| `js/venting.js` | Conditional emergency pressure-relief free-area range from explicit gas-release evidence and compressible flow |
+| `js/loop-testing.js` | Executable SIL calculation plans plus HIL I/O/timing/fault contracts and measured-evidence evaluation |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |
@@ -531,7 +533,17 @@ now adds a visual typed canvas, deterministic graph files, versioned numeric
 transport into the same Rust core, guided/manual/automatic-draft workflows,
 and evidence-backed repair proposals that require a named human. Thermal
 runaway is attached as a specialized comparative safety scenario: it can fail
-or remain unproven, but can never certify non-propagation. High-order
+or remain unproven, but can never certify non-propagation. Its customer result
+shows NMC/LFP/LTO behavior plus separate air/barrier, structural-spacer,
+interconnect and radiation heat paths, including the equations and a plain
+language interpretation. Emergency vent sizing is attached separately: it
+requires visible gas-volume and release-time evidence, calculates both choked
+and subcritical compressible-flow cases, and returns a conditional free-area
+range—not a deflagration approval. SIL and HIL are likewise separate add-ons:
+SIL executes the exact software model against independent numeric ranges;
+the HIL module freezes I/O, sample time, faults, overruns and safe state and
+can only pass when measured target evidence is supplied. See
+[`docs/LOOP_TESTING.md`](docs/LOOP_TESTING.md). High-order
 SUNDIALS/IDA adapters, sparse DAE backends and an FMI importing master remain
 separate until their own conformance gates exist.
 

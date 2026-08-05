@@ -44,4 +44,19 @@ test('runaway propagation is visible with a non-certification boundary', () => {
   assert.match(studio, /Chemistry behavior on the same design/);
   assert.match(studio, /NMC demands the earliest intervention/);
   assert.match(studio, /None is a safety approval/);
+  assert.match(studio, /Calculated heat paths between cells/);
+  assert.match(studio, /Cell spacer \/ holder/);
+  assert.match(studio, /Show the propagation equations/);
+});
+
+test('vent sizing and loop verification are separate and plainly bounded', () => {
+  assert.match(studio, /Emergency vent sizing/);
+  assert.match(studio, /Gas low \(L\/cell\)/);
+  assert.match(studio, /Conditional vent-area screen/);
+  assert.match(studio, /not NFPA 68 deflagration sizing/);
+  assert.match(html, /Software-in-the-Loop/);
+  assert.match(html, /Hardware-in-the-Loop/);
+  assert.match(html, /Only measured target evidence can pass it/);
+  assert.match(studio, /createSilTestPlan/);
+  assert.match(studio, /createHilTestContract/);
 });
