@@ -1,6 +1,6 @@
 // training.js — an interactive walkthrough of the design process, in the
 // real UI (each step opens the real tab it talks about). Two tracks so
-// nobody gets confused: SIMPLE teaches the five clicks a customer needs;
+// nobody gets confused: SIMPLE teaches the six clicks a customer needs;
 // ADVANCED adds the expert levers (weights, TCO basis, DoD, stacks,
 // architecture, rules). Pure data; the driver lives in app.js.
 //
@@ -11,15 +11,15 @@
 
 export const TRAINING_TRACKS = {
   simple: {
-    name: 'Simple — the five clicks',
+    name: 'Simple — the six clicks',
     steps: [
       {
         tab: 'usage', title: '1 · Say what you are building',
         text: 'Tap an application card (e-bike, EV, e-bus, robot vacuum…). Everything below fills itself with sensible numbers for that application — including its own load profile. You never start from a blank form.',
       },
       {
-        tab: 'usage', title: '2 · Check the load shape', concept: 'load-profile',
-        text: 'The chart shows how your application really draws power over time. If it looks right, you are done here — the "Use profile" button turns the shape into the power numbers. Have your own measurements? One button uploads a CSV.',
+        tab: 'profile', title: '2 · Choose the load profile', concept: 'load-profile',
+        text: 'This separate step shows only profiles matched to your application. Pick the operating mode and check the battery-power chart; the selection immediately updates RMS and peak power. Measured CSV data and unrelated profiles stay in the expert fold.',
       },
       {
         tab: 'fit', title: '3 · Give it your space', concept: 'space-fill',

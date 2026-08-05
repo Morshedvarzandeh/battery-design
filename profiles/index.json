@@ -6,6 +6,8 @@
     "appIds": "applications it suits, [] for any",
     "dtS": "seconds per sample",
     "p": "normalised power, +1 = peak discharge, negative = charge/regen",
+    "family": "optional application-specific family",
+    "description": "optional short UI explanation",
     "note": "what it represents and where it came from",
     "source": "built-in | contributed | measured",
     "terrain": "optional: tarmac | gravel | sand | mud | rock | snow"
@@ -132,12 +134,74 @@
       "file": "robovac-clean.json"
     },
     {
-      "id": "marine-house",
-      "name": "Marine house loads (fridge cycling + windlass peaks)",
+      "id": "marine-full-electric",
+      "name": "Full electric",
       "appIds": [
         "marine"
       ],
-      "file": "marine-house.json"
+      "family": "marine-operation",
+      "description": "The battery supplies the complete propulsion and auxiliary demand during the electric operating period.",
+      "file": "marine-full-electric.json"
+    },
+    {
+      "id": "marine-load-levelling",
+      "name": "Load levelling",
+      "appIds": [
+        "marine"
+      ],
+      "family": "marine-operation",
+      "description": "Keep the genset at a stable set load: discharge the battery above it and charge below it.",
+      "file": "marine-load-levelling.json"
+    },
+    {
+      "id": "marine-boost",
+      "name": "Boost function",
+      "appIds": [
+        "marine"
+      ],
+      "family": "marine-operation",
+      "description": "Add battery power above the propulsion system’s maximum continuous rating, then recharge at lower demand.",
+      "file": "marine-boost.json"
+    },
+    {
+      "id": "marine-spinning-reserve",
+      "name": "Spinning reserve",
+      "appIds": [
+        "marine"
+      ],
+      "family": "marine-operation",
+      "description": "Hold the battery ready to take load immediately after a genset trip or sudden loss of generation.",
+      "file": "marine-spinning-reserve.json"
+    },
+    {
+      "id": "marine-peak-shaving",
+      "name": "Peak shaving",
+      "appIds": [
+        "marine"
+      ],
+      "family": "marine-operation",
+      "description": "Cover sudden short peaks and bridge the time needed to start or ramp another generator.",
+      "file": "marine-peak-shaving.json"
+    },
+    {
+      "id": "marine-load-smoothing",
+      "name": "Load smoothing",
+      "appIds": [
+        "marine"
+      ],
+      "family": "marine-operation",
+      "description": "Filter rapid load fluctuations so the genset sees a steadier power demand.",
+      "file": "marine-load-smoothing.json"
+    },
+    {
+      "id": "marine-ramp-support",
+      "name": "Ramp support",
+      "appIds": [
+        "marine"
+      ],
+      "family": "marine-operation",
+      "description": "Fill the genset response delay during fast demand ramps and absorb surplus while it ramps down.",
+      "file": "marine-ramp-support.json"
     }
   ]
 }

@@ -21,14 +21,19 @@ const index = [];
 for (const p of LOAD_PROFILES) {
   const record = {
     id: p.id, name: p.name, appIds: p.appIds, dtS: p.dtS,
-    note: p.note,
+    family: p.family, description: p.description, note: p.note,
     source: 'built-in',
     // Rounded: these are class-representative shapes, and sixteen digits of
     // float precision would imply a measurement nobody took.
     p: p.p.map((v) => Math.round(v * 1000) / 1000),
   };
   writeFileSync(path.join(OUT, `${p.id}.json`), `${JSON.stringify(record, null, 2)}\n`);
-  index.push({ id: p.id, name: p.name, appIds: p.appIds, file: `${p.id}.json` });
+  index.push({
+    id: p.id, name: p.name, appIds: p.appIds,
+    ...(p.family ? { family: p.family } : {}),
+    ...(p.description ? { description: p.description } : {}),
+    file: `${p.id}.json`,
+  });
 }
 
 writeFileSync(path.join(OUT, 'index.json'), `${JSON.stringify({
@@ -36,6 +41,7 @@ writeFileSync(path.join(OUT, 'index.json'), `${JSON.stringify({
   schema: {
     id: 'unique id', name: 'what a customer sees', appIds: 'applications it suits, [] for any',
     dtS: 'seconds per sample', p: 'normalised power, +1 = peak discharge, negative = charge/regen',
+    family: 'optional application-specific family', description: 'optional short UI explanation',
     note: 'what it represents and where it came from', source: 'built-in | contributed | measured',
     terrain: 'optional: tarmac | gravel | sand | mud | rock | snow',
   },

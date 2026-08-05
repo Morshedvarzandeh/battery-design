@@ -91,7 +91,7 @@ export function simulateMission(a) {
   }
   const { cell, s, p, profile, scaleW } = a;
   if (!profile || !profile.p?.length || !(scaleW > 0)) {
-    return { unavailable: true, why: 'No load profile applied — pick or upload one on the Usage tab.' };
+    return { unavailable: true, why: 'No load profile applied — pick or upload one on the Load profile tab.' };
   }
   const rCellMOhm = cell.dcirMOhm;
   const rMOhm = a.resistanceMOhm ?? (rCellMOhm != null ? (s * rCellMOhm) / p : null);

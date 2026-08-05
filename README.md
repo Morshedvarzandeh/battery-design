@@ -216,6 +216,13 @@ project's provenance-first datasheet pipeline.
   chains recompute in Excel/LibreOffice; a "Your value" column and the
   Feedback sheet invite corrections back by email — the feedback loop that
   teaches the tool.
+- **Application-scoped load profiles** — a separate Load profile step shows
+  only the duty shapes matched to the selected application; unrelated shapes
+  and measured CSV upload stay in an expert fold. Marine users get seven
+  explicit battery operating modes: full electric, load levelling, boost,
+  spinning reserve, peak shaving, load smoothing and ramp support. Their
+  traces model battery duty directly, so positive power is discharge and
+  negative power is charging.
 - **Mission simulation (level 1)** — the Sim tab runs the design through
   TIME: the application's load profile drives an equivalent-circuit model
   of the pack (chemistry-class OCV(SoC) − I·R, coulomb counting) coupled to
@@ -326,7 +333,7 @@ project's provenance-first datasheet pipeline.
   refuses to imply otherwise. RVs and boats get V2L because they already have
   the inverter; a portable power station is told it *is* one already.
 - **Interactive training** — a 🎓 walkthrough that drives the real UI, in
-  two tracks: Simple (the five clicks a customer needs) and Advanced (duty
+  two tracks: Simple (the six clicks a customer needs) and Advanced (duty
   & DoD economics, seasons, stacks, multi-objective weights, architecture,
   release rules, sensitivity), filtered per application through the
   knowledge graph. Inline "why these spaces exist" guidance
@@ -347,11 +354,12 @@ where you are at every step.
 
 ```mermaid
 flowchart LR
-  A["1 · Application & duty\nvoltage window · power\ncycles/year · years"] --> B["2 · Space & boundaries\nbay shape (box/round/L/stepped/drawn)\nwalls · spacers · cooling space\nintegration allowance"]
-  B --> C["3 · Scenario generation\nmax-fill every cell\nbest S×P in the window"]
-  C --> D["4 · Multi-objective selection\nenergy · TCO/upfront cost · weight\nPareto front · sensitivity · robustness"]
-  D --> E["5 · Engineering verification\nmechanical · thermal · electrical · safety\nstandards audit"]
-  E --> F["6 · Report\neconomics · CO2 payback\npatent landscape · PDF/Word"]
+  A["1 · Application & requirements\nvoltage window · energy\ncycles/year · years"] --> L["2 · Load profile\napplication-relevant duty\nRMS · peak · energy/pass"]
+  L --> B["3 · Space & boundaries\nbay shape (box/round/L/stepped/drawn)\nwalls · spacers · cooling space\nintegration allowance"]
+  B --> C["4 · Scenario generation\nmax-fill every cell\nbest S×P in the window"]
+  C --> D["5 · Multi-objective selection\nenergy · TCO/upfront cost · weight\nPareto front · sensitivity · robustness"]
+  D --> E["6 · Engineering verification\nmechanical · thermal · electrical · safety\nstandards audit"]
+  E --> F["7 · Report\neconomics · CO2 payback\npatent landscape · PDF/Word"]
   P["Private customer cells\n(device-only, emailed 1:1)"] -.-> C
   G["Public databases\ncells · components · presets · patents\n(CI-gated contributions)"] -.-> C
 ```

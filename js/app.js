@@ -599,6 +599,52 @@ function currentProfile() {
   return state.profileId ? profileById(state.profileId) : null;
 }
 
+// The knowledge graph owns whether this decision belongs to the selected
+// application. The profile-to-application edges then own the shortlist. This
+// keeps a vessel operator out of EV/robot/solar terminology unless they
+// deliberately open the full library.
+function renderProfileChoices(appId = state.presetId) {
+  const grid = $('profileChoices');
+  const hint = $('profileChoiceHint');
+  const tab = $('tabProfile');
+  if (!grid || !hint || !tab) return;
+
+  const isNeeded = needed(appId, 'load-profile');
+  tab.hidden = !isNeeded;
+  if (!isNeeded) {
+    grid.innerHTML = '';
+    hint.textContent = 'This application does not need a load-profile selection.';
+    if ($('pane-profile')?.classList.contains('active')) {
+      document.querySelector('#tabs .tab[data-tab="usage"]')?.click();
+    }
+    return;
+  }
+
+  const choices = appId ? profilesForApp(appId) : [];
+  grid.innerHTML = '';
+  if (!appId) {
+    hint.textContent = 'Pick an application on the Usage tab first. Only its relevant load profiles will appear here.';
+    return;
+  }
+
+  const appName = PRESETS.find((p) => p.id === appId)?.name || appId;
+  hint.textContent = appId === 'marine'
+    ? 'Seven marine battery operating modes are relevant here. Select what the battery must do; the chart shows battery power, where positive is discharge and negative is charging.'
+    : `${choices.length} profile${choices.length === 1 ? '' : 's'} matched to ${appName}. Pick the duty that best represents the machine.`;
+
+  for (const pr of choices) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'profile-choice';
+    b.dataset.profile = pr.id;
+    b.classList.toggle('active', state.profileId === pr.id);
+    b.setAttribute('aria-pressed', state.profileId === pr.id ? 'true' : 'false');
+    b.innerHTML = `<b>${esc(pr.name)}</b><span>${esc(pr.description || pr.note)}</span>`;
+    b.onclick = () => selectProfile(pr.id);
+    grid.appendChild(b);
+  }
+}
+
 // Regroups the profile dropdown around the chosen application: its
 // recommended shapes first (default on top), everything else still one
 // click away, the customer's upload always last.
@@ -634,24 +680,30 @@ function rebuildProfileSelect(appId) {
   if (customProfile) opt(null, 'custom', customProfile.name);
   opt(null, 'upload', 'Custom — upload CSV (time_s, power_W)…');
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  renderProfileChoices(appId);
+}
+
+function selectProfile(value) {
+  if (value === 'upload') { $('profileFile').click(); return; }
+  state.profileId = value || null;
+  $('selProfile').value = value || '';
+  if (state.profileId === 'vehicle') {
+    useVehicleProfile();
+    return;
+  }
+  if (state.profileId) {
+    state.profileScaleW = customScaleOr(parseFloat($('rqPp').value) || 1000);
+    applyProfileToRequirements();
+  } else {
+    state.profileScaleW = null;
+  }
+  renderProfile();
 }
 
 function initProfiles() {
   const sel = $('selProfile');
   rebuildProfileSelect(null);
-  sel.onchange = () => {
-    if (sel.value === 'upload') { $('profileFile').click(); return; }
-    state.profileId = sel.value || null;
-    if (state.profileId === 'vehicle') {
-      useVehicleProfile();
-      return;
-    }
-    if (state.profileId) {
-      state.profileScaleW = customScaleOr(parseFloat($('rqPp').value) || 1000);
-      applyProfileToRequirements();
-    }
-    renderProfile();
-  };
+  sel.onchange = () => selectProfile(sel.value);
   $('profileFile').onchange = async () => {
     const file = $('profileFile').files[0];
     if (!file) return;
@@ -683,7 +735,11 @@ function initProfiles() {
     a.click();
     URL.revokeObjectURL(a.href);
   };
-  $('btnProfileApply').onclick = () => { applyProfileToRequirements(); renderProfile(); };
+  $('btnProfileApply').onclick = () => {
+    state.profileScaleW = customScaleOr(parseFloat($('rqPp').value) || state.profileScaleW || 1000);
+    applyProfileToRequirements();
+    renderProfile();
+  };
 }
 
 const customScaleOr = (fallback) =>
@@ -706,12 +762,13 @@ function renderProfile() {
   const line = $('profileStatsLine');
   $('btnProfileApply').style.display = prof ? 'block' : 'none';
   canvas.style.display = prof ? 'block' : 'none';
+  renderProfileChoices(state.presetId);
   if (!prof) { line.textContent = ''; return; }
   const scale = state.profileScaleW || 1000;
   const st = profileStats(prof, scale);
   drawProfileChart(canvas, prof, scale);
   const dur = st.durationS >= 3600 ? `${f1(st.durationS / 3600)} h` : `${f0(st.durationS)} s`;
-  line.innerHTML = `${esc(prof.note)}<br><b>${dur}</b> pass · peak <b>${f0(st.peakW)} W</b> ·
+  line.innerHTML = `<b>${esc(prof.name)}</b><br>${esc(prof.note)}<br><b>${dur}</b> pass · peak <b>${f0(st.peakW)} W</b> ·
     RMS <b>${f0(st.rmsW)} W</b> · mean <b>${f0(st.meanW)} W</b> ·
     ${st.crestFactor ? `crest ${f1(st.crestFactor)}× · ` : ''}energy/pass <b>${f0(st.energyPerPassWh)} Wh</b>
     ${st.regenWh > 0.5 ? ` · regen ${f0(st.regenWh)} Wh` : ''}`;
@@ -1109,12 +1166,13 @@ function wizardStep3() {
 // design is derived from them.
 // ---------------------------------------------------------------------------
 const FLOW_STEPS = [
-  { tab: 'usage', num: '1', label: 'Application & duty' },
-  { tab: 'fit', num: '2', label: 'Space & boundaries → scenarios' },
-  { tab: 'design', num: '3', label: 'Chosen design' },
-  { tab: 'comp', num: '4', label: 'Components & suppliers' },
-  { tab: 'analysis', num: '5', label: 'Engineering audit' },
-  { tab: 'results', num: '6', label: 'Report' },
+  { tab: 'usage', num: '1', label: 'Application & requirements' },
+  { tab: 'profile', num: '2', label: 'Load profile' },
+  { tab: 'fit', num: '3', label: 'Space & boundaries → scenarios' },
+  { tab: 'design', num: '4', label: 'Chosen design' },
+  { tab: 'comp', num: '5', label: 'Components & suppliers' },
+  { tab: 'analysis', num: '6', label: 'Engineering audit' },
+  { tab: 'results', num: '7', label: 'Report' },
 ];
 
 function buildFlowBar() {
@@ -2457,7 +2515,7 @@ function computeSim() {
   const prof = currentProfile();
   const S = lastSummary;
   if (!S || !prof || !state.profileScaleW) {
-    lastSim = { unavailable: true, why: 'No load profile applied — pick one on the Usage tab and press "Use profile".' };
+    lastSim = { unavailable: true, why: 'No load profile applied — pick one on the Load profile tab.' };
     lastSimFindings = [];
     return;
   }

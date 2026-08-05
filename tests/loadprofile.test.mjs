@@ -33,12 +33,33 @@ test('the per-application choice list is a shortlist, default first', () => {
   ok(profilesForApp('nonexistent-app').length === 0, 'unknown app gets no fake recommendations');
 });
 
+test('marine exposes exactly the seven graph-scoped battery operating modes', () => {
+  const marine = profilesForApp('marine');
+  const ids = marine.map((p) => p.id);
+  ok(profileForApp('marine')?.id === 'marine-full-electric', 'full electric is the marine default');
+  ok(marine.length === 7, `marine has seven relevant choices (got ${marine.length})`);
+  for (const id of [
+    'marine-full-electric', 'marine-load-levelling', 'marine-boost',
+    'marine-spinning-reserve', 'marine-peak-shaving',
+    'marine-load-smoothing', 'marine-ramp-support',
+  ]) ok(ids.includes(id), `${id} is available to marine`);
+  ok(marine.every((p) => p.family === 'marine-operation'), 'all seven share the marine operation family');
+});
+
 test('the shapes behave like their machines', () => {
   const p = (id) => LOAD_PROFILES.find((x) => x.id === id);
   ok(p('robovac-clean').p.some((v) => v < 0), 'robovac has the dock-charging tail');
   ok(p('rv-house').p.some((v) => v < 0), 'rv day includes charging while driving');
   ok(p('humanoid-locomotion').p.every((v) => v > 0), 'humanoid base load never drops to zero');
   ok(Math.min(...p('humanoid-locomotion').p) >= 0.25, 'humanoid balance/compute base is substantial');
+  ok(p('marine-full-electric').p.every((v) => v >= 0), 'full electric supplies the complete positive demand');
+  ok(p('marine-load-levelling').p.some((v) => v > 0) && p('marine-load-levelling').p.some((v) => v < 0),
+    'load levelling both discharges above and charges below the genset setpoint');
+  ok(p('marine-spinning-reserve').p.some((v) => v === 0) && p('marine-spinning-reserve').p.some((v) => v > 0),
+    'spinning reserve waits before taking the load');
+  ok(p('marine-load-smoothing').dtS <= 0.5, 'load smoothing represents fluctuations above 1 Hz');
+  ok(p('marine-ramp-support').p.some((v) => v > 0) && p('marine-ramp-support').p.some((v) => v < 0),
+    'ramp support discharges on ramp-up and charges on ramp-down');
 });
 
 test('hand-checked math on a square wave', () => {
