@@ -21,7 +21,11 @@ import {
   recommendBlockPlan,
   validateStudioGraph,
 } from '../js/cosim-graph.js';
-import { runRunawayPropagationModule, runVentSizingModule } from '../js/cosim-analysis.js';
+import {
+  runAttachedAnalysisModules,
+  runRunawayPropagationModule,
+  runVentSizingModule,
+} from '../js/cosim-analysis.js';
 
 const HUMAN = {
   id: 'engineer-1', kind: 'human', role: 'application-engineer', authorities: ['edit-graph'],
@@ -169,9 +173,12 @@ test('runaway simulation can reject or compare but never reports a safety pass',
       - result.evidence.heatPaths.interconnectWPerK) < 1e-12);
   assert.ok(result.evidence.rankedSpacers.length >= 5);
   assert.match(result.evidence.equations.spacer, /contact_fraction/);
+  assert.ok(result.evidence.gasSourceMm.x >= 0 && result.evidence.gasSourceMm.x <= result.evidence.enclosureMm.x);
+  assert.ok(result.evidence.gasSourceMm.y >= 0 && result.evidence.gasSourceMm.y <= result.evidence.enclosureMm.y);
+  assert.ok(result.evidence.gasSourceMm.z >= 0 && result.evidence.gasSourceMm.z <= result.evidence.enclosureMm.z);
 });
 
-test('vent sizing is separate, asks for measured gas data and remains conditional', () => {
+test('vent sizing, supplier quantity and placement remain separate and conditional', () => {
   const graph = MODEL_TEMPLATES['road-runaway'].build();
   const module = graph.analysisModules.find((item) => item.type === 'vent-sizing');
   const missing = runVentSizingModule(module);
@@ -182,8 +189,56 @@ test('vent sizing is separate, asks for measured gas data and remains conditiona
     releaseDurationLowS: 1.5, releaseDurationHighS: 4,
     gasDataBasis: 'Cell abuse report TR-99, 100% SOC',
   });
-  const result = runVentSizingModule(module);
+  const areaOnly = runVentSizingModule(module);
+  assert.equal(areaOnly.status, 'needs-hardware');
+  assert.ok(areaOnly.missingHardwareInputs.some((item) => /supplier/i.test(item)));
+  Object.assign(module.parameters, {
+    ventUnitId: 'verified-vent-10', ventUnitName: 'Verified vent 10',
+    ventSupplier: 'Supplier', ventPartNumber: 'V-10',
+    ventUnitFreeAreaCm2: 10, ventUnitWidthMm: 40, ventUnitHeightMm: 30,
+    ventUnitMechanism: 'pressure-relief-device',
+    ventOpeningGaugePressureKPa: 4, ventTemperatureRatingC: 500,
+    ventUnitMarketProfiles: 'road-pack',
+    ventUnitEvidenceBasis: 'Supplier flow report F-10 rev B',
+    ventEvidenceRevision: 'B', ventEvidenceDate: '2026-07-01',
+    allowedVentFaces: 'top,rear', preferredVentFace: 'top',
+    edgeClearanceMm: 5, minimumVentSpacingMm: 5, maxVentCount: 32,
+  });
+  const runaway = runRunawayPropagationModule(graph.analysisModules[0]);
+  const result = runVentSizingModule(module, {
+    market: graph.market, segment: graph.segment, runawayEvidence: runaway.evidence,
+  });
   assert.equal(result.status, 'conditional');
   assert.ok(result.evidence.high.areaCm2 > result.evidence.low.areaCm2);
+  assert.ok(result.evidence.hardwareLayout.requiredQuantity > 1);
+  assert.equal(result.evidence.hardwareLayout.placements.length,
+    result.evidence.hardwareLayout.requiredQuantity);
+  assert.equal(result.evidence.hardwareLayout.openingPressureHeadroomKPa, 6);
   assert.match(result.limitations[0], /not NFPA 68/i);
+});
+
+test('attached vent placement resolves propagation geometry independent of module order', () => {
+  const graph = MODEL_TEMPLATES['road-runaway'].build();
+  const vent = graph.analysisModules.find((item) => item.type === 'vent-sizing');
+  Object.assign(vent.parameters, {
+    gasVolumeLowLPerCell: 5, gasVolumeHighLPerCell: 12,
+    releaseDurationLowS: 1.5, releaseDurationHighS: 4,
+    gasDataBasis: 'Cell abuse report TR-99, 100% SOC',
+    ventUnitId: 'verified-vent-10', ventUnitName: 'Verified vent 10',
+    ventSupplier: 'Supplier', ventPartNumber: 'V-10',
+    ventUnitFreeAreaCm2: 10, ventUnitWidthMm: 40, ventUnitHeightMm: 30,
+    ventUnitMechanism: 'pressure-relief-device',
+    ventOpeningGaugePressureKPa: 4, ventTemperatureRatingC: 500,
+    ventUnitMarketProfiles: 'road-pack',
+    ventUnitEvidenceBasis: 'Supplier flow report F-10',
+    ventEvidenceRevision: 'B', ventEvidenceDate: '2026-07-01',
+    allowedVentFaces: 'top,rear', preferredVentFace: 'top',
+    edgeClearanceMm: 5, minimumVentSpacingMm: 5, maxVentCount: 32,
+  });
+  graph.analysisModules.reverse();
+  const results = runAttachedAnalysisModules(graph);
+  const ventResult = results.find((item) => item.type === 'vent-sizing');
+  assert.equal(ventResult.status, 'conditional');
+  assert.equal(ventResult.evidence.hardwareLayout.placedQuantity,
+    ventResult.evidence.hardwareLayout.requiredQuantity);
 });

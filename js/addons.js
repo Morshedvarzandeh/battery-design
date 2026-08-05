@@ -249,11 +249,11 @@ export const ADDONS = [
   },
   {
     id: 'vent-sizing', name: 'Emergency vent sizing', tier: 'desktop', status: 'shipped',
-    module: 'venting.js + cosim-analysis.js', concepts: ['propagation'],
-    what: 'A conditional pressure-relief free-area range from declared gas volume, release time, allowable gauge pressure, gas temperature and opening coefficient. It uses compressible choked/subcritical orifice flow and exposes every equation and assumption; it never invents gas yield from NMC, LFP or LTO.',
-    provides: ['low/high unobstructed free area and equivalent diameter', 'mass-flow and flow-regime evidence', 'the physical tests still required'],
-    needs: ['representative cell/module gas volume and release-rate test data', 'allowable enclosure pressure', 'production vent/duct testing'],
-    why: 'A visible conditional calculation is useful; an unsourced gas assumption or a claim of NFPA 68 compliance would be dangerous. The module therefore stays Unproven until actual test evidence is attached.',
+    module: 'venting.js + vent-layout.js + cosim-analysis.js', concepts: ['propagation'],
+    what: 'A conditional pressure-relief free-area range from declared gas volume, release time, allowable gauge pressure, gas temperature and opening coefficient. A separate supplier-backed layer selects multiple vent units when required, checks market compatibility and enclosure fit, and returns provisional coordinates only on human-screened discharge faces.',
+    provides: ['low/high unobstructed free area and equivalent diameter', 'supplier vent quantity and market-profile compatibility', 'enclosure capacity, exact provisional face coordinates and discharge vectors', 'mass-flow, placement and physical-test evidence'],
+    needs: ['representative cell/module gas volume and release-rate test data', 'allowable enclosure pressure', 'supplier free area/footprint/part evidence', 'reviewed discharge faces and CAD clearances', 'production vent/duct testing'],
+    why: 'A visible conditional calculation is useful; an unsourced gas assumption, invented market vent size, unsafe discharge-face guess or claim of NFPA 68 compliance would be dangerous. Missing evidence therefore blocks hardware placement or leaves the result conditional.',
   },
   {
     id: 'sil', name: 'Software-in-the-Loop verification', tier: 'browser', status: 'shipped',

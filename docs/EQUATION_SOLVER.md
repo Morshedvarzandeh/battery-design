@@ -75,6 +75,13 @@ rate must be measured for the actual cell, SOC, age and abuse condition. The
 screen does not model flame, combustion, vent opening dynamics, ducts,
 ejecta, enclosure response or exclusion zones, and is not NFPA 68 sizing.
 
+`js/vent-layout.js` is a third, downstream decision layer. It requires a
+supplier-declared free area and footprint, selects multiple units when the
+high-case area exceeds one unit, constrains them to the actual enclosure and
+human-permitted faces, and returns provisional coordinates. It blocks a
+layout that cannot fit rather than changing pressure assumptions. See
+[`VENT_LAYOUT.md`](VENT_LAYOUT.md) for the exact market and approval boundary.
+
 Calculation verification is split again from the physical model. The SIL
 runner executes the versioned software adapter against independent numeric
 oracles while checking graph/model/solver identity, units and exact

@@ -6,6 +6,7 @@ import { cellById } from './cells.js';
 import { layoutPack } from './pack-engine.js';
 import { propagation, propagationStudy, releaseMultiple } from './runaway.js';
 import { sizeEmergencyVent } from './venting.js';
+import { selectVentHardwareLayout, ventMarketProfile } from './vent-layout.js';
 import { ANALYSIS_MODULE_CATALOG } from './cosim-graph.js';
 
 export const RUNAWAY_CHEMISTRY_BEHAVIOR = Object.freeze({
@@ -90,13 +91,19 @@ export function runRunawayPropagationModule(module) {
       kineticsBoundary: result.kineticsBoundary,
       chemistryComparison,
       chemistryComparisonBasis: 'Controlled comparison: identical cell geometry, mass, stored electrical energy, spacing, barrier, ambient and state of charge; only the chemistry-class onset and release multiple change.',
+      seedCellIndex: result.seedCellIndex,
+      gasSourceMm: result.gasSourceMm,
+      enclosureMm: result.enclosureMm,
       history: result.history,
     },
     findings: result.findings,
   };
 }
 
-export function runVentSizingModule(module) {
+const missingValue = (value) => value == null || String(value).trim() === '';
+const splitList = (value) => String(value || '').split(',').map((item) => item.trim()).filter(Boolean);
+
+export function runVentSizingModule(module, context = {}) {
   if (module?.type !== 'vent-sizing') throw new TypeError('Expected a vent-sizing module.');
   const p = module.parameters || {};
   const manifest = ANALYSIS_MODULE_CATALOG[module.type];
@@ -107,7 +114,7 @@ export function runVentSizingModule(module) {
     ['releaseDurationHighS', 'Maximum release duration'],
     ['gasDataBasis', 'Gas data measurement or scenario basis'],
   ];
-  const missingInputs = required.filter(([key]) => p[key] == null || String(p[key]).trim() === '')
+  const missingInputs = required.filter(([key]) => missingValue(p[key]))
     .map(([, label]) => label);
   if (missingInputs.length) return {
     moduleId: module.id, type: module.type, solver: manifest.solver,
@@ -116,22 +123,113 @@ export function runVentSizingModule(module) {
     findings: [{ level: 'review', text: 'Use representative cell/module abuse-test gas volume and release-rate data; do not infer it from NMC, LFP or LTO alone.' }],
   };
   const result = sizeEmergencyVent(p);
-  return {
+  const profile = context.market ? ventMarketProfile(context.market, context.segment ?? null) : null;
+  const geometry = context.runawayEvidence ? {
+    enclosure: context.runawayEvidence.enclosureMm,
+    source: context.runawayEvidence.gasSourceMm,
+  } : null;
+  const hardwareRequired = [
+    ['ventUnitId', 'Supplier vent record id'],
+    ['ventUnitName', 'Supplier vent name'],
+    ['ventSupplier', 'Vent supplier'],
+    ['ventPartNumber', 'Vent part number'],
+    ['ventUnitFreeAreaCm2', 'Supplier-declared unobstructed free area'],
+    ['ventUnitWidthMm', 'Vent footprint width'],
+    ['ventUnitHeightMm', 'Vent footprint height'],
+    ['ventUnitMechanism', 'Vent mechanism'],
+    ['ventOpeningGaugePressureKPa', 'Vent opening gauge pressure'],
+    ['ventTemperatureRatingC', 'Vent temperature rating'],
+    ['ventUnitMarketProfiles', 'Supplier-declared market profiles'],
+    ['ventUnitEvidenceBasis', 'Supplier part evidence'],
+    ['ventEvidenceRevision', 'Supplier evidence revision'],
+    ['ventEvidenceDate', 'Supplier evidence date'],
+    ['allowedVentFaces', 'Human-screened discharge faces'],
+    ['edgeClearanceMm', 'Vent-to-edge clearance'],
+    ['minimumVentSpacingMm', 'Minimum inter-vent spacing'],
+  ];
+  const missingHardwareInputs = hardwareRequired.filter(([key]) => missingValue(p[key]))
+    .map(([, label]) => label);
+  if (!profile) missingHardwareInputs.push('Graph market and Grid segment');
+  if (!geometry?.enclosure || !geometry?.source) missingHardwareInputs.push('Runaway enclosure and gas-source geometry');
+  if (missingHardwareInputs.length) return {
     moduleId: module.id, type: module.type, solver: manifest.solver,
-    status: result.status, headline: result.headline,
+    status: 'needs-hardware',
+    headline: `${result.headline}; supplier vent selection and placement need more input.`,
+    missingHardwareInputs,
     limitations: [manifest.limitation, ...result.limitations],
     evidence: result,
     findings: [
-      { level: 'review', text: `Provide at least ${result.high.areaCm2.toFixed(1)} cm² unobstructed free area for this declared screen, then validate the production vent and enclosure by test.` },
+      { level: 'review', text: `The declared gas case needs at least ${result.high.areaCm2.toFixed(1)} cm² unobstructed free area.` },
+      { level: 'review', text: 'Enter a supplier-verified vent unit, allowed discharge faces and physical clearances before hardware quantity or placement is shown.' },
+    ],
+  };
+  const layout = selectVentHardwareLayout({
+    market: context.market,
+    segment: context.segment ?? null,
+    requiredFreeAreaCm2: result.high.areaCm2,
+    allowableGaugePressureKPa: result.inputs.allowableGaugePressureKPa,
+    ventGasTemperatureC: result.inputs.ventGasTemperatureC,
+    enclosure: geometry.enclosure,
+    source: geometry.source,
+    allowedFaces: splitList(p.allowedVentFaces),
+    preferredFace: String(p.preferredVentFace || '').trim() || null,
+    edgeClearanceMm: p.edgeClearanceMm,
+    minimumSpacingMm: p.minimumVentSpacingMm,
+    maxVentCount: p.maxVentCount ?? 128,
+    unit: {
+      id: p.ventUnitId,
+      name: p.ventUnitName,
+      supplier: p.ventSupplier,
+      partNumber: p.ventPartNumber,
+      freeAreaCm2: p.ventUnitFreeAreaCm2,
+      widthMm: p.ventUnitWidthMm,
+      heightMm: p.ventUnitHeightMm,
+      mechanism: p.ventUnitMechanism,
+      openingGaugePressureKPa: p.ventOpeningGaugePressureKPa,
+      temperatureRatingC: p.ventTemperatureRatingC,
+      marketProfiles: splitList(p.ventUnitMarketProfiles),
+      evidenceBasis: p.ventUnitEvidenceBasis,
+      evidenceRevision: p.ventEvidenceRevision,
+      evidenceDate: p.ventEvidenceDate,
+    },
+  });
+  const placementLimitation = 'Vent coordinates are a geometric screening result on human-permitted faces; CAD structure, external safe discharge, obstructions, ducts, opening dynamics and installed-system tests remain required.';
+  return {
+    moduleId: module.id, type: module.type, solver: manifest.solver,
+    status: layout.status === 'blocked' ? 'fail' : result.status,
+    headline: `${result.headline}; ${layout.headline}`,
+    limitations: [manifest.limitation, placementLimitation, ...result.limitations],
+    evidence: { ...result, hardwareLayout: layout },
+    findings: layout.status === 'blocked' ? [
+      { level: 'fail', text: layout.headline },
+      ...layout.correctiveActions.map((text) => ({ level: 'review', text })),
+      { level: 'review', text: `Gas-data basis: ${result.inputs.gasDataBasis}` },
+    ] : [
+      { level: 'review', text: `Use ${layout.requiredQuantity} supplier-declared vent unit${layout.requiredQuantity === 1 ? '' : 's'} providing ${layout.totalDeclaredFreeAreaCm2.toFixed(1)} cm² total free area, then validate the installed layout by test.` },
       { level: 'review', text: `Gas-data basis: ${result.inputs.gasDataBasis}` },
     ],
   };
 }
 
 export function runAttachedAnalysisModules(graph) {
-  return (graph.analysisModules || []).filter((module) => module.enabled !== false).map((module) => {
-    if (module.type === 'runaway-propagation') return runRunawayPropagationModule(module);
-    if (module.type === 'vent-sizing') return runVentSizingModule(module);
+  const enabledModules = (graph.analysisModules || []).filter((item) => item.enabled !== false);
+  const runawayModule = enabledModules.find((module) => module.type === 'runaway-propagation');
+  const runawayResult = runawayModule ? runRunawayPropagationModule(runawayModule) : null;
+  const results = [];
+  for (const module of enabledModules) {
+    if (module.type === 'runaway-propagation') {
+      results.push(module === runawayModule ? runawayResult : runRunawayPropagationModule(module));
+      continue;
+    }
+    if (module.type === 'vent-sizing') {
+      results.push(runVentSizingModule(module, {
+        market: graph.market,
+        segment: graph.segment,
+        runawayEvidence: runawayResult?.evidence || null,
+      }));
+      continue;
+    }
     throw new RangeError(`No solver is registered for analysis module: ${module.type}`);
-  });
+  }
+  return results;
 }
