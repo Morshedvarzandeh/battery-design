@@ -126,9 +126,9 @@ export const ADDONS = [
   {
     id: 'equations', name: 'Rust equation-graph solver', tier: 'desktop', status: 'shipped',
     module: 'rust-core/src/equations.rs', concepts: ['simulation', 'cosim'],
-    what: 'Compile typed blocks into one executable equation graph, solve finite algebraic feedback loops with damped Newton iterations, and integrate continuous states with adaptive error control and exact event boundaries.',
-    provides: ['typed and validated model graphs', 'adaptive continuous-time traces', 'algebraic-loop diagnostics', 'reproducible solver statistics'],
-    needs: ['approved blocks and parameters', 'a native Rust host; the visual canvas and generic WebAssembly graph transport remain separate work'],
+    what: 'Compile typed blocks into one executable equation graph, solve finite algebraic feedback loops, recommend an explicit or small-graph implicit method from declared time scales, and integrate continuous states with adaptive error control and exact event boundaries.',
+    provides: ['typed and validated model graphs', 'adaptive continuous-time traces', 'recorded solver decisions', 'stable diagnostic codes and safe next actions', 'reproducible solver statistics'],
+    needs: ['approved blocks and parameters', 'a native Rust host; high-order SUNDIALS/IDA adapters, the visual canvas and generic WebAssembly graph transport remain separate work'],
     why: 'One authoritative equation layer prevents the visual editor, desktop runner and future FMI adapters from developing different physics.',
   },
   {

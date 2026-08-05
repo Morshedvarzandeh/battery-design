@@ -10,6 +10,10 @@ use std::fmt;
 
 pub type BlockId = usize;
 
+/// The built-in implicit path uses dense finite-difference Jacobians. Larger
+/// models must use a future validated sparse backend rather than fail slowly.
+pub const DENSE_IMPLICIT_STATE_LIMIT: usize = 64;
+
 /// Quantities carried by ports.  Connections require an exact match; implicit
 /// unit conversion is intentionally forbidden at this layer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -185,6 +189,14 @@ pub enum EquationError {
         time_s: f64,
         residual: f64,
     },
+    ImplicitNonConvergence {
+        time_s: f64,
+        residual: f64,
+    },
+    ImplicitStateLimit {
+        states: usize,
+        maximum: usize,
+    },
     StepUnderflow {
         time_s: f64,
     },
@@ -230,6 +242,14 @@ impl fmt::Display for EquationError {
                 f,
                 "the algebraic system did not converge at t={time_s}; residual={residual}"
             ),
+            Self::ImplicitNonConvergence { time_s, residual } => write!(
+                f,
+                "the implicit state solve did not converge at t={time_s}; residual={residual}"
+            ),
+            Self::ImplicitStateLimit { states, maximum } => write!(
+                f,
+                "the dense implicit backend supports at most {maximum} states; model has {states}"
+            ),
             Self::StepUnderflow { time_s } => {
                 write!(f, "adaptive integration reached its minimum step at t={time_s}")
             }
@@ -239,6 +259,56 @@ impl fmt::Display for EquationError {
 }
 
 impl std::error::Error for EquationError {}
+
+impl EquationError {
+    /// Stable machine-readable code for UI, API and AI-assisted diagnostics.
+    /// Callers must branch on this code rather than parse the Display text.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::EmptyGraph => "graph.empty",
+            Self::DuplicateBlockName(_) => "graph.duplicate_block_name",
+            Self::UnknownBlock(_) => "graph.unknown_block",
+            Self::InvalidPort { .. } => "connection.invalid_port",
+            Self::DuplicateConnection { .. } => "connection.duplicate_input",
+            Self::MissingInput { .. } => "connection.missing_input",
+            Self::QuantityMismatch { .. } => "connection.quantity_mismatch",
+            Self::InvalidParameter { .. } => "block.invalid_parameter",
+            Self::InvalidSettings(_) => "solver.invalid_settings",
+            Self::StateSize { .. } => "solver.state_size",
+            Self::NonFiniteValue { .. } => "solver.non_finite_value",
+            Self::SingularAlgebraicSystem { .. } => "solver.singular_algebraic_loop",
+            Self::AlgebraicNonConvergence { .. } => "solver.algebraic_non_convergence",
+            Self::ImplicitNonConvergence { .. } => "solver.implicit_non_convergence",
+            Self::ImplicitStateLimit { .. } => "solver.implicit_state_limit",
+            Self::StepUnderflow { .. } => "solver.step_underflow",
+            Self::MaxStepsExceeded => "solver.max_steps_exceeded",
+        }
+    }
+
+    /// Conservative next action suitable for a guided error panel. These are
+    /// explanations, not automatic mutations: a human still approves changes.
+    pub fn suggested_action(&self) -> &'static str {
+        match self {
+            Self::EmptyGraph => "Add an approved source or component block before simulation.",
+            Self::DuplicateBlockName(_) => "Give every block a unique, descriptive name.",
+            Self::UnknownBlock(_) => "Reconnect the wire to a block that exists in this model version.",
+            Self::InvalidPort { .. } => "Choose an available input port on the destination block.",
+            Self::DuplicateConnection { .. } => "Keep one wire on this input or insert an approved Sum block.",
+            Self::MissingInput { .. } => "Connect the required input or explicitly remove the unused block.",
+            Self::QuantityMismatch { .. } => "Use a compatible port or insert an explicit, unit-reviewed conversion block.",
+            Self::InvalidParameter { .. } => "Restore the parameter to its sourced operating range and validate again.",
+            Self::InvalidSettings(_) => "Restore the validated solver preset before running again.",
+            Self::StateSize { .. } => "Reinitialize the simulation from the current compiled model version.",
+            Self::NonFiniteValue { .. } => "Inspect the named block for invalid data, division by zero or an exceeded operating range.",
+            Self::SingularAlgebraicSystem { .. } => "Inspect the highlighted feedback loop for redundant equations or a missing physical constraint.",
+            Self::AlgebraicNonConvergence { .. } => "Review discontinuities and feedback-loop initialization; do not loosen tolerances silently.",
+            Self::ImplicitNonConvergence { .. } => "Review state initialization and discontinuities, then retry with a smaller validated initial step.",
+            Self::ImplicitStateLimit { .. } => "Partition the model or use a validated sparse implicit backend; do not force this dense solver.",
+            Self::StepUnderflow { .. } => "Inspect the event or fastest state at this time before changing the minimum step.",
+            Self::MaxStepsExceeded => "Inspect stiffness, repeated events and the requested duration before increasing the step limit.",
+        }
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct EquationGraph {
@@ -466,8 +536,40 @@ fn topological_algebraic_order(
     (order.len() == algebraic_blocks.len()).then_some(order)
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntegrationMethod {
+    /// Select from the compiled graph and requested time horizon, then record
+    /// the decision in the result. Auto never changes tolerances.
+    Auto,
+    /// Adaptive Dormand-Prince 5(4), suited to non-stiff continuous models.
+    DormandPrince45,
+    /// Adaptive backward Euler with damped Newton state solves and step
+    /// doubling. This is a robust first implicit path, not an IDA/BDF claim.
+    BackwardEuler,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SolverDecisionReason {
+    UserSelected,
+    NoContinuousStates,
+    NonStiffTimeScales,
+    SeparatedTimeScales,
+    FastStateForRequestedHorizon,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SolverDecision {
+    pub requested: IntegrationMethod,
+    pub selected: IntegrationMethod,
+    pub reason: SolverDecisionReason,
+    pub fastest_time_constant_s: Option<f64>,
+    pub slowest_time_constant_s: Option<f64>,
+    pub time_scale_ratio: Option<f64>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SolverSettings {
+    pub method: IntegrationMethod,
     pub start_s: f64,
     pub end_s: f64,
     pub initial_step_s: f64,
@@ -478,11 +580,14 @@ pub struct SolverSettings {
     pub max_steps: usize,
     pub algebraic_tolerance: f64,
     pub algebraic_max_iterations: usize,
+    pub implicit_tolerance: f64,
+    pub implicit_max_iterations: usize,
 }
 
 impl Default for SolverSettings {
     fn default() -> Self {
         Self {
+            method: IntegrationMethod::Auto,
             start_s: 0.0,
             end_s: 10.0,
             initial_step_s: 0.01,
@@ -493,6 +598,8 @@ impl Default for SolverSettings {
             max_steps: 100_000,
             algebraic_tolerance: 1e-10,
             algebraic_max_iterations: 30,
+            implicit_tolerance: 1e-10,
+            implicit_max_iterations: 20,
         }
     }
 }
@@ -508,6 +615,7 @@ impl SolverSettings {
             ("relative_tolerance", self.relative_tolerance),
             ("absolute_tolerance", self.absolute_tolerance),
             ("algebraic_tolerance", self.algebraic_tolerance),
+            ("implicit_tolerance", self.implicit_tolerance),
         ] {
             if !value.is_finite() {
                 return Err(EquationError::InvalidSettings(name));
@@ -522,8 +630,10 @@ impl SolverSettings {
             || self.relative_tolerance <= 0.0
             || self.absolute_tolerance <= 0.0
             || self.algebraic_tolerance <= 0.0
+            || self.implicit_tolerance <= 0.0
             || self.max_steps == 0
             || self.algebraic_max_iterations == 0
+            || self.implicit_max_iterations == 0
         {
             return Err(EquationError::InvalidSettings("non-positive limit"));
         }
@@ -553,6 +663,8 @@ pub struct SimulationResult {
     pub points: Vec<TracePoint>,
     pub accepted_steps: usize,
     pub rejected_steps: usize,
+    pub nonlinear_iterations: usize,
+    pub solver: SolverDecision,
     pub summary: GraphSummary,
 }
 
@@ -611,9 +723,77 @@ impl CompiledGraph {
         self.outputs_at(time_s, state, settings)
     }
 
+    /// Recommend a method without mutating the user's settings. The complete
+    /// decision is returned with every simulation for review and replay.
+    pub fn recommend_solver(&self, settings: &SolverSettings) -> SolverDecision {
+        let mut time_constants = self
+            .state_blocks
+            .iter()
+            .filter_map(|block_id| match self.blocks[*block_id].kind {
+                BlockKind::FirstOrder { tau_s, .. } => Some(tau_s),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        time_constants.sort_by(|a, b| a.total_cmp(b));
+        let fastest = time_constants.first().copied();
+        let slowest = time_constants.last().copied();
+        let ratio = fastest.zip(slowest).map(|(fast, slow)| slow / fast);
+
+        if settings.method != IntegrationMethod::Auto {
+            return SolverDecision {
+                requested: settings.method,
+                selected: settings.method,
+                reason: SolverDecisionReason::UserSelected,
+                fastest_time_constant_s: fastest,
+                slowest_time_constant_s: slowest,
+                time_scale_ratio: ratio,
+            };
+        }
+
+        let horizon_s = (settings.end_s - settings.start_s).max(0.0);
+        let (selected, reason) = if self.state_blocks.is_empty() {
+            (
+                IntegrationMethod::DormandPrince45,
+                SolverDecisionReason::NoContinuousStates,
+            )
+        } else if ratio.is_some_and(|value| value >= 1_000.0) {
+            (
+                IntegrationMethod::BackwardEuler,
+                SolverDecisionReason::SeparatedTimeScales,
+            )
+        } else if fastest.is_some_and(|tau_s| horizon_s / tau_s >= 10_000.0) {
+            (
+                IntegrationMethod::BackwardEuler,
+                SolverDecisionReason::FastStateForRequestedHorizon,
+            )
+        } else {
+            (
+                IntegrationMethod::DormandPrince45,
+                SolverDecisionReason::NonStiffTimeScales,
+            )
+        };
+        SolverDecision {
+            requested: IntegrationMethod::Auto,
+            selected,
+            reason,
+            fastest_time_constant_s: fastest,
+            slowest_time_constant_s: slowest,
+            time_scale_ratio: ratio,
+        }
+    }
+
     pub fn simulate(&self, settings: SolverSettings) -> Result<SimulationResult, EquationError> {
         settings.validate()?;
         let summary = self.summary();
+        let solver = self.recommend_solver(&settings);
+        if solver.selected == IntegrationMethod::BackwardEuler
+            && self.state_blocks.len() > DENSE_IMPLICIT_STATE_LIMIT
+        {
+            return Err(EquationError::ImplicitStateLimit {
+                states: self.state_blocks.len(),
+                maximum: DENSE_IMPLICIT_STATE_LIMIT,
+            });
+        }
         let mut state = self.initial_state();
         let mut time_s = settings.start_s;
         let mut points = vec![TracePoint {
@@ -626,6 +806,8 @@ impl CompiledGraph {
                 points,
                 accepted_steps: 0,
                 rejected_steps: 0,
+                nonlinear_iterations: 0,
+                solver,
                 summary,
             });
         }
@@ -648,6 +830,8 @@ impl CompiledGraph {
                 points,
                 accepted_steps,
                 rejected_steps: 0,
+                nonlinear_iterations: 0,
+                solver,
                 summary,
             });
         }
@@ -658,6 +842,7 @@ impl CompiledGraph {
             .min(settings.end_s - settings.start_s);
         let mut accepted_steps = 0_usize;
         let mut rejected_steps = 0_usize;
+        let mut nonlinear_iterations = 0_usize;
         let end_epsilon = 32.0 * f64::EPSILON * (1.0 + settings.end_s.abs());
 
         while time_s < settings.end_s - end_epsilon {
@@ -687,14 +872,19 @@ impl CompiledGraph {
             } else {
                 step_end_s
             };
-            let attempted = self.dormand_prince_step(
-                time_s,
-                &state,
-                step_s,
-                stage_end_s,
-                &settings,
-            )?;
-            if attempted.error_norm <= 1.0 || step_s <= settings.min_step_s {
+            let attempted = match solver.selected {
+                IntegrationMethod::DormandPrince45 | IntegrationMethod::Auto => self
+                    .dormand_prince_step(time_s, &state, step_s, stage_end_s, &settings)?,
+                IntegrationMethod::BackwardEuler => self.backward_euler_step(
+                    time_s,
+                    &state,
+                    step_s,
+                    stage_end_s,
+                    &settings,
+                )?,
+            };
+            nonlinear_iterations += attempted.nonlinear_iterations;
+            if attempted.error_norm <= 1.0 {
                 time_s += step_s;
                 if (settings.end_s - time_s).abs() <= end_epsilon {
                     time_s = settings.end_s;
@@ -708,12 +898,20 @@ impl CompiledGraph {
                 let factor = if attempted.error_norm == 0.0 {
                     5.0
                 } else {
-                    (0.9 * attempted.error_norm.powf(-0.2)).clamp(0.2, 5.0)
+                    (0.9 * attempted.error_norm.powf(-1.0 / attempted.error_order))
+                        .clamp(0.2, 5.0)
                 };
                 step_s = (step_s * factor).clamp(settings.min_step_s, settings.max_step_s);
             } else {
                 rejected_steps += 1;
-                let factor = (0.9 * attempted.error_norm.powf(-0.25)).clamp(0.1, 0.5);
+                if step_s <= settings.min_step_s {
+                    return Err(EquationError::StepUnderflow { time_s });
+                }
+                let factor = (0.9
+                    * attempted
+                        .error_norm
+                        .powf(-1.0 / attempted.error_order))
+                .clamp(0.1, 0.5);
                 let next_step = step_s * factor;
                 if next_step < settings.min_step_s {
                     return Err(EquationError::StepUnderflow { time_s });
@@ -726,6 +924,8 @@ impl CompiledGraph {
             points,
             accepted_steps,
             rejected_steps,
+            nonlinear_iterations,
+            solver,
             summary,
         })
     }
@@ -823,6 +1023,142 @@ impl CompiledGraph {
         Ok(StepAttempt {
             state: fifth,
             error_norm,
+            error_order: 5.0,
+            nonlinear_iterations: 0,
+        })
+    }
+
+    fn backward_euler_step(
+        &self,
+        time_s: f64,
+        state: &[f64],
+        step_s: f64,
+        stage_end_s: f64,
+        settings: &SolverSettings,
+    ) -> Result<StepAttempt, EquationError> {
+        let (coarse, coarse_iterations) = self.backward_euler_solve(
+            time_s,
+            stage_end_s,
+            state,
+            step_s,
+            settings,
+        )?;
+        let half_step_s = step_s * 0.5;
+        let midpoint_s = time_s + half_step_s;
+        let (half, first_iterations) = self.backward_euler_solve(
+            time_s,
+            midpoint_s,
+            state,
+            half_step_s,
+            settings,
+        )?;
+        let (fine, second_iterations) = self.backward_euler_solve(
+            midpoint_s,
+            stage_end_s,
+            &half,
+            half_step_s,
+            settings,
+        )?;
+        let error_norm = fine
+            .iter()
+            .zip(&coarse)
+            .zip(state)
+            .map(|((high, low), old)| {
+                let scale = settings.absolute_tolerance
+                    + settings.relative_tolerance * old.abs().max(high.abs());
+                (high - low).abs() / scale
+            })
+            .fold(0.0_f64, f64::max);
+        if !error_norm.is_finite() || fine.iter().any(|value| !value.is_finite()) {
+            return Err(EquationError::NonFiniteValue {
+                block: "implicit continuous state".to_string(),
+                time_s,
+            });
+        }
+        Ok(StepAttempt {
+            state: fine,
+            error_norm,
+            error_order: 2.0,
+            nonlinear_iterations: coarse_iterations + first_iterations + second_iterations,
+        })
+    }
+
+    fn backward_euler_solve(
+        &self,
+        start_s: f64,
+        evaluation_s: f64,
+        state: &[f64],
+        step_s: f64,
+        settings: &SolverSettings,
+    ) -> Result<(Vec<f64>, usize), EquationError> {
+        let initial_derivative = self.derivatives(start_s, state, settings)?;
+        let mut guess = state
+            .iter()
+            .zip(&initial_derivative)
+            .map(|(value, derivative)| value + step_s * derivative)
+            .collect::<Vec<_>>();
+        let residual_at = |candidate: &[f64]| -> Result<Vec<f64>, EquationError> {
+            let derivative = self.derivatives(evaluation_s, candidate, settings)?;
+            Ok(candidate
+                .iter()
+                .zip(state)
+                .zip(derivative)
+                .map(|((next, previous), rate)| next - previous - step_s * rate)
+                .collect())
+        };
+        let mut residual = residual_at(&guess)?;
+
+        for iteration in 0..settings.implicit_max_iterations {
+            let norm = max_abs(&residual);
+            if norm <= settings.implicit_tolerance {
+                return Ok((guess, iteration));
+            }
+            let n = guess.len();
+            let mut jacobian = vec![vec![0.0; n]; n];
+            for column in 0..n {
+                let mut perturbed = guess.clone();
+                let delta = f64::EPSILON.sqrt() * (1.0 + guess[column].abs());
+                perturbed[column] += delta;
+                let shifted = residual_at(&perturbed)?;
+                for row in 0..n {
+                    jacobian[row][column] = (shifted[row] - residual[row]) / delta;
+                }
+            }
+            let right_hand_side = residual.iter().map(|value| -value).collect::<Vec<_>>();
+            let correction = solve_dense(jacobian, right_hand_side).ok_or(
+                EquationError::ImplicitNonConvergence {
+                    time_s: evaluation_s,
+                    residual: norm,
+                },
+            )?;
+
+            let mut accepted = None;
+            let mut damping = 1.0;
+            for _ in 0..10 {
+                let candidate = guess
+                    .iter()
+                    .zip(&correction)
+                    .map(|(value, delta)| value + damping * delta)
+                    .collect::<Vec<_>>();
+                let candidate_residual = residual_at(&candidate)?;
+                if max_abs(&candidate_residual) < norm {
+                    accepted = Some((candidate, candidate_residual));
+                    break;
+                }
+                damping *= 0.5;
+            }
+            let Some((next_guess, next_residual)) = accepted else {
+                return Err(EquationError::ImplicitNonConvergence {
+                    time_s: evaluation_s,
+                    residual: norm,
+                });
+            };
+            guess = next_guess;
+            residual = next_residual;
+        }
+        Err(EquationError::ImplicitNonConvergence {
+            time_s: evaluation_s,
+            residual: max_abs(&residual),
         })
     }
 
@@ -1015,6 +1351,8 @@ impl CompiledGraph {
 struct StepAttempt {
     state: Vec<f64>,
     error_norm: f64,
+    error_order: f64,
+    nonlinear_iterations: usize,
 }
 
 fn combine(base: &[f64], step_s: f64, terms: &[(&Vec<f64>, f64)]) -> Vec<f64> {
@@ -1350,6 +1688,121 @@ mod tests {
             2e-8,
         );
         assert!(result.rejected_steps > 0, "the oversized first step is rejected");
+    }
+
+    #[test]
+    fn auto_selects_implicit_integration_for_separated_time_scales() {
+        let mut graph = EquationGraph::new();
+        let command = graph
+            .add_block(Block::new(
+                "command",
+                Quantity::Dimensionless,
+                BlockKind::Constant { value: 1.0 },
+            ))
+            .unwrap();
+        let fast = graph
+            .add_block(Block::new(
+                "fast response",
+                Quantity::Dimensionless,
+                BlockKind::FirstOrder {
+                    tau_s: 1e-4,
+                    initial: 0.0,
+                },
+            ))
+            .unwrap();
+        let slow = graph
+            .add_block(Block::new(
+                "slow response",
+                Quantity::Dimensionless,
+                BlockKind::FirstOrder {
+                    tau_s: 1.0,
+                    initial: 0.0,
+                },
+            ))
+            .unwrap();
+        graph.connect(command, fast, 0).unwrap();
+        graph.connect(command, slow, 0).unwrap();
+        let compiled = graph.compile().unwrap();
+        let settings = SolverSettings {
+            end_s: 1.0,
+            initial_step_s: 1e-3,
+            max_step_s: 0.05,
+            relative_tolerance: 2e-4,
+            absolute_tolerance: 1e-7,
+            ..SolverSettings::default()
+        };
+        let decision = compiled.recommend_solver(&settings);
+        assert_eq!(decision.selected, IntegrationMethod::BackwardEuler);
+        assert_eq!(decision.reason, SolverDecisionReason::SeparatedTimeScales);
+        assert_eq!(decision.time_scale_ratio, Some(10_000.0));
+
+        let result = compiled.simulate(settings).unwrap();
+        assert_eq!(result.solver, decision);
+        assert!(result.nonlinear_iterations > 0);
+        near(result.last_value(fast).unwrap(), 1.0, 2e-4);
+        near(
+            result.last_value(slow).unwrap(),
+            1.0 - (-1.0_f64).exp(),
+            8e-4,
+        );
+    }
+
+    #[test]
+    fn backward_euler_remains_stable_with_a_step_far_above_the_fast_time_constant() {
+        let mut graph = EquationGraph::new();
+        let command = graph
+            .add_block(Block::new(
+                "command",
+                Quantity::Dimensionless,
+                BlockKind::Constant { value: 1.0 },
+            ))
+            .unwrap();
+        let response = graph
+            .add_block(Block::new(
+                "response",
+                Quantity::Dimensionless,
+                BlockKind::FirstOrder {
+                    tau_s: 1e-4,
+                    initial: 0.0,
+                },
+            ))
+            .unwrap();
+        graph.connect(command, response, 0).unwrap();
+        let result = graph
+            .compile()
+            .unwrap()
+            .simulate(SolverSettings {
+                method: IntegrationMethod::BackwardEuler,
+                end_s: 0.1,
+                initial_step_s: 0.01,
+                min_step_s: 0.01,
+                max_step_s: 0.01,
+                relative_tolerance: 2.0,
+                absolute_tolerance: 1.0,
+                ..SolverSettings::default()
+            })
+            .unwrap();
+        assert_eq!(result.solver.reason, SolverDecisionReason::UserSelected);
+        assert!(result
+            .points
+            .iter()
+            .all(|point| point.values[response].is_finite()));
+        let final_value = result.last_value(response).unwrap();
+        assert!((0.0..=1.0).contains(&final_value));
+        near(final_value, 1.0, 1e-8);
+    }
+
+    #[test]
+    fn errors_expose_stable_codes_and_human_safe_next_actions() {
+        let error = EquationError::QuantityMismatch {
+            from: "battery voltage".to_string(),
+            from_quantity: Quantity::VoltageV,
+            to: "coolant inlet".to_string(),
+            expected: Quantity::TemperatureK,
+        };
+        assert_eq!(error.code(), "connection.quantity_mismatch");
+        assert!(error.suggested_action().contains("compatible port"));
+        assert!(error.suggested_action().contains("unit-reviewed"));
     }
 
     #[test]
