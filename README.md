@@ -489,6 +489,8 @@ is copied into the repository.
 | `js/vehicle.js` | The machine around the pack: road load, vehicle class defaults, driving modes, speed traces, Wh/km and range |
 | `js/v2x.js` | Feeding power back: V2L/V2H/V2G/V2V modes, per-design verdicts, and the cycle-life wear floor behind the V2G economics |
 | `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
+| `rust-core/` | Dependency-free numerical kernels tested natively and compiled to WebAssembly for web and desktop-webview builds; the same crate is ready for direct native linking as kernels migrate |
+| `js/wasm-core.js` | Typed Rust/Wasm loader, memory boundary and exact JavaScript fallback |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |
@@ -509,12 +511,14 @@ tests use named `test()` blocks and shared assertions from
 node --test tests/*.test.mjs   # every runtime suite
 node --test tests/btms.test.mjs  # one area
 npm ci && npm run typecheck    # strict TypeScript contracts for the core
+npm run rust:test              # native Rust kernel tests
+npm run wasm:build             # browser WebAssembly artifact
 ```
 
-CI runs four gates on every change: `tools/validate.mjs` (data contracts),
-strict TypeScript contract checking, the full test run, and
-`tools/validate-vs-market.mjs` (the result must still
-match production packs).
+CI validates the data contracts, native Rust kernels, generated WebAssembly
+and Rust/JavaScript parity, strict TypeScript contracts, the full runtime test
+suite, and `tools/validate-vs-market.mjs` (the result must still match
+production packs).
 
 ## References and sources
 

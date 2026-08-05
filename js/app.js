@@ -35,6 +35,7 @@ import { buildSensorPlan } from './sensors.js';
 import { buildEngineeringDiagnostics } from './diagnostics.js';
 import { runSimulationJob } from './simulation-jobs.js';
 import { SimulationWorkerClient, shouldUseSimulationWorker } from './simulation-client.js';
+import { initializeWasmCore } from './wasm-core.js';
 import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
 import { shortCircuitStudy } from './shortcircuit.js';
@@ -2375,6 +2376,10 @@ let lastSimCompare = null;
 let simSeason = 'design', simPasses = 1, simSoC = 100;
 let simChargeMode = 'none', simChargeMin = 15;
 const simulationWorker = new SimulationWorkerClient();
+// Loading is opportunistic. The synchronous sizing path keeps using the
+// reference JavaScript kernel until Rust/Wasm is ready, and forever on a host
+// that does not support it.
+void initializeWasmCore();
 let simulationGeneration = 0;
 
 // ---------------------------------------------------------------------------

@@ -25,7 +25,7 @@ const OUT = path.join(HERE, 'runner');
 // Exactly what the application needs at runtime. Tests, tools and the
 // contrib data are not shipped — they are how the tool is built, not how it
 // is used, and shipping them makes the download bigger for no one's benefit.
-const INCLUDE = ['index.html', 'js', 'vendor', 'assets', 'desktop', 'REFERENCES.md', 'LICENSE', 'NOTICE'];
+const INCLUDE = ['index.html', 'js', 'wasm', 'vendor', 'assets', 'desktop', 'REFERENCES.md', 'LICENSE', 'NOTICE'];
 
 rmSync(OUT, { recursive: true, force: true });
 mkdirSync(OUT, { recursive: true });
