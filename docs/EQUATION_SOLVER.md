@@ -27,13 +27,32 @@ its equations predict.
   tolerance;
 - stable diagnostic codes plus conservative, human-readable next actions;
 - complete traces in stable block order and solver statistics;
-- a coupled electrical/thermal cell reference graph.
+- a coupled electrical/thermal cell reference graph;
+- a versioned numeric transport for browser-authored approved graphs;
+- an opaque WebAssembly run handle that returns solver metadata and stable
+  `[time, block values...]` trace rows without introducing a second solver.
+
+`cosim.html`, `js/cosim-graph.js` and `js/cosim-studio.js` provide the first
+guided visual composition surface over that exact backend. The graph document
+is canonical and checksummed, typed wires are checked before transport, and
+Guided, Manual and Automatic draft modes all end at the same human approval
+boundary. Assistant/debugger changes are proposals; they cannot apply
+themselves.
+
+Thermal-runaway propagation is attached as a separate specialist analysis
+module because its spatial two-node-per-cell model is not one scalar equation
+block. It compares spacing/barriers and containment energy using
+`js/runaway.js`, runs off the UI thread, and can return Fail or Unproven only.
+It never returns Pass and never substitutes for UL 9540A or GB 38031 testing.
+The customer result also presents a controlled NMC/LFP/LTO comparison in
+plain language. Geometry, mass, stored energy, spacing, barrier, ambient and
+state of charge remain identical; only the chemistry-class onset and release
+multiple change. This makes the behavioral difference visible without
+pretending that chemistry class replaces actual-cell ARC and propagation data.
 
 This is a real solver, but it is not yet a general industrial DAE platform.
 The following remain explicitly unshipped:
 
-- a visual block canvas and drag/drop editing;
-- generic browser/Wasm graph serialization;
 - physical conserving ports and automatic index reduction;
 - large sparse Jacobians and sparse linear algebra;
 - high-order BDF/IDA-class stiff integration and general implicit DAEs;
@@ -99,6 +118,8 @@ the same versioned graph and result identifier.
 
 Validation failures expose a stable code such as
 `connection.quantity_mismatch` or `solver.implicit_non_convergence` and a
-conservative suggested action. A future assistant may explain or draft that
-action, but it may not reconnect blocks, alter tolerances or approve the model
-without the existing human review workflow.
+conservative suggested action. The shipped assistant may explain or draft
+that action, but it may not reconnect blocks, alter tolerances or approve the
+model without the existing human review workflow. The studio enforces this by
+returning immutable proposals and requiring a named human carrying
+`edit-graph` authority before a draft or deterministic repair is applied.

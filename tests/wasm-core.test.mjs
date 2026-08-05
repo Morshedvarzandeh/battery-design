@@ -5,11 +5,14 @@ import { existsSync, readFileSync } from 'node:fs';
 import { profileStatsKernel } from '../js/profile-kernel.js';
 import {
   acceleratedProfileStats,
+  equationGraphWasmReady,
   initializeWasmCore,
   resetWasmCoreForTest,
+  simulateEquationGraph,
   WASM_PROFILE_THRESHOLD,
   wasmCoreReady,
 } from '../js/wasm-core.js';
+import { MODEL_TEMPLATES } from '../js/cosim-graph.js';
 
 const WASM = new URL('../wasm/battery_design_core.wasm', import.meta.url);
 const cases = [
@@ -44,4 +47,17 @@ test('Rust/Wasm profile results match JavaScript', { skip: !existsSync(WASM) }, 
       else assert.ok(Math.abs(actual[key] - expected[key]) < 1e-9, `${key}: ${actual[key]} != ${expected[key]}`);
     }
   }
+});
+
+test('browser graphs execute through the same Rust equation core', { skip: !existsSync(WASM) }, async () => {
+  resetWasmCoreForTest();
+  assert.equal(await initializeWasmCore({ bytes: readFileSync(WASM) }), true);
+  assert.equal(equationGraphWasmReady(), true);
+  const result = simulateEquationGraph(MODEL_TEMPLATES['road-electrothermal'].build());
+  const last = result.points.at(-1);
+  assert.equal(result.solver.method, 'dormand-prince-45');
+  assert.ok(result.acceptedSteps > 0);
+  assert.ok(Math.abs(last.values['terminal-voltage'] - 2.98) < 1e-9);
+  assert.ok(Math.abs(last.values.heat - 28.8) < 1e-9);
+  assert.ok(last.values.temperature > 298.15);
 });

@@ -163,7 +163,7 @@ test('the engine never depends on the panels', () => {
   const SURFACE = new Set([
     'app.js', 'viewer2d.js', 'viewer3d.js', 'garage-ui.js', 'garage3d-host.js',
     'cell-picker.js', 'radar.js', 'bay-import.js', 'training.js', 'excel.js',
-    'desktop-link.js',
+    'desktop-link.js', 'cosim-studio.js',
     // Browser-only by requirement, not by accident: a customer's own cell data
     // is stored in THEIR browser and nowhere else, so this module cannot be
     // made to run headless without breaking the promise that keeps it private.

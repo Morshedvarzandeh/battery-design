@@ -491,8 +491,12 @@ is copied into the repository.
 | `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
 | `rust-core/` | Dependency-free numerical kernels tested natively and compiled to WebAssembly for web and desktop-webview builds; the same crate is ready for direct native linking as kernels migrate |
 | `rust-core/src/equations.rs` | Typed block graph, port validation, algebraic-loop assembly, explicit and small-graph implicit integration, deterministic events, stable diagnostics and result traces |
-| `js/wasm-core.js` | Typed Rust/Wasm loader, memory boundary and exact JavaScript fallback |
+| `rust-core/src/graph_transport.rs` | Versioned browser-to-Rust graph transport plus an opaque Wasm run/trace ABI |
+| `js/wasm-core.js` | Typed Rust/Wasm loader, memory boundary, exact profile fallback and authoritative graph-run client |
 | `js/governance.js` | Market scope, role-based progressive disclosure, human approval gates, immutable project history and per-person history projections |
+| `js/cosim-graph.js` | Approved block manifest, canonical graph document, market-isolated templates, assistant proposals, debugging and human-approved repairs |
+| `js/cosim-studio.js` | Guided/manual/automatic visual block canvas and live Rust trace playback |
+| `js/cosim-analysis.js` | Attached specialist simulations, including thermal-runaway propagation screening with a never-certify boundary |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |
@@ -522,10 +526,14 @@ nonlinear work. Failures expose stable codes and conservative next actions for
 a guided UI without allowing an assistant to change the model silently. A
 coupled cell voltage/heat/temperature graph is kept as an executable reference
 model. The exact shipped boundary and the validation ladder are documented in
-[`docs/EQUATION_SOLVER.md`](docs/EQUATION_SOLVER.md). The visual block canvas,
-high-order SUNDIALS/IDA adapters, sparse DAE backends, generic Wasm graph
-transport and FMI master remain separate until their own conformance gates
-exist.
+[`docs/EQUATION_SOLVER.md`](docs/EQUATION_SOLVER.md). The Co-Simulation Studio
+now adds a visual typed canvas, deterministic graph files, versioned numeric
+transport into the same Rust core, guided/manual/automatic-draft workflows,
+and evidence-backed repair proposals that require a named human. Thermal
+runaway is attached as a specialized comparative safety scenario: it can fail
+or remain unproven, but can never certify non-propagation. High-order
+SUNDIALS/IDA adapters, sparse DAE backends and an FMI importing master remain
+separate until their own conformance gates exist.
 
 ## Tests
 

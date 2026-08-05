@@ -5,6 +5,7 @@
 //! ABI at the bottom is the same implementation exposed to WebAssembly.
 
 pub mod equations;
+pub mod graph_transport;
 
 /// Stable ABI order returned by `profile_stats` and `bd_profile_stats`:
 /// duration_s, peak_w, mean_w, rms_w, discharge_wh, regen_wh, peak_charge_w.

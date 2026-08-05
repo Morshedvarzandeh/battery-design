@@ -367,7 +367,7 @@ export interface GridCustomerQuestion {
 }
 
 export type ActorKind = 'human' | 'ai' | 'system';
-export type WorkflowAuthority = 'validate' | 'review' | 'approve' | 'release';
+export type WorkflowAuthority = 'validate' | 'review' | 'approve' | 'release' | 'edit-graph';
 
 export interface WorkflowActor {
   readonly id: string;
@@ -404,4 +404,71 @@ export interface DesignRecord {
   readonly state: DesignState;
   readonly version: string;
   readonly history: readonly DesignHistoryEvent[];
+}
+
+// Co-Simulation Studio graph contract. Canvas positions travel with the file
+// for human readability, while Rust receives the canonical block order,
+// numerical parameters, typed connections and solver settings only.
+export type EquationQuantity =
+  | 'dimensionless' | 'fraction' | 'fraction-per-second'
+  | 'voltage' | 'current' | 'power' | 'energy'
+  | 'temperature' | 'temperature-rate' | 'heat' | 'speed' | 'torque';
+export type EquationBlockType =
+  | 'constant' | 'step' | 'gain' | 'sum' | 'product' | 'limit'
+  | 'integrator' | 'first-order' | 'thermal-rate';
+export type StudioMode = 'guided' | 'manual' | 'automatic';
+
+export interface EquationBlockNode {
+  id: string;
+  type: EquationBlockType;
+  name: string;
+  outputQuantity: EquationQuantity;
+  parameters: Record<string, number | EquationQuantity>;
+  position: { x: number; y: number };
+}
+
+export interface EquationConnection {
+  id: string;
+  from: string;
+  to: string;
+  toPort: number;
+}
+
+export interface EquationSolverSettings {
+  method: 'auto' | 'dormand-prince-45' | 'backward-euler';
+  startS: number;
+  endS: number;
+  initialStepS: number;
+  minStepS: number;
+  maxStepS: number;
+  relativeTolerance: number;
+  absoluteTolerance: number;
+  maxSteps: number;
+  algebraicTolerance: number;
+  algebraicMaxIterations: number;
+  implicitTolerance: number;
+  implicitMaxIterations: number;
+}
+
+export interface EquationAnalysisModule {
+  id: string;
+  type: 'runaway-propagation';
+  enabled: boolean;
+  parameters: Record<string, string | number>;
+}
+
+export interface EquationGraphDocument {
+  schema: 'battery-design/equation-graph@1';
+  catalogVersion: string;
+  id: string;
+  title: string;
+  market: 'road' | 'grid';
+  segment: GridCustomerSegment | null;
+  mode: StudioMode;
+  version: string;
+  nodes: EquationBlockNode[];
+  connections: EquationConnection[];
+  analysisModules: EquationAnalysisModule[];
+  settings: EquationSolverSettings;
+  history: Array<Record<string, unknown>>;
 }
