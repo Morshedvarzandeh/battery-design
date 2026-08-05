@@ -21,6 +21,7 @@
 
 import { defaultSizingOption, sizingOptionsFor } from './knowledge.js';
 import { POLICY_DEMANDS, POLICY_PROFILES } from './operating-policy.js';
+import { acceleratedProfileStats } from './wasm-core.js';
 
 function seg(value, seconds, dtS) {
   return Array(Math.max(1, Math.round(seconds / dtS))).fill(value);
@@ -248,26 +249,7 @@ export function profileById(id) {
 // Profile mathematics — all on the scaled (absolute-W) profile.
 // ---------------------------------------------------------------------------
 export function profileStats(profile, peakScaleW) {
-  const p = profile.p.map((v) => v * peakScaleW);
-  const dt = profile.dtS;
-  const n = p.length;
-  const durationS = n * dt;
-  let peakW = 0, sumPos = 0, sumSq = 0, sumChargeWh = 0, peakChargeW = 0, energyWh = 0;
-  for (const w of p) {
-    peakW = Math.max(peakW, w);
-    sumSq += w * w;
-    if (w > 0) { sumPos += w; energyWh += (w * dt) / 3600; }
-    else { peakChargeW = Math.max(peakChargeW, -w); sumChargeWh += (-w * dt) / 3600; }
-  }
-  const meanW = sumPos / n;               // mean of demand (charging excluded)
-  const rmsW = Math.sqrt(sumSq / n);      // heating-equivalent power
-  return {
-    durationS, peakW, meanW, rmsW,
-    energyPerPassWh: energyWh,            // discharge energy in one pass
-    regenWh: sumChargeWh,
-    peakChargeW: peakChargeW || null,
-    crestFactor: meanW > 0 ? peakW / meanW : null,
-  };
+  return acceleratedProfileStats(profile, peakScaleW);
 }
 
 // Profile-specific audit of a pack: the checks scalars can't do.

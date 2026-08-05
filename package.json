@@ -1,0 +1,14 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "rust:test": "cargo test --locked --manifest-path rust-core/Cargo.toml",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test tests/*.test.mjs",
+    "wasm:build": "node tools/build-wasm.mjs",
+    "validate": "node tools/validate.mjs && npm run typecheck && npm test && node tools/validate-vs-market.mjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  }
+}

@@ -8,6 +8,8 @@ __pycache__/
 
 # Distribution / packaging
 .Python
+node_modules/
+wasm/*.wasm
 build/
 develop-eggs/
 dist/

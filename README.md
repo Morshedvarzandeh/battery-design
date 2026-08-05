@@ -313,6 +313,12 @@ project's provenance-first datasheet pipeline.
   JSON, ready to paste into any chatbot, with your private cell records
   deliberately left out. Same modules everywhere — there is no second
   implementation that could disagree with the page.
+
+  The browser now applies the same measured rule to mission work: short runs
+  stay synchronous, while deep time-series profiles and multi-cell comparisons
+  run in a module worker so controls, navigation and progress feedback remain
+  responsive. Changing an input cancels stale work, and browsers that cannot
+  start a worker fall back to the identical main-thread calculation.
 - **The vehicle around the pack** — for machines that actually drive, the
   demand is no longer a number you type. Give the vehicle instead — mass
   without the pack, payload, frontal area, drag coefficient, rolling
@@ -483,6 +489,16 @@ is copied into the repository.
 | `js/vehicle.js` | The machine around the pack: road load, vehicle class defaults, driving modes, speed traces, Wh/km and range |
 | `js/v2x.js` | Feeding power back: V2L/V2H/V2G/V2V modes, per-design verdicts, and the cycle-life wear floor behind the V2G economics |
 | `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
+| `rust-core/` | Dependency-free numerical kernels tested natively and compiled to WebAssembly for web and desktop-webview builds; the same crate is ready for direct native linking as kernels migrate |
+| `rust-core/src/equations.rs` | Typed block graph, port validation, algebraic-loop assembly, explicit and small-graph implicit integration, deterministic events, stable diagnostics and result traces |
+| `rust-core/src/graph_transport.rs` | Versioned browser-to-Rust graph transport plus an opaque Wasm run/trace ABI |
+| `js/wasm-core.js` | Typed Rust/Wasm loader, memory boundary, exact profile fallback and authoritative graph-run client |
+| `js/governance.js` | Market scope, role-based progressive disclosure, human approval gates, immutable project history and per-person history projections |
+| `js/cosim-graph.js` | Approved block manifest, canonical graph document, market-isolated templates, assistant proposals, debugging and human-approved repairs |
+| `js/cosim-studio.js` | Guided/manual/automatic visual block canvas and live Rust trace playback |
+| `js/cosim-analysis.js` | Attached specialist simulations, including thermal-runaway propagation screening with a never-certify boundary |
+| `js/venting.js` | Conditional emergency pressure-relief free-area range from explicit gas-release evidence and compressible flow |
+| `js/loop-testing.js` | Executable SIL calculation plans plus HIL I/O/timing/fault contracts and measured-evidence evaluation |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |
@@ -491,20 +507,66 @@ is copied into the repository.
 The data modules are import-free so they can be consumed by tooling (node
 scripts, tests) without a browser.
 
+The product-control layer keeps one design record behind every audience. A
+manager receives five guided decision sections; an application engineer may
+open the block graph and evidence; a simulation specialist may open solver
+controls. Draft, validated, reviewed, approved and released are distinct
+states. Review, approval and release require named humans with explicit
+organization, market access and authority, while any material change creates
+a new draft version. Grid
+projects are additionally segmented into Home, Small Company and Industrial
+question sets, each including outage duration, dependable outage-time solar
+and inverter/islanding checks without borrowing vehicle or marine concepts.
+
+The first authoritative equation-graph backend is now part of the native Rust
+core. It rejects missing, duplicate and dimensionally incompatible
+connections before a run; solves finite algebraic feedback loops; integrates
+continuous states with explicit Dormand-Prince or an adaptive backward-Euler
+path for small stiff ODE graphs; and stops exactly at declared time events.
+Every run records the requested method, selected method, selection reason and
+nonlinear work. Failures expose stable codes and conservative next actions for
+a guided UI without allowing an assistant to change the model silently. A
+coupled cell voltage/heat/temperature graph is kept as an executable reference
+model. The exact shipped boundary and the validation ladder are documented in
+[`docs/EQUATION_SOLVER.md`](docs/EQUATION_SOLVER.md). The Co-Simulation Studio
+now adds a visual typed canvas, deterministic graph files, versioned numeric
+transport into the same Rust core, guided/manual/automatic-draft workflows,
+and evidence-backed repair proposals that require a named human. Thermal
+runaway is attached as a specialized comparative safety scenario: it can fail
+or remain unproven, but can never certify non-propagation. Its customer result
+shows NMC/LFP/LTO behavior plus separate air/barrier, structural-spacer,
+interconnect and radiation heat paths, including the equations and a plain
+language interpretation. Emergency vent sizing is attached separately: it
+requires visible gas-volume and release-time evidence, calculates both choked
+and subcritical compressible-flow cases, and returns a conditional free-area
+range—not a deflagration approval. SIL and HIL are likewise separate add-ons:
+SIL executes the exact software model against independent numeric ranges;
+the HIL module freezes I/O, sample time, faults, overruns and safe state and
+can only pass when measured target evidence is supplied. See
+[`docs/LOOP_TESTING.md`](docs/LOOP_TESTING.md). High-order
+SUNDIALS/IDA adapters, sparse DAE backends and an FMI importing master remain
+separate until their own conformance gates exist.
+
 ## Tests
 
-The suites live in `tests/*.test.mjs` and run on Node's built-in test
-runner — no dependencies, named `test()` blocks, shared assertions from
+The runtime suites live in `tests/*.test.mjs` and run on Node's built-in test
+runner with no runtime dependencies. Strict TypeScript is a development-only
+contract gate for cell records, pack layouts and both simulation levels. The
+tests use named `test()` blocks and shared assertions from
 `tests/helpers.mjs`:
 
 ```bash
-node --test tests/*.test.mjs   # every suite
+node --test tests/*.test.mjs   # every runtime suite
 node --test tests/btms.test.mjs  # one area
+npm ci && npm run typecheck    # strict TypeScript contracts for the core
+npm run rust:test              # native Rust kernel tests
+npm run wasm:build             # browser WebAssembly artifact
 ```
 
-CI runs three gates on every change: `tools/validate.mjs` (data contracts),
-the full test run, and `tools/validate-vs-market.mjs` (the result must still
-match production packs).
+CI validates the data contracts, native Rust kernels, generated WebAssembly
+and Rust/JavaScript parity, strict TypeScript contracts, the full runtime test
+suite, and `tools/validate-vs-market.mjs` (the result must still match
+production packs).
 
 ## References and sources
 

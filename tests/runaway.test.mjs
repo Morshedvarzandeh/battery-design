@@ -13,7 +13,7 @@
 import { test } from 'node:test';
 import { ok } from './helpers.mjs';
 import {
-  BARRIERS, RELEASE_MULTIPLE, releaseMultiple, neighbours,
+  BARRIERS, SPACERS, RELEASE_MULTIPLE, releaseMultiple, neighbours,
   propagation, propagationStudy,
 } from '../js/runaway.js';
 import { layoutPack } from '../js/pack-engine.js';
@@ -72,6 +72,28 @@ test('two nodes per cell, because one cannot propagate correctly', () => {
   // The trigger cell must get much hotter than its neighbours, or nothing is
   // being modelled at all.
   ok(thin.peakC > thin.peakNeighbourC + 200, 'the cell that went is far hotter than the ones that did not');
+});
+
+test('the cell spacer is a separate parallel heat bridge, not hidden in the gap', () => {
+  const layout = lay(1);
+  const none = propagation({ layout, cell: CELL(), barrier: 'mica', spacer: 'none' });
+  const holder = propagation({ layout, cell: CELL(), barrier: 'mica', spacer: 'pp-holder' });
+  const bonded = propagation({ layout, cell: CELL(), barrier: 'mica', spacer: 'structural-adhesive' });
+  ok(none.coupling.spacerWK === 0, 'the thermal reference has no structural bridge');
+  ok(holder.coupling.spacerWK > 0, 'a PP holder conducts through its contact ribs');
+  ok(bonded.coupling.spacerWK > holder.coupling.spacerWK, 'a full-area direct bond is a much larger heat bridge');
+  ok(Math.abs(holder.coupling.conductionWK
+      - holder.coupling.gapWK - holder.coupling.spacerWK - holder.coupling.interconnectWK) < 1e-12,
+  'air/barrier, spacer and interconnect conductances add as parallel paths');
+  ok(bonded.marginK < holder.marginK, 'the stronger spacer bridge heats the neighbour more');
+  ok(/G_spacer/.test(holder.equations.spacer) && /G_gap \+ G_spacer \+ G_interconnect/.test(holder.equations.totalConduction),
+    'the returned evidence states both equations explicitly');
+
+  const study = propagationStudy({ layout, cell: CELL(), barrier: 'mica', spacer: 'pp-holder' });
+  ok(study.spacerRanked.length === Object.keys(SPACERS).length, 'every approved spacer path is compared');
+  for (let i = 1; i < study.spacerRanked.length; i++) {
+    ok(study.spacerRanked[i].marginK <= study.spacerRanked[i - 1].marginK, 'spacers rank by comparison margin');
+  }
 });
 
 test('the physical levers move the answer the way physics says', () => {
@@ -144,5 +166,15 @@ test('every barrier is complete and usable', () => {
       `${id} is a complete barrier`);
     const r = propagation({ layout: lay(), cell: CELL(), barrier: id, barrierThicknessMm: 0.5 });
     ok(r && isFinite(r.marginK), `${id} produces a finite answer`);
+  }
+});
+
+test('every spacer heat path is explicit and finite', () => {
+  for (const [id, spacer] of Object.entries(SPACERS)) {
+    ok(spacer.name && spacer.what && spacer.kWmK >= 0
+      && spacer.contactFraction >= 0 && spacer.contactFraction <= 1
+      && spacer.pathLengthMm > 0, `${id} is a complete heat-path definition`);
+    const result = propagation({ layout: lay(), cell: CELL(), barrier: 'mica', spacer: id });
+    ok(Number.isFinite(result.coupling.spacerWK), `${id} produces a finite spacer conductance`);
   }
 });

@@ -1,0 +1,19 @@
+[package]
+name = "battery-design-core"
+version = "0.1.0"
+description = "Dependency-free numerical kernels shared by battery-design web and desktop builds"
+authors = ["Morshed Varzandeh"]
+license = "AGPL-3.0-or-later"
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+

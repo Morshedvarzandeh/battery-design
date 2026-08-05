@@ -29,7 +29,7 @@ env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
-  # The same three gates the ordinary CI runs. A release that skipped them
+  # The same gates the ordinary CI runs. A release that skipped them
   # would be the one build nobody checked, which is exactly backwards.
   gates:
     runs-on: ubuntu-latest
@@ -37,7 +37,15 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.77.2
+          targets: wasm32-unknown-unknown
       - run: node tools/validate.mjs
+      - run: npm ci
+      - run: npm run rust:test
+      - run: npm run wasm:build
+      - run: npm run typecheck
       - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs
 
@@ -89,7 +97,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.target }}
+          targets: ${{ matrix.target }},wasm32-unknown-unknown
 
       # Tauri on Linux needs the system webview and its build headers. The
       # webview belongs to the OS and is not shipped with the app, which is
@@ -125,7 +133,9 @@ jobs:
           ls -la desktop-app/src-tauri/binaries/
 
       - name: Stage the application
-        run: node desktop-app/prepare.mjs
+        run: |
+          npm run wasm:build
+          node desktop-app/prepare.mjs
 
       # The icon set is committed, so there is nothing to generate here. It
       # used to be regenerated on every runner, which quietly papered over the

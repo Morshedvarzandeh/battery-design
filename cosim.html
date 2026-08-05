@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>battery-design · Co-Simulation Studio</title>
+  <meta name="description" content="Describe an engineering goal, review an approved block model, run the Rust equation engine, and inspect evidence without losing human control.">
+  <meta name="theme-color" content="#0B6E5F">
+  <link rel="stylesheet" href="./cosim.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="./index.html"><b>battery-design</b><span> · Co-Simulation Studio</span></a>
+    <span class="boundary">Guided by default · Rust-authoritative equation runs</span>
+    <span class="spacer"></span>
+    <span id="saveState" class="status-chip">Draft</span>
+    <a class="quiet-link" href="./index.html">Back to sizing</a>
+  </header>
+
+  <nav class="progress" aria-label="Simulation workflow">
+    <span class="active"><b>1</b> Describe</span><i>→</i>
+    <span><b>2</b> Review blocks</span><i>→</i>
+    <span><b>3</b> Validate</span><i>→</i>
+    <span><b>4</b> Run &amp; explain</span>
+  </nav>
+
+  <main>
+    <aside class="guide-panel" aria-label="Guided model setup">
+      <section>
+        <p class="eyebrow">Your engineering question</p>
+        <h1>What should the system prove?</h1>
+        <p class="lede">Use plain language. The assistant may prepare a draft from approved blocks; it cannot approve or release its own work.</p>
+      </section>
+
+      <section class="field-grid">
+        <label>Market
+          <select id="marketSelect">
+            <option value="road">Road vehicle</option>
+            <option value="grid">Grid energy</option>
+          </select>
+        </label>
+        <label id="segmentField" hidden>Customer segment
+          <select id="segmentSelect">
+            <option value="home">Home</option>
+            <option value="small-company">Small company</option>
+            <option value="industrial">Industrial</option>
+          </select>
+        </label>
+      </section>
+
+      <fieldset class="mode-field">
+        <legend>How do you want to work?</legend>
+        <label><input type="radio" name="studioMode" value="guided" checked><span><b>Guided</b><small>Explain and suggest</small></span></label>
+        <label><input type="radio" name="studioMode" value="manual"><span><b>Manual</b><small>You build the graph</small></span></label>
+        <label><input type="radio" name="studioMode" value="automatic"><span><b>Automatic draft</b><small>AI drafts; human approves</small></span></label>
+      </fieldset>
+
+      <label class="prompt-field" for="goalInput">Describe the goal</label>
+      <textarea id="goalInput" rows="5" placeholder="Example: Show cell voltage and temperature during a current step, then explain the limiting result."></textarea>
+      <div class="example-row" aria-label="Example requests">
+        <button type="button" class="example" data-example="Show cell voltage and temperature during a current step.">Voltage &amp; temperature</button>
+        <button type="button" class="example" data-example="Compare thermal-runaway propagation barriers after one cell is triggered.">Runaway propagation</button>
+        <button type="button" class="example" data-example="Show remaining battery energy for a four-hour home outage including inverter losses.">Home backup</button>
+      </div>
+      <button type="button" id="suggestButton" class="primary wide">Prepare block draft</button>
+
+      <section id="assistantCard" class="assistant-card empty-card" aria-live="polite">
+        <p class="eyebrow">Design assistant</p>
+        <p>Describe the result you need. I will explain which approved blocks are required and why.</p>
+      </section>
+    </aside>
+
+    <section class="workspace" aria-label="Visual block workspace">
+      <div class="workspace-toolbar">
+        <div>
+          <strong id="modelTitle">Untitled model</strong>
+          <span id="graphIdentity">0 blocks · not validated</span>
+        </div>
+        <span class="spacer"></span>
+        <label class="add-control"><span class="sr-only">Block type</span><select id="blockTypeSelect"></select></label>
+        <button type="button" id="addBlockButton">Add block</button>
+        <button type="button" id="debugButton">Debug</button>
+        <button type="button" id="exportButton">Export</button>
+        <button type="button" id="importButton">Import</button>
+        <input id="importFile" type="file" accept="application/json,.json" hidden>
+      </div>
+
+      <div id="graphCanvas" class="graph-canvas" tabindex="0" aria-label="Block graph canvas">
+        <svg id="wireLayer" class="wire-layer" aria-hidden="true"></svg>
+        <div id="nodeLayer" class="node-layer"></div>
+        <div id="canvasEmpty" class="canvas-empty">
+          <span>○</span>
+          <h2>Start with the result, not the blocks</h2>
+          <p>Describe the job on the left, or switch to Manual to add an approved block.</p>
+        </div>
+      </div>
+
+      <div class="runbar">
+        <div class="run-message"><b id="runHeadline">Not run yet</b><span id="runDetail">A valid graph is required before the Rust engine starts.</span></div>
+        <button type="button" id="runButton" class="primary">Run live playback</button>
+      </div>
+    </section>
+
+    <aside class="evidence-panel" aria-label="Validation and engineering evidence">
+      <section>
+        <div class="section-title"><div><p class="eyebrow">Model health</p><h2>What needs attention?</h2></div><span id="healthBadge" class="status-chip neutral">Empty</span></div>
+        <div id="diagnosticsList" class="diagnostic-list"><p class="muted">Add a model to begin validation.</p></div>
+        <button type="button" id="applyRepairButton" class="secondary wide" hidden>Review and apply minimal repair</button>
+      </section>
+
+      <section id="inspectorSection" hidden>
+        <p class="eyebrow">Selected block</p>
+        <div id="blockInspector"></div>
+      </section>
+
+      <section id="scenarioSection" hidden>
+        <p class="eyebrow">Safety scenario inputs</p>
+        <div id="scenarioInspector"></div>
+      </section>
+
+      <section id="loopSection">
+        <p class="eyebrow">Verification add-ons</p>
+        <h2>Software or hardware loop?</h2>
+        <div class="loop-card">
+          <h3>Software-in-the-Loop <span class="status-chip pass">Executable</span></h3>
+          <p>Run this exact software model repeatedly against an independent numeric acceptance range.</p>
+          <label>Output under test<select id="silOutputSelect"></select></label>
+          <div class="field-grid scenario-grid"><label>Minimum<input id="silMinimum" type="number" step="any" placeholder="independent limit"></label><label>Maximum<input id="silMaximum" type="number" step="any" placeholder="independent limit"></label></div>
+          <button type="button" id="runSilButton" class="secondary wide">Run SIL calculation test</button>
+        </div>
+        <div class="loop-card">
+          <h3>Hardware-in-the-Loop <span class="status-chip neutral">Contract first</span></h3>
+          <p>Generate the fixed-period I/O, fault, overrun and safe-state contract. Only measured target evidence can pass it.</p>
+          <label>Target sample period (µs)<input id="hilSamplePeriod" type="number" min="1" step="1" value="1000"></label>
+          <button type="button" id="prepareHilButton" class="secondary wide">Prepare HIL test contract</button>
+        </div>
+        <div id="loopResults" class="diagnostic-list"><p class="muted">No loop test prepared for this graph version.</p></div>
+      </section>
+
+      <section id="resultSection" hidden>
+        <p class="eyebrow">Live result</p>
+        <div id="resultSummary"></div>
+        <svg id="traceChart" viewBox="0 0 320 128" role="img" aria-label="Simulation trace"></svg>
+        <div id="liveValues" class="live-values"></div>
+        <details class="evidence-fold">
+          <summary>Show solver evidence</summary>
+          <div id="solverEvidence"></div>
+        </details>
+      </section>
+
+      <section id="safetySection" hidden>
+        <p class="eyebrow">Safety scenario</p>
+        <div id="safetyResults"></div>
+      </section>
+    </aside>
+  </main>
+
+  <footer>
+    Live Playback is not deterministic HIL real-time. SIL executes the software model; HIL needs measured target timing and I/O evidence. Thermal-runaway propagation is a comparative screening model and never certifies safety; vent sizing is conditional too.
+  </footer>
+  <script type="module" src="./js/cosim-studio.js"></script>
+</body>
+</html>

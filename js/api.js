@@ -632,3 +632,19 @@ export function briefFromDesign(d) {
   if (d.warnings.length) lines.push(`Notes: ${d.warnings.join(' ')}`);
   return lines.join('\n');
 }
+
+// Product-control API. These are pure projections over the same engineering
+// result: market scope, progressive disclosure, and human approval/history.
+export {
+  AUDIENCES,
+  GRID_SEGMENTS,
+  audienceFor,
+  createDesignRecord,
+  gridCustomerQuestions,
+  personHistory,
+  productSurface,
+  projectHistory,
+  recordMaterialChange,
+  scopeForApplication,
+  transitionDesign,
+} from './governance.js';

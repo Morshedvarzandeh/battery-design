@@ -48,6 +48,7 @@ than one that prints them.
 | **UL 94** | Tests for flammability of plastic materials for parts in devices and appliances | Housing and holder material class | `components.js` |
 | **NFPA 855** | Standard for the installation of stationary energy storage systems | US stationary installation | `standards.js`, `markets.js` |
 | **NFPA 68** | Standard on explosion protection by deflagration venting | Vent-path sizing guidance | `standards.js`, `components.js` |
+| **NASA Glenn compressible mass flow** | Isentropic mass-flow/choking relation | Conditional thin-opening pressure-relief screen | `venting.js` |
 | **NFPA 1192** | Standard on recreational vehicles | Auxiliary (RV) class | `standards.js` |
 | **SAE J2929** | Safety standard for electric and hybrid vehicle propulsion battery systems using lithium-based rechargeable cells | Vehicle-class safety reference | `standards.js` |
 | **NIOSH lifting guideline** | US National Institute for Occupational Safety and Health revised lifting equation | The handling warning when a module or pack passes the mass at which one person can lift it safely | `standards.js`, `engineering.js` |
