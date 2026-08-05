@@ -4,6 +4,8 @@
 //! ordinary, safe functions that native code can call directly. The small C
 //! ABI at the bottom is the same implementation exposed to WebAssembly.
 
+pub mod equations;
+
 /// Stable ABI order returned by `profile_stats` and `bd_profile_stats`:
 /// duration_s, peak_w, mean_w, rms_w, discharge_wh, regen_wh, peak_charge_w.
 pub const PROFILE_STATS_LEN: usize = 7;
@@ -131,4 +133,3 @@ mod tests {
         assert_eq!(profile_stats(&[], 1.0, 1000.0), [0.0; PROFILE_STATS_LEN]);
     }
 }
-

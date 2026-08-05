@@ -490,6 +490,7 @@ is copied into the repository.
 | `js/v2x.js` | Feeding power back: V2L/V2H/V2G/V2V modes, per-design verdicts, and the cycle-life wear floor behind the V2G economics |
 | `js/sim1d.js` | Level-1 mission simulation (OCV−IR + lumped thermal over the profile) |
 | `rust-core/` | Dependency-free numerical kernels tested natively and compiled to WebAssembly for web and desktop-webview builds; the same crate is ready for direct native linking as kernels migrate |
+| `rust-core/src/equations.rs` | Typed block graph, port validation, algebraic-loop assembly, damped Newton solve, adaptive Dormand–Prince integration, deterministic events and result traces |
 | `js/wasm-core.js` | Typed Rust/Wasm loader, memory boundary and exact JavaScript fallback |
 | `js/governance.js` | Market scope, role-based progressive disclosure, human approval gates, immutable project history and per-person history projections |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
@@ -510,6 +511,16 @@ a new draft version. Grid
 projects are additionally segmented into Home, Small Company and Industrial
 question sets, each including outage duration, dependable outage-time solar
 and inverter/islanding checks without borrowing vehicle or marine concepts.
+
+The first authoritative equation-graph backend is now part of the native Rust
+core. It rejects missing, duplicate and dimensionally incompatible
+connections before a run; solves finite algebraic feedback loops; integrates
+continuous states with local error control; and stops exactly at declared time
+events. A coupled cell voltage/heat/temperature graph is kept as an executable
+reference model. The exact shipped boundary and the validation ladder are
+documented in [`docs/EQUATION_SOLVER.md`](docs/EQUATION_SOLVER.md). The visual
+block canvas, sparse DAE backends, generic Wasm graph transport and FMI master
+remain deliberately separate until their own conformance gates exist.
 
 ## Tests
 

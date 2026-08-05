@@ -124,12 +124,20 @@ export const ADDONS = [
     why: 'Thousands of complete designs is minutes of computation, not milliseconds.',
   },
   {
+    id: 'equations', name: 'Rust equation-graph solver', tier: 'desktop', status: 'shipped',
+    module: 'rust-core/src/equations.rs', concepts: ['simulation', 'cosim'],
+    what: 'Compile typed blocks into one executable equation graph, solve finite algebraic feedback loops with damped Newton iterations, and integrate continuous states with adaptive error control and exact event boundaries.',
+    provides: ['typed and validated model graphs', 'adaptive continuous-time traces', 'algebraic-loop diagnostics', 'reproducible solver statistics'],
+    needs: ['approved blocks and parameters', 'a native Rust host; the visual canvas and generic WebAssembly graph transport remain separate work'],
+    why: 'One authoritative equation layer prevents the visual editor, desktop runner and future FMI adapters from developing different physics.',
+  },
+  {
     id: 'blocks', name: 'Block editor for model composition', tier: 'desktop', status: 'planned',
-    module: 'planned', concepts: ['simulation', 'cosim'],
-    what: 'Wiring the tool\'s own models together on a canvas the way Simulink or GT-SUITE does — pack, vehicle, thermal loop, charger and load as blocks with typed ports, so a customer can compose a study instead of choosing from the studies that exist.',
-    provides: ['a visual model graph', 'studies the customer composes rather than picks', 'an export the FMU already knows how to carry'],
-    needs: ['the modules to declare their inputs and outputs as typed ports', 'app.js split up first — at 3,500 lines it is the obstacle, not the canvas'],
-    why: 'Every model here already has a clean functional signature, so the ports exist implicitly. Declaring them is what turns fifteen fixed studies into an open-ended one.',
+    module: 'planned UI over rust-core/src/equations.rs', concepts: ['simulation', 'cosim'],
+    what: 'Wiring the tool\'s models together on a calm canvas the way Simulink or GT-SUITE does — pack, vehicle, thermal loop, charger and load as blocks with typed ports, guided templates and a human approval gate.',
+    provides: ['a visual model graph', 'market-specific templates', 'plain-language results with engineering evidence on demand'],
+    needs: ['a versioned block manifest', 'generic graph transport into the Rust solver', 'the canvas and guided review workflow'],
+    why: 'The equation backend now exists; the remaining product work is to expose it without confronting managers with solver internals or letting an AI approve its own graph.',
   },
   // --- The physical simulation package -------------------------------------
   // Everything here is PLANNED, and grouped deliberately: these are the
