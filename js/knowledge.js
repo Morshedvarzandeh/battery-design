@@ -15,6 +15,10 @@ import { CLASS_OF_APP, appClassOf } from './markets.js';
 export const CONCEPTS = {
   'duty-economics': { label: 'Duty cycle & lifetime cost', why: 'Cycles/year, DoD and cycle life set the real cost of every design.' },
   'load-profile': { label: 'Load profiles', why: 'The shape of the demand sizes the pack, not the average.' },
+  'energy-policy': { label: 'Operating goal', why: 'EMS or PMS policy decides which part of external demand the battery must carry.' },
+  'driving-mode': { label: 'Driving mode', why: 'Eco, Normal and Sport change the battery demand without changing the route.' },
+  payload: { label: 'Passenger, cargo or mission payload', why: 'What the machine carries changes road, marine and flight energy before the battery is sized.' },
+  'round-trip-efficiency': { label: 'Round-trip efficiency', why: 'Charge, battery, discharge and auxiliary losses decide how much energy must be bought for every unit delivered.' },
   'space-fill': { label: 'Space-first max fill', why: 'The bay is fixed; the design is extracted from it.' },
   'multi-objective': { label: 'Multi-objective weights & Pareto', why: 'Energy vs cost vs mass is a trade, not a formula.' },
   'integration-allowance': { label: 'Integration allowance', why: 'Real packs lose plan area to structure — calibrated against production packs.' },
@@ -140,6 +144,10 @@ export const NEEDS = {
 
   'duty-economics': { classes: ALL },
   'load-profile': { classes: ALL },
+  'energy-policy': { classes: [], apps: ['solar-ess', 'marine'] },
+  'driving-mode': { classes: [], apps: ['ev', 'ebus', 'ebike', 'escooter', 'robot'] },
+  payload: { classes: [], apps: ['ebus', 'marine', 'drone', 'robot'] },
+  'round-trip-efficiency': { classes: ALL },
   'space-fill': { classes: ALL },
   'multi-objective': { classes: ALL },
   'integration-allowance': { classes: ['vehicle', 'stationary', 'marine', 'industrial', 'auxiliary'] },
@@ -177,6 +185,80 @@ export const NEEDS = {
   'vehicle-dynamics': { classes: [], apps: ['ev', 'ebus', 'ebike', 'escooter', 'robot'] },
 };
 
+// The knowledge graph also owns the choices shown by Sizing. Data modules
+// describe profiles, policies and driving modes; only this graph decides
+// which of them an application is allowed to expose and which is the default.
+export const SIZING_OPTIONS = {
+  'load-profile': {
+    ebike: { default: 'ebike-assist', options: ['ebike-assist'] },
+    escooter: { default: 'escooter-urban', options: ['escooter-urban'] },
+    drone: { default: 'drone-mission', options: ['drone-mission'] },
+    powertool: { default: 'powertool-bursts', options: ['powertool-bursts'] },
+    'solar-ess': { default: 'grid-site-net-day', options: ['grid-site-net-day'] },
+    rv: { default: 'rv-house', options: ['rv-house', 'grid-site-net-day'] },
+    ev: { default: 'wltp-ev', options: ['wltp-ev', 'ebus-route'] },
+    ebus: { default: 'ebus-route', options: ['ebus-route'] },
+    robot: { default: 'robot-shift', options: ['robot-shift'] },
+    humanoid: { default: 'humanoid-locomotion', options: ['humanoid-locomotion', 'robot-shift'] },
+    cyberdog: { default: 'quadruped-patrol', options: ['quadruped-patrol'] },
+    wearable: { default: 'wearable-day', options: ['wearable-day'] },
+    robovac: { default: 'robovac-clean', options: ['robovac-clean', 'robot-shift'] },
+    ups: { default: 'ups-standby', options: ['ups-standby', 'powerstation-trip'] },
+    powerstation: { default: 'powerstation-trip', options: ['powerstation-trip', 'grid-site-net-day'] },
+    marine: { default: 'marine-vessel-duty', options: ['marine-vessel-duty'] },
+  },
+  'energy-policy': {
+    'solar-ess': {
+      default: 'grid-self-consumption',
+      options: ['grid-self-consumption', 'grid-peak-shaving', 'grid-load-shifting'],
+    },
+    marine: {
+      default: 'marine-full-electric',
+      options: [
+        'marine-full-electric', 'marine-load-levelling', 'marine-boost',
+        'marine-spinning-reserve', 'marine-peak-shaving',
+        'marine-load-smoothing', 'marine-ramp-support',
+      ],
+    },
+  },
+  'driving-mode': {
+    ev: { default: 'normal', options: ['eco', 'normal', 'sport'] },
+    ebus: { default: 'normal', options: ['eco', 'normal', 'sport'] },
+    ebike: { default: 'normal', options: ['eco', 'normal', 'sport'] },
+    escooter: { default: 'normal', options: ['eco', 'normal', 'sport'] },
+    robot: { default: 'normal', options: ['eco', 'normal', 'sport'] },
+  },
+};
+
+export function sizingOptionsFor(appId, conceptId) {
+  const entry = SIZING_OPTIONS[conceptId]?.[appId];
+  return entry ? [...entry.options] : [];
+}
+
+export function defaultSizingOption(appId, conceptId) {
+  return SIZING_OPTIONS[conceptId]?.[appId]?.default || null;
+}
+
+// The one decision presented on the simple Sizing page. Policies take
+// precedence over driving modes; otherwise the customer chooses a duty.
+export function primarySizingDecision(appId) {
+  if (sizingOptionsFor(appId, 'energy-policy').length) return 'energy-policy';
+  if (sizingOptionsFor(appId, 'driving-mode').length) return 'driving-mode';
+  return 'load-profile';
+}
+
+export function sizingInputsForApp(appId) {
+  return [
+    ...(needed(appId, 'route-road') ? ['route'] : []),
+    ...(needed(appId, 'hull-resistance') ? ['voyage', 'sea-conditions'] : []),
+    ...(needed(appId, 'flight-weather') ? ['flight-mission', 'flight-weather'] : []),
+    ...(needed(appId, 'payload') ? ['payload'] : []),
+    ...(needed(appId, 'round-trip-efficiency') ? ['round-trip-efficiency'] : []),
+    ...(sizingOptionsFor(appId, 'driving-mode').length ? ['driving-mode'] : []),
+    ...(sizingOptionsFor(appId, 'energy-policy').length ? ['operating-goal'] : []),
+  ];
+}
+
 // Does this application need this concept? No app selected -> everything
 // is on the table (the customer has not narrowed yet).
 export function needed(appId, conceptId) {
@@ -212,5 +294,12 @@ export function validateGraph() {
     for (const a of edge.apps || []) if (!CLASS_OF_APP[a]) errors.push(`${cid}: unknown app ${a}`);
   }
   for (const cid of Object.keys(CONCEPTS)) if (!NEEDS[cid]) errors.push(`concept ${cid} has no edge`);
+  for (const [cid, apps] of Object.entries(SIZING_OPTIONS)) {
+    if (!CONCEPTS[cid]) errors.push(`sizing options for unknown concept ${cid}`);
+    for (const [appId, entry] of Object.entries(apps)) {
+      if (!CLASS_OF_APP[appId]) errors.push(`${cid}: sizing options for unknown app ${appId}`);
+      if (!entry.options?.includes(entry.default)) errors.push(`${cid}/${appId}: default is not an allowed option`);
+    }
+  }
   return errors;
 }

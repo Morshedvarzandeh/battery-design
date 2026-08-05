@@ -25,10 +25,14 @@ import {
   LOAD_PROFILES, profileForApp, profilesForApp, profileById, profileStats, profileChecks,
   parseProfileCSV,
 } from './loadprofiles.js';
+import { operatingPolicyById } from './operating-policy.js';
+import { roundTripPlan } from './efficiency.js';
+import { assessSizingCandidate, customerReadiness } from './customer-experience.js';
 import { climateById, climateSpan, seasonalOutlook, INDOOR_APPS } from './seasons.js';
 import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
 import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
+import { buildEngineeringDiagnostics } from './diagnostics.js';
 import { simulateMission, compareCells } from './sim1d.js';
 import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
@@ -39,9 +43,12 @@ import {
   vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare,
   modeComparison, DRIVING_MODES,
 } from './vehicle.js';
+import { parseGpx, routeToTrace, validateRoute } from './route.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { TRAINING_TRACKS } from './training.js';
-import { stepsFor, needed, appNeeds } from './knowledge.js';
+import {
+  stepsFor, needed, appNeeds, sizingOptionsFor, defaultSizingOption, primarySizingDecision,
+} from './knowledge.js';
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
 import {
   buildArchitecture, modulePartition, systemPlan, divisors,
@@ -84,6 +91,9 @@ const state = {
   loopOverride: 'auto',    // thermal loop choice (like BMS topology: an input)
   emsOverride: 'auto',     // EMS architecture (only for EMS-bearing applications)
   driveMode: 'normal',     // Eco | Normal | Sport — the driver, not the machine
+  energyPolicyId: null,   // EMS/PMS goal converted internally to battery duty
+  busLoad: 'typical',     // empty | typical | full — plain passenger-load presets
+  vehicleRoute: null,     // local GPX route; never uploaded by the application
   v2xPolicy: 'off',        // off | v2l | v2h | v2g | v2v — what you actually build
 };
 let customProfile = null;  // uploaded profile (session only)
@@ -151,13 +161,32 @@ function init() {
   restoreHash();
   initComponents();
   bindControls();
+  setAudienceMode(localStorage.getItem('bd-audience') === 'engineering' ? 'engineering' : 'customer');
   viewer2d = new PackViewer2D($('viewport2d'));
   syncInputs();
   recompute();
   $('btnWizard').onclick = showWizard;
-  $('wzSkip').onclick = () => hideWizard(true);
+  $('btnAudience').onclick = () => setAudienceMode(
+    document.body.classList.contains('customer-view') ? 'engineering' : 'customer');
+  $('wzSkip').onclick = () => { hideWizard(true); setAudienceMode('engineering'); };
   bindTraining();
   if (!localStorage.getItem('bd-wizard-done')) showWizard();
+}
+
+function setAudienceMode(mode) {
+  const customer = mode !== 'engineering';
+  document.body.classList.toggle('customer-view', customer);
+  localStorage.setItem('bd-audience', customer ? 'customer' : 'engineering');
+  $('btnAudience').textContent = customer ? 'Engineering workbench' : 'Quick sizing';
+  $('brandMode').textContent = customer ? ' · sizing studio' : ' · engineering workbench';
+  document.querySelectorAll('#tabs .tab[data-customer-label]').forEach((tab) => {
+    tab.textContent = tab.dataset[customer ? 'customerLabel' : 'engineerLabel'];
+  });
+  buildFlowBar();
+  const active = document.querySelector('#tabs .tab.active');
+  if (customer && active?.classList.contains('engineering-nav')) {
+    document.querySelector('#tabs .tab[data-tab="usage"]')?.click();
+  }
 }
 
 function isDark() {
@@ -501,8 +530,36 @@ function renderPresets() {
   grid.appendChild(note);
 }
 
+function customerDefaultCell(pr) {
+  const complete = (c) => c.priceUSD != null && c.cycleLife != null;
+  for (const chemistry of pr.preferredChemistries || []) {
+    const hit = allCells().find((c) => c.chemistry === chemistry && complete(c));
+    if (hit) return hit;
+  }
+  for (const chemistry of pr.preferredChemistries || []) {
+    const hit = allCells().find((c) => c.chemistry === chemistry && c.priceUSD != null);
+    if (hit) return hit;
+  }
+  return allCells().find(complete) || allCells()[0];
+}
+
 function applyPreset(pr) {
+  const applicationChanged = state.presetId !== pr.id;
   state.presetId = pr.id;
+  if (applicationChanged) {
+    // Application-dependent state must never leak from the previous machine.
+    // A home system should not inherit an automotive cell, a boat's PMS goal,
+    // or a bus route merely because those happened to be on screen first.
+    const nextCell = customerDefaultCell(pr);
+    state.cellId = nextCell.id;
+    state.arrangement = defaultArrangement(nextCell);
+    state.orientation = 'upright';
+    state.nx = 0; state.nz = 1; state.appliedBay = null;
+    state.vehicleRoute = null; state.busLoad = 'typical';
+    state.energyPolicyId = null; state.driveMode = 'normal';
+    state.sel = { ...(DEFAULTS_BY_FORM[nextCell.form] || {}) };
+    onCellChange();
+  }
   const fam = familyOfApp(pr.id);
   if (fam && openFamily !== fam.id) { openFamily = fam.id; renderPresets(); }
   document.querySelectorAll('.preset').forEach((el) =>
@@ -555,11 +612,12 @@ function applyPreset(pr) {
     state.climateId = 'temperate';
   }
   $('selClimate').value = state.climateId;
-  // Each application carries its OWN characteristic load shape (a truck-like
-  // van is not a rooftop solar plant), plus a short list of alternates the
-  // customer can switch between — the dropdown regroups per application.
+  // Knowledge-graph defaults select the raw duty, operating policy or driving
+  // mode. The simple Sizing UI shows only the primary decision for this app.
   fillVehicleInputs(pr.id);
   rebuildProfileSelect(pr.id);
+  state.energyPolicyId = defaultSizingOption(pr.id, 'energy-policy');
+  state.driveMode = defaultSizingOption(pr.id, 'driving-mode') || 'normal';
   const prof = profileForApp(pr.id);
   if (prof) {
     state.profileId = prof.id;
@@ -587,16 +645,122 @@ function applyPreset(pr) {
   state.p = sp.p;
   syncInputs();
   recompute();
+  // Road applications size from machine physics by default. The mode cards
+  // update this same generated profile instead of creating another concept.
+  if (primarySizingDecision(pr.id) === 'driving-mode') useVehicleProfile();
 }
 
 // ---------------------------------------------------------------------------
-// Load profiles
+// Sizing duty: raw demand, operating policy or driving mode -> battery profile
 // ---------------------------------------------------------------------------
 function currentProfile() {
   if (state.profileId === 'custom') return customProfile;
   // The physics-derived profile: built from the vehicle, not stored anywhere.
   if (state.profileId === 'vehicle') return lastVehicle?.drive?.profile || null;
   return state.profileId ? profileById(state.profileId) : null;
+}
+
+// One simple customer decision, selected by the knowledge graph. Internally
+// the cards may represent a raw duty, an EMS/PMS policy or a driving mode;
+// every path produces the same battery profile consumed by sizing.
+function renderProfileChoices(appId = state.presetId) {
+  const grid = $('profileChoices');
+  const hint = $('profileChoiceHint');
+  const tab = $('tabProfile');
+  if (!grid || !hint || !tab) return;
+
+  const isNeeded = needed(appId, 'load-profile');
+  tab.hidden = !isNeeded;
+  if (!isNeeded) {
+    grid.innerHTML = '';
+    hint.textContent = 'This application does not need a load-profile selection.';
+    if ($('pane-profile')?.classList.contains('active')) {
+      document.querySelector('#tabs .tab[data-tab="usage"]')?.click();
+    }
+    return;
+  }
+
+  grid.innerHTML = '';
+  if (!appId) {
+    if ($('sizingInputs')) $('sizingInputs').innerHTML = '';
+    hint.textContent = 'Pick an application on the Usage tab first. Sizing will show only the relevant choices.';
+    return;
+  }
+
+  const decision = primarySizingDecision(appId);
+  renderSizingInputs(appId);
+  const appName = PRESETS.find((p) => p.id === appId)?.name || appId;
+  let choices = [];
+  let selected = null;
+  let choose = null;
+  if (decision === 'energy-policy') {
+    choices = sizingOptionsFor(appId, decision).map(operatingPolicyById).filter(Boolean);
+    selected = state.energyPolicyId;
+    choose = (id) => { state.energyPolicyId = id; selectProfile(id); };
+    hint.textContent = `Choose the result you want from the ${appName} battery. Sizing calculates the battery duty behind it.`;
+  } else if (decision === 'driving-mode') {
+    const allowed = new Set(sizingOptionsFor(appId, decision));
+    choices = DRIVING_MODES.filter((m) => allowed.has(m.id)).map((m) => ({ ...m, description: m.what }));
+    selected = state.driveMode;
+    choose = (id) => { state.driveMode = id; useVehicleProfile(); };
+    hint.textContent = `Choose the normal customer use for ${appName}. Normal sizes mission energy; Sport is the demanding power check.`;
+  } else {
+    choices = profilesForApp(appId);
+    selected = state.profileId;
+    choose = selectProfile;
+    hint.textContent = `Choose the duty closest to how ${appName} will be used.`;
+  }
+
+  for (const pr of choices) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'profile-choice';
+    b.dataset.profile = pr.id;
+    b.classList.toggle('active', selected === pr.id);
+    b.setAttribute('aria-pressed', selected === pr.id ? 'true' : 'false');
+    b.innerHTML = `<b>${esc(pr.name)}</b><span>${esc(pr.description || pr.note || pr.what)}</span>`;
+    b.onclick = () => choose(pr.id);
+    grid.appendChild(b);
+  }
+}
+
+const BUS_LOADS = [
+  { id: 'empty', name: 'Empty bus', payloadKg: 0, note: 'Vehicle only — useful as the lower bound.' },
+  { id: 'typical', name: 'Typical service', payloadKg: 3000, note: 'About 40 passengers at 75 kg including belongings.' },
+  { id: 'full', name: 'Full capacity', payloadKg: 6000, note: 'About 80 passengers at 75 kg including belongings.' },
+];
+
+function renderSizingInputs(appId = state.presetId) {
+  const box = $('sizingInputs');
+  if (!box) return;
+  const hasPassengers = needed(appId, 'passenger-load');
+  const hasRoute = needed(appId, 'route-road');
+  if (!hasPassengers && !hasRoute) { box.innerHTML = ''; return; }
+  const route = state.vehicleRoute;
+  box.innerHTML = `
+    ${hasPassengers ? `<div style="margin-top:10px"><b style="font-size:12px">Bus loading</b></div>
+    <div class="profile-grid" id="busLoadChoices" style="margin-top:6px">
+      ${BUS_LOADS.map((x) => `<button type="button" class="profile-choice${state.busLoad === x.id ? ' active' : ''}" data-bus-load="${x.id}" aria-pressed="${state.busLoad === x.id}"><b>${esc(x.name)}</b><span>${esc(x.note)}</span></button>`).join('')}
+    </div>` : ''}
+    <div style="margin-top:10px"><b style="font-size:12px">Route</b></div>
+    <div class="seg" id="busRouteChoices" style="margin-top:6px">
+      <button type="button" data-route="standard" class="${route ? '' : 'active'}">Standard city route</button>
+      <button type="button" data-route="upload" class="${route ? 'active' : ''}">${route ? 'Replace route' : 'Use my route (GPX)'}</button>
+    </div>
+    <div class="hint" style="margin-top:6px">${route
+      ? `${esc(route.name)} · ${f1(route.totals.distanceKm)} km${route.totals.climbM != null ? ` · ${f0(route.totals.climbM)} m climb` : ''}. Processed locally.`
+      : 'The standard stop–go bus cycle is used. A GPX exported from a map or fleet system can replace it without sending the route anywhere.'}</div>`;
+  box.querySelectorAll('[data-bus-load]').forEach((b) => b.onclick = () => {
+    const load = BUS_LOADS.find((x) => x.id === b.dataset.busLoad) || BUS_LOADS[1];
+    state.busLoad = load.id;
+    $('vehPayload').value = load.payloadKg;
+    useVehicleProfile();
+  });
+  box.querySelector('[data-route="standard"]')?.addEventListener('click', () => {
+    state.vehicleRoute = null;
+    useVehicleProfile();
+  });
+  box.querySelector('[data-route="upload"]')?.addEventListener('click', () => $('routeFile')?.click());
 }
 
 // Regroups the profile dropdown around the chosen application: its
@@ -634,24 +798,31 @@ function rebuildProfileSelect(appId) {
   if (customProfile) opt(null, 'custom', customProfile.name);
   opt(null, 'upload', 'Custom — upload CSV (time_s, power_W)…');
   if ([...sel.options].some((o) => o.value === cur)) sel.value = cur;
+  renderProfileChoices(appId);
+}
+
+function selectProfile(value) {
+  if (value === 'upload') { $('profileFile').click(); return; }
+  state.profileId = value || null;
+  if (operatingPolicyById(value)) state.energyPolicyId = value;
+  $('selProfile').value = value || '';
+  if (state.profileId === 'vehicle') {
+    useVehicleProfile();
+    return;
+  }
+  if (state.profileId) {
+    state.profileScaleW = customScaleOr(parseFloat($('rqPp').value) || 1000);
+    applyProfileToRequirements();
+  } else {
+    state.profileScaleW = null;
+  }
+  renderProfile();
 }
 
 function initProfiles() {
   const sel = $('selProfile');
   rebuildProfileSelect(null);
-  sel.onchange = () => {
-    if (sel.value === 'upload') { $('profileFile').click(); return; }
-    state.profileId = sel.value || null;
-    if (state.profileId === 'vehicle') {
-      useVehicleProfile();
-      return;
-    }
-    if (state.profileId) {
-      state.profileScaleW = customScaleOr(parseFloat($('rqPp').value) || 1000);
-      applyProfileToRequirements();
-    }
-    renderProfile();
-  };
+  sel.onchange = () => selectProfile(sel.value);
   $('profileFile').onchange = async () => {
     const file = $('profileFile').files[0];
     if (!file) return;
@@ -683,7 +854,11 @@ function initProfiles() {
     a.click();
     URL.revokeObjectURL(a.href);
   };
-  $('btnProfileApply').onclick = () => { applyProfileToRequirements(); renderProfile(); };
+  $('btnProfileApply').onclick = () => {
+    state.profileScaleW = customScaleOr(parseFloat($('rqPp').value) || state.profileScaleW || 1000);
+    applyProfileToRequirements();
+    renderProfile();
+  };
 }
 
 const customScaleOr = (fallback) =>
@@ -706,12 +881,29 @@ function renderProfile() {
   const line = $('profileStatsLine');
   $('btnProfileApply').style.display = prof ? 'block' : 'none';
   canvas.style.display = prof ? 'block' : 'none';
+  renderProfileChoices(state.presetId);
+  const outcome = $('sizingOutcome');
+  if (outcome) {
+    if (!state.presetId) {
+      outcome.innerHTML = '<div class="empty">Choose an application and operating goal.</div>';
+    } else {
+      const wh = parseFloat($('rqWh')?.value) || 0;
+      const pc = parseFloat($('rqPc')?.value) || 0;
+      const pp = parseFloat($('rqPp')?.value) || 0;
+      const power = (v) => v >= 1000 ? `${f1(v / 1000)} kW` : `${f0(v)} W`;
+      outcome.innerHTML =
+        `<div class="stat"><span>Required usable energy</span><b>${wh >= 1000 ? `${f1(wh / 1000)} kWh` : `${f0(wh)} Wh`}</b></div>` +
+        `<div class="stat"><span>Continuous battery power</span><b>${power(pc)}</b></div>` +
+        `<div class="stat"><span>Peak battery power</span><b>${power(pp)}</b></div>` +
+        '<div class="hint" style="margin-top:6px">These values go directly to pack sizing. Open Engineering details only to inspect or replace the duty behind them.</div>';
+    }
+  }
   if (!prof) { line.textContent = ''; return; }
   const scale = state.profileScaleW || 1000;
   const st = profileStats(prof, scale);
   drawProfileChart(canvas, prof, scale);
   const dur = st.durationS >= 3600 ? `${f1(st.durationS / 3600)} h` : `${f0(st.durationS)} s`;
-  line.innerHTML = `${esc(prof.note)}<br><b>${dur}</b> pass · peak <b>${f0(st.peakW)} W</b> ·
+  line.innerHTML = `<b>${esc(prof.name)}</b><br>${esc(prof.note)}<br><b>${dur}</b> pass · peak <b>${f0(st.peakW)} W</b> ·
     RMS <b>${f0(st.rmsW)} W</b> · mean <b>${f0(st.meanW)} W</b> ·
     ${st.crestFactor ? `crest ${f1(st.crestFactor)}× · ` : ''}energy/pass <b>${f0(st.energyPerPassWh)} Wh</b>
     ${st.regenWh > 0.5 ? ` · regen ${f0(st.regenWh)} Wh` : ''}`;
@@ -996,111 +1188,209 @@ function onCellChange() {
 // pre-filled, the customer never has to think about the machinery.
 // ---------------------------------------------------------------------------
 let wzPreset = null;
+let wzFamily = null;
+let wzUseSpace = true;
 
-function showWizard() { $('wizard').style.display = 'flex'; wizardStep1(); }
+function showWizard() {
+  setAudienceMode('customer');
+  $('wizard').style.display = 'flex';
+  wizardStep1();
+}
 function hideWizard(done) {
   $('wizard').style.display = 'none';
   if (done) localStorage.setItem('bd-wizard-done', '1');
 }
 
 function wizardStep1() {
-  $('wzTitle').textContent = 'What are you building?';
-  $('wzSub').textContent = 'Pick the closest — every number after this is pre-filled and adjustable later.';
+  $('wzTitle').textContent = 'What are you powering?';
+  $('wzSub').textContent = 'Start with the kind of product. We will ask only the questions that change its battery size.';
   $('wzBack').style.visibility = 'hidden';
   const body = $('wzBody');
   body.innerHTML = '<div class="wz-grid"></div>';
   const grid = body.querySelector('.wz-grid');
-  for (const pr of PRESETS) {
+  for (const fam of familyIndex()) {
     const b = document.createElement('button');
     b.className = 'wz-opt';
-    b.innerHTML = `<span class="ico">${pr.icon}</span>${esc(pr.name)}`;
-    b.onclick = () => { wzPreset = pr; applyPreset(pr); wizardStep2(); };
+    b.innerHTML = `<span class="ico">${fam.icon}</span><b>${esc(fam.name)}</b>`
+      + `<span class="hint" style="display:block;margin-top:4px">${fam.count} ${fam.count === 1 ? 'application' : 'applications'}</span>`;
+    b.onclick = () => { wzFamily = fam; wizardStepApplication(); };
     grid.appendChild(b);
   }
 }
 
-function wizardStep2() {
-  const d = wzPreset?.maxDimsMm || { x: 400, y: 300, z: 120 };
-  $('wzTitle').textContent = 'How much space do you have?';
-  $('wzSub').textContent = 'Typical for your application is already filled in — change anything, in millimetres.';
+function wizardStepApplication() {
+  $('wzTitle').textContent = `Which ${wzFamily.name.toLowerCase()} application?`;
+  $('wzSub').textContent = 'Choose the closest match. Every starting value remains adjustable.';
   $('wzBack').style.visibility = 'visible';
   $('wzBack').onclick = wizardStep1;
+  const body = $('wzBody');
+  body.innerHTML = '<div class="wz-grid"></div>';
+  const grid = body.querySelector('.wz-grid');
+  for (const pr of wzFamily.members) {
+    const b = document.createElement('button');
+    b.className = 'wz-opt';
+    b.innerHTML = `<span class="ico">${pr.icon}</span><b>${esc(pr.name)}</b>`
+      + `<span class="hint" style="display:block;margin-top:4px">${esc(pr.desc)}</span>`;
+    b.onclick = () => { wzPreset = pr; wzUseSpace = false; applyPreset(pr); wizardStepJob(); };
+    grid.appendChild(b);
+  }
+}
+
+function wizardChoicesFor(appId) {
+  const decision = primarySizingDecision(appId);
+  if (decision === 'energy-policy') {
+    return sizingOptionsFor(appId, decision).map(operatingPolicyById).filter(Boolean)
+      .map((x) => ({ id: x.id, name: x.name, copy: x.description }));
+  }
+  if (decision === 'driving-mode') {
+    const allowed = new Set(sizingOptionsFor(appId, decision));
+    return DRIVING_MODES.filter((x) => allowed.has(x.id))
+      .map((x) => ({ id: x.id, name: x.name, copy: x.what }));
+  }
+  return profilesForApp(appId).map((x) => ({
+    id: x.id, name: x.name, copy: x.description || x.note,
+  }));
+}
+
+function wizardSelectJob(id) {
+  const decision = primarySizingDecision(wzPreset.id);
+  if (decision === 'energy-policy') {
+    state.energyPolicyId = id;
+    selectProfile(id);
+  } else if (decision === 'driving-mode') {
+    state.driveMode = id;
+    useVehicleProfile();
+  } else {
+    selectProfile(id);
+  }
+}
+
+function wizardStepJob() {
+  const decision = primarySizingDecision(wzPreset.id);
+  const selected = decision === 'energy-policy' ? state.energyPolicyId
+    : decision === 'driving-mode' ? state.driveMode : state.profileId;
+  const choices = wizardChoicesFor(wzPreset.id);
+  $('wzTitle').textContent = 'What should the battery do?';
+  $('wzSub').textContent = `${wzPreset.name}: choose the outcome closest to normal use. The calculations behind it stay out of your way.`;
+  $('wzBack').style.visibility = 'visible';
+  $('wzBack').onclick = wizardStepApplication;
   $('wzBody').innerHTML = `
-    <div class="wz-dims">
-      <div><label>Length</label><input type="number" id="wzX" value="${d.x}"></div>
-      <div><label>Width</label><input type="number" id="wzY" value="${d.y}"></div>
-      <div><label>Height</label><input type="number" id="wzZ" value="${d.z}"></div>
+    <div class="wz-grid" id="wzJobChoices"></div>
+    ${wzPreset.id === 'ebus' ? `<div style="margin-top:16px"><b>How full is the bus normally?</b></div>
+      <div class="wz-grid" id="wzBusLoads" style="margin-top:8px"></div>` : ''}
+    <button class="btn primary wz-big" id="wzJobNext">Continue →</button>`;
+  const grid = $('wzJobChoices');
+  for (const choice of choices) {
+    const b = document.createElement('button');
+    b.className = `wz-opt${choice.id === selected ? ' active' : ''}`;
+    b.innerHTML = `<b>${esc(choice.name)}</b><span class="hint" style="display:block;margin-top:5px">${esc(choice.copy)}</span>`;
+    b.onclick = () => { wizardSelectJob(choice.id); wizardStepJob(); };
+    grid.appendChild(b);
+  }
+  if (wzPreset.id === 'ebus') {
+    for (const load of BUS_LOADS) {
+      const b = document.createElement('button');
+      b.className = `wz-opt${load.id === state.busLoad ? ' active' : ''}`;
+      b.innerHTML = `<b>${esc(load.name)}</b><span class="hint" style="display:block;margin-top:5px">${esc(load.note)}</span>`;
+      b.onclick = () => {
+        state.busLoad = load.id;
+        $('vehPayload').value = load.payloadKg;
+        useVehicleProfile();
+        wizardStepJob();
+      };
+      $('wzBusLoads').appendChild(b);
+    }
+  }
+  $('wzJobNext').onclick = wizardStepBoundaries;
+}
+
+function wizardStepBoundaries() {
+  const d = wzPreset?.maxDimsMm || { x: 400, y: 300, z: 120 };
+  $('wzTitle').textContent = 'Any boundaries we should respect?';
+  $('wzSub').textContent = 'Use the typical space, enter yours, or continue without one. You do not need CAD to get a first answer.';
+  $('wzBack').style.visibility = 'visible';
+  $('wzBack').onclick = wizardStepJob;
+  $('wzBody').innerHTML = `
+    <div class="seg" id="wzSpaceMode" style="margin-bottom:12px">
+      <button type="button" data-known="yes" class="${wzUseSpace ? 'active' : ''}">Use a space limit</button>
+      <button type="button" data-known="no" class="${wzUseSpace ? '' : 'active'}">I don't know yet</button>
     </div>
-    <div class="hint">Space isn’t a box? Round, L-shape, stepped and free drawing live on the Fit tab —
-      <a id="wzShapes" style="cursor:pointer">open it</a>.</div>
-    <button class="btn primary wz-big" id="wzGo">Show my designs →</button>`;
-  $('wzShapes').onclick = () => { hideWizard(true); document.querySelector('[data-tab="fit"]').click(); };
+    <div class="wz-dims">
+      <div><label for="wzX">Length (mm)</label><input type="number" id="wzX" value="${d.x}" ${wzUseSpace ? '' : 'disabled'}></div>
+      <div><label for="wzY">Width (mm)</label><input type="number" id="wzY" value="${d.y}" ${wzUseSpace ? '' : 'disabled'}></div>
+      <div><label for="wzZ">Height (mm)</label><input type="number" id="wzZ" value="${d.z}" ${wzUseSpace ? '' : 'disabled'}></div>
+    </div>
+    <div class="hint">A round, L-shaped, stepped, drawn, or CAD envelope can be added later under Space.</div>
+    <button class="btn primary wz-big" id="wzGo">Find my sizing match →</button>`;
+  $('wzSpaceMode').querySelectorAll('button').forEach((b) => b.onclick = () => {
+    wzUseSpace = b.dataset.known === 'yes';
+    wizardStepBoundaries();
+  });
   $('wzGo').onclick = () => {
-    $('fitX').value = $('wzX').value; $('fitY').value = $('wzY').value; $('fitZ').value = $('wzZ').value;
-    wizardStep3();
+    for (const [fit, req, wz] of [['fitX', 'rqDx', 'wzX'], ['fitY', 'rqDy', 'wzY'], ['fitZ', 'rqDz', 'wzZ']]) {
+      $(fit).value = wzUseSpace ? $(wz).value : '';
+      $(req).value = wzUseSpace ? $(wz).value : '';
+    }
+    wizardStepRecommendation();
   };
 }
 
-function wizardStep3() {
-  $('wzTitle').textContent = 'Pick your design';
-  $('wzSub').textContent = 'Best three for your space, balanced for energy, lifetime cost and weight. Tap one — then choose cooling plates, cell spacers, thermal interface materials and suppliers under “Components”.';
+function wizardStepRecommendation(chosenIndex = 0) {
+  $('wzTitle').textContent = 'Your sizing match';
+  $('wzSub').textContent = 'One clear starting point, checked first against the boundaries you gave us. Readiness is separate from ranking.';
   $('wzBack').style.visibility = 'visible';
-  $('wzBack').onclick = wizardStep2;
-  const num = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
-  const results = maxFill(allCells(),
-    { x: num('fitX'), y: num('fitY'), z: num('fitZ') },
-    {
-      vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
-      energyWh: (num('rqWh') ?? 0) > 0 ? num('rqWh') : null,
-      contPowerW: num('rqPc'),
-      cyclesPerYear: num('rqCy'), targetYears: num('rqYr'), dod: currentDod(),
-      costBasis: 'tco',
-      weights: { energy: 5, cost: 3, mass: 2 },
-    },
-    {
-      spacingMm: state.spacingMm, wallMm: state.wallMm,
-      headroomMm: state.headroomMm, layerGapMm: state.layerGapMm,
-      coolingSpace: coolingSpace(), integrationPct: 35,
-    }, 3);
+  $('wzBack').onclick = wizardStepBoundaries;
+  const req = sizingRequestFromInputs({ includeSpace: wzUseSpace });
+  const results = suggestDesigns(req, allCells(), 12);
+  const eligible = results.filter((r) => r.eligibility?.eligible);
   const body = $('wzBody');
-  if (!results.length) {
-    body.innerHTML = '<div class="empty">That space is smaller than any single cell in the library — the closest possible solution starts with a few more millimetres. Go back and add a little room.</div>';
+  if (!eligible.length) {
+    const nearest = results[0];
+    const blockers = nearest?.eligibility?.blockers || ['No library design meets the stated boundaries.'];
+    body.innerHTML = `<div class="wz-status fail"><b>No eligible match yet</b><div class="hint" style="margin-top:5px">We will not label a design “best” while it misses a requirement.</div></div>
+      <ul>${blockers.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+      <button class="btn primary wz-big" id="wzAdjust">Adjust the boundaries</button>`;
+    $('wzAdjust').onclick = wizardStepBoundaries;
     return;
   }
-  lastFillResults = results;
-  body.innerHTML = '';
-  results.forEach((r, i) => {
-    const why = [
-      i === 0 ? 'Best overall balance' : (r.pareto ? 'A different trade-off — nothing beats it on all counts' : 'Runner-up'),
-      r.targetEnergyWh && !r.meetsEnergy
-        ? `the most possible in your space — ${f0(r.energyCoverage * 100)}% of the ${fWh(r.targetEnergyWh)} target`
-        : null,
-      r.tco?.tcoUSD != null
-        ? `~$${f0(r.tco.tcoUSD)} over ${f0(parseFloat($('rqYr').value) || 0)} years${r.tco.replacements > 1 ? ` (${r.tco.replacements} packs)` : ''}`
-        : (r.costUSD != null ? `~$${f0(r.costUSD)} upfront` : ''),
-    ].filter(Boolean).join(' · ');
-    const el = document.createElement('div');
-    el.className = 'wz-pick';
-    el.innerHTML = `
-      <div class="big">${fWh(r.energyWh)} · ${fKg(r.massKg)}</div>
-      <div>${esc(r.cell.name)} — ${r.s}S${r.p}P, ${r.n} cells</div>
-      <div class="why">${esc(why)}</div>`;
-    el.onclick = () => {
-      state.cellId = r.cell.id;
-      state.s = r.s; state.p = r.p;
-      state.appliedBay = r.shaped ? r.bay : null;
-      Object.assign(state, {
-        arrangement: r.opts.arrangement, orientation: r.opts.orientation,
-        nx: r.opts.nx, nz: r.opts.nz,
-      });
-      onCellChange();
-      syncInputs();
-      recompute();
-      hideWizard(true);
-      document.querySelector('[data-tab="design"]').click();
-    };
-    body.appendChild(el);
+  const pick = eligible[Math.min(chosenIndex, eligible.length - 1)];
+  applyCandidate(pick, { navigate: false });
+  const readiness = customerReadiness(allLiveFindings(), pick.eligibility.blockers);
+  const rte = roundTripPlan({ application: state.presetId, deliveredWh: req.energyWh || pick.summary.energyWh * currentDod() });
+  const lifeYears = pick.cell.cycleLife && req.cyclesPerYear
+    ? pick.cell.cycleLife / req.cyclesPerYear : null;
+  body.innerHTML = `
+    <div class="wz-status ${readiness.tone}"><b>${esc(readiness.label)}</b><div style="margin-top:4px">${esc(readiness.headline)}</div></div>
+    <div class="wz-kpis">
+      <div class="wz-kpi"><span>Installed energy</span><b>${fWh(pick.summary.energyWh)}</b></div>
+      <div class="wz-kpi"><span>Continuous power</span><b>${fPow(pick.eligibility.capabilities.contPowerW / 1000)}</b></div>
+      <div class="wz-kpi"><span>Peak power</span><b>${fPow(pick.eligibility.capabilities.peakPowerW / 1000)}</b></div>
+      <div class="wz-kpi"><span>Round-trip efficiency</span><b>${f0(rte.rte * 100)}%</b></div>
+      <div class="wz-kpi"><span>Estimated cell cost</span><b>${pick.costUSD == null ? '—' : `~$${f0(pick.costUSD)}`}</b></div>
+      <div class="wz-kpi"><span>Expected cell life</span><b>${lifeYears == null ? '—' : `~${f1(lifeYears)} y`}</b></div>
+    </div>
+    <div class="wz-pick" style="cursor:default">
+      <div class="big">${esc(pick.cell.name)}</div>
+      <div>${pick.s}S${pick.p}P · ${pick.summary.cellCount.toLocaleString()} cells · ${fKg(pick.summary.massKg)}</div>
+      <div class="why">Why this match: meets the stated sizing gates and follows ${esc(wzPreset.name)} chemistry preferences. To deliver ${fWh(rte.deliveredWh)}, charge about ${fWh(rte.inputWh)}; about ${fWh(rte.lossWh)} becomes loss.</div>
+    </div>
+    ${eligible.length > 1 ? `<details class="fold"><summary>Compare ${Math.min(2, eligible.length - 1)} other eligible ${eligible.length - 1 === 1 ? 'option' : 'options'}</summary>
+      <div id="wzAlternatives" style="margin-top:8px"></div></details>` : ''}
+    <button class="btn primary wz-big" id="wzUse">Use this sizing →</button>`;
+  eligible.slice(0, 3).forEach((r, i) => {
+    if (r === pick) return;
+    const b = document.createElement('button');
+    b.className = 'wz-pick';
+    b.style.width = '100%';
+    b.innerHTML = `<div class="big">${esc(r.cell.name)}</div><div>${fWh(r.summary.energyWh)} · ${fKg(r.summary.massKg)} · ${r.s}S${r.p}P</div>`;
+    b.onclick = () => wizardStepRecommendation(eligible.indexOf(r));
+    $('wzAlternatives')?.appendChild(b);
   });
+  $('wzUse').onclick = () => {
+    hideWizard(true);
+    renderCustomerResult();
+    document.querySelector('[data-tab="profile"]')?.click();
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1108,18 +1398,30 @@ function wizardStep3() {
 // the market: the customer's application and boundaries come FIRST, the
 // design is derived from them.
 // ---------------------------------------------------------------------------
-const FLOW_STEPS = [
-  { tab: 'usage', num: '1', label: 'Application & duty' },
-  { tab: 'fit', num: '2', label: 'Space & boundaries → scenarios' },
-  { tab: 'design', num: '3', label: 'Chosen design' },
-  { tab: 'comp', num: '4', label: 'Components & suppliers' },
-  { tab: 'analysis', num: '5', label: 'Engineering audit' },
-  { tab: 'results', num: '6', label: 'Report' },
+const ENGINEERING_FLOW_STEPS = [
+  { tab: 'usage', num: '1', label: 'Application & requirements' },
+  { tab: 'profile', num: '2', label: 'Sizing' },
+  { tab: 'fit', num: '3', label: 'Space & boundaries → scenarios' },
+  { tab: 'design', num: '4', label: 'Chosen design' },
+  { tab: 'comp', num: '5', label: 'Components & suppliers' },
+  { tab: 'analysis', num: '6', label: 'Engineering audit' },
+  { tab: 'results', num: '7', label: 'Report' },
+];
+
+const CUSTOMER_FLOW_STEPS = [
+  { tab: 'usage', num: '1', label: 'Choose application' },
+  { tab: 'profile', num: '2', label: 'Describe the job' },
+  { tab: 'fit', num: '3', label: 'Add boundaries' },
+  { tab: 'results', num: '4', label: 'Recommendation' },
 ];
 
 function buildFlowBar() {
   const bar = $('flowBar');
-  FLOW_STEPS.forEach((st, i) => {
+  const activeTab = document.querySelector('#tabs .tab.active')?.dataset.tab || 'usage';
+  const steps = document.body.classList.contains('customer-view')
+    ? CUSTOMER_FLOW_STEPS : ENGINEERING_FLOW_STEPS;
+  bar.innerHTML = '';
+  steps.forEach((st, i) => {
     if (i) {
       const a = document.createElement('span');
       a.className = 'farrow';
@@ -1133,7 +1435,7 @@ function buildFlowBar() {
     b.onclick = () => document.querySelector(`#tabs .tab[data-tab="${st.tab}"]`)?.click();
     bar.appendChild(b);
   });
-  updateFlowBar('design');
+  updateFlowBar(activeTab);
 }
 
 function updateFlowBar(tab) {
@@ -1439,6 +1741,7 @@ function currentReportHTML() {
 }
 
 function renderResults() {
+  renderCustomerResult();
   renderRadar();
   if (!lastSummary) return;
   $('reportView').innerHTML = currentReportHTML();
@@ -2007,16 +2310,22 @@ function renderSensors() {
   const box = $('sensorBody');
   if (!box) return;
   if (!lastSummary || !lastArch) { box.innerHTML = '<div class="empty">—</div>'; lastSensors = null; return; }
+  const diagnostics = buildEngineeringDiagnostics({ appId: state.presetId, chemistry: cell().chemistry });
   lastSensors = buildSensorPlan({
     cell: cell(), s: state.s, p: state.p, summary: lastSummary,
     partition: lastArch.partition, bms: lastArch.bms,
     therm: lastTherm, selection: selComponents(),
+    conditionMonitoring: diagnostics.conditionMonitoring,
   });
   const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
   box.innerHTML = lastSensors.groups.map((gr) => `
     <h3 style="font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 0 4px">${esc(gr.level)}</h3>
     ${gr.sensors.map((sn) => stat(`${sn.count != null ? `${sn.count}× ` : ''}${sn.name}`, `<span style="font-weight:normal">${esc(sn.note)}</span>`)).join('')}`).join('') +
-    lastSensors.notes.map((n) => `<div class="hint">${esc(n)}</div>`).join('');
+    lastSensors.notes.map((n) => `<div class="hint">${esc(n)}</div>`).join('') +
+    `<details style="margin-top:12px"><summary>Engineering diagnostics</summary>
+      <div class="hint"><b>${esc(diagnostics.batteryModel.next ? `Next model check: ${diagnostics.batteryModel.next.title}` : 'Battery model measurements are ready for calibration')}</b><br>${esc(diagnostics.batteryModel.next?.measurement || diagnostics.batteryModel.modelBoundary)}</div>
+      ${diagnostics.conditionMonitoring.applicable ? `<div class="hint"><b>Condition monitoring: ${esc(diagnostics.conditionMonitoring.status === 'collect-baseline' ? 'collect a healthy baseline first' : diagnostics.conditionMonitoring.detector)}</b><br>${esc(diagnostics.conditionMonitoring.recommendation)} ${esc(diagnostics.conditionMonitoring.limitation)}</div>` : ''}
+    </details>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2242,7 +2551,7 @@ function fillVehicleInputs(appId) {
   sec.style.display = d ? '' : 'none';
   if (!d) return;
   $('vehMass').value = d.curbKg;
-  $('vehPayload').value = d.payloadKg;
+  $('vehPayload').value = appId === 'ebus' ? BUS_LOADS.find((x) => x.id === state.busLoad).payloadKg : d.payloadKg;
   $('vehCd').value = d.cd;
   $('vehArea').value = d.frontalAreaM2;
   $('vehCrr').value = d.crr;
@@ -2254,7 +2563,13 @@ function fillVehicleInputs(appId) {
 
 function computeVehicle() {
   const vehicle = vehicleFromInputs();
-  const trace = traceForApp(state.presetId);
+  const routeTargetKph = { ebike: 20, escooter: 25, robot: 15, ebus: 30, ev: 50 }[state.presetId] || 50;
+  const routeTrace = state.vehicleRoute
+    ? routeToTrace(state.vehicleRoute, { targetKph: routeTargetKph, dtS: 5 })
+    : null;
+  const trace = routeTrace
+    ? { ...routeTrace, note: state.vehicleRoute.notes.join(' ') }
+    : traceForApp(state.presetId);
   if (!vehicle || !trace) { lastVehicle = null; return; }
   // The pack the customer just designed is part of the mass the wheels carry.
   const packMassKg = lastSummary?.massKg ?? 0;
@@ -2353,7 +2668,10 @@ function bindVehicle() {
   const refresh = () => { computeVehicle(); renderVehicle(); if (state.profileId === 'vehicle') useVehicleProfile(); };
   for (const id of ['vehMass', 'vehPayload', 'vehCd', 'vehArea', 'vehCrr', 'vehEff', 'vehRegen', 'vehAux', 'vehGrade']) {
     const el = $(id);
-    if (el) el.onchange = refresh;
+    if (el) el.onchange = () => {
+      if (id === 'vehPayload' && state.presetId === 'ebus') state.busLoad = 'custom';
+      refresh();
+    };
   }
   $('segDriveMode')?.querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.driveMode = b.dataset.mode;
@@ -2362,6 +2680,23 @@ function bindVehicle() {
   });
   const apply = $('btnVehApply');
   if (apply) apply.onclick = useVehicleProfile;
+  const routeFile = $('routeFile');
+  if (routeFile) routeFile.onchange = async () => {
+    const file = routeFile.files?.[0];
+    if (!file) return;
+    const route = parseGpx(await file.text());
+    const errors = validateRoute(route);
+    if (!route || errors.length) {
+      $('profileChoiceHint').textContent = route
+        ? `This route cannot be used: ${errors.join(' ')}`
+        : 'This file does not contain a usable GPX track or route.';
+    } else {
+      state.vehicleRoute = route;
+      useVehicleProfile();
+    }
+    routeFile.value = '';
+    renderSizingInputs(state.presetId);
+  };
 }
 
 let lastCharging = null;
@@ -2457,7 +2792,7 @@ function computeSim() {
   const prof = currentProfile();
   const S = lastSummary;
   if (!S || !prof || !state.profileScaleW) {
-    lastSim = { unavailable: true, why: 'No load profile applied — pick one on the Usage tab and press "Use profile".' };
+    lastSim = { unavailable: true, why: 'No sizing duty applied — choose one on the Sizing tab.' };
     lastSimFindings = [];
     return;
   }
@@ -2942,6 +3277,76 @@ function currentUsage() {
   };
 }
 
+function allLiveFindings() {
+  const perspectives = lastAnalysis?.perspectives || {};
+  const engineering = ['mechanical', 'thermal', 'electrical', 'safety']
+    .flatMap((k) => perspectives[k] || []);
+  return [
+    ...engineering, ...lastArchFindings, ...lastThermFindings,
+    ...lastSimFindings, ...(lastShort?.findings || []), ...lastFindings,
+  ];
+}
+
+function renderCustomerResult() {
+  const box = $('customerResult');
+  if (!box) return;
+  if (!state.presetId || !lastSummary) {
+    box.innerHTML = '<div class="empty">Complete the sizing choices to see one clear recommendation.</div>';
+    if ($('customerResultReport')) $('customerResultReport').innerHTML = box.innerHTML;
+    return;
+  }
+  const req = sizingRequestFromInputs();
+  const dims = lastSummary.dims;
+  const limit = req.maxDimsMm;
+  const fits = !limit || !dims ||
+    (dims.x <= limit.x && dims.y <= limit.y && dims.z <= limit.z) ||
+    (dims.y <= limit.x && dims.x <= limit.y && dims.z <= limit.z);
+  const assessment = assessSizingCandidate({
+    cell: cell(), s: state.s, p: state.p, summary: lastSummary, fits,
+  }, req);
+  const readiness = customerReadiness(allLiveFindings(), assessment.blockers);
+  const deliveredWh = req.energyWh || lastSummary.energyWh * currentDod();
+  const rte = roundTripPlan({ application: state.presetId, deliveredWh });
+  const cm = costModel(cell(), lastSummary.cellCount, lastSummary.energyWh, {
+    cyclesPerYear: req.cyclesPerYear, targetYears: req.targetYears, dod: currentDod(),
+  });
+  const installed = lastSummary.energyWh;
+  const usable = installed * currentDod();
+  const issueText = readiness.failCount
+    ? `${readiness.failCount} blocking ${readiness.failCount === 1 ? 'item' : 'items'} to resolve`
+    : readiness.warnCount
+      ? `${readiness.warnCount} ${readiness.warnCount === 1 ? 'condition' : 'conditions'} to review`
+      : 'No blocking item found';
+  const reason = assessment.eligible
+    ? `Meets the stated energy, power and voltage gates${req.maxMassKg ? ', the mass limit' : ''}${limit ? ', and the space limit' : ''} for ${PRESETS.find((p) => p.id === state.presetId)?.name || 'this application'}.`
+    : assessment.blockers[0];
+  box.className = 'customer-result';
+  const html = `
+    <div class="result-head">
+      <div><div class="result-title">${esc(readiness.label)}</div><div class="hint">${esc(issueText)}</div></div>
+      <span class="chip ${readiness.tone}">${readiness.tone === 'pass' ? 'ready' : readiness.tone === 'warn' ? 'review' : 'change needed'}</span>
+    </div>
+    <div class="result-copy">${esc(reason)} ${esc(readiness.headline)}</div>
+    <div class="wz-kpis">
+      <div class="wz-kpi"><span>Installed / usable</span><b>${fWh(installed)} / ${fWh(usable)}</b></div>
+      <div class="wz-kpi"><span>Continuous / peak</span><b>${fPow(assessment.capabilities.contPowerW / 1000)} / ${fPow(assessment.capabilities.peakPowerW / 1000)}</b></div>
+      <div class="wz-kpi"><span>Round-trip efficiency</span><b>${f0(rte.rte * 100)}% <small style="font:inherit;color:var(--muted)">estimated</small></b></div>
+      <div class="wz-kpi"><span>Charge for ${fWh(rte.deliveredWh)}</span><b>${fWh(rte.inputWh)}</b></div>
+      <div class="wz-kpi"><span>Loss per cycle</span><b>${fWh(rte.lossWh)}</b></div>
+      <div class="wz-kpi"><span>Cell cost / life</span><b>${cm.upfrontUSD == null ? '—' : `~$${f0(cm.upfrontUSD)}`}${cm.serviceYears == null ? '' : ` / ~${f1(cm.serviceYears)} y`}</b></div>
+    </div>
+    <button class="btn customer-engineering" style="width:100%">Review engineering details</button>`;
+  box.innerHTML = html;
+  const reportBox = $('customerResultReport');
+  if (reportBox) { reportBox.className = 'customer-result'; reportBox.innerHTML = html; }
+  for (const button of document.querySelectorAll('.customer-engineering')) {
+    button.onclick = () => {
+      setAudienceMode('engineering');
+      document.querySelector('#tabs .tab[data-tab="analysis"]')?.click();
+    };
+  }
+}
+
 function runAnalysis() {
   const S = lastSummary, c = cell();
   const pack = {
@@ -3028,6 +3433,7 @@ function runAnalysis() {
     + stds.map((s) =>
       `<div style="margin-bottom:4px"><b>${esc(s.code)}</b> — ${esc(s.title)}</div>`).join('');
   renderSeasonTable();
+  renderCustomerResult();
 }
 
 // The architecture seen through the Electrical perspective: droop with the
@@ -3453,24 +3859,36 @@ function currentDod() {
   return isFinite(v) && v >= 10 && v <= 100 ? v / 100 : 0.8;
 }
 
-// ---------------------------------------------------------------------------
-// Suggestions ("from usage")
-// ---------------------------------------------------------------------------
-function runSuggest() {
-  const num = (id) => { const v = parseFloat($(id).value); return isFinite(v) ? v : null; };
+function sizingRequestFromInputs({ includeSpace = true } = {}) {
+  const num = (id) => {
+    const v = parseFloat($(id)?.value);
+    return isFinite(v) ? v : null;
+  };
   const preset = PRESETS.find((x) => x.id === state.presetId);
   const dims = [num('rqDx'), num('rqDy'), num('rqDz')];
-  const req = {
+  return {
+    application: state.presetId || null,
+    market: state.marketId,
+    v2xPolicy: state.v2xPolicy,
     vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
     energyWh: num('rqWh'),
     contPowerW: num('rqPc'), peakPowerW: num('rqPp'),
     chargeRateC: num('rqC'),
     maxMassKg: num('rqKg'),
-    maxDimsMm: dims.every((v) => v != null) ? { x: dims[0], y: dims[1], z: dims[2] } : null,
-    envTempC: (num('rqTlo') != null && num('rqThi') != null) ? [num('rqTlo'), num('rqThi')] : null,
+    maxDimsMm: includeSpace && dims.every((v) => v != null)
+      ? { x: dims[0], y: dims[1], z: dims[2] } : null,
+    envTempC: (num('rqTlo') != null && num('rqThi') != null)
+      ? [num('rqTlo'), num('rqThi')] : null,
     preferredChemistries: preset?.preferredChemistries || [],
     cyclesPerYear: num('rqCy'), targetYears: num('rqYr'),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Suggestions ("from usage")
+// ---------------------------------------------------------------------------
+function runSuggest() {
+  const req = sizingRequestFromInputs();
   const results = suggestDesigns(req, allCells());
   const box = $('suggestions');
   if (!results.length) {
@@ -3480,24 +3898,27 @@ function runSuggest() {
   box.innerHTML = '';
   results.forEach((r, i) => {
     const ch = CHEMISTRIES[r.cell.chemistry];
+    const eligibility = r.eligibility || assessSizingCandidate(r, req);
     const card = document.createElement('div');
     card.className = 'card';
     card.innerHTML = `
       <h4>#${i + 1} ${esc(r.cell.name)}
-        <span class="chip" style="color:${ch?.color};border-color:${ch?.color}">${r.cell.chemistry}</span></h4>
+        <span class="chip" style="color:${ch?.color};border-color:${ch?.color}">${r.cell.chemistry}</span>
+        <span class="chip ${eligibility.eligible ? (eligibility.conditions.length ? 'warn' : 'pass') : 'fail'}">${esc(eligibility.label)}</span></h4>
       <div class="m">${r.s}S${r.p}P · ${f1(r.summary.nominalV)} V · ${fWh(r.summary.energyWh)} ·
         ${fKg(r.summary.massKg)} · ${f1(r.summary.volumeL)} L
         ${r.costUSD != null ? `· ~$${f0(r.costUSD)}` : ''}</div>
       <div class="scorebar"><i style="width:${clamp(r.score, 2, 100)}%"></i></div>
-      <ul>${r.reasons.map((t) => `<li>${esc(t)}</li>`).join('')}
+      <ul>${eligibility.blockers.map((t) => `<li class="warn">${esc(t)}</li>`).join('')}
+          ${r.reasons.map((t) => `<li>${esc(t)}</li>`).join('')}
           ${r.warnings.map((t) => `<li class="warn">${esc(t)}</li>`).join('')}</ul>
-      <button class="btn primary" style="margin-top:8px">Apply this design</button>`;
+      <button class="btn ${eligibility.eligible ? 'primary' : ''}" style="margin-top:8px">${eligibility.eligible ? 'Apply this sizing match' : 'Inspect this non-eligible option'}</button>`;
     card.querySelector('button').onclick = () => applyCandidate(r);
     box.appendChild(card);
   });
 }
 
-function applyCandidate(r) {
+function applyCandidate(r, { navigate = true } = {}) {
   state.cellId = r.cell.id;
   state.s = r.s; state.p = r.p;
   // Copy the full layout options the suggestion was priced with, so the
@@ -3512,7 +3933,7 @@ function applyCandidate(r) {
   onCellChange();
   syncInputs();
   recompute();
-  document.querySelector('[data-tab="design"]').click();
+  if (navigate) document.querySelector('[data-tab="design"]').click();
 }
 
 // ---------------------------------------------------------------------------
@@ -3534,9 +3955,12 @@ function runMaxFill() {
   const shaped = bay.kind !== 'box';
   const envelope = shaped ? null : { x: bay.x, y: bay.y, z: bay.z };
   const req = {
+    application: state.presetId || null, market: state.marketId,
     vRange: [num('rqVlo') ?? 1, num('rqVhi') ?? 1000],
     energyWh: (num('rqWh') ?? 0) > 0 ? num('rqWh') : null,
-    contPowerW: num('rqPc'),
+    contPowerW: num('rqPc'), peakPowerW: num('rqPp'),
+    maxMassKg: num('rqKg'),
+    preferredChemistries: PRESETS.find((x) => x.id === state.presetId)?.preferredChemistries || [],
     cyclesPerYear: num('rqCy'), targetYears: num('rqYr'), dod: currentDod(),
     costBasis: $('segCost').querySelector('.active')?.dataset.cost || 'tco',
     weights: {
@@ -3583,6 +4007,7 @@ function runMaxFill() {
       <h4>#${i + 1} ${esc(r.cell.name)}
         <span class="chip" style="color:${ch?.color};border-color:${ch?.color}">${r.cell.chemistry}</span>
         ${r.pareto ? '<span class="chip pass">Pareto-optimal</span>' : '<span class="chip info">dominated</span>'}
+        <span class="chip ${r.eligibility?.eligible ? (r.eligibility.conditions.length ? 'warn' : 'pass') : 'fail'}">${esc(r.eligibility?.label || 'not assessed')}</span>
         ${r.targetEnergyWh ? (r.meetsEnergy ? '<span class="chip pass">meets target</span>' : '<span class="chip warn">closest possible</span>') : ''}
         ${offPref ? `<span class="chip warn">off-preference for ${esc(preset.name)}</span>` : ''}</h4>
       <div class="m">${r.s}S${r.p}P · ${f1(r.nominalV)} V · ${r.n}/${r.nMax} cells (${f0(r.utilization * 100)}% of fit) ·
@@ -3596,8 +4021,8 @@ function runMaxFill() {
         ${r.tco?.usdPerKWhDelivered != null ? ` · <b>${(Math.round(r.tco.usdPerKWhDelivered * 100) / 100).toFixed(2)} $/kWh delivered</b> over ${f0(r.cell.cycleLife)} cycles` : ''}
         ${r.tco?.tcoUSD != null ? ` · TCO ~$${f0(r.tco.tcoUSD)}${r.tco.replacements > 1 ? ` (${r.tco.replacements}× packs)` : ''}${r.tco.serviceYears != null ? ` · ~${f1(r.tco.serviceYears)} y/pack` : ''}` : ''}</div>` : ''}
       <div class="scorebar"><i style="width:${clamp(r.score, 2, 100)}%"></i></div>
-      ${r.warnings.length ? `<ul>${r.warnings.map((x) => `<li class="warn">${esc(x)}</li>`).join('')}</ul>` : ''}
-      <button class="btn primary" style="margin-top:8px">Apply this fill</button>`;
+      ${(r.eligibility?.blockers.length || r.warnings.length) ? `<ul>${[...(r.eligibility?.blockers || []), ...r.warnings].map((x) => `<li class="warn">${esc(x)}</li>`).join('')}</ul>` : ''}
+      <button class="btn ${r.eligibility?.eligible ? 'primary' : ''}" style="margin-top:8px">${r.eligibility?.eligible ? 'Apply this sizing match' : 'Inspect this non-eligible fill'}</button>`;
     card.querySelector('button').onclick = () => {
       state.cellId = r.cell.id;
       state.s = r.s; state.p = r.p;

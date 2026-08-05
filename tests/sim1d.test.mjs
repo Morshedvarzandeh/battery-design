@@ -131,7 +131,7 @@ test('regen against a full battery is lost, and says so', () => {
 
 test('honest unavailability: no profile, or no resistance to model with', () => {
   const none = simulateMission({ cell: CELL, s: 10, p: 1, profile: null, scaleW: 100 });
-  ok(none.unavailable && /load profile/.test(none.why), 'no profile → unavailable with the reason');
+  ok(none.unavailable && /sizing duty/.test(none.why), 'no profile → unavailable with the reason');
   const noR = simulateMission({
     cell: { ...CELL, dcirMOhm: null }, s: 10, p: 1,
     profile: { dtS: 60, p: flat(10) }, scaleW: 100,

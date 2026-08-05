@@ -1,4 +1,9 @@
-// loadprofiles.js — time-series load profiles. Two scalar numbers (cont W,
+// loadprofiles.js — external duty and the battery profiles used by sizing.
+// Operating-policy outputs live in operating-policy.js; eligibility and
+// defaults live in the knowledge graph. This module is the common profile
+// interface consumed by sizing, simulation, CSV upload and the API.
+//
+// Two scalar numbers (cont W,
 // peak W) hide what really sizes a pack: the SHAPE of the demand over time.
 // The same average power delivered as WLTP driving, as power-tool trigger
 // bursts, or as a UPS standby-then-surge produces different RMS heating,
@@ -14,16 +19,18 @@
 // coarse power-shape derived from the public WLTP-3 velocity trace for a
 // mid-size EV, flagged as such. Pure data + math, no DOM.
 
+import { defaultSizingOption, sizingOptionsFor } from './knowledge.js';
+import { POLICY_DEMANDS, POLICY_PROFILES } from './operating-policy.js';
+
 function seg(value, seconds, dtS) {
   return Array(Math.max(1, Math.round(seconds / dtS))).fill(value);
 }
 
 // ---------------------------------------------------------------------------
-export const LOAD_PROFILES = [
+const DUTY_PROFILES = [
   {
     id: 'wltp-ev',
     name: 'WLTP-shaped drive cycle (EV)',
-    appIds: ['ev'],
     dtS: 20,
     note: 'Coarse power shape following the WLTP Class 3 phases (Low/Medium/High/Extra-High) with regenerative braking dips; scaled by your peak power. Representative, not the homologation trace.',
     // ~30 min in 20 s steps. Low (urban stop-go) → Medium → High → Extra-High.
@@ -45,7 +52,6 @@ export const LOAD_PROFILES = [
   {
     id: 'ebike-assist',
     name: 'Pedal-assist ride (rolling terrain)',
-    appIds: ['ebike'],
     dtS: 10,
     note: 'Assist power follows terrain: climbs at full assist, flats at partial, descents near zero. No regen (rare on e-bikes).',
     p: [
@@ -58,7 +64,6 @@ export const LOAD_PROFILES = [
   {
     id: 'escooter-urban',
     name: 'Urban stop-and-go (launch peaks)',
-    appIds: ['escooter'],
     dtS: 5,
     note: 'Repeated launches to full power, short cruises, coasts to stops — the crest factor is what stresses the cells.',
     p: [
@@ -71,7 +76,6 @@ export const LOAD_PROFILES = [
   {
     id: 'drone-mission',
     name: 'Multirotor mission (hover-heavy)',
-    appIds: ['drone'],
     dtS: 5,
     note: 'Takeoff surge, sustained hover/cruise near 70–80% of peak, maneuver spikes, landing burst. Almost no rest — RMS sits close to peak, unlike ground vehicles.',
     p: [
@@ -83,7 +87,6 @@ export const LOAD_PROFILES = [
   {
     id: 'powertool-bursts',
     name: 'Trigger bursts (low duty factor)',
-    appIds: ['powertool'],
     dtS: 2,
     note: 'Seconds of full power, long pauses: enormous peak-to-mean ratio. Peak capability and voltage sag matter far more than energy.',
     p: [
@@ -95,8 +98,8 @@ export const LOAD_PROFILES = [
   {
     id: 'ess-daily',
     name: 'Daily solar cycle (charge midday, discharge evening)',
-    appIds: ['solar-ess'],
-    suitableFor: ['rv', 'powerstation'],
+    // Legacy ID retained for saved URLs and API callers. New grid sizing uses
+    // grid-site-net-day + an explicit policy from operating-policy.js.
     dtS: 3600,
     note: '24 h at 1 h steps: overnight trickle, midday solar CHARGING (negative), evening discharge plateau. One pass = one calendar day.',
     p: [
@@ -108,8 +111,6 @@ export const LOAD_PROFILES = [
   {
     id: 'ebus-route',
     name: 'City bus route (stop–go, heavy regen, layover)',
-    appIds: ['ebus'],
-    suitableFor: ['ev'],
     dtS: 10,
     note: 'Repeated stop-go: launch to high power, cruise, hard regenerative stop (negative), dwell at the stop; a terminus layover ends the pass. Regen is far deeper than a passenger car.',
     p: [
@@ -122,8 +123,6 @@ export const LOAD_PROFILES = [
   {
     id: 'rv-house',
     name: 'RV / van day (cooking peaks, charging while driving)',
-    appIds: ['rv'],
-    suitableFor: ['marine'],
     dtS: 3600,
     note: '24 h at 1 h steps: overnight fridge/heater base, morning cooking peak, alternator + solar CHARGING while driving midday (negative), evening cooking and lights. A vehicle house bank, not a rooftop solar plant.',
     p: [
@@ -135,8 +134,6 @@ export const LOAD_PROFILES = [
   {
     id: 'powerstation-trip',
     name: 'Portable power box (appliance bursts, idle between)',
-    appIds: ['powerstation'],
-    suitableFor: ['ups'],
     dtS: 60,
     note: 'Kettle/tool bursts at full inverter power, fridge cycling, long light-load stretches — the inverter rating sets the peaks, the fridge sets the energy.',
     p: [
@@ -148,7 +145,6 @@ export const LOAD_PROFILES = [
   {
     id: 'ups-standby',
     name: 'Standby with rare full-load event',
-    appIds: ['ups'],
     dtS: 60,
     note: 'Near-zero float for hours, then one full-power mains-failure event. Sizing is the event, aging is the calendar — the shape shows why.',
     p: [
@@ -158,8 +154,6 @@ export const LOAD_PROFILES = [
   {
     id: 'robot-shift',
     name: 'AGV / lift truck shift (move–lift–return, opportunity charge)',
-    appIds: ['robot'],
-    suitableFor: ['humanoid', 'robovac'],
     dtS: 10,
     note: 'Repetitive move–lift–return cycle with a short opportunity-charge dip at the station (negative), the LTO/LFP use case. Lift trucks add the lift peaks; AMRs flatten them.',
     p: [
@@ -172,7 +166,6 @@ export const LOAD_PROFILES = [
   {
     id: 'humanoid-locomotion',
     name: 'Humanoid robot (balance base + joint bursts)',
-    appIds: ['humanoid'],
     dtS: 2,
     note: 'Continuous balance/compute base load with walking bursts and manipulation spikes — a humanoid never rests while standing, so the base never drops to zero.',
     p: [
@@ -185,7 +178,6 @@ export const LOAD_PROFILES = [
   {
     id: 'wearable-day',
     name: 'Wearable gadget day (milliwatt base, burst peaks, dock charge)',
-    appIds: ['wearable'],
     dtS: 3600,
     note: '24 h at 1 h steps: milliwatt sensor/display base, a GPS workout hour and an evening burst hour at full radio+haptics power, overnight dock CHARGING (negative). One pass = one day on the wrist.',
     p: [
@@ -197,7 +189,6 @@ export const LOAD_PROFILES = [
   {
     id: 'quadruped-patrol',
     name: 'Quadruped patrol (stand, trot, obstacle, jump)',
-    appIds: ['cyberdog'],
     dtS: 5,
     note: 'A robot dog spends most of its time standing still holding its own weight — cheap but never zero — then trots, climbs an obstacle, and occasionally jumps. The jump is milliseconds of kilowatts: it sizes the pack\'s peak current, while the standing and trotting size its energy.',
     p: [
@@ -218,7 +209,6 @@ export const LOAD_PROFILES = [
   {
     id: 'robovac-clean',
     name: 'Robot vacuum run (steady suction, dock recharge)',
-    appIds: ['robovac'],
     dtS: 60,
     note: 'Near-constant suction/drive load with carpet-boost spikes, then return to dock and a CHARGING tail (negative). One pass = one cleaning run.',
     p: [
@@ -227,22 +217,16 @@ export const LOAD_PROFILES = [
       ...seg(-0.55, 1200, 60),
     ],
   },
-  {
-    id: 'marine-house',
-    name: 'Marine house loads (fridge cycling + windlass peaks)',
-    appIds: ['marine'],
-    dtS: 60,
-    note: 'Low base house load with periodic fridge compressor cycling and occasional heavy windlass/inverter peaks.',
-    p: [
-      ...seg(0.08, 600, 60), ...seg(0.25, 300, 60), ...seg(0.08, 600, 60),
-      ...seg(1.00, 60, 60), ...seg(0.10, 600, 60), ...seg(0.28, 300, 60),
-      ...seg(0.08, 600, 60), ...seg(0.85, 120, 60), ...seg(0.10, 480, 60),
-    ],
-  },
 ];
 
+// Compatibility name used throughout the application. It now contains
+// external duties and generated policy outputs, all sharing one interface.
+export const LOAD_PROFILES = [...DUTY_PROFILES, ...POLICY_DEMANDS, ...POLICY_PROFILES];
+
 export function profileForApp(appId) {
-  return LOAD_PROFILES.find((pr) => pr.appIds.includes(appId)) || null;
+  const id = defaultSizingOption(appId, 'energy-policy')
+    || defaultSizingOption(appId, 'load-profile');
+  return profileById(id);
 }
 
 // Every application gets a CHOICE of profiles, not a single locked default:
@@ -250,10 +234,10 @@ export function profileForApp(appId) {
 // then the ones marked suitable as alternates. The customer can still pick
 // any shape, or upload their own.
 export function profilesForApp(appId) {
-  return [
-    ...LOAD_PROFILES.filter((pr) => pr.appIds.includes(appId)),
-    ...LOAD_PROFILES.filter((pr) => !pr.appIds.includes(appId) && (pr.suitableFor || []).includes(appId)),
-  ];
+  const ids = sizingOptionsFor(appId, 'energy-policy').length
+    ? sizingOptionsFor(appId, 'energy-policy')
+    : sizingOptionsFor(appId, 'load-profile');
+  return ids.map(profileById).filter(Boolean);
 }
 
 export function profileById(id) {

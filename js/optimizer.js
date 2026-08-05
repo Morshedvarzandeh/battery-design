@@ -6,6 +6,7 @@
 import { electrical, gridDims, layoutPack, summarize, ARRANGEMENTS_BY_FORM } from './pack-engine.js';
 import { cellEnergyWh } from './cells.js';
 import { bayCapacity, scaleBayPlan } from './bay.js';
+import { assessSizingCandidate } from './customer-experience.js';
 
 const ORIENTATIONS_BY_FORM = {
   cylindrical: ['upright', 'lying'],
@@ -139,8 +140,13 @@ export function suggestDesigns(req, cells, topK = 8) {
       0.15 * chemScore +
       0.05 * c.penalty;
     c.score = Math.round((1 - c.score) * 1000) / 10; // present as 0–100, higher better
+    c.eligibility = assessSizingCandidate(c, req);
   }
-  raw.sort((a, b) => b.score - a.score);
+  // Hard gates precede preference scoring. A beautiful weighted score cannot
+  // make a design that misses power, energy, space or a market blocker "best".
+  raw.sort((a, b) => (a.eligibility.eligible === b.eligibility.eligible)
+    ? b.score - a.score
+    : (a.eligibility.eligible ? -1 : 1));
   return raw.slice(0, topK);
 }
 
@@ -216,7 +222,16 @@ function buildCandidate(cell, s, req) {
   }
 
   // Best compact layout, then hard constraints.
-  const space = optimizeSpace(cell, s, p, {}, req.maxDimsMm || null, 1);
+  // Packaging reserves scale with the cell. Applying a vehicle pack's 2 mm
+  // walls and 8 mm busbar deck to a 1.3 g wearable pouch turns a watch cell
+  // into a 46 g box before ranking even starts. These are still first-order
+  // reserves, but at the right physical scale; the UI exposes them later.
+  const scaleOpts = cell.massG < 10
+    ? { spacingMm: 0.25, wallMm: 0.5, headroomMm: 1, layerGapMm: 0.5 }
+    : cell.massG < 250
+      ? { spacingMm: 0.75, wallMm: 1.5, headroomMm: 5, layerGapMm: 1 }
+      : {};
+  const space = optimizeSpace(cell, s, p, scaleOpts, req.maxDimsMm || null, 1);
   const best = space[0];
   if (!best) return null;
   if (req.maxDimsMm && !best.fits) {
@@ -378,7 +393,7 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
       const maxP = pick.s * cell.nominalV * pick.p * cell.maxContDischargeA;
       if (maxP < req.contPowerW) warnings.push(`Continuous power capability ${fmt(maxP)} W < required ${fmt(req.contPowerW)} W`);
     }
-    out.push({
+    const candidate = {
       cell, s: pick.s, p: pick.p, n: pick.n, nMax: best.nMax,
       utilization: pick.n / best.nMax,
       energyWh, costUSD, tco,
@@ -398,14 +413,16 @@ export function maxFill(cells, envelope, req, baseOpts = {}, topK = 8) {
         underMm: cool.bottom, rowExtraMm: cool.rowGap,
         nx: best.nx ?? 0, nz: best.nz ?? 1,
       },
-    });
+    };
+    candidate.eligibility = assessSizingCandidate(candidate, req);
+    out.push(candidate);
   }
   scoreMultiObjective(out, req.weights, req.costBasis);
   // Designs that reach the requested energy rank ahead of the closest-
   // possible ones; within each group the multi-objective score decides.
-  out.sort((a, b) => (a.meetsEnergy === b.meetsEnergy)
-    ? b.score - a.score
-    : (a.meetsEnergy ? -1 : 1));
+  out.sort((a, b) => (a.eligibility.eligible === b.eligibility.eligible)
+    ? ((a.meetsEnergy === b.meetsEnergy) ? b.score - a.score : (a.meetsEnergy ? -1 : 1))
+    : (a.eligibility.eligible ? -1 : 1));
   return out.slice(0, topK);
 }
 

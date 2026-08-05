@@ -37,12 +37,18 @@ const SPEC_PROPERTIES = {
   dod: { type: 'number', description: 'Usable depth of discharge, 0–1.' },
   v2xPolicy: { type: 'string', enum: ['off', 'v2l', 'v2h', 'v2g', 'v2v'], description: 'Feed-back policy to design for.' },
   driveMode: { type: 'string', enum: ['eco', 'normal', 'sport'], description: 'Driving mode for road machines.' },
+  policyId: { type: 'string', description: 'EMS/PMS operating goal for grid or marine sizing; list_applications returns allowed ids.' },
   gradePct: { type: 'number', description: 'Route gradient in percent.' },
+  route: {
+    type: 'object',
+    description: 'Selected road route: points with lat/lon and optional elevation/timestamp, plus optional name and targetKph.',
+    additionalProperties: true,
+  },
   vehicle: {
     type: 'object', description: 'Vehicle overrides: curbKg (mass WITHOUT the pack), payloadKg, cd, frontalAreaM2, crr, driveEff, regenFrac, auxW.',
     additionalProperties: true,
   },
-  profileId: { type: 'string', description: 'Load profile id, or "vehicle" to derive the load from the vehicle physics.' },
+  profileId: { type: 'string', description: 'Battery/load profile id, or "vehicle" to derive demand from vehicle physics. Existing integrations remain supported.' },
 };
 
 const TOOLS = [
@@ -152,8 +158,10 @@ const HANDLERS = {
     const iso = d.architecture.isolation;
     if (iso) lines.push(`Isolation: ${iso.ohmsPerVolt} Ω/V per ${iso.standardLabel} — a floor of ${iso.floorKOhm} kΩ at ${d.pack.vMax.toFixed(0)} V`);
     lines.push(`Thermal: ${d.thermal.loop.name} — ${d.thermal.assessment.verdict}. ${d.thermal.assessment.why}`);
-    const sensorCount = (d.sensors.groups || []).reduce((n, g) => n + (g.rows?.length || 0), 0);
+    const sensorCount = (d.sensors.groups || []).reduce((n, g) => n + (g.sensors?.length || 0), 0);
     if (sensorCount) lines.push(`Sensor plan: ${sensorCount} entries across cell, module, system and cooling levels`);
+    if (d.diagnostics?.batteryModel?.next) lines.push(`Model diagnostics: next measurement — ${d.diagnostics.batteryModel.next.title}`);
+    if (d.diagnostics?.conditionMonitoring?.applicable) lines.push(`Condition monitoring: ${d.diagnostics.conditionMonitoring.recommendation}`);
     lines.push(`Release (${d.spec.resolved.market}): ${d.checklist.items.length} items, ${d.checklist.items.filter((i) => i.scope === 'mandatory').length} mandatory`);
     if (d.co2?.paybackCycles) lines.push(`CO2: ${d.co2.mfgKgPerPack.toFixed(0)} kg to manufacture, payback in ${Math.round(d.co2.paybackCycles)} cycles`);
     lines.push('', 'Full result available as JSON from the same call in the desktop runner: node desktop/bd.mjs design --json');

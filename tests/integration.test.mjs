@@ -9,6 +9,7 @@ import { ok } from './helpers.mjs';
 import { PRESETS } from '../js/presets.js';
 import { CELLS, CHEMISTRIES, cellById } from '../js/cells.js';
 import { profileForApp, profilesForApp } from '../js/loadprofiles.js';
+import { defaultSizingOption } from '../js/knowledge.js';
 import { MARKETS, releaseChecklist, appClassOf, CLASS_OF_APP } from '../js/markets.js';
 import {
   COMMS_BY_APP, commsForApp, buildArchitecture, modulePartition, bmsArchitecture,
@@ -26,9 +27,12 @@ test('every application is fully integrated', () => {
   for (const pr of PRESETS) {
     const cls = appClassOf(pr.id);
     ok(VALID_CLASSES.has(cls), `${pr.id}: classified (${cls})`);
-    // Its own profile, and the recommendation list starts with it.
+    // The knowledge graph owns its default, and the recommendation list
+    // starts with the resulting battery profile.
     const def = profileForApp(pr.id);
-    ok(def && def.appIds.includes(pr.id), `${pr.id}: default profile belongs to it`);
+    const expected = defaultSizingOption(pr.id, 'energy-policy')
+      || defaultSizingOption(pr.id, 'load-profile');
+    ok(def?.id === expected, `${pr.id}: default profile comes from the knowledge graph`);
     ok(profilesForApp(pr.id)[0]?.id === def.id, `${pr.id}: recommendation list starts with its default`);
     // Its own communication entry — not the generic fallback.
     ok(COMMS_BY_APP[pr.id] != null, `${pr.id}: has an explicit comms mapping`);

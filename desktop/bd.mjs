@@ -71,6 +71,7 @@ function specFrom(args) {
     market: args.market,
     v2xPolicy: args.v2x,
     driveMode: args.mode,
+    policyId: args.policy,
   };
   if (args.energy != null) spec.energyWh = num(args.energy);
   if (args.s != null) spec.s = num(args.s);
@@ -981,9 +982,10 @@ Common flags
   --app ID          application preset (see: apps)          --market eu|us|cn|intl
   --cell ID         cell from the library (see: cells)      --v2x off|v2l|v2h|v2g
   --energy WH       energy target                           --mode eco|normal|sport
+  --policy ID       EMS/PMS operating goal (grid/marine)
   --s N --p N       explicit series/parallel                --mass KG --payload KG
   --dod 0.8         usable depth of discharge               --grade PCT   route gradient
-  --profile ID      load profile, or "vehicle" for physics  --soc 0.9     mission start SoC
+  --profile ID      profile, or "vehicle" for physics       --soc 0.9     mission start SoC
   --json            machine-readable output                 --out FILE    write JSON to a file
   --jobs N          worker threads (default: every core)     --top N       how many results to show
   --chemistry LFP   restrict a sweep or search              --all         include designs that FAIL the audit

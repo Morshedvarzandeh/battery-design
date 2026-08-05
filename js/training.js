@@ -1,6 +1,6 @@
 // training.js — an interactive walkthrough of the design process, in the
 // real UI (each step opens the real tab it talks about). Two tracks so
-// nobody gets confused: SIMPLE teaches the five clicks a customer needs;
+// nobody gets confused: SIMPLE teaches the six clicks a customer needs;
 // ADVANCED adds the expert levers (weights, TCO basis, DoD, stacks,
 // architecture, rules). Pure data; the driver lives in app.js.
 //
@@ -11,15 +11,15 @@
 
 export const TRAINING_TRACKS = {
   simple: {
-    name: 'Simple — the five clicks',
+    name: 'Simple — the six clicks',
     steps: [
       {
         tab: 'usage', title: '1 · Say what you are building',
-        text: 'Tap an application card (e-bike, EV, e-bus, robot vacuum…). Everything below fills itself with sensible numbers for that application — including its own load profile. You never start from a blank form.',
+        text: 'Tap an application card (e-bike, EV, e-bus, robot vacuum…). Everything below fills itself with sensible numbers for that application. You never start from a blank form.',
       },
       {
-        tab: 'usage', title: '2 · Check the load shape', concept: 'load-profile',
-        text: 'The chart shows how your application really draws power over time. If it looks right, you are done here — the "Use profile" button turns the shape into the power numbers. Have your own measurements? One button uploads a CSV.',
+        tab: 'profile', title: '2 · Size for the real use', concept: 'load-profile',
+        text: 'Answer one plain question: what should the battery do? Depending on the application, the cards represent its normal duty, operating goal or driving mode. The page shows the energy and power passed to sizing; the trace and measured-data tools stay under Engineering details.',
       },
       {
         tab: 'fit', title: '3 · Give it your space', concept: 'space-fill',
@@ -75,12 +75,16 @@ export const TRAINING_TRACKS = {
         text: 'Where your application has an energy management system (storage plants, depots, vessels, fleets), the literature gives three families: centralized (one controller, simplest, single point of failure), hierarchical (three control levels with separate timescales — the IEEE 2030.7 microgrid framing, the default for multi-rack plants), and distributed (droop/price signals, no single failure point). Auto suggests from your stack count; the selector only appears when an EMS exists — a wearable never sees this question.',
       },
       {
+        tab: 'profile', title: '6a2 · The operating policy changes the size', concept: 'energy-policy',
+        text: 'Peak shaving, load shifting, load levelling and reserve are control policies, not raw load profiles. Sizing converts the selected EMS/PMS goal into the battery power trace. Open Engineering details to inspect the result or replace the representative demand with measured data.',
+      },
+      {
         tab: 'therm', title: '6b · The thermal SYSTEM, not just the plate', concept: 'btms-loop',
         text: 'The cold plate is the tip of a loop: pump, radiator, a refrigerant chiller when you must cool below ambient (owned by the vehicle AC / plant HVAC), a heater branch for winter charging — all run by the BTMS ECU, the third control unit: the BMS protects, the BTMS moves heat, the supervisor decides. The Thermal tab sizes the flow (ṁ = Q/(c_p·ΔT)) and the compressor cost.',
       },
       {
         tab: 'usage', title: '6b2 · The vehicle around the pack', concept: 'vehicle-dynamics',
-        text: 'Type a peak-power number and you have guessed. Give the vehicle instead — mass, payload, frontal area, drag, rolling resistance — pick Eco, Normal or Sport, and the demand is CALCULATED: rolling resistance, aerodynamic drag, gradient and acceleration, at every second of a speed trace. Out come Wh/km and range. The pack you designed is part of the mass being carried, so a heavier pack really does cost range — the trade every vehicle programme argues about, visible instead of assumed.',
+        text: 'Type a peak-power number and you have guessed. Give the vehicle instead — mass, payload, frontal area, drag, rolling resistance — then choose Eco, Normal or Sport on Sizing. Demand is calculated from rolling resistance, aerodynamic drag, gradient and acceleration. The pack is part of the moving mass, so a heavier pack really does cost range.',
       },
       {
         tab: 'sim', title: '6c · Run the mission', concept: 'simulation',

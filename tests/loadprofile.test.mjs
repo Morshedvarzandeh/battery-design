@@ -6,6 +6,7 @@ import { PRESETS } from '../js/presets.js';
 import {
   LOAD_PROFILES, profileForApp, profilesForApp, profileStats, profileChecks, parseProfileCSV,
 } from '../js/loadprofiles.js';
+import { sizingOptionsFor } from '../js/knowledge.js';
 
 test('every application preset has its own default profile', () => {
   for (const pr of PRESETS) {
@@ -16,7 +17,7 @@ test('every application preset has its own default profile', () => {
 test('vehicle-class systems never default to the rooftop-solar cycle', () => {
   ok(profileForApp('rv')?.id === 'rv-house', `RV defaults to rv-house (got ${profileForApp('rv')?.id})`);
   ok(profileForApp('powerstation')?.id === 'powerstation-trip', 'power station defaults to its own shape');
-  ok(profileForApp('solar-ess')?.id === 'ess-daily', 'solar keeps the solar day');
+  ok(profileForApp('solar-ess')?.id === 'grid-self-consumption', 'grid storage defaults to a stated EMS goal');
   ok(profileForApp('robot')?.id === 'robot-shift', 'AGV/lift truck keeps the shift cycle');
   ok(profileForApp('humanoid')?.id === 'humanoid-locomotion', 'humanoid has its own profile');
   ok(profileForApp('robovac')?.id === 'robovac-clean', 'robot vacuum has its own profile');
@@ -25,12 +26,40 @@ test('vehicle-class systems never default to the rooftop-solar cycle', () => {
 test('the per-application choice list is a shortlist, default first', () => {
   const rv = profilesForApp('rv');
   ok(rv[0]?.id === 'rv-house', 'rv choice list starts with its default');
-  ok(rv.some((p) => p.id === 'ess-daily'), 'solar day offered as an RV alternate (camped off-grid)');
+  ok(rv.some((p) => p.id === 'grid-site-net-day'), 'site net-demand day offered as an RV alternate');
   ok(rv.length < LOAD_PROFILES.length, 'recommended list is a shortlist, not everything');
   const hum = profilesForApp('humanoid');
   ok(hum[0]?.id === 'humanoid-locomotion' && hum.some((p) => p.id === 'robot-shift'),
     'humanoid: own default + industrial alternate');
   ok(profilesForApp('nonexistent-app').length === 0, 'unknown app gets no fake recommendations');
+});
+
+test('marine exposes exactly the seven graph-scoped battery operating modes', () => {
+  const marine = profilesForApp('marine');
+  const ids = marine.map((p) => p.id);
+  ok(profileForApp('marine')?.id === 'marine-full-electric', 'full electric is the marine default');
+  ok(marine.length === 7, `marine has seven relevant choices (got ${marine.length})`);
+  for (const id of [
+    'marine-full-electric', 'marine-load-levelling', 'marine-boost',
+    'marine-spinning-reserve', 'marine-peak-shaving',
+    'marine-load-smoothing', 'marine-ramp-support',
+  ]) ok(ids.includes(id), `${id} is available to marine`);
+  ok(marine.every((p) => p.family === 'operating-policy' && p.kind === 'policy-output'),
+    'all seven are generated policy outputs, not raw load profiles');
+  ok(marine.every((p) => p.sourceProfileId === 'marine-vessel-duty'),
+    'all seven trace back to the external vessel demand');
+});
+
+test('the knowledge graph is the only application-to-choice map', () => {
+  for (const pr of PRESETS) {
+    const ids = profilesForApp(pr.id).map((p) => p.id);
+    const expected = sizingOptionsFor(pr.id, 'energy-policy').length
+      ? sizingOptionsFor(pr.id, 'energy-policy')
+      : sizingOptionsFor(pr.id, 'load-profile');
+    ok(ids.join('|') === expected.join('|'), `${pr.id}: visible choices exactly match the graph`);
+  }
+  ok(LOAD_PROFILES.every((p) => p.appIds == null && p.suitableFor == null),
+    'profile data carries no second application mapping that can drift');
 });
 
 test('the shapes behave like their machines', () => {
@@ -39,6 +68,14 @@ test('the shapes behave like their machines', () => {
   ok(p('rv-house').p.some((v) => v < 0), 'rv day includes charging while driving');
   ok(p('humanoid-locomotion').p.every((v) => v > 0), 'humanoid base load never drops to zero');
   ok(Math.min(...p('humanoid-locomotion').p) >= 0.25, 'humanoid balance/compute base is substantial');
+  ok(p('marine-full-electric').p.every((v) => v >= 0), 'full electric supplies the complete positive demand');
+  ok(p('marine-load-levelling').p.some((v) => v > 0) && p('marine-load-levelling').p.some((v) => v < 0),
+    'load levelling both discharges above and charges below the genset setpoint');
+  ok(p('marine-spinning-reserve').p.some((v) => v === 0) && p('marine-spinning-reserve').p.some((v) => v > 0),
+    'spinning reserve waits before taking the load');
+  ok(p('marine-load-smoothing').dtS <= 0.5, 'load smoothing represents fluctuations above 1 Hz');
+  ok(p('marine-ramp-support').p.some((v) => v > 0) && p('marine-ramp-support').p.some((v) => v < 0),
+    'ramp support discharges on ramp-up and charges on ramp-down');
 });
 
 test('hand-checked math on a square wave', () => {
