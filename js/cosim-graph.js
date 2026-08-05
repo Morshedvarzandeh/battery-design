@@ -133,7 +133,7 @@ export const ANALYSIS_MODULE_CATALOG = Object.freeze({
   }),
   'vent-sizing': Object.freeze({
     id: 'vent-sizing', name: 'Emergency pressure-relief sizing', markets: ['road', 'grid'],
-    solver: 'js/venting.sizeEmergencyVent+vent-layout.selectVentHardwareLayout@1',
+    solver: 'js/venting.sizeEmergencyVent@1+vent-layout.selectVentHardwareLayout@2',
     summary: 'Calculates a conditional free-flow area, supplier vent quantity and provisional placement on reviewed enclosure faces.',
     limitation: 'Compressible-orifice screening only: measured gas-release data and production enclosure/vent tests are required; it is not NFPA 68 deflagration sizing or a safety approval.',
   }),
@@ -309,7 +309,8 @@ export function validateStudioGraph(graph) {
       ));
       const hardwareFields = [p.ventUnitId, p.ventUnitName, p.ventSupplier, p.ventPartNumber,
         p.ventUnitFreeAreaCm2, p.ventUnitWidthMm, p.ventUnitHeightMm,
-        p.ventUnitMechanism, p.ventUnitMarketProfiles, p.ventUnitEvidenceBasis,
+        p.ventUnitMechanism, p.ventOpeningGaugePressureKPa, p.ventTemperatureRatingC,
+        p.ventUnitMarketProfiles, p.ventUnitEvidenceBasis, p.ventEvidenceRevision, p.ventEvidenceDate,
         p.allowedVentFaces, p.edgeClearanceMm, p.minimumVentSpacingMm];
       const missingHardwareData = hardwareFields.some((value) => value == null || String(value).trim() === '');
       if (missingHardwareData) diagnostics.push(diag(
@@ -333,9 +334,17 @@ export function validateStudioGraph(graph) {
               : 'grid-industrial-enclosure';
         const validFaces = ['top', 'bottom', 'front', 'rear', 'left', 'right'];
         const footprintCm2 = p.ventUnitWidthMm * p.ventUnitHeightMm / 100;
+        const evidenceDate = String(p.ventEvidenceDate || '');
+        const parsedEvidenceDate = new Date(`${evidenceDate}T00:00:00Z`);
+        const validEvidenceDate = /^\d{4}-\d{2}-\d{2}$/.test(evidenceDate)
+          && !Number.isNaN(parsedEvidenceDate.getTime())
+          && parsedEvidenceDate.toISOString().slice(0, 10) === evidenceDate;
         if (!finitePositive(p.ventUnitFreeAreaCm2)
           || !finitePositive(p.ventUnitWidthMm) || !finitePositive(p.ventUnitHeightMm)
           || p.ventUnitFreeAreaCm2 > footprintCm2
+          || !finitePositive(p.ventOpeningGaugePressureKPa)
+          || !Number.isFinite(p.ventTemperatureRatingC) || p.ventTemperatureRatingC <= -273.15
+          || !validEvidenceDate
           || !['pressure-relief-device', 'burst-opening', 'directed-duct-exit'].includes(p.ventUnitMechanism)
           || !profiles.includes(expectedProfile)
           || !faces.length || faces.some((face) => !validFaces.includes(face))
@@ -345,6 +354,18 @@ export function validateStudioGraph(graph) {
           || !Number.isInteger(p.maxVentCount) || p.maxVentCount < 1) diagnostics.push(diag(
           'analysis.invalid_parameter', 'fail', 'The supplier vent or placement constraint is invalid.',
           `Use a real positive free area no larger than the footprint, an approved pressure-relief mechanism, ${expectedProfile} compatibility, valid permitted faces and non-negative clearances.`,
+          { moduleId: module.id },
+        ));
+        if (finitePositive(p.ventOpeningGaugePressureKPa)
+          && p.ventOpeningGaugePressureKPa >= p.allowableGaugePressureKPa) diagnostics.push(diag(
+          'analysis.vent_opening_pressure_incompatible', 'fail', 'The selected vent opens at or above the allowable enclosure pressure.',
+          'Select verified hardware whose worst-case opening pressure stays below the structural pressure limit; do not raise the limit without evidence and human approval.',
+          { moduleId: module.id },
+        ));
+        if (Number.isFinite(p.ventTemperatureRatingC)
+          && p.ventTemperatureRatingC < p.ventGasTemperatureC) diagnostics.push(diag(
+          'analysis.vent_temperature_incompatible', 'fail', 'The selected vent temperature rating is below the declared hot-gas case.',
+          'Select hardware with a documented transient temperature rating that covers the declared vent-gas temperature.',
           { moduleId: module.id },
         ));
       }
@@ -562,7 +583,8 @@ function runawayTemplate(options = {}) {
       dischargeCoefficient: 0.7, specificGasConstantJPerKgK: 287, gamma: 1.3,
       ventUnitId: '', ventUnitName: '', ventSupplier: '', ventPartNumber: '',
       ventUnitFreeAreaCm2: null, ventUnitWidthMm: null, ventUnitHeightMm: null,
-      ventUnitMechanism: '', ventUnitMarketProfiles: '', ventUnitEvidenceBasis: '',
+      ventUnitMechanism: '', ventOpeningGaugePressureKPa: null, ventTemperatureRatingC: null,
+      ventUnitMarketProfiles: '', ventUnitEvidenceBasis: '', ventEvidenceRevision: '', ventEvidenceDate: '',
       allowedVentFaces: '', preferredVentFace: '', edgeClearanceMm: null,
       minimumVentSpacingMm: null, maxVentCount: 128,
     },

@@ -15,14 +15,20 @@ const UNIT = {
   widthMm: 80,
   heightMm: 50,
   mechanism: 'pressure-relief-device',
+  openingGaugePressureKPa: 4,
+  temperatureRatingC: 500,
   marketProfiles: ['road-pack', 'grid-home-pack'],
   evidenceBasis: 'Supplier drawing D-17 and flow report F-22, revision C',
+  evidenceRevision: 'C',
+  evidenceDate: '2026-06-15',
 };
 
 const BASE = {
   market: 'road',
   segment: null,
   requiredFreeAreaCm2: 92,
+  allowableGaugePressureKPa: 10,
+  ventGasTemperatureC: 400,
   enclosure: { x: 500, y: 300, z: 160 },
   source: { x: 245, y: 145, z: 130 },
   allowedFaces: ['top', 'rear'],
@@ -49,6 +55,7 @@ test('large required area selects multiple supplier vents and places every unit'
   assert.equal(result.placedQuantity, 4);
   assert.equal(result.totalDeclaredFreeAreaCm2, 120);
   assert.equal(result.freeAreaMarginCm2, 28);
+  assert.equal(result.openingPressureHeadroomKPa, 6);
   assert.ok(result.placements.every((item) => item.face === 'top'), 'preferred permitted face is used when it fits');
   assert.ok(result.placements.every((item) => item.centerMm.z === BASE.enclosure.z));
   assert.ok(result.placements.every((item) => item.dischargeDirection.z === 1));
@@ -119,4 +126,13 @@ test('supplier market, footprint, evidence and safe-face declarations are mandat
   assert.throws(() => selectVentHardwareLayout({
     ...BASE, unit: { ...UNIT, evidenceBasis: '' },
   }), /evidence basis/i);
+  assert.throws(() => selectVentHardwareLayout({
+    ...BASE, unit: { ...UNIT, openingGaugePressureKPa: 10 },
+  }), /opening pressure.*below/i);
+  assert.throws(() => selectVentHardwareLayout({
+    ...BASE, unit: { ...UNIT, temperatureRatingC: 399 },
+  }), /temperature rating.*cover/i);
+  assert.throws(() => selectVentHardwareLayout({
+    ...BASE, unit: { ...UNIT, evidenceDate: '2026-02-30' },
+  }), /real calendar date/i);
 });

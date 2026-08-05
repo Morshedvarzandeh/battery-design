@@ -11,7 +11,7 @@
 // returned coordinates still require CAD, obstruction, duct-loss, water-
 // ingress, occupant/egress and physical enclosure tests.
 
-export const VENT_LAYOUT_SCHEMA = 'battery-design/vent-hardware-layout@1';
+export const VENT_LAYOUT_SCHEMA = 'battery-design/vent-hardware-layout@2';
 
 export const VENT_FACES = Object.freeze(['top', 'bottom', 'front', 'rear', 'left', 'right']);
 
@@ -55,6 +55,18 @@ const nonNegative = (name, value) => {
 const text = (name, value) => {
   const normalized = String(value || '').trim();
   if (!normalized) throw new RangeError(`${name} is required.`);
+  return normalized;
+};
+
+const isoDate = (name, value) => {
+  const normalized = text(name, value);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) {
+    throw new RangeError(`${name} must use YYYY-MM-DD.`);
+  }
+  const parsed = new Date(`${normalized}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== normalized) {
+    throw new RangeError(`${name} must be a real calendar date.`);
+  }
   return normalized;
 };
 
@@ -179,7 +191,7 @@ function validatePointInside(name, point, enclosure) {
   }
 }
 
-function normalizedUnit(unit, profileId) {
+function normalizedUnit(unit, profileId, scenario) {
   const normalized = {
     id: text('Supplier vent id', unit?.id),
     name: text('Supplier vent name', unit?.name),
@@ -189,10 +201,18 @@ function normalizedUnit(unit, profileId) {
     widthMm: positive('Vent footprint width', unit?.widthMm),
     heightMm: positive('Vent footprint height', unit?.heightMm),
     mechanism: text('Vent mechanism', unit?.mechanism),
+    openingGaugePressureKPa: positive('Vent opening gauge pressure', unit?.openingGaugePressureKPa),
+    temperatureRatingC: unit?.temperatureRatingC,
     marketProfiles: Array.isArray(unit?.marketProfiles)
       ? [...new Set(unit.marketProfiles.map((item) => String(item).trim()).filter(Boolean))] : [],
     evidenceBasis: text('Supplier vent evidence basis', unit?.evidenceBasis),
+    evidenceRevision: text('Supplier vent evidence revision', unit?.evidenceRevision),
+    evidenceDate: isoDate('Supplier vent evidence date', unit?.evidenceDate),
   };
+  if (!Number.isFinite(normalized.temperatureRatingC)
+    || normalized.temperatureRatingC <= -273.15) {
+    throw new RangeError('Vent temperature rating must be above absolute zero.');
+  }
   if (!MECHANISMS.includes(normalized.mechanism)) {
     throw new RangeError(`Vent mechanism must be one of: ${MECHANISMS.join(', ')}.`);
   }
@@ -202,6 +222,12 @@ function normalizedUnit(unit, profileId) {
   const footprintAreaCm2 = normalized.widthMm * normalized.heightMm / 100;
   if (normalized.freeAreaCm2 > footprintAreaCm2) {
     throw new RangeError('Supplier-declared free area cannot exceed the physical vent footprint.');
+  }
+  if (normalized.openingGaugePressureKPa >= scenario.allowableGaugePressureKPa) {
+    throw new RangeError('Vent opening pressure must remain below the allowable enclosure gauge pressure.');
+  }
+  if (normalized.temperatureRatingC < scenario.ventGasTemperatureC) {
+    throw new RangeError('Vent temperature rating must cover the declared vent-gas temperature.');
   }
   return normalized;
 }
@@ -213,6 +239,11 @@ function normalizedUnit(unit, profileId) {
 export function selectVentHardwareLayout(input) {
   const profile = ventMarketProfile(input?.market, input?.segment ?? null);
   const requiredFreeAreaCm2 = positive('Required free vent area', input?.requiredFreeAreaCm2);
+  const allowableGaugePressureKPa = positive('Allowable enclosure gauge pressure', input?.allowableGaugePressureKPa);
+  const ventGasTemperatureC = input?.ventGasTemperatureC;
+  if (!Number.isFinite(ventGasTemperatureC) || ventGasTemperatureC <= -273.15) {
+    throw new RangeError('Declared vent-gas temperature must be above absolute zero.');
+  }
   const enclosure = {
     x: positive('Enclosure X dimension', input?.enclosure?.x),
     y: positive('Enclosure Y dimension', input?.enclosure?.y),
@@ -231,7 +262,9 @@ export function selectVentHardwareLayout(input) {
   if (preferredFace && !allowedFaces.includes(preferredFace)) {
     throw new RangeError('Preferred vent face must also be in the allowed-face list.');
   }
-  const unit = normalizedUnit(input?.unit, profile.id);
+  const unit = normalizedUnit(input?.unit, profile.id, {
+    allowableGaugePressureKPa, ventGasTemperatureC,
+  });
   const maxVentCount = input?.maxVentCount ?? 128;
   if (!Number.isInteger(maxVentCount) || maxVentCount < 1) {
     throw new RangeError('Maximum vent count must be a positive integer.');
@@ -301,6 +334,9 @@ export function selectVentHardwareLayout(input) {
     status: 'provisional',
     marketProfile: profile,
     requiredFreeAreaCm2,
+    allowableGaugePressureKPa,
+    ventGasTemperatureC,
+    openingPressureHeadroomKPa: allowableGaugePressureKPa - unit.openingGaugePressureKPa,
     unit,
     requiredQuantity: quantity,
     placedQuantity: placements.length,
@@ -321,7 +357,7 @@ export function selectVentHardwareLayout(input) {
     approvalChecklist: [
       'Confirm each discharge direction terminates in a safe exterior area, away from occupants, egress, responders, air intakes, ignition sources and adjacent equipment.',
       'Confirm CAD structure, seals, service access, crash/load paths, water ingress and every internal obstruction or duct loss.',
-      'Confirm supplier free area, opening pressure, temperature capability, flow direction, tolerance and non-reclosing/reclosing behavior from the cited part evidence.',
+      'Confirm supplier free area, opening-pressure tolerance, temperature capability, flow direction and non-reclosing/reclosing behavior from the cited evidence revision and date.',
       'Validate the production enclosure, all installed vents and any ducts with representative gas-release and pressure testing.',
       'Use a qualified fire-protection review and the applicable deflagration/explosion-prevention analysis for ESS installations.',
     ],

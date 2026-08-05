@@ -137,8 +137,12 @@ export function runVentSizingModule(module, context = {}) {
     ['ventUnitWidthMm', 'Vent footprint width'],
     ['ventUnitHeightMm', 'Vent footprint height'],
     ['ventUnitMechanism', 'Vent mechanism'],
+    ['ventOpeningGaugePressureKPa', 'Vent opening gauge pressure'],
+    ['ventTemperatureRatingC', 'Vent temperature rating'],
     ['ventUnitMarketProfiles', 'Supplier-declared market profiles'],
     ['ventUnitEvidenceBasis', 'Supplier part evidence'],
+    ['ventEvidenceRevision', 'Supplier evidence revision'],
+    ['ventEvidenceDate', 'Supplier evidence date'],
     ['allowedVentFaces', 'Human-screened discharge faces'],
     ['edgeClearanceMm', 'Vent-to-edge clearance'],
     ['minimumVentSpacingMm', 'Minimum inter-vent spacing'],
@@ -163,6 +167,8 @@ export function runVentSizingModule(module, context = {}) {
     market: context.market,
     segment: context.segment ?? null,
     requiredFreeAreaCm2: result.high.areaCm2,
+    allowableGaugePressureKPa: result.inputs.allowableGaugePressureKPa,
+    ventGasTemperatureC: result.inputs.ventGasTemperatureC,
     enclosure: geometry.enclosure,
     source: geometry.source,
     allowedFaces: splitList(p.allowedVentFaces),
@@ -179,8 +185,12 @@ export function runVentSizingModule(module, context = {}) {
       widthMm: p.ventUnitWidthMm,
       heightMm: p.ventUnitHeightMm,
       mechanism: p.ventUnitMechanism,
+      openingGaugePressureKPa: p.ventOpeningGaugePressureKPa,
+      temperatureRatingC: p.ventTemperatureRatingC,
       marketProfiles: splitList(p.ventUnitMarketProfiles),
       evidenceBasis: p.ventUnitEvidenceBasis,
+      evidenceRevision: p.ventEvidenceRevision,
+      evidenceDate: p.ventEvidenceDate,
     },
   });
   const placementLimitation = 'Vent coordinates are a geometric screening result on human-permitted faces; CAD structure, external safe discharge, obstructions, ducts, opening dynamics and installed-system tests remain required.';
@@ -202,12 +212,13 @@ export function runVentSizingModule(module, context = {}) {
 }
 
 export function runAttachedAnalysisModules(graph) {
+  const enabledModules = (graph.analysisModules || []).filter((item) => item.enabled !== false);
+  const runawayModule = enabledModules.find((module) => module.type === 'runaway-propagation');
+  const runawayResult = runawayModule ? runRunawayPropagationModule(runawayModule) : null;
   const results = [];
-  let runawayResult = null;
-  for (const module of (graph.analysisModules || []).filter((item) => item.enabled !== false)) {
+  for (const module of enabledModules) {
     if (module.type === 'runaway-propagation') {
-      runawayResult = runRunawayPropagationModule(module);
-      results.push(runawayResult);
+      results.push(module === runawayModule ? runawayResult : runRunawayPropagationModule(module));
       continue;
     }
     if (module.type === 'vent-sizing') {
