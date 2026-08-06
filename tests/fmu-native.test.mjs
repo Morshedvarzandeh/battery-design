@@ -63,8 +63,9 @@ test('native linux64 FMU builds reproducibly and passes a real consumer lifecycl
 
   const firstPath = join(temporary, 'battery-design-ev.fmu');
   const secondPath = join(temporary, 'battery-design-ev-second.fmu');
-  const first = packageFmu({ tree, output: firstPath });
-  const second = packageFmu({ tree, output: secondPath });
+  const packageOptions = { requiredPlatforms: ['linux64'], maxGlibc: '99.0' };
+  const first = packageFmu({ tree, output: firstPath, ...packageOptions });
+  const second = packageFmu({ tree, output: secondPath, ...packageOptions });
   assert.equal(first.sha256, second.sha256);
   assert.deepEqual(readFileSync(firstPath), readFileSync(secondPath), 'the complete .fmu is byte reproducible');
   assert.deepEqual(first.binaries, ['linux64']);
@@ -77,6 +78,10 @@ test('native linux64 FMU builds reproducibly and passes a real consumer lifecycl
   assert.ok(first.files.every((path) => !path.startsWith('tree/') && !path.startsWith('./')),
     'modelDescription.xml and all package directories are at the archive root');
   assert.deepEqual(auditFmuTree(tree).binaries, ['linux64']);
+  assert.throws(
+    () => packageFmu({ tree, output: join(temporary, 'missing-win64.fmu'), requiredPlatforms: ['linux64', 'win64'] }),
+    /missing required native platforms: win64/,
+  );
 
   const archiveSmoke = spawnSync('python3', [join(ROOT, 'tools', 'fmu-smoke.py'), firstPath, '--platform', 'linux64'], {
     encoding: 'utf8', maxBuffer: 4 * 1024 * 1024,

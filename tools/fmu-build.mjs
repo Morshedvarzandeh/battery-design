@@ -290,7 +290,19 @@ function writeInspectionRecord(contract, result) {
   }, null, 2)}\n`);
 }
 
-function verifiedPackagedBinaries(contract) {
+export function recordNativeInspection({ tree, platform, maxGlibc = null }) {
+  const contract = readFmuContract(tree);
+  const result = inspectNativeBinary({ tree: contract.root, platform, maxGlibc });
+  writeInspectionRecord(contract, result);
+  return result;
+}
+
+function verifiedPackagedBinaries(contract, { requiredPlatforms = [], maxGlibc = null } = {}) {
+  const required = [...new Set(requiredPlatforms)];
+  for (const platform of required) platformContract(platform);
+  if (maxGlibc && !/^\d+\.\d+(?:\.\d+)*$/.test(maxGlibc)) {
+    throw new Error(`Invalid GLIBC ceiling: ${maxGlibc}`);
+  }
   const binaries = [];
   for (const [platform, target] of Object.entries(FMI2_NATIVE_PLATFORMS)) {
     const rel = `binaries/${platform}/${contract.modelIdentifier}${target.extension}`;
@@ -320,6 +332,13 @@ function verifiedPackagedBinaries(contract) {
         || JSON.stringify(recordedSymbols) !== JSON.stringify(expectedSymbols)) {
       throw new Error(`${platform} FMI binary does not match its native inspection record.`);
     }
+    if (platform === 'linux64' && maxGlibc) {
+      const observed = record.runtime?.glibcMax;
+      const enforced = record.runtime?.enforcedGlibcCeiling;
+      if (!observed || enforced !== maxGlibc || compareDottedVersions(observed, maxGlibc) > 0) {
+        throw new Error(`linux64 FMI binary lacks a verified GLIBC_${maxGlibc} compatibility ceiling.`);
+      }
+    }
     if (target.os === process.platform && target.nodeArchitecture === process.arch) {
       const recordedCeiling = record.runtime?.enforcedGlibcCeiling || null;
       const inspected = inspectNativeBinary({
@@ -329,10 +348,19 @@ function verifiedPackagedBinaries(contract) {
         throw new Error(`${platform} FMI binary changed or its runtime inspection record is inaccurate.`);
       }
     }
-    binaries.push({ platform, path: rel, sha256: digest });
+    binaries.push({
+      platform,
+      path: rel,
+      sha256: digest,
+      exportedSymbols: recordedSymbols,
+      runtime: record.runtime || null,
+    });
   }
   binaries.sort((a, b) => a.platform.localeCompare(b.platform, 'en'));
   if (!binaries.length) throw new Error('Cannot package a compiled FMU without a verified native binary.');
+  const present = new Set(binaries.map((binary) => binary.platform));
+  const missing = required.filter((platform) => !present.has(platform));
+  if (missing.length) throw new Error(`FMU is missing required native platforms: ${missing.join(', ')}`);
   return binaries;
 }
 
@@ -356,6 +384,10 @@ function walkFiles(root, current = root, out = []) {
 }
 
 function ensurePackageMetadata(contract, binaries) {
+  const sourceRevision = process.env.BATTERY_DESIGN_SOURCE_REVISION || null;
+  if (sourceRevision && !/^[a-f0-9]{40}$/.test(sourceRevision)) {
+    throw new Error('BATTERY_DESIGN_SOURCE_REVISION must be a full lowercase Git SHA-1.');
+  }
   const licenseDir = join(contract.root, 'documentation', 'licenses');
   mkdirSync(licenseDir, { recursive: true });
   copyFileSync(join(REPO_ROOT, 'LICENSE'), join(licenseDir, 'battery-design-AGPL-3.0.txt'));
@@ -394,6 +426,7 @@ are under \`documentation/licenses/\`.
     fmiVersion: '2.0',
     fmiStandardPatch: FMI_STANDARD_VERSION,
     modelRevision: FMU_MODEL_REVISION,
+    sourceRevision,
     modelIdentifier: contract.modelIdentifier,
     guid: contract.guid,
     modelDescriptionSha256: sha256(readFileSync(contract.xmlPath)),
@@ -518,7 +551,7 @@ function deterministicZip(entries) {
   return Buffer.concat([...localParts, ...centralParts, end]);
 }
 
-export function packageFmu({ tree, output }) {
+export function packageFmu({ tree, output, requiredPlatforms = [], maxGlibc = null }) {
   const root = resolve(tree);
   const outputPath = resolve(output);
   if (outputPath === root || outputPath.startsWith(`${root}${sep}`)) {
@@ -528,7 +561,7 @@ export function packageFmu({ tree, output }) {
   // Reject symlinks and unsafe tree entries before creating or copying any
   // metadata, then bind every binary to a native-runner inspection record.
   walkFiles(root);
-  const binaries = verifiedPackagedBinaries(contract);
+  const binaries = verifiedPackagedBinaries(contract, { requiredPlatforms, maxGlibc });
   ensurePackageMetadata(contract, binaries);
   const audit = auditFmuTree(root);
   const entries = walkFiles(root).sort((a, b) => Buffer.from(a.rel).compare(Buffer.from(b.rel)));
@@ -553,7 +586,7 @@ function parseCli(argv) {
     const token = rest[i];
     if (!token.startsWith('--')) throw new Error(`Unexpected argument: ${token}`);
     const key = token.slice(2);
-    if (key === 'reproducible') options[key] = true;
+    if (key === 'reproducible' || key === 'record') options[key] = true;
     else {
       if (i + 1 >= rest.length || rest[i + 1].startsWith('--')) throw new Error(`Missing value for ${token}.`);
       options[key] = rest[++i];
@@ -565,7 +598,7 @@ function parseCli(argv) {
 async function main() {
   const { command, options } = parseCli(process.argv.slice(2));
   if (command === 'compile') {
-    if (!options.tree || !options.platform) throw new Error('Usage: fmu-build.mjs compile --tree DIR --platform linux64 [--compiler cc] [--max-glibc 2.28] [--reproducible]');
+    if (!options.tree || !options.platform) throw new Error('Usage: fmu-build.mjs compile --tree DIR --platform linux64 [--compiler cc] [--max-glibc 2.17] [--reproducible]');
     console.log(JSON.stringify(compileNativeBinary({
       tree: options.tree,
       platform: options.platform,
@@ -576,17 +609,27 @@ async function main() {
     return;
   }
   if (command === 'package') {
-    if (!options.tree || !options.output) throw new Error('Usage: fmu-build.mjs package --tree DIR --output battery-design-ev.fmu');
-    console.log(JSON.stringify(packageFmu({ tree: options.tree, output: options.output }), null, 2));
+    if (!options.tree || !options.output) throw new Error('Usage: fmu-build.mjs package --tree DIR --output battery-design-ev.fmu [--require-platforms linux64,win64] [--max-glibc 2.17]');
+    const requiredPlatforms = options['require-platforms']
+      ? options['require-platforms'].split(',').filter(Boolean) : [];
+    console.log(JSON.stringify(packageFmu({
+      tree: options.tree,
+      output: options.output,
+      requiredPlatforms,
+      maxGlibc: options['max-glibc'] || null,
+    }), null, 2));
     return;
   }
   if (command === 'inspect') {
-    if (!options.tree || !options.platform) throw new Error('Usage: fmu-build.mjs inspect --tree DIR --platform linux64 [--max-glibc 2.28]');
-    console.log(JSON.stringify(inspectNativeBinary({
+    if (!options.tree || !options.platform) throw new Error('Usage: fmu-build.mjs inspect --tree DIR --platform linux64 [--max-glibc 2.17] [--record]');
+    const inspection = {
       tree: options.tree,
       platform: options.platform,
       maxGlibc: options['max-glibc'] || null,
-    }), null, 2));
+    };
+    console.log(JSON.stringify(options.record
+      ? recordNativeInspection(inspection)
+      : inspectNativeBinary(inspection), null, 2));
     return;
   }
   throw new Error('Usage: fmu-build.mjs <compile|package|inspect> ...');

@@ -1,0 +1,401 @@
+name: Compiled FMI 2.0 FMU
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: Exact full commit SHA to build.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  FMI_TREE: fmu-ev
+  MANYLINUX_IMAGE: quay.io/pypa/manylinux2014_x86_64:2026.08.05-1@sha256:5573110c10bbea40239d80e449f4a02d2773c5d2c0edc27c17307c421816b760
+  FMUSIM_VERSION: '0.6.0'
+  FMUSIM_LINUX_URL: https://github.com/modelica/fmusim/releases/download/v0.6.0/fmusim-x86_64-linux.zip
+  FMUSIM_LINUX_SHA256: 1854e6ad2b92765db682ba690530d227f0924e14ed12ecb16bd8e06fbe2affa2
+  FMUSIM_WINDOWS_URL: https://github.com/modelica/fmusim/releases/download/v0.6.0/fmusim-x86_64-windows.zip
+  FMUSIM_WINDOWS_SHA256: ffb2a1cb1ba8fb3500244ee3c7646b18b4cabbe0b25a3d08ca9e24a240f50ac9
+  FMPY_VERSION: '0.3.30'
+
+jobs:
+  source:
+    name: Generate canonical source tree
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the exact caller revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 maintenance branch
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Bind source generation to the requested commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          source_revision=$(git rev-parse HEAD)
+          test "$source_revision" = "$EXPECTED_SHA"
+          echo "BATTERY_DESIGN_SOURCE_REVISION=$source_revision" >> "$GITHUB_ENV"
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Validate the FMI contract generator
+        run: node --test tests/fmi-contract.test.mjs
+      - name: Generate the canonical EV source-FMU tree once
+        run: node desktop/bd.mjs fmu --app ev --energy 60000 --out "$FMI_TREE"
+      - name: Preserve the canonical source tree
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fmu-canonical-source
+          path: ${{ env.FMI_TREE }}/
+          if-no-files-found: error
+          retention-days: 1
+
+  linux64:
+    name: Build and smoke linux64 (GLIBC 2.17)
+    needs: source
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out the exact caller revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 maintenance branch
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Restore the canonical source tree
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fmu-canonical-source
+          path: ${{ env.FMI_TREE }}
+      - name: Compile twice in the pinned manylinux2014 toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          model_id=$(node --input-type=module -e \
+            "import { readFmuContract } from './tools/fmu-build.mjs'; console.log(readFmuContract(process.env.FMI_TREE).modelIdentifier)")
+          mapfile -t source_files < <(node --input-type=module -e \
+            "import { readFmuContract } from './tools/fmu-build.mjs'; readFmuContract(process.env.FMI_TREE).sourceFiles.forEach((file) => console.log(file))")
+          test "${#source_files[@]}" -gt 0
+          container_sources=()
+          for source_file in "${source_files[@]}"; do
+            container_sources+=("/io/${FMI_TREE}/sources/${source_file}")
+          done
+          mkdir -p "$FMI_TREE/resources" "$FMI_TREE/binaries/linux64" \
+            "$FMI_TREE/.fmu-build/linux64/primary" "$FMI_TREE/.fmu-build/linux64/repro"
+          docker run --rm --platform linux/amd64 \
+            --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/io:rw" \
+            --workdir /io \
+            "$MANYLINUX_IMAGE" \
+            bash -euxo pipefail -c '
+              tree=$1
+              model_id=$2
+              shift 2
+              primary="/io/$tree/.fmu-build/linux64/primary/$model_id.so"
+              repro="/io/$tree/.fmu-build/linux64/repro/$model_id.so"
+              common=(
+                -std=c11 -O2 -Wall -Wextra -Werror -fPIC -fvisibility=hidden
+                -ffile-prefix-map=/io=. -fdebug-prefix-map=/io=.
+                -shared -DFMI2_OVERRIDE_FUNCTION_PREFIX
+                -I/io/third_party/fmi-2.0.5/headers
+              )
+              linker=(-Wl,--no-undefined -Wl,-z,defs -Wl,--build-id=none)
+              gcc "${common[@]}" "$@" "${linker[@]}" -o "$primary" -lm
+              gcc "${common[@]}" "$@" "${linker[@]}" -o "$repro" -lm
+              cmp "$primary" "$repro"
+              install -m 0755 "$primary" "/io/$tree/binaries/linux64/$model_id.so"
+            ' bash "$FMI_TREE" "$model_id" "${container_sources[@]}"
+      - name: Enforce ABI, architecture, dependencies and GLIBC ceiling
+        run: node tools/fmu-build.mjs inspect --tree "$FMI_TREE" --platform linux64 --max-glibc 2.17 --record
+      - name: Exercise the native FMI lifecycle and physical invariants
+        run: python3 tools/fmu-smoke.py "$FMI_TREE" --platform linux64
+      - name: Preserve the verified linux64 binary and inspection record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fmu-linux64
+          path: |
+            ${{ env.FMI_TREE }}/binaries/linux64/
+            ${{ env.FMI_TREE }}/.fmu-build/inspections/linux64.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  win64:
+    name: Build, package and host-test win64
+    needs: source
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact caller revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 maintenance branch
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Bind Windows packaging to the requested commit
+        shell: pwsh
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:EXPECTED_SHA -notmatch '^[0-9a-f]{40}$') { throw 'ref must be a full lowercase commit SHA.' }
+          $sourceRevision = (git rev-parse HEAD).Trim()
+          if ($sourceRevision -ne $env:EXPECTED_SHA) { throw "Checked out $sourceRevision, expected $env:EXPECTED_SHA" }
+          "BATTERY_DESIGN_SOURCE_REVISION=$sourceRevision" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Restore the canonical source tree
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fmu-canonical-source
+          path: ${{ env.FMI_TREE }}
+      - name: Compile twice with MSVC x64
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) { throw 'A Visual Studio x64 C toolchain is required.' }
+          $vcvars = Join-Path $installation 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path -LiteralPath $vcvars -PathType Leaf)) { throw "Missing $vcvars" }
+          "FMI_VCVARS64=$vcvars" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $script = Join-Path $env:RUNNER_TEMP 'build-win64-fmu.cmd'
+          @"
+          @echo off
+          call "$vcvars"
+          if errorlevel 1 exit /b %errorlevel%
+          node tools\fmu-build.mjs compile --tree "$env:FMI_TREE" --platform win64 --reproducible
+          "@ | Set-Content -LiteralPath $script -Encoding ascii
+          & $script
+          if ($LASTEXITCODE -ne 0) { throw "MSVC FMU build failed with exit code $LASTEXITCODE" }
+      - name: Exercise the native FMI lifecycle and physical invariants
+        run: python tools/fmu-smoke.py "$env:FMI_TREE" --platform win64
+      - name: Build a temporary Windows-only FMU
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $winFmu = Join-Path $env:RUNNER_TEMP 'battery-design-ev-win64.fmu'
+          if (-not (Test-Path -LiteralPath $env:FMI_VCVARS64 -PathType Leaf)) {
+            throw 'The verified Visual Studio x64 environment is unavailable.'
+          }
+          $script = Join-Path $env:RUNNER_TEMP 'package-win64-fmu.cmd'
+          @"
+          @echo off
+          call "$env:FMI_VCVARS64"
+          if errorlevel 1 exit /b %errorlevel%
+          node tools\fmu-build.mjs package --tree "$env:FMI_TREE" --output "$winFmu" --require-platforms win64
+          "@ | Set-Content -LiteralPath $script -Encoding ascii
+          & $script
+          if ($LASTEXITCODE -ne 0) { throw "Windows-only FMU packaging failed with exit code $LASTEXITCODE" }
+          python -c "import sys, zipfile; names=zipfile.ZipFile(sys.argv[1]).namelist(); platforms={n.split('/')[1] for n in names if n.startswith('binaries/')}; assert platforms == {'win64'}, platforms" $winFmu
+          if ($LASTEXITCODE -ne 0) { throw 'Temporary FMU was not Windows-only.' }
+          "WIN_FMU=$winFmu" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install SHA-verified fmusim 0.6.0 for Windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'fmusim-win64.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'fmusim-win64'
+          Invoke-WebRequest -Uri $env:FMUSIM_WINDOWS_URL -OutFile $archive
+          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:FMUSIM_WINDOWS_SHA256) { throw "fmusim SHA-256 mismatch: $actual" }
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          $binary = Get-ChildItem -LiteralPath $directory -Filter fmusim.exe -File -Recurse | Select-Object -First 1
+          if (-not $binary) { throw 'The verified fmusim archive contains no executable.' }
+          $version = (& $binary.FullName --version).Trim()
+          if ($version -ne "fmusim $env:FMUSIM_VERSION") { throw "Unexpected fmusim version: $version" }
+          "FMUSIM_EXE=$($binary.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Install the hash-locked FMPy 0.3.30 validation runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $directory = Join-Path $env:RUNNER_TEMP 'fmpy-wheel'
+          $requirements = (Resolve-Path 'tools/fmpy-validation-requirements.txt').Path
+          New-Item -ItemType Directory -Path $directory | Out-Null
+          python -m pip download --disable-pip-version-check --no-deps --only-binary=:all: `
+            --require-hashes --dest $directory -r $requirements
+          if ($LASTEXITCODE -ne 0) { throw 'FMPy runtime download or hash verification failed.' }
+          if ((Get-ChildItem -LiteralPath $directory -Filter '*.whl' -File).Count -ne 5) {
+            throw 'The FMPy validation runtime must contain exactly five locked wheels.'
+          }
+          python -m pip install --disable-pip-version-check --no-deps --no-index `
+            --find-links $directory --require-hashes -r $requirements
+          if ($LASTEXITCODE -ne 0) { throw 'FMPy validation runtime installation failed.' }
+          $version = (python -c 'import fmpy; print(fmpy.__version__)').Trim()
+          if ($version -ne $env:FMPY_VERSION) { throw "Unexpected FMPy version: $version" }
+      - name: Validate and simulate the win64 FMU with both independent hosts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fmusimCsv = Join-Path $env:RUNNER_TEMP 'fmusim-win64.csv'
+          & $env:FMUSIM_EXE validate $env:WIN_FMU
+          if ($LASTEXITCODE -ne 0) { throw 'fmusim validation failed.' }
+          & $env:FMUSIM_EXE simulate --interface-type cs --start-time 0 --stop-time 1 --output-interval 0.1 --fixed-step-size 0.1 `
+            --start-value I_pack=100 --start-value T_ambient=25 --start-value coolant_flow=0.05 `
+            --output-variable V_pack --output-variable SoC --output-file $fmusimCsv $env:WIN_FMU
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $fmusimCsv -PathType Leaf) -or (Get-Item $fmusimCsv).Length -eq 0) {
+            throw 'fmusim did not produce a non-empty simulation result.'
+          }
+          python tools/fmpy-smoke.py $env:WIN_FMU
+          if ($LASTEXITCODE -ne 0) { throw 'FMPy trajectory validation failed.' }
+      - name: Preserve the verified win64 binary and inspection record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fmu-win64
+          path: |
+            ${{ env.FMI_TREE }}/binaries/win64/
+            ${{ env.FMI_TREE }}/.fmu-build/inspections/win64.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  package:
+    name: Assemble and independently validate compiled FMU
+    needs: [source, linux64, win64]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out the exact caller revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4 maintenance branch
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+      - name: Bind final packaging to the requested commit
+        shell: bash
+        env:
+          EXPECTED_SHA: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]]
+          source_revision=$(git rev-parse HEAD)
+          test "$source_revision" = "$EXPECTED_SHA"
+          echo "BATTERY_DESIGN_SOURCE_REVISION=$source_revision" >> "$GITHUB_ENV"
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Install Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: Restore the canonical source tree
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fmu-canonical-source
+          path: ${{ env.FMI_TREE }}
+      - name: Fan in the linux64 binary and hidden inspection record
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fmu-linux64
+          path: ${{ env.FMI_TREE }}
+      - name: Fan in the win64 binary and hidden inspection record
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fmu-win64
+          path: ${{ env.FMI_TREE }}
+      - name: Verify fan-in evidence and the Linux compatibility contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "$FMI_TREE/.fmu-build/inspections/linux64.json"
+          test -s "$FMI_TREE/.fmu-build/inspections/win64.json"
+          node tools/fmu-build.mjs inspect --tree "$FMI_TREE" --platform linux64 --max-glibc 2.17
+      - name: Build the deterministic two-platform FMU twice
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          first="$RUNNER_TEMP/battery-design-ev.first.fmu"
+          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output "$first" --require-platforms linux64,win64 --max-glibc 2.17
+          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output dist/battery-design-ev.fmu --require-platforms linux64,win64 --max-glibc 2.17
+          cmp "$first" dist/battery-design-ev.fmu
+          (cd dist && sha256sum battery-design-ev.fmu > battery-design-ev.fmu.sha256)
+      - name: Verify the final archive's exact platform set
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import zipfile
+
+          archive = 'dist/battery-design-ev.fmu'
+          with zipfile.ZipFile(archive) as package:
+              names = package.namelist()
+              binaries = [name for name in names if name.startswith('binaries/')]
+              platforms = {name.split('/')[1] for name in binaries}
+              assert platforms == {'linux64', 'win64'}, platforms
+              assert len(binaries) == 2, binaries
+              assert not any(name.startswith('.fmu-build/') for name in names)
+              manifest = json.loads(package.read('resources/battery-design-build.json'))
+              assert manifest['artifactKind'] == 'compiled-fmu'
+              assert manifest['sourceRevision'] == os.environ['BATTERY_DESIGN_SOURCE_REVISION']
+              assert {entry['platform'] for entry in manifest['binaries']} == platforms
+              assert manifest['binaries'][0].get('exportedSymbols')
+              assert manifest['binaries'][1].get('exportedSymbols')
+          PY
+      - name: Exercise the packaged Linux binary and physical invariants
+        run: python tools/fmu-smoke.py dist/battery-design-ev.fmu --platform linux64
+      - name: Install SHA-verified fmusim 0.6.0 for Linux
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/fmusim-linux64.zip"
+          directory="$RUNNER_TEMP/fmusim-linux64"
+          curl --fail --show-error --silent --location "$FMUSIM_LINUX_URL" --output "$archive"
+          printf '%s  %s\n' "$FMUSIM_LINUX_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$directory"
+          unzip -q "$archive" -d "$directory"
+          fmusim=$(find "$directory" -maxdepth 2 -name fmusim -type f -print -quit)
+          test -n "$fmusim"
+          chmod 0755 "$fmusim"
+          test "$("$fmusim" --version)" = "fmusim $FMUSIM_VERSION"
+          echo "FMUSIM_EXE=$fmusim" >> "$GITHUB_ENV"
+      - name: Install the hash-locked FMPy 0.3.30 validation runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory="$RUNNER_TEMP/fmpy-wheel"
+          mkdir -p "$directory"
+          python -m pip download --disable-pip-version-check --no-deps --only-binary=:all: \
+            --require-hashes --dest "$directory" -r tools/fmpy-validation-requirements.txt
+          test "$(find "$directory" -maxdepth 1 -name '*.whl' -type f | wc -l)" -eq 5
+          python -m pip install --disable-pip-version-check --no-deps --no-index \
+            --find-links "$directory" --require-hashes -r tools/fmpy-validation-requirements.txt
+          test "$(python -c 'import fmpy; print(fmpy.__version__)')" = "$FMPY_VERSION"
+      - name: Validate and simulate the final FMU with both independent hosts
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$FMUSIM_EXE" validate dist/battery-design-ev.fmu
+          "$FMUSIM_EXE" simulate --interface-type cs --start-time 0 --stop-time 1 \
+            --output-interval 0.1 --fixed-step-size 0.1 \
+            --start-value I_pack=100 --start-value T_ambient=25 --start-value coolant_flow=0.05 \
+            --output-variable V_pack --output-variable SoC \
+            --output-file "$RUNNER_TEMP/fmusim-linux64.csv" dist/battery-design-ev.fmu
+          test -s "$RUNNER_TEMP/fmusim-linux64.csv"
+          python tools/fmpy-smoke.py dist/battery-design-ev.fmu
+      - name: Upload the release-ready FMU and checksum
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: battery-design-ev-fmu
+          path: |
+            dist/battery-design-ev.fmu
+            dist/battery-design-ev.fmu.sha256
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30

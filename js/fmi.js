@@ -14,17 +14,16 @@
 //   inputs   I_pack [A]  (+ discharge),  T_ambient [°C],  coolant flow [kg/s]
 //   outputs  V_pack [V],  SoC [-],  T_cell [°C],  Q_loss [W],  V_min_cell [V]
 //
-// This module GENERATES the FMU: the modelDescription.xml that declares the
-// interface, and the C source that implements a reduced one-RC plant model
-// using a documented subset of the coefficients exposed by js/sim2.js. The
-// stepping code is C on purpose — an FMU has to be a compiled shared library,
-// and this is the one place in the project where a compiled language is not
-// an optimisation but a requirement of the format.
+// This module generates the canonical FMI source tree: modelDescription.xml,
+// the complete reduced one-RC C implementation and source-build documentation.
+// tools/fmu-build.mjs compiles, inspects and packages that tree into a loadable
+// .fmu. The stepping code is C on purpose — an FMU has to be a compiled shared
+// library, so here a compiled language is a format requirement rather than an
+// optimisation.
 //
-// Honesty: this emits a SOURCE FMU. The C is complete and self-contained, but
-// somebody has to compile it for their platform — the build line is in the
-// generated README and needs nothing but cc. No binary is shipped that anyone
-// cannot reproduce.
+// Honesty: buildFmu() emits a source-FMU build kit. The release workflow
+// separately compiles reproducible native binaries and packages the downloadable
+// .fmu; browser, CLI and local-API exports remain source-only.
 //
 // Pure string generation, no filesystem, no DOM: the desktop runner writes
 // the files, the browser can preview them.

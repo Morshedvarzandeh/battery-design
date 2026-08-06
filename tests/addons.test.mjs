@@ -2,7 +2,7 @@
 //
 // The tool outgrew being one program. These check that the capability
 // registry describes itself honestly — including what is NOT built — and that
-// the FMI export produces something a host tool would actually accept.
+// the FMI export produces a complete interface suitable for native and host validation.
 import { test } from 'node:test';
 import { ok, throws } from './helpers.mjs';
 import { ADDONS, addonById, addonsFor, capabilityReport, validateAddons } from '../js/addons.js';

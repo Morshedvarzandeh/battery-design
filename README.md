@@ -26,16 +26,23 @@ Prefer not to install anything? The same designer runs in a browser at
 **[morshedvarzandeh.github.io/battery-design](https://morshedvarzandeh.github.io/battery-design/)**,
 with the advanced local model and export tools reserved for the desktop build.
 
-Already have a simulation toolchain? The release's
-`battery-design-ev-fmi-source-kit.zip`
-is an **FMI 2.0 source-FMU build kit**, not a loadable binary FMU. It contains
-`modelDescription.xml`, path-preserving C source and build instructions. Compile
-it for the target platform, package the required `binaries/` tree and validate
-the result before importing it into ANSYS Twin Builder, Simulink, GT-SUITE or
-Dymola.
+Already have a simulation toolchain? The gated release workflow produces
+`battery-design-ev.fmu`, a compiled FMI 2.0 Co-Simulation FMU containing
+verified `linux64` (glibc 2.17+ baseline) and `win64` x64 binaries. Import the
+`.fmu` directly; it is already a ZIP-format FMU archive. CI validates its FMI
+2.0.5 XML contract,
+native ABI and lifecycle, then imports and steps it with fmusim and FMPy on the
+matching operating systems. These open-source checks do not certify acceptance
+in ANSYS Twin Builder, Simulink or GT-SUITE; record a product/version-specific
+result using the [commercial acceptance checklist](docs/FMI_COMMERCIAL_ACCEPTANCE.md)
+before making a host-support claim.
 
-The future Linux packages are unsigned, so a software centre may warn about
-them. Windows and macOS packages are not currently built or advertised.
+The desktop GUI, CLI and local API continue to export an editable source-FMU
+build kit. That local source kit is not loadable until it is compiled and
+packaged.
+
+The Linux desktop packages are unsigned, so a software centre may warn about
+them. Windows and macOS desktop packages are not currently built or advertised.
 
 ### Where each capability is exposed
 

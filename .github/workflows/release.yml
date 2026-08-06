@@ -5,7 +5,7 @@
 # macOS, so the only honest place to build them is a matrix of real runners.
 #
 # It runs on a tag, or on a manual dispatch naming one. Either way it produces
-# a DRAFT release with an installer plus the FMI source kit, and the draft is
+# a DRAFT release with verified installers plus the compiled FMI artifact, and the draft is
 # published by hand — a release is outward-facing and the last look should be a
 # person's.
 name: Release
@@ -21,7 +21,11 @@ on:
 
 permissions:
   actions: read
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
 
 # On a tag push this is the tag. On a manual run github.ref_name would be the
 # BRANCH — which would have quietly produced a release called "main" — so the
@@ -41,6 +45,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_TAG }}
+          persist-credentials: false
       - name: Verify the requested release ref
         id: release_ref
         env:
@@ -126,26 +131,15 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # This repository currently generates FMI metadata and portable C source,
-  # not a precompiled platform FMU. Build the source kit once and label it
-  # precisely so users do not mistake it for a drop-in simulation component.
   fmu:
+    name: FMI 2.0 compiled artifact
     needs: gates
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.gates.outputs.release_sha }}
-      - uses: actions/setup-node@v4
-        with: { node-version: '22' }
-      - name: Export the FMI 2.0 source kit
-        run: |
-          node desktop/bd.mjs fmu --app ev --energy 60000 --out ./fmu-ev
-          cd fmu-ev && zip -r ../battery-design-ev-fmi-source-kit.zip . && cd ..
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fmi-source-kit
-          path: battery-design-ev-fmi-source-kit.zip
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/fmu.yml
+    with:
+      ref: ${{ needs.gates.outputs.release_sha }}
 
   # LINUX ONLY, deliberately.
   #
@@ -172,6 +166,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.gates.outputs.release_sha }}
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
@@ -241,40 +236,8 @@ jobs:
           echo "icon set complete"
 
       - uses: tauri-apps/tauri-action@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: desktop-app/src-tauri
-          tagName: ${{ env.RELEASE_TAG }}
-          releaseName: 'Battery pack designer ${{ env.RELEASE_TAG }}'
-          releaseBody: |
-            Design a battery pack on your own machine. No account, no network, nothing uploaded.
-
-            **Which file do I want?**
-
-            | You are on | Download |
-            |---|---|
-            | Linux, Debian/Ubuntu | `.deb` |
-            | Linux, anything else | `.AppImage` |
-
-            **Windows and macOS are not built yet.** They will be, but an
-            installer nobody has launched is not a release — this one was
-            installed and run before it was published. Until then, both
-            platforms can run the designer in a browser at
-            morshedvarzandeh.github.io/battery-design, or from a clone with
-            `node desktop/bd.mjs serve`.
-
-            **Building an FMI integration?** Take
-            `battery-design-ev-fmi-source-kit.zip`. It contains FMI 2.0 model
-            metadata and C source. Compile it with FMI headers for your target,
-            add the platform binary, and package the resulting FMU before importing
-            it into a simulation tool. It is not a precompiled drop-in FMU.
-
-            The package is unsigned, which some software centres will mention.
-
-            Nothing you enter leaves your machine.
-          releaseDraft: true
-          prerelease: false
           args: --target ${{ matrix.target }}
 
       - name: Install and launch-smoke both Linux packages
@@ -285,15 +248,87 @@ jobs:
           appimage=$(find desktop-app/src-tauri/target/${{ matrix.target }}/release/bundle/appimage -name '*.AppImage' -type f -print -quit)
           tools/smoke-installed-linux.sh "$deb" "$appimage"
 
-  attach-fmu:
+      - name: Preserve only the installed and launch-smoked packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: desktop-linux-installers
+          path: |
+            desktop-app/src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            desktop-app/src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  create-draft:
     needs: [desktop, fmu]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+      contents: write
+    env:
+      RELEASE_NOTES: |
+        Design a battery pack on your own machine. No account, no network, nothing uploaded.
+
+        **Which file do I want?**
+
+        | You are on | Download |
+        |---|---|
+        | Linux, Debian/Ubuntu | `.deb` |
+        | Linux, anything else | `.AppImage` |
+        | FMI 2.0 host on Linux/Windows x64 | `battery-design-ev.fmu` |
+
+        Windows and macOS desktop installers are not published yet. Both platforms can use the browser app or run the designer from a clone.
+
+        **FMI integration:** `battery-design-ev.fmu` contains compiled `linux64` and `win64` FMI 2.0 Co-Simulation binaries. CI ran schema, ABI, lifecycle and import-and-step checks with fmusim and FMPy on the matching operating systems. This is open-source interoperability evidence, not certification or an acceptance result from ANSYS Twin Builder, Simulink or GT-SUITE. Complete `docs/FMI_COMMERCIAL_ACCEPTANCE.md` before making a product-specific compatibility claim. The desktop GUI, CLI and local API still export an editable, source-only build kit.
+
+        Verify the FMU with `battery-design-ev.fmu.sha256`. The desktop packages are unsigned, which some software centres will mention.
     steps:
-      - uses: actions/download-artifact@v4
-        with: { name: fmi-source-kit }
-      - name: Attach the FMI source kit to the release
+      - name: Restore the exact compiled FMU accepted by its reusable gate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: battery-design-ev-fmu
+          path: release-assets/fmu
+      - name: Restore only the installed and launch-smoked desktop packages
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: desktop-linux-installers
+          path: release-assets/installers
+      - name: Verify the immutable release inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s release-assets/fmu/battery-design-ev.fmu
+          test -s release-assets/fmu/battery-design-ev.fmu.sha256
+          (cd release-assets/fmu && sha256sum --check battery-design-ev.fmu.sha256)
+          test "$(find release-assets/installers -type f -name '*.deb' | wc -l)" -eq 1
+          test "$(find release-assets/installers -type f -name '*.AppImage' | wc -l)" -eq 1
+      - name: Create the draft only after every release artifact passed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          gh release upload "${{ env.RELEASE_TAG }}" battery-design-ev-fmi-source-kit.zip \
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            test "$(gh release view "$RELEASE_TAG" --repo "${{ github.repository }}" --json isDraft --jq .isDraft)" = true
+            gh release edit "$RELEASE_TAG" --repo "${{ github.repository }}" \
+              --title "Battery pack designer $RELEASE_TAG" --notes "$RELEASE_NOTES" --draft
+          else
+            gh release create "$RELEASE_TAG" --repo "${{ github.repository }}" --verify-tag --draft \
+              --title "Battery pack designer $RELEASE_TAG" --notes "$RELEASE_NOTES"
+          fi
+          mapfile -t previous_assets < <(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" --json assets --jq '.assets[].name')
+          for asset in "${previous_assets[@]}"; do
+            gh release delete-asset "$RELEASE_TAG" "$asset" \
+              --repo "${{ github.repository }}" --yes
+          done
+          mapfile -t assets < <(find release-assets -type f \( -name '*.deb' -o -name '*.AppImage' \
+            -o -name 'battery-design-ev.fmu' -o -name 'battery-design-ev.fmu.sha256' \) | sort)
+          test "${#assets[@]}" -eq 4
+          gh release upload "$RELEASE_TAG" "${assets[@]}" \
             --repo "${{ github.repository }}" --clobber
+          mapfile -t expected_names < <(
+            for asset_path in "${assets[@]}"; do basename "$asset_path"; done | sort
+          )
+          mapfile -t published_names < <(gh release view "$RELEASE_TAG" \
+            --repo "${{ github.repository }}" --json assets --jq '.assets[].name' | sort)
+          test "${#published_names[@]}" -eq 4
+          test "$(printf '%s\n' "${expected_names[@]}")" = "$(printf '%s\n' "${published_names[@]}")"

@@ -28,6 +28,16 @@ jobs:
       - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs
 
+  fmu:
+    name: FMI 2.0 compiled artifact
+    needs: validate
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/fmu.yml
+    with:
+      ref: ${{ github.sha }}
+
   browser-e2e:
     needs: [validate, godot-web]
     runs-on: ubuntu-latest

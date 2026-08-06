@@ -1251,7 +1251,7 @@ const COMMANDS = {
         });
       }
 
-      // Co-simulation export: the FMU as files the page can offer as a download.
+      // Co-simulation source-kit export: path-preserving files the page serializes for download.
       if (url === '/api/fmu' && req.method === 'POST') {
         return withBody((body) => {
           const d = designFromSpec(body.spec || {});
