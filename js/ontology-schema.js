@@ -267,7 +267,7 @@ const architectureModule = (label, domain, implementation, capabilities, availab
 export const ARCHITECTURE_MODULE_DEFINITIONS = Object.freeze({
   requirements: architectureModule('Requirements and application scope', 'requirements', ['js/knowledge.js', 'js/presets.js'], ['duty-economics', 'load-profile', 'energy-policy', 'driving-mode', 'payload', 'host-machine']),
   standards: architectureModule('Standards and compliance audit', 'compliance', ['js/standards.js', 'js/markets.js', 'js/eurules.js'], ['release-rules']),
-  geometry: architectureModule('Pack and host geometry', 'geometry', ['js/pack-engine.js', 'js/scene3d.js', 'js/vessels.js'], ['space-fill', 'integration-allowance', 'spaces-why', 'module-tier', 'stacks-racks', 'showroom']),
+  geometry: architectureModule('Pack and host geometry', 'geometry', ['js/pack-engine.js', 'js/scene3d.js', 'js/vessels.js', 'assets3d/catalog.js'], ['space-fill', 'integration-allowance', 'spaces-why', 'module-tier', 'stacks-racks', 'showroom']),
   electrical: architectureModule('Electrical architecture and protection', 'electrical', ['js/architecture.js', 'js/electrical-protection.js'], ['hv-chain', 'bms-topology', 'ems-arch', 'round-trip-efficiency']),
   wiring: architectureModule('Conductors, joints and wiring', 'electrical', ['js/topology.js', 'js/wiring.js'], ['conductors', 'corrosion']),
   grounding: architectureModule('Grounding and bonding', 'electrical-safety', ['js/grounding.js'], ['bonding']),
@@ -288,7 +288,7 @@ export const ARCHITECTURE_MODULE_DEFINITIONS = Object.freeze({
   })),
   lifecycle: architectureModule('Lifecycle, service and circular value', 'lifecycle', ['js/lca.js', 'js/optimizer.js', 'js/swap.js'], ['footprint', 'circular-value', 'swappable']),
   workspace: architectureModule('Interactive design workspace', 'product', ['js/garage.js', 'js/garage-ui.js', 'garage3d/'], ['part-swap', 'showroom', 'multi-objective']),
-  reporting: architectureModule('Traceable reporting', 'reporting', ['js/report.js', 'js/brief.js'], ['report', 'duty-economics', 'multi-objective']),
+  reporting: architectureModule('Traceable reporting', 'reporting', ['js/report.js', 'js/visual-report.js', 'js/brief.js'], ['report', 'duty-economics', 'multi-objective']),
   governance: architectureModule('Approval and release governance', 'governance', ['js/governance.js'], ['release-rules']),
 });
 

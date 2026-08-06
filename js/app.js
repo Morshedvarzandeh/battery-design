@@ -15,6 +15,7 @@ import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from 
 import { optimizeSpace, suggestDesigns, maxFill, costModel } from './optimizer.js';
 import { layoutPackBay, polygonBounds } from './bay.js';
 import { co2Model, GRID_FACTORS, buildReportHTML, buildWordDocument, buildArchReportHTML } from './report.js';
+import { buildVisualReportHTML, visualReportFilename } from './visual-report.js';
 import { buildWorkbookXml, workbookFilename } from './excel.js';
 import {
   loadMyCells, saveMyCells, normalizeCustomCell, validateCustomCell, buildMailto, OWNER_EMAIL,
@@ -1687,6 +1688,14 @@ function bindResults() {
     download(buildArchReportHTML(currentReportData()),
       `pack-architecture-${cell().id}-${state.s}s${state.p}p.html`, 'text/html');
   };
+  // The visual report is a self-contained, animated HTML decision story. It
+  // consumes the same report snapshot, simulation and portable 3D payload as
+  // every other export; it does not run a second sizing calculation.
+  $('btnVisualRep').onclick = () => {
+    if (!lastSummary) return;
+    const R = currentReportData();
+    download(buildVisualReportHTML(R), visualReportFilename(R), 'text/html');
+  };
   // The engineer's workbook: live formulas + the feedback loop.
   $('btnXls').onclick = () => {
     if (!lastSummary) return;
@@ -1876,6 +1885,18 @@ function currentReportData() {
     twinShip: marineDesign?.twinShip || null,
     sizing: semanticDesign.spec.resolved.sizing,
     semantics: semanticDesign.semantics,
+    semanticBinding: {
+      cellId: semanticDesign.spec.resolved.cell,
+      series: semanticDesign.spec.resolved.s,
+      parallel: semanticDesign.spec.resolved.p,
+      cellCount: semanticDesign.pack.cellCount,
+      nominalVoltageV: semanticDesign.pack.nominalV,
+      nominalEnergyWh: semanticDesign.pack.energyWh,
+      preliminaryMassKg: semanticDesign.pack.massKg,
+      outerDimensionsMm: semanticDesign.pack.dims,
+      layout: semanticDesign.spec.resolved.layout,
+    },
+    scene: lastLayout ? buildScene({ design: semanticDesign, layout: lastLayout, showHost: true }) : null,
     shortCircuit: lastShort,
     electricalProtection: lastElectricalProtection,
     simPng: (() => {
@@ -2674,6 +2695,7 @@ function saveTextFile(content, filename) {
 // The design on screen, as the spec the engine speaks.
 function currentSpec() {
   const profileTrace = state.presetId === 'marine' ? profileTraceForState() : null;
+  const cool = coolingSpace();
   return {
     application: state.presetId || undefined,
     cell: cell().id, s: state.s, p: state.p,
@@ -2682,6 +2704,19 @@ function currentSpec() {
     evaluationDate: state.evaluationDate,
     v2xPolicy: state.v2xPolicy, driveMode: state.driveMode,
     components: Object.fromEntries(Object.entries(state.sel)),
+    layout: {
+      arrangement: state.arrangement,
+      orientation: state.orientation,
+      spacingMm: state.spacingMm,
+      wallMm: state.wallMm,
+      headroomMm: state.headroomMm,
+      layerGapMm: state.layerGapMm,
+      underMm: cool.bottom,
+      rowExtraMm: cool.rowGap,
+      nx: state.nx,
+      nz: state.nz,
+      bay: state.appliedBay || undefined,
+    },
     ...(state.presetId === 'marine' ? {
       marine: { ...state.marine },
       policyId: state.energyPolicyId || undefined,

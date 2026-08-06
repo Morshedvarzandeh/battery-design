@@ -20,6 +20,7 @@
 import { COMPONENT_CATEGORIES, componentById } from './components.js';
 import { CHEMISTRIES } from './cells.js';
 import { hostFor, packSeat, fitInHost } from './hosts.js';
+import { instantiateHostAsset3d } from '../assets3d/catalog.js';
 
 export const SCENE_VERSION = 1;
 
@@ -185,6 +186,7 @@ function hostBlock(design, L) {
   const packM = { x: L.outer.x / 1000, y: L.outer.y / 1000, z: L.outer.z / 1000 };
   const seat = packSeat(host, packM);
   const fit = fitInHost(host, packM);
+  const visualModel = host.model || instantiateHostAsset3d(host.kind, host.sizeM);
   return {
     id: host.id || null, vesselId: host.vesselId || null,
     kind: host.kind, name: host.name,
@@ -198,20 +200,21 @@ function hostBlock(design, L) {
     fitLabel: fit?.label || null, fitNote: fit?.note ?? null,
     // Complete renderer-ready vessel payload. Sizes and positions are copied
     // unchanged from vessels.js; Godot only maps axes and draws the boxes.
-    model: host.model ? {
-      version: host.model.version,
-      primitives: host.model.primitives.map((primitive) => ({
-        kind: primitive.kind,
-        role: primitive.role,
-        name: primitive.name,
-        sizeM: { ...primitive.sizeM },
-        atM: { ...primitive.atM },
-        tint: primitive.tint,
-      })),
-    } : null,
+    // Complete portable asset payload. The clone strips frozen references but
+    // does not recalculate or reinterpret geometry. Cars, vessels, robots and
+    // every other host now cross the same versioned asset-library boundary.
+    model: visualModel ? clonePortable(visualModel) : null,
     evidence: host.evidence ? { ...host.evidence } : null,
     boundary: host.boundary || null,
   };
+}
+
+function clonePortable(value) {
+  if (Array.isArray(value)) return value.map(clonePortable);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, clonePortable(child)]));
+  }
+  return value;
 }
 
 const round2 = (v) => Math.round(v * 100) / 100;

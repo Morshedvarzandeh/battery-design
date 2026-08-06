@@ -6,18 +6,19 @@
 //   · milliAmpere1 — the 5 m electric autonomous-ferry prototype.
 //   · R/V Gunnerus — the research vessel used by the TwinShip demonstrator.
 //
-// The visual models are deliberately low-detail engineering massing models.
-// Each primitive is already positioned and sized here; the Godot renderer only
-// draws the payload.  That keeps the vessel choice testable in Node and stops a
-// second geometry model growing inside the renderer.
+// Visual geometry lives in the reusable assets3d library. This module binds an
+// evidence-governed vessel study to a versioned original asset; the renderer
+// only consumes the resulting portable payload.
 //
 // Published particulars are facts.  Mission defaults marked provisional are
 // inputs for a screening calculation and must be replaced by a measured power
 // trace or a vessel resistance/shaft-power curve for engineering release.
 
-export const VESSEL_MODEL_VERSION = '2026.08.3';
+import { fixedAsset3dById, VESSEL_ASSET_IDS } from '../assets3d/catalog.js';
 
-const MODEL_BOUNDARY = 'Low-detail engineering massing only, not CAD. Primitive boxes show named systems and the sourced outer vertical envelope; they are not hull lines, compartment geometry, class drawings or construction geometry.';
+export const VESSEL_MODEL_VERSION = '2026.08.5';
+
+const MODEL_BOUNDARY = 'Original low-poly game visualization, not CAD. The asset communicates vessel class, named visible systems and the sourced outer vertical envelope; it is not hull-offset data, compartment geometry, a class drawing or construction geometry.';
 
 const waterlineDatum = (draughtM, zMaxM, topReference) => Object.freeze({
   id: 'design-waterline-z0',
@@ -34,40 +35,21 @@ const waterlineDatum = (draughtM, zMaxM, topReference) => Object.freeze({
 const milliAmpereDatum = waterlineDatum(0.20, 3.30, 'published air draught');
 const gunnerusDatum = waterlineDatum(2.70, 19.70, 'published antenna height');
 
-const box = (role, name, sizeM, atM, tint = '#5f8f96') => ({
-  kind: 'box', role, name, sizeM, atM, tint,
+const milliAmpereAsset = fixedAsset3dById(VESSEL_ASSET_IDS.milliAmpere1);
+const gunnerusAsset = fixedAsset3dById(VESSEL_ASSET_IDS.gunnerus);
+
+const bindVisualAsset = (visualAsset, datum) => Object.freeze({
+  ...visualAsset,
+  // The study identity and evidence boundary remain in this module; the
+  // reusable asset contributes visual geometry and explicit licence data.
+  version: `${VESSEL_MODEL_VERSION}+asset-${visualAsset.version}`,
+  kind: 'engineering-massing',
+  boundary: MODEL_BOUNDARY,
+  datum,
 });
 
-const milliAmpereModel = [
-  box('hull', 'Aft hull', { x: 2.50, y: 1.70, z: 0.36 }, { x: 0, y: -1.55, z: -0.02 }),
-  box('hull', 'Mid hull', { x: 2.68, y: 1.90, z: 0.46 }, { x: 0, y: -0.05, z: 0.03 }),
-  box('hull', 'Bow hull', { x: 1.95, y: 1.45, z: 0.34 }, { x: 0, y: 1.58, z: -0.03 }),
-  box('deck', 'Passenger deck', { x: 2.72, y: 4.45, z: 0.10 }, { x: 0, y: 0, z: 0.32 }, '#72999b'),
-  box('superstructure', 'Passenger cabin', { x: 1.82, y: 2.12, z: 1.08 }, { x: 0, y: -0.05, z: 0.90 }, '#7ca5a8'),
-  box('roof', 'Sensor roof', { x: 1.94, y: 2.25, z: 0.09 }, { x: 0, y: -0.05, z: 1.49 }, '#8ab0b0'),
-  box('mast', 'Sensor mast', { x: 0.10, y: 0.10, z: 1.25 }, { x: 0, y: -0.05, z: 2.16 }, '#a4bdba'),
-  box('sensor', 'Radar and camera bar', { x: 1.15, y: 0.16, z: 0.10 }, { x: 0, y: -0.05, z: 2.80 }, '#d0b264'),
-  box('antenna', 'Air-draught marker antenna', { x: 0.06, y: 0.06, z: 0.45 }, { x: 0, y: -0.05, z: 3.075 }, '#d0b264'),
-  box('thruster', 'Fore azimuth thruster', { x: 0.34, y: 0.34, z: 0.30 }, { x: 0, y: 2.12, z: -0.05 }, '#d28a55'),
-  box('thruster', 'Aft azimuth thruster', { x: 0.34, y: 0.34, z: 0.30 }, { x: 0, y: -2.12, z: -0.05 }, '#d28a55'),
-];
-
-const gunnerusModel = [
-  box('hull', 'Aft hull', { x: 9.20, y: 12.00, z: 2.55 }, { x: 0, y: -10.2, z: -1.425 }),
-  box('hull', 'Mid hull', { x: 9.65, y: 14.00, z: 2.70 }, { x: 0, y: 0.0, z: -1.35 }),
-  box('hull', 'Bow hull', { x: 6.70, y: 11.50, z: 2.45 }, { x: 0, y: 11.8, z: -1.225 }),
-  box('deck', 'Main and work deck', { x: 9.45, y: 30.20, z: 0.14 }, { x: 0, y: -0.8, z: 1.50 }, '#72999b'),
-  box('superstructure', 'Laboratory superstructure', { x: 7.20, y: 8.80, z: 2.90 }, { x: 0, y: -5.0, z: 3.02 }, '#7ca5a8'),
-  box('bridge', 'Bridge', { x: 8.05, y: 4.70, z: 1.45 }, { x: 0, y: 0.2, z: 5.195 }, '#8ab0b0'),
-  box('workdeck', 'Aft scientific work deck', { x: 8.60, y: 8.60, z: 0.10 }, { x: 0, y: -12.1, z: 1.62 }, '#5c898b'),
-  box('mast', 'Main mast to published mast height', { x: 0.28, y: 0.28, z: 8.93 }, { x: 0, y: -0.2, z: 10.385 }, '#a4bdba'),
-  box('sensor', 'Navigation sensor bar', { x: 4.10, y: 0.28, z: 0.18 }, { x: 0, y: -0.2, z: 8.10 }, '#d0b264'),
-  box('sensor', 'Radar platform', { x: 2.10, y: 0.85, z: 0.16 }, { x: 0, y: -0.2, z: 14.70 }, '#d0b264'),
-  box('antenna', 'Antenna to published antenna height', { x: 0.10, y: 0.10, z: 4.85 }, { x: 0, y: -0.2, z: 17.275 }, '#d0b264'),
-  box('azipod', 'Port azimuth propulsion unit', { x: 0.70, y: 1.50, z: 0.68 }, { x: -2.35, y: -15.35, z: -2.35 }, '#d28a55'),
-  box('azipod', 'Starboard azimuth propulsion unit', { x: 0.70, y: 1.50, z: 0.68 }, { x: 2.35, y: -15.35, z: -2.35 }, '#d28a55'),
-  box('thruster', 'Bow tunnel-thruster zone', { x: 5.20, y: 0.55, z: 0.55 }, { x: 0, y: 13.65, z: -1.70 }, '#d28a55'),
-];
+const milliAmpereModel = bindVisualAsset(milliAmpereAsset, milliAmpereDatum);
+const gunnerusModel = bindVisualAsset(gunnerusAsset, gunnerusDatum);
 
 export const VESSEL_MODELS = Object.freeze([
   Object.freeze({
@@ -117,7 +99,7 @@ export const VESSEL_MODELS = Object.freeze([
       kind: 'engineering-massing',
       boundary: MODEL_BOUNDARY,
       datum: milliAmpereDatum,
-      primitives: Object.freeze(milliAmpereModel),
+      ...milliAmpereModel,
     }),
     evidence: Object.freeze({
       title: 'milliAmpere: An Autonomous Ferry Prototype',
@@ -177,7 +159,7 @@ export const VESSEL_MODELS = Object.freeze([
       kind: 'engineering-massing',
       boundary: MODEL_BOUNDARY,
       datum: gunnerusDatum,
-      primitives: Object.freeze(gunnerusModel),
+      ...gunnerusModel,
     }),
     evidence: Object.freeze({
       title: 'R/V Gunnerus technical specifications after the 2019 lengthening',

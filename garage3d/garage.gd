@@ -45,6 +45,11 @@ var _scale_note := ""                 # which known object is standing beside it
 var _spec: VBoxContainer              # the spec sheet down the left
 var _bar: HBoxContainer               # the fitted parts along the bottom
 var _frame_span := 0.0                # what the shot has to contain, metres
+var _frame_target := Vector3.ZERO     # asset-supplied visual target, never a pack calculation
+var _frame_distance_factor := 1.65
+var _marine_mode := false
+var _touch_points := {}
+var _last_pinch_distance := 0.0
 
 
 func _ready() -> void:
@@ -67,14 +72,21 @@ const BENCH_H := 0.85                 # a working bench, roughly hip height
 
 func _build_stage() -> void:
 	var env := Environment.new()
-	env.background_mode = Environment.BG_COLOR
-	env.background_color = Color(0.048, 0.062, 0.058)
+	var sky_material := ProceduralSkyMaterial.new()
+	sky_material.sky_top_color = Color(0.12, 0.39, 0.61)
+	sky_material.sky_horizon_color = Color(0.73, 0.86, 0.91)
+	sky_material.ground_bottom_color = Color(0.035, 0.11, 0.16)
+	sky_material.ground_horizon_color = Color(0.43, 0.65, 0.71)
+	var sky := Sky.new()
+	sky.sky_material = sky_material
+	env.background_mode = Environment.BG_SKY
+	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_COLOR
-	env.ambient_light_color = Color(0.42, 0.48, 0.47)
-	env.ambient_light_energy = 0.42
+	env.ambient_light_color = Color(0.69, 0.78, 0.82)
+	env.ambient_light_energy = 0.58
 	env.fog_enabled = true
-	env.fog_light_color = Color(0.05, 0.07, 0.065)
-	env.fog_density = 0.012
+	env.fog_light_color = Color(0.58, 0.75, 0.82)
+	env.fog_density = 0.004
 	var world := WorldEnvironment.new()
 	world.environment = env
 	add_child(world)
@@ -83,9 +95,11 @@ func _build_stage() -> void:
 	# room; one reads as a product shot, which is the wrong feeling entirely.
 	var key := DirectionalLight3D.new()
 	key.rotation_degrees = Vector3(-58, -42, 0)
-	key.light_energy = 1.25
+	key.light_energy = 1.48
 	key.light_color = Color(1.0, 0.97, 0.92)
-	key.shadow_enabled = true
+	# Asset scenes use clean engineering colour. Cast shadows made thin masts,
+	# rails and roofs project large false wedges that looked like geometry.
+	key.shadow_enabled = false
 	add_child(key)
 	var fill := DirectionalLight3D.new()
 	fill.rotation_degrees = Vector3(-18, 128, 0)
@@ -156,6 +170,9 @@ func _build_room(span_m: float) -> void:
 					Color(0.16, 0.18, 0.175), 0.8, 0.2))
 	_bench_top = bench_h + 0.025
 	_frame_span = span_m
+	_frame_target = Vector3(0, _bench_top + span_m * 0.35, 0)
+	_frame_distance_factor = 2.1
+	_marine_mode = false
 	_add_scale_reference(span_m, bench)
 
 
@@ -258,8 +275,25 @@ func _build_ui() -> void:
 	_hint.modulate = Color(1, 1, 1, 0.45)
 	_hint.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	_hint.position = Vector2(16, -24)
-	_hint.text = "drag to orbit · wheel to zoom · click a part to name it"
+	_hint.text = "drag/swipe to orbit · wheel/pinch to zoom · click a part to name it"
 	layer.add_child(_hint)
+
+	# Compact camera presets remain useful on touch screens,
+	# where precise orbit gestures are harder than on a desktop mouse.
+	var views := GridContainer.new()
+	views.columns = 2
+	views.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	views.position = Vector2(-214, 16)
+	views.add_theme_constant_override("h_separation", 8)
+	views.add_theme_constant_override("v_separation", 8)
+	layer.add_child(views)
+	for label in ["BOW", "PORT", "AFT", "TOP"]:
+		var button := Button.new()
+		button.text = label
+		button.custom_minimum_size = Vector2(94, 38)
+		button.focus_mode = Control.FOCUS_NONE
+		button.pressed.connect(_set_camera_preset.bind(label))
+		views.add_child(button)
 
 	_caption.text = "waiting for a design…"
 	_status.text = ""
@@ -353,11 +387,15 @@ func _fill_spec(scene: Dictionary) -> void:
 
 		var model = host.get("model", null)
 		if typeof(model) == TYPE_DICTIONARY and not model.is_empty():
-			_spec_head("VESSEL MODEL · NOT CAD")
-			_spec_row("Model", "engineering massing v%s" % str(model.get("version", "—")), white)
-			_spec_row("Datum", "design waterline z=0 · z up", Color(0.52, 0.82, 0.96))
-			_spec_row("Baseline", "z=%+.2f m" % float(hs.get("baselineZ", hs.get("zMin", 0.0))), white)
-			_spec_row("Vertical range", "%+.2f to %+.2f m" % [float(hs.get("zMin", 0.0)), float(hs.get("zMax", 0.0))], white)
+			var marine_model := str(model.get("category", "")) == "marine"
+			_spec_head("VESSEL MODEL · NOT CAD" if marine_model else "3D ASSET · NOT CAD")
+			_spec_row("Asset", str(model.get("assetId", "—")), white)
+			_spec_row("Version", str(model.get("version", "—")), white)
+			_spec_row("Geometry", str(model.get("geometryDigest", "—")), Color(0.52, 0.82, 0.96))
+			if marine_model:
+				_spec_row("Datum", "design waterline z=0 · z up", Color(0.52, 0.82, 0.96))
+				_spec_row("Baseline", "z=%+.2f m" % float(hs.get("baselineZ", hs.get("zMin", 0.0))), white)
+				_spec_row("Vertical range", "%+.2f to %+.2f m" % [float(hs.get("zMin", 0.0)), float(hs.get("zMax", 0.0))], white)
 			var evidence: Dictionary = host.get("evidence", {})
 			var source_title := str(evidence.get("title", ""))
 			if source_title != "":
@@ -368,6 +406,9 @@ func _fill_spec(scene: Dictionary) -> void:
 			var boundary := str(host.get("boundary", ""))
 			if boundary != "":
 				_spec_note("Model / study boundary", boundary, Color(0.95, 0.72, 0.35))
+			var licence: Dictionary = model.get("licence", {})
+			if not licence.is_empty():
+				_spec_note("Reusable asset licence", "%s · %s" % [str(licence.get("spdx", "—")), str(licence.get("origin", "—"))], Color(0.52, 0.82, 0.96))
 
 	for part in scene.get("parts", []):
 		var nm := str(part.get("name", ""))
@@ -393,8 +434,11 @@ func _fill_spec(scene: Dictionary) -> void:
 func _open_the_pipe() -> void:
 	if not OS.has_feature("web"):
 		# Run from the editor with no host: draw something so the scene can be
-		# opened and worked on without the whole app around it.
-		_render(_demo_scene())
+		# opened and worked on without the whole app around it. The headless CI
+		# smoke supplies its own payload; skipping the editor MultiMesh fixture
+		# avoids asking Godot's deliberately mesh-less dummy renderer to draw it.
+		if DisplayServer.get_name() != "headless":
+			_render(_demo_scene())
 		return
 	_js_callback = JavaScriptBridge.create_callback(_on_js_scene)
 	var window := JavaScriptBridge.get_interface("window")
@@ -512,27 +556,28 @@ func _build_studio(host: Dictionary, outer: Dictionary) -> void:
 	var z_min := float(size.get("zMin", 0.0))
 	var waterline_y := float(size.get("waterlineZ", 0.0)) - z_min
 	var stage_r: float = maxf(hw, hl) * 1.15
+	var model = host.get("model", null)
+	_marine_mode = typeof(model) == TYPE_DICTIONARY and str(model.get("scenePreset", "")) == "ocean"
 
-	# A dark studio floor with a lit disc under the machine — the turntable a
-	# showroom puts a car on, which is what makes the object read as presented
-	# rather than merely placed.
-	var disc := MeshInstance3D.new()
-	var cyl := CylinderMesh.new()
-	cyl.top_radius = stage_r
-	cyl.bottom_radius = stage_r
-	cyl.height = 0.02
-	var dm := StandardMaterial3D.new()
-	dm.albedo_color = Color(0.11, 0.13, 0.128)
-	dm.roughness = 0.35
-	dm.metallic = 0.25
-	cyl.surface_set_material(0, dm)
-	disc.mesh = cyl
-	disc.position = Vector3(0, -0.01, 0)
-	_room.add_child(disc)
-
-	var floor_plane := _slab(Vector3(stage_r * 8.0, 0.02, stage_r * 8.0),
-			Vector3(0, -0.03, 0), Color(0.038, 0.048, 0.046), 0.95, 0.0)
-	_room.add_child(floor_plane)
+	if _marine_mode:
+		_build_ocean(stage_r, waterline_y)
+	else:
+		# A lit turntable remains useful for road, robot and product assets.
+		var disc := MeshInstance3D.new()
+		var cyl := CylinderMesh.new()
+		cyl.top_radius = stage_r
+		cyl.bottom_radius = stage_r
+		cyl.height = 0.02
+		var dm := StandardMaterial3D.new()
+		dm.albedo_color = Color(0.11, 0.13, 0.128)
+		dm.roughness = 0.35
+		dm.metallic = 0.25
+		cyl.surface_set_material(0, dm)
+		disc.mesh = cyl
+		disc.position = Vector3(0, -0.01, 0)
+		_room.add_child(disc)
+		_room.add_child(_slab(Vector3(stage_r * 8.0, 0.02, stage_r * 8.0),
+				Vector3(0, -0.03, 0), Color(0.038, 0.048, 0.046), 0.95, 0.0))
 
 	var spot := SpotLight3D.new()
 	spot.position = Vector3(0, hh * 3.0 + 2.0, 0)
@@ -547,18 +592,18 @@ func _build_studio(host: Dictionary, outer: Dictionary) -> void:
 	# plane marks the separately supplied design waterline, so underwater hull
 	# and propulsion geometry remains visible below z=0 rather than being folded
 	# into an ambiguous all-positive envelope.
-	_add_waterline_marker(hw, hl, waterline_y)
+	if not _marine_mode:
+		_add_waterline_marker(hw, hl, waterline_y)
 
-	# Selected vessels arrive as a complete primitive payload from vessels.js.
-	# Sizes and positions are not re-derived here: the renderer maps the
-	# repository's z-up axes to Godot's y-up axes and draws every supplied box.
-	# Other machines keep the established generic massing renderer.
-	var model = host.get("model", null)
+	# Every host arrives as a complete portable asset payload. Sizes, meshes and
+	# positions are not re-derived here: the renderer only maps the repository's
+	# z-up axes to Godot's y-up axes and draws the declared primitives.
 	if typeof(model) == TYPE_DICTIONARY and not model.is_empty():
 		_build_payload_model(model, -z_min)
 	else:
-		_build_machine(str(host.get("kind", "box")), hw, hh, hl)
-	_add_wireframe(Vector3(hw, hh, hl), Vector3(0, hh * 0.5, 0), Color(0.36, 0.78, 0.72))
+		_fail("3D asset payload missing for " + str(host.get("kind", "unknown host")))
+	if not _marine_mode:
+		_add_wireframe(Vector3(hw, hh, hl), Vector3(0, hh * 0.5, 0), Color(0.36, 0.78, 0.72))
 
 	# The pack, seated where the mounting puts it. Mount decides the seat, so a
 	# pack that grows moves within the machine instead of the machine rescaling
@@ -572,7 +617,38 @@ func _build_studio(host: Dictionary, outer: Dictionary) -> void:
 	# pack put the camera inside the car — a wireframe filling the screen from
 	# the inside reads as a bug, not as a vehicle.
 	_frame_span = maxf(maxf(hw, hl), hh)
+	_frame_target = Vector3(0, hh * 0.45, 0)
+	_frame_distance_factor = 1.65
+	if typeof(model) == TYPE_DICTIONARY:
+		var presentation: Dictionary = model.get("presentation", {})
+		var target: Dictionary = presentation.get("targetM", {})
+		_frame_target = Vector3(
+				float(target.get("x", 0.0)),
+				float(target.get("z", hh * 0.45)) - z_min,
+				float(target.get("y", 0.0)))
+		_frame_distance_factor = float(presentation.get("distanceFactor", 1.65))
+		_orbit_yaw = deg_to_rad(float(presentation.get("orbitYawDeg", 34.0)))
+		_orbit_pitch = deg_to_rad(float(presentation.get("orbitPitchDeg", -18.0)))
 	_scale_note = "%s · %s" % [str(host.get("name", "")), str(host.get("mount", {}).get("name", ""))]
+
+
+func _build_ocean(stage_r: float, waterline_y: float) -> void:
+	var water := MeshInstance3D.new()
+	water.name = "WaterPlane"
+	var plane := PlaneMesh.new()
+	plane.size = Vector2(stage_r * 7.0, stage_r * 7.0)
+	var water_material := StandardMaterial3D.new()
+	water_material.albedo_color = Color(0.42, 0.66, 0.72)
+	water_material.roughness = 1.0
+	water_material.metallic = 0.0
+	water_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	plane.surface_set_material(0, water_material)
+	water.mesh = plane
+	water.position = Vector3(0, waterline_y - 0.035, 0)
+	_room.add_child(water)
+
+	# No decorative wake or projected footprint. Motion belongs to simulation
+	# overlays; the base asset view stays visually neutral.
 
 
 func _add_waterline_marker(width_m: float, length_m: float, at_y: float) -> void:
@@ -741,12 +817,12 @@ func _frame_on(pack: Dictionary) -> void:
 	# pack alone crops the person, which throws away the only thing in the
 	# room that tells you how big any of it is.
 	var reference_h: float = 1.75 if span > 0.5 else 0.2
-	_target_distance = maxf(0.35, maxf(span * 2.1, reference_h * 1.9))
+	_target_distance = maxf(0.35, maxf(span * _frame_distance_factor, reference_h * 1.9))
 	_distance = _target_distance
 	# Orbit around the pack where it now sits, not around the floor. Circling a
 	# point under the bench puts the subject at the top of the frame and the
 	# concrete in the middle of it.
-	_rig.position = _pack_root.position
+	_rig.position = _frame_target if _frame_span > 0.0 else _pack_root.position
 
 
 # ---------------------------------------------------------------------------
@@ -772,6 +848,47 @@ func _unhandled_input(event: InputEvent) -> void:
 	elif event is InputEventMouseMotion and _dragging:
 		_orbit_yaw -= event.relative.x * 0.008
 		_orbit_pitch = clamp(_orbit_pitch - event.relative.y * 0.008, -1.45, 1.45)
+	elif event is InputEventMagnifyGesture:
+		_target_distance = clampf(_target_distance / maxf(event.factor, 0.1), 0.15, 160.0)
+	elif event is InputEventScreenTouch:
+		if event.pressed:
+			_touch_points[event.index] = event.position
+		else:
+			_touch_points.erase(event.index)
+		_last_pinch_distance = _current_pinch_distance()
+	elif event is InputEventScreenDrag:
+		_touch_points[event.index] = event.position
+		if _touch_points.size() == 1:
+			_orbit_yaw -= event.relative.x * 0.008
+			_orbit_pitch = clamp(_orbit_pitch - event.relative.y * 0.008, -1.45, 1.45)
+		elif _touch_points.size() >= 2:
+			var pinch := _current_pinch_distance()
+			if pinch > 0.0 and _last_pinch_distance > 0.0:
+				_target_distance = clampf(_target_distance * (_last_pinch_distance / pinch), 0.15, 160.0)
+			_last_pinch_distance = pinch
+
+
+func _current_pinch_distance() -> float:
+	if _touch_points.size() < 2:
+		return 0.0
+	var points: Array = _touch_points.values()
+	return (points[0] as Vector2).distance_to(points[1] as Vector2)
+
+
+func _set_camera_preset(label: String) -> void:
+	match label:
+		"BOW":
+			_orbit_yaw = 0.0
+			_orbit_pitch = deg_to_rad(-12.0)
+		"PORT":
+			_orbit_yaw = deg_to_rad(-90.0)
+			_orbit_pitch = deg_to_rad(-10.0)
+		"AFT":
+			_orbit_yaw = PI
+			_orbit_pitch = deg_to_rad(-12.0)
+		"TOP":
+			_orbit_yaw = deg_to_rad(28.0)
+			_orbit_pitch = deg_to_rad(-72.0)
 
 
 func _try_pick(at: Vector2) -> void:
@@ -817,41 +934,21 @@ func _demo_scene() -> Dictionary:
 	}
 
 
-# ---------------------------------------------------------------------------
-# The machines
-# ---------------------------------------------------------------------------
-#
-# Crude massing, deliberately. Enough blocks that a car reads as a car and a
-# quadruped as a quadruped, and not one more — this is a place for the pack to
-# sit, not a model of anybody's vehicle, and every extra facet is an invitation
-# to measure something that was never measured.
-#
-# Every dimension below is a FRACTION of the envelope, which itself came from
-# the payload. Nothing here invents a size; it only decides how the given size
-# is divided up, which is the same class of decision as choosing a colour.
-func _glass(size: Vector3, at: Vector3, tint := Color(0.42, 0.52, 0.56, 0.13)) -> void:
-	var inst := _slab(size, at, tint, 0.25, 0.0)
-	var m: StandardMaterial3D = (inst.mesh as BoxMesh).surface_get_material(0)
-	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-	m.cull_mode = BaseMaterial3D.CULL_DISABLED
-	_room.add_child(inst)
-
-
-# Draw-only payload consumer for identified vessel models. Every primitive's
-# size, position, role and colour is supplied by JavaScript. Axis mapping is a
-# renderer concern; geometry or compartment-fit calculations are not.
+# Draw-only payload consumer for every reusable 3D asset. Every primitive's
+# mesh, bounds, role, material and identity is supplied by JavaScript. Axis
+# mapping is a renderer concern; geometry and engineering calculations are not.
 func _build_payload_model(model: Dictionary, vertical_offset_m: float) -> void:
 	var primitive_index := 0
+	var marine_asset := str(model.get("category", "")) == "marine"
 	for raw in model.get("primitives", []):
 		if typeof(raw) != TYPE_DICTIONARY:
 			continue
 		var primitive: Dictionary = raw
-		if str(primitive.get("kind", "")) != "box":
+		var kind := str(primitive.get("kind", ""))
+		if kind not in ["box", "mesh", "cylinder"]:
 			continue
 		var size_m: Dictionary = primitive.get("sizeM", {})
 		var at_m: Dictionary = primitive.get("atM", {})
-		var tint := Color(str(primitive.get("tint", "#5f8f96")))
-		tint.a = 0.20
 		var render_size := Vector3(
 				float(size_m.get("x", 0.0)),
 				float(size_m.get("z", 0.0)),
@@ -860,125 +957,83 @@ func _build_payload_model(model: Dictionary, vertical_offset_m: float) -> void:
 				float(at_m.get("x", 0.0)),
 				float(at_m.get("z", 0.0)) + vertical_offset_m,
 				float(at_m.get("y", 0.0)))
-		_glass(render_size, render_at, tint)
+		if render_size.x <= 0.0 or render_size.y <= 0.0 or render_size.z <= 0.0:
+			continue
+		var instance: MeshInstance3D = null
+		match kind:
+			"box":
+				var box_mesh := BoxMesh.new()
+				box_mesh.size = render_size
+				box_mesh.surface_set_material(0, _asset_material(primitive))
+				instance = MeshInstance3D.new()
+				instance.mesh = box_mesh
+			"cylinder":
+				var cylinder_mesh := CylinderMesh.new()
+				cylinder_mesh.top_radius = float(primitive.get("radiusM", 0.0))
+				cylinder_mesh.bottom_radius = float(primitive.get("radiusM", 0.0))
+				cylinder_mesh.height = float(primitive.get("heightM", 0.0))
+				cylinder_mesh.radial_segments = 18
+				cylinder_mesh.surface_set_material(0, _asset_material(primitive))
+				instance = MeshInstance3D.new()
+				instance.mesh = cylinder_mesh
+				match str(primitive.get("axis", "z")):
+					"x": instance.rotation_degrees = Vector3(0, 0, 90)
+					"y": instance.rotation_degrees = Vector3(90, 0, 0)
+			"mesh":
+				var vertices: Array = primitive.get("vertices", [])
+				var triangles: Array = primitive.get("triangles", [])
+				var surface := SurfaceTool.new()
+				surface.begin(Mesh.PRIMITIVE_TRIANGLES)
+				var valid_faces := 0
+				for face_raw in triangles:
+					if typeof(face_raw) != TYPE_ARRAY or face_raw.size() != 3:
+						continue
+					var valid_face := true
+					for raw_index in face_raw:
+						var vertex_index := int(raw_index)
+						if vertex_index < 0 or vertex_index >= vertices.size() or typeof(vertices[vertex_index]) != TYPE_ARRAY or vertices[vertex_index].size() != 3:
+							valid_face = false
+							break
+					if not valid_face:
+						continue
+					for raw_index in face_raw:
+						var vertex: Array = vertices[int(raw_index)]
+						surface.add_vertex(Vector3(float(vertex[0]), float(vertex[2]), float(vertex[1])))
+					valid_faces += 1
+				if valid_faces == 0:
+					continue
+				surface.generate_normals()
+				surface.set_material(_asset_material(primitive))
+				instance = MeshInstance3D.new()
+				instance.mesh = surface.commit()
+		if instance == null:
+			continue
+		instance.position = render_at
+		instance.name = str(primitive.get("name", "AssetPart%d" % primitive_index)).validate_node_name()
+		_room.add_child(instance)
 		var role := str(primitive.get("role", "vessel-part"))
+		var item_id := "%s:%s:%d" % ["vessel" if marine_asset else "asset", role, primitive_index]
 		_pickables.append({
 			"aabb": AABB(render_at - render_size * 0.5, render_size),
 			"name": str(primitive.get("name", role)),
-			"category": "Vessel " + role.capitalize(),
-			"id": "vessel:%s:%d" % [role, primitive_index],
+			"category": ("Vessel " if marine_asset else "Host ") + role.capitalize(),
+			"id": item_id,
 		})
 		primitive_index += 1
 
 
-func _wheel(r: float, w: float, at: Vector3) -> void:
-	var inst := MeshInstance3D.new()
-	var cyl := CylinderMesh.new()
-	cyl.top_radius = r
-	cyl.bottom_radius = r
-	cyl.height = w
-	cyl.radial_segments = 18
-	var m := StandardMaterial3D.new()
-	m.albedo_color = Color(0.10, 0.11, 0.115)
-	m.roughness = 0.85
-	cyl.surface_set_material(0, m)
-	inst.mesh = cyl
-	inst.rotation_degrees = Vector3(0, 0, 90)      # lay the cylinder on its side
-	inst.position = at
-	_room.add_child(inst)
-
-
-func _build_machine(kind: String, w: float, h: float, l: float) -> void:
-	match kind:
-		"car":
-			_glass(Vector3(w, h * 0.52, l), Vector3(0, h * 0.26, 0))                    # body
-			_glass(Vector3(w * 0.86, h * 0.48, l * 0.46), Vector3(0, h * 0.76, -l * 0.04))  # cabin
-			for sz in [0.34, -0.32]:
-				for sx in [-1.0, 1.0]:
-					_wheel(h * 0.22, w * 0.11, Vector3(sx * w * 0.46, h * 0.22, sz * l))
-		"bus":
-			_glass(Vector3(w, h * 0.92, l), Vector3(0, h * 0.5, 0))
-			for sz in [0.38, -0.02, -0.36]:
-				for sx in [-1.0, 1.0]:
-					_wheel(h * 0.16, w * 0.12, Vector3(sx * w * 0.46, h * 0.16, sz * l))
-		"van":
-			_glass(Vector3(w, h * 0.86, l), Vector3(0, h * 0.5, 0))
-			_glass(Vector3(w * 0.94, h * 0.34, l * 0.22), Vector3(0, h * 0.34, l * 0.39))
-			for sz in [0.36, -0.3]:
-				for sx in [-1.0, 1.0]:
-					_wheel(h * 0.15, w * 0.12, Vector3(sx * w * 0.46, h * 0.15, sz * l))
-		"boat":
-			# A hull, tapered to a bow. Three stacked slabs narrowing forward is
-			# enough taper to read as a boat from any angle worth looking from.
-			_glass(Vector3(w, h * 0.42, l * 0.62), Vector3(0, h * 0.21, -l * 0.16))
-			_glass(Vector3(w * 0.72, h * 0.40, l * 0.24), Vector3(0, h * 0.20, l * 0.27))
-			_glass(Vector3(w * 0.38, h * 0.36, l * 0.14), Vector3(0, h * 0.18, l * 0.44))
-			_glass(Vector3(w * 0.62, h * 0.40, l * 0.26), Vector3(0, h * 0.60, -l * 0.12))  # console
-		"bike":
-			_wheel(h * 0.32, w * 0.10, Vector3(0, h * 0.32, l * 0.38))
-			_wheel(h * 0.32, w * 0.10, Vector3(0, h * 0.32, -l * 0.38))
-			_glass(Vector3(w * 0.16, h * 0.10, l * 0.72), Vector3(0, h * 0.46, 0))        # top tube
-			_glass(Vector3(w * 0.16, h * 0.42, l * 0.10), Vector3(0, h * 0.44, -l * 0.06)) # down tube
-			_glass(Vector3(w * 0.52, h * 0.06, l * 0.10), Vector3(0, h * 0.80, l * 0.30))  # bars
-			_glass(Vector3(w * 0.22, h * 0.08, l * 0.20), Vector3(0, h * 0.72, -l * 0.30)) # saddle
-		"scooter":
-			_wheel(h * 0.14, w * 0.10, Vector3(0, h * 0.14, l * 0.40))
-			_wheel(h * 0.14, w * 0.10, Vector3(0, h * 0.14, -l * 0.40))
-			_glass(Vector3(w * 0.5, h * 0.06, l * 0.72), Vector3(0, h * 0.13, 0))          # deck
-			_glass(Vector3(w * 0.10, h * 0.80, l * 0.10), Vector3(0, h * 0.52, l * 0.36))  # stem
-			_glass(Vector3(w * 0.9, h * 0.05, l * 0.08), Vector3(0, h * 0.92, l * 0.36))   # bars
-		"drone":
-			_glass(Vector3(w * 0.34, h * 0.7, l * 0.34), Vector3(0, h * 0.5, 0))           # body
-			for sx in [-1.0, 1.0]:
-				for sz in [-1.0, 1.0]:
-					_glass(Vector3(w * 0.42, h * 0.10, l * 0.06),
-							Vector3(sx * w * 0.24, h * 0.55, sz * l * 0.24))               # arms
-					_wheel(w * 0.22, h * 0.04, Vector3(sx * w * 0.42, h * 0.62, sz * l * 0.42))
-		"humanoid":
-			_glass(Vector3(w * 0.72, h * 0.34, l), Vector3(0, h * 0.72, 0))                # torso
-			_glass(Vector3(w * 0.30, h * 0.13, l * 0.7), Vector3(0, h * 0.955, 0))         # head
-			for sx in [-1.0, 1.0]:
-				_glass(Vector3(w * 0.16, h * 0.34, l * 0.6), Vector3(sx * w * 0.46, h * 0.72, 0))  # arms
-				_glass(Vector3(w * 0.22, h * 0.52, l * 0.7), Vector3(sx * w * 0.17, h * 0.26, 0))  # legs
-		"quadruped":
-			_glass(Vector3(w, h * 0.36, l * 0.72), Vector3(0, h * 0.68, 0))                # body
-			_glass(Vector3(w * 0.7, h * 0.26, l * 0.18), Vector3(0, h * 0.72, l * 0.44))   # head
-			for sx in [-1.0, 1.0]:
-				for sz in [-1.0, 1.0]:
-					_glass(Vector3(w * 0.14, h * 0.5, l * 0.12),
-							Vector3(sx * w * 0.40, h * 0.25, sz * l * 0.30))               # legs
-		"agv":
-			_glass(Vector3(w, h * 0.72, l), Vector3(0, h * 0.44, 0))
-			for sz in [0.32, -0.32]:
-				for sx in [-1.0, 1.0]:
-					_wheel(h * 0.16, w * 0.10, Vector3(sx * w * 0.48, h * 0.16, sz * l))
-		"puck":
-			var body := MeshInstance3D.new()
-			var cy := CylinderMesh.new()
-			cy.top_radius = w * 0.5
-			cy.bottom_radius = w * 0.5
-			cy.height = h
-			cy.radial_segments = 28
-			var pm := StandardMaterial3D.new()
-			pm.albedo_color = Color(0.42, 0.52, 0.56, 0.15)
-			pm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-			pm.cull_mode = BaseMaterial3D.CULL_DISABLED
-			cy.surface_set_material(0, pm)
-			body.mesh = cy
-			body.position = Vector3(0, h * 0.5, 0)
-			_room.add_child(body)
-		"cabinet":
-			_glass(Vector3(w, h, l), Vector3(0, h * 0.5, 0))
-			for i in 4:                                                                    # shelf lines
-				_glass(Vector3(w * 0.96, h * 0.012, l * 0.96),
-						Vector3(0, h * (0.2 + 0.2 * float(i)), 0), Color(0.36, 0.78, 0.72, 0.2))
-		"handtool":
-			_glass(Vector3(w * 2.2, h * 0.42, l * 0.5), Vector3(0, h * 0.78, l * 0.1))     # motor body
-			_glass(Vector3(w, h * 0.6, l * 0.5), Vector3(0, h * 0.3, -l * 0.05))           # grip
-		"wrist":
-			_glass(Vector3(w, h, l), Vector3(0, h * 0.5, 0))
-			for sz in [-1.0, 1.0]:
-				_glass(Vector3(w * 0.8, h * 0.25, l * 1.6),
-						Vector3(0, h * 0.5, sz * l * 1.2), Color(0.30, 0.36, 0.40, 0.18))  # strap
-		_:
-			_glass(Vector3(w, h, l), Vector3(0, h * 0.5, 0))
+func _asset_material(primitive: Dictionary) -> StandardMaterial3D:
+	var definition: Dictionary = primitive.get("material", {})
+	var result := StandardMaterial3D.new()
+	var color := Color(str(definition.get("color", primitive.get("tint", "#5f8f96"))))
+	color.a = float(definition.get("opacity", 1.0))
+	result.albedo_color = color
+	result.roughness = clampf(float(definition.get("roughness", 0.55)), 0.0, 1.0)
+	result.metallic = clampf(float(definition.get("metallic", 0.0)), 0.0, 1.0)
+	# One calm technical style across the reusable asset library. Shape is
+	# communicated by geometry and colour separation, never cast shadows.
+	result.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	if color.a < 0.999:
+		result.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		result.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return result

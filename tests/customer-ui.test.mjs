@@ -145,6 +145,8 @@ test('new customer interactions are keyboard-visible and semantic', () => {
 });
 
 test('report, AI brief and JSON export share one generated ontology snapshot', () => {
+  assert.match(html, /id="btnVisualRep"/);
+  assert.match(app, /buildVisualReportHTML\(R\)/);
   const reportStart = app.indexOf('function currentReportData()');
   const reportEnd = app.indexOf('function currentReportHTML()', reportStart);
   const report = app.slice(reportStart, reportEnd);
@@ -153,6 +155,10 @@ test('report, AI brief and JSON export share one generated ontology snapshot', (
   assert.match(report, /const semanticDesign = designFromSpec\(currentSpec\(\)\)/);
   assert.match(report, /const marineDesign = state\.presetId === 'marine' \? semanticDesign : null/);
   assert.match(report, /semantics: semanticDesign\.semantics/);
+  assert.match(report, /semanticBinding: \{/);
+  assert.match(report, /outerDimensionsMm: semanticDesign\.pack\.dims/);
+  assert.match(report, /scene: lastLayout \? buildScene\(\{ design: semanticDesign, layout: lastLayout, showHost: true \}\) : null/,
+    'the visual report receives the same evaluated design and existing layout');
   assert.match(report, /sizing: semanticDesign\.spec\.resolved\.sizing/,
     'report data carries the resolved policy, profile and trace identity');
 
@@ -177,6 +183,12 @@ test('browser and advanced desktop requests preserve governed marine profile ide
   const spec = app.slice(specStart, specEnd);
   assert.match(spec, /profileId: state\.profileId \|\| undefined/);
   assert.match(spec, /profileTrace: profileTrace \|\| undefined/);
+  for (const field of ['arrangement', 'orientation', 'spacingMm', 'wallMm', 'headroomMm', 'layerGapMm', 'nx', 'nz']) {
+    assert.match(spec, new RegExp(`${field}: state\\.${field}`), `report semantics carry the visible ${field}`);
+  }
+  assert.match(spec, /underMm: cool\.bottom/);
+  assert.match(spec, /rowExtraMm: cool\.rowGap/);
+  assert.match(spec, /bay: state\.appliedBay \|\| undefined/);
 
   const traceStart = app.indexOf('function profileTraceForState()');
   const traceEnd = app.indexOf('function marineProfileForState()', traceStart);
