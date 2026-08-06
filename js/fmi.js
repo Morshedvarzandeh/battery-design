@@ -1,9 +1,9 @@
 // fmi.js — the pack as a component in someone else's simulation.
 //
-// Co-simulation with ANSYS Twin Builder, Simulink, GT-SUITE or Dymola does
-// not need a bridge per tool. Every one of them already speaks FMI — the
-// Functional Mock-up Interface — so the pack is exported as a standard FMU
-// and dropped into whatever the rest of the toolchain is.
+// ANSYS Twin Builder, Simulink, GT-SUITE and Dymola support FMI co-simulation,
+// so one standards-based component can target their import pipelines. Actual
+// acceptance is still recorded per product/version rather than inferred from
+// an open-source conformance run.
 //
 // The coupling is the obvious one: the master (a vehicle model, a plant
 // model, a drive cycle) tells the pack what current it is drawing and how
@@ -34,6 +34,7 @@ import { semanticDigest } from './ontology.js';
 
 export const FMI_VERSION = '2.0';
 export const FMI_STANDARD_VERSION = '2.0.5';
+export const FMU_MODEL_REVISION = 'battery-plant-1rc-v1';
 
 // Every symbol an FMI 2.0 Co-Simulation shared library must export, including
 // functions for capabilities this model declares unsupported.
@@ -60,15 +61,14 @@ export const FMU_VARIABLES = [
   { name: 'coolant_flow', causality: 'input', unit: 'kg/s', start: 0.05, description: 'Coolant mass flow; 0 means no loop running' },
   { name: 'V_pack', causality: 'output', unit: 'V', start: 0, description: 'Terminal voltage under load' },
   { name: 'SoC', causality: 'output', unit: '1', start: 1, description: 'State of charge, 0 to 1' },
-  { name: 'T_cell', causality: 'output', unit: 'degC', start: 25, description: 'Cell temperature (hottest module)' },
+  { name: 'T_cell', causality: 'output', unit: 'degC', start: 25, description: 'Representative temperature of the single lumped cell node' },
   { name: 'Q_loss', causality: 'output', unit: 'W', start: 0, description: 'Heat generated, for the thermal side of the co-simulation' },
-  { name: 'V_cell_min', causality: 'output', unit: 'V', start: 0, description: 'Lowest cell voltage — what a BMS would trip on' },
+  { name: 'V_cell_min', causality: 'output', unit: 'V', start: 0, description: 'Uniform-cell terminal-voltage estimate (not a resolved cell minimum)' },
   { name: 'P_terminal', causality: 'output', unit: 'W', start: 0, description: 'Electrical power at the terminals' },
 ];
 
-// Parameters the master can set once at initialisation. These are the same
-// coefficients js/sim2.js exposes, so a model calibrated there is the model
-// that runs inside ANSYS.
+// Parameters the master can set once at initialisation. These are a documented
+// subset of js/sim2.js coefficients used by this reduced one-RC plant.
 export const FMU_PARAMETERS = [
   { name: 'cells_series', unit: '1', description: 'Cells in series' },
   { name: 'cells_parallel', unit: '1', description: 'Cells in parallel' },
@@ -132,6 +132,7 @@ export function fmuGuid({ cell, s, p, params = null, modelName = 'BatteryPack' }
   const digest = semanticDigest({
     format: 'battery-design/fmi-2.0-co-simulation@1',
     standardPatch: FMI_STANDARD_VERSION,
+    modelRevision: FMU_MODEL_REVISION,
     modelName,
     cellId: cell?.id || null,
     defaults: fmuParameterValues({ cell, s, p, params }),
@@ -178,7 +179,7 @@ export function modelDescriptionXml({ cell, s, p, params = null, modelName = 'Ba
     canInterpolateInputs="false"
     maxOutputDerivativeOrder="0"
     canBeInstantiatedOnlyOncePerProcess="false"
-    canNotUseMemoryManagementFunctions="true"
+    canNotUseMemoryManagementFunctions="false"
     canGetAndSetFMUstate="false"
     canSerializeFMUstate="false"
     providesDirectionalDerivative="false">
@@ -249,10 +250,9 @@ const validModelIdentifier = (value) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(val
 /**
  * The C source implementing FMI 2.0 co-simulation.
  *
- * Same physics as js/sim2.js, written plainly: no allocation in the step
- * function, no library dependencies, sub-stepped internally so the master can
- * take whatever macro step it likes without the RC or thermal state going
- * unstable.
+ * A deliberately reduced subset of js/sim2.js, written plainly: no allocation
+ * in the step function, no non-standard library dependencies, and bounded
+ * internal steps with stable exponential RC and thermal updates.
  */
 export function fmuSourceC({ modelName = 'BatteryPack', guid = '{00000000-0000-0000-0000-000000000000}', defaults = SOURCE_DEFAULTS } = {}) {
   if (!validModelIdentifier(modelName)) throw new TypeError('Invalid FMI model identifier.');
@@ -317,6 +317,8 @@ typedef struct {
   /* outputs */
   double vPack, qLoss, vCellMin, pTerm;
   fmi2CallbackLogger logger;
+  fmi2CallbackAllocateMemory allocate;
+  fmi2CallbackFreeMemory release;
   fmi2ComponentEnvironment env;
   char instanceName[256];
   int mode, stopTimeDefined;
@@ -409,15 +411,26 @@ fmi2Component fmi2Instantiate(fmi2String instanceName, fmi2Type fmuType,
     const fmi2CallbackFunctions *functions, fmi2Boolean visible, fmi2Boolean loggingOn) {
   (void)resourceLocation; (void)visible; (void)loggingOn;
   if (fmuType != fmi2CoSimulation || !fmuGUID || strcmp(fmuGUID, GUID) != 0) return NULL;
-  Pack *m = (Pack *)calloc(1, sizeof(Pack));
+  Pack *m = functions && functions->allocateMemory && functions->freeMemory
+    ? (Pack *)functions->allocateMemory(1, sizeof(Pack))
+    : (Pack *)calloc(1, sizeof(Pack));
   if (!m) return NULL;
-  if (functions) { m->logger = functions->logger; m->env = functions->componentEnvironment; }
+  if (functions) {
+    m->logger = functions->logger; m->env = functions->componentEnvironment;
+    if (functions->allocateMemory && functions->freeMemory) {
+      m->allocate = functions->allocateMemory; m->release = functions->freeMemory;
+    }
+  }
   if (instanceName) { strncpy(m->instanceName, instanceName, sizeof(m->instanceName) - 1); }
   restore_start_values(m);
   return m;
 }
 
-void fmi2FreeInstance(fmi2Component c) { if (c) free(c); }
+void fmi2FreeInstance(fmi2Component c) {
+  Pack *m = (Pack *)c;
+  if (m && m->release) { fmi2CallbackFreeMemory release = m->release; release(m); }
+  else if (m) { free(m); }
+}
 
 fmi2Status fmi2SetupExperiment(fmi2Component c, fmi2Boolean toleranceDefined, fmi2Real tolerance,
     fmi2Real startTime, fmi2Boolean stopTimeDefined, fmi2Real stopTime) {
@@ -555,7 +568,7 @@ fmi2Status fmi2CancelStep(fmi2Component c) { (void)c; return fmi2Error; }
 fmi2Status fmi2GetStatus(fmi2Component c, const fmi2StatusKind k, fmi2Status *v) { (void)c;(void)k;(void)v; return fmi2Discard; }
 fmi2Status fmi2GetRealStatus(fmi2Component c, const fmi2StatusKind k, fmi2Real *v) {
   Pack *m = (Pack *)c;
-  if (k == fmi2LastSuccessfulTime && m) { *v = m->time; return fmi2OK; }
+  if (k == fmi2LastSuccessfulTime && m && v) { *v = m->time; return fmi2OK; }
   return fmi2Discard;
 }
 fmi2Status fmi2GetIntegerStatus(fmi2Component c, const fmi2StatusKind k, fmi2Integer *v) { (void)c;(void)k;(void)v; return fmi2Discard; }
@@ -604,8 +617,8 @@ costs it.
 ${FMU_VARIABLES.map((v) => `| ${v.causality} | \`${v.name}\` | ${v.unit} | ${v.description} |`).join('\n')}
 
 Parameters (set once at initialisation) are an explicit subset of the desktop
-model coefficients. Calibrated R0/RC1 values are baked into both XML and binary
-starts so the selected reduced plant is the one that runs inside your host:
+model coefficients. Selected R0/RC1 values are baked into both XML and binary
+starts so the declared reduced plant is internally consistent in any host:
 
 ${FMU_PARAMETERS.map((v) => `- \`${v.name}\` (${v.unit}) — ${v.description}`).join('\n')}
 
@@ -667,7 +680,8 @@ export function buildFmu({ cell, s, p, params = null, modelName = 'BatteryPack',
   const defaults = fmuParameterValues({ cell, s, p, params });
   const guid = fmuGuid({ cell, s, p, params, modelName });
   return {
-    guid, modelName, standardVersion: FMI_STANDARD_VERSION, defaults,
+    guid, modelName, standardVersion: FMI_STANDARD_VERSION,
+    modelRevision: FMU_MODEL_REVISION, defaults,
     files: {
       'modelDescription.xml': modelDescriptionXml({ cell, s, p, params, modelName, guid, generatedOn }),
       [`sources/${modelName}.c`]: fmuSourceC({ modelName, guid, defaults }),

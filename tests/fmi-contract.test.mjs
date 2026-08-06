@@ -40,6 +40,7 @@ test('modelDescription declares a complete scalar co-simulation contract', () =>
   const xml = built.files['modelDescription.xml'];
   assert.match(xml, /<CoSimulation[\s\S]*<SourceFiles>\s*<File name="BatteryPack\.c"\/>\s*<\/SourceFiles>/);
   assert.match(xml, /<DefaultExperiment startTime="0" stopTime="10" tolerance="0\.0001" stepSize="0\.1"\/>/);
+  assert.match(xml, /canNotUseMemoryManagementFunctions="false"/);
 
   const outputBlock = xml.match(/<Outputs>([\s\S]*?)<\/Outputs>/)?.[1] || '';
   const initialBlock = xml.match(/<InitialUnknowns>([\s\S]*?)<\/InitialUnknowns>/)?.[1] || '';
