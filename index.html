@@ -942,6 +942,106 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         </details>
         <div id="archBody" style="margin-top:8px"><div class="empty">—</div></div>
       </div>
+      <div class="sec" id="electricalProtectionSec">
+        <h3>HV startup, current shunt &amp; fast protection</h3>
+        <div class="hint">Sensata-based calculators for the parts around the DC link. The curves show
+          what the circuit does; the plain-language verdict says what is qualified, missing or unsafe.
+          Archived parts are reference models only.</div>
+
+        <h4 style="margin:12px 0 4px">Precharge resistor and contactor</h4>
+        <div id="prechargeCalcBody"><div class="empty">—</div></div>
+        <canvas id="prechargeCalcCanvas" height="230" style="width:100%;border:1px solid var(--line);border-radius:var(--r);margin:6px 0;background:var(--ground)"></canvas>
+        <details class="fold" style="margin-top:6px">
+          <summary>Calculator inputs and supplier evidence</summary>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Selected resistor Ω</label><input type="number" id="epResOhm" min="0" step="0.1" placeholder="auto from target time"></div>
+            <div><label class="f">Tolerance ±%</label><input type="number" id="epResTolerance" value="5" min="0" step="0.1"></div>
+            <div><label class="f">Downstream load A</label><input type="number" id="epLoadA" value="0" min="0" step="0.1"></div>
+          </div>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Voltage rating V</label><input type="number" id="epResVoltage" min="0" placeholder="supplier"></div>
+            <div><label class="f">Pulse energy J</label><input type="number" id="epResEnergy" min="0" placeholder="supplier"></div>
+            <div><label class="f">Pulse power W</label><input type="number" id="epResPulsePower" min="0" placeholder="supplier"></div>
+          </div>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Continuous power W</label><input type="number" id="epResContinuous" min="0" placeholder="supplier"></div>
+            <div><label class="f">Design margin %</label><input type="number" id="epMargin" value="20" min="0" step="5"></div>
+            <div><label class="f">Precharge contactor</label><select id="epContactor"><option value="auto">Auto P-series screen</option><option value="p105">GIGAVAC P105</option><option value="p115">GIGAVAC P115</option><option value="p125">GIGAVAC P125</option><option value="p195">GIGAVAC P195</option></select></div>
+          </div>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Make-current rating A</label><input type="number" id="epContactorMake" min="0" placeholder="part datasheet"></div>
+            <div><label class="f">Switching life cycles</label><input type="number" id="epContactorCycles" min="0" placeholder="part datasheet"></div>
+            <div><label class="f">Evidence date</label><input type="date" id="epEvidenceDate"></div>
+          </div>
+          <div class="row2" style="margin-top:6px">
+            <div><label class="f">Supplier part(s)</label><input id="epEvidencePart" placeholder="resistor + contactor part numbers"></div>
+            <div><label class="f">Document revision(s)</label><input id="epEvidenceRevision" placeholder="datasheet revisions"></div>
+          </div>
+        </details>
+
+        <h4 style="margin:14px 0 4px">Current-shunt selection</h4>
+        <div id="shuntCalcBody"><div class="empty">—</div></div>
+        <canvas id="shuntCalcCanvas" height="230" style="width:100%;border:1px solid var(--line);border-radius:var(--r);margin:6px 0;background:var(--ground)"></canvas>
+        <details class="fold" style="margin-top:6px">
+          <summary>Duty, measurement and thermal model</summary>
+          <label class="f" style="margin-top:6px">Reference / supplier model</label>
+          <select id="shuntReference">
+            <option value="sensata-sfp200-108">Sensata SFP200 · 108 mm² busbars · archived</option>
+            <option value="sensata-sfp200-1-0-awg">Sensata SFP200 · 1/0 AWG cables · archived</option>
+            <option value="custom">Current supplier shunt · enter ratings</option>
+          </select>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Continuous duty A</label><input type="number" id="shuntContinuousA" min="0" placeholder="from pack"></div>
+            <div><label class="f">Peak duty A</label><input type="number" id="shuntPeakA" min="0" placeholder="from pack"></div>
+            <div><label class="f">Peak duration s</label><input type="number" id="shuntPeakS" value="5" min="0.001" step="0.1"></div>
+          </div>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Resistance µΩ</label><input type="number" id="shuntResistance" value="18" min="0" step="0.1"></div>
+            <div><label class="f">Continuous rating A</label><input type="number" id="shuntRatingA" min="0" placeholder="supplier"></div>
+            <div><label class="f">Peak rating A</label><input type="number" id="shuntPeakRatingA" min="0" placeholder="supplier"></div>
+          </div>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Rated peak duration s</label><input type="number" id="shuntPeakRatingS" min="0" placeholder="supplier"></div>
+            <div><label class="f">Conductor area mm²</label><input type="number" id="shuntArea" min="0" placeholder="installed"></div>
+            <div><label class="f">Max operating °C</label><input type="number" id="shuntMaxC" min="0" placeholder="supplier"></div>
+          </div>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Gain error ±%</label><input type="number" id="shuntGain" min="0" step="0.1" placeholder="supplier"></div>
+            <div><label class="f">Offset error mA</label><input type="number" id="shuntOffsetMA" min="0" placeholder="supplier"></div>
+            <div><label class="f">Noise error mA RMS</label><input type="number" id="shuntNoiseMA" min="0" placeholder="supplier"></div>
+          </div>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Thermal R K/W</label><input type="number" id="shuntRth" min="0" step="0.1" placeholder="fitted/measured"></div>
+            <div><label class="f">Thermal τ s</label><input type="number" id="shuntTau" min="0" step="1" placeholder="fitted/measured"></div>
+            <div><label class="f">Required accuracy %</label><input type="number" id="shuntAccuracy" value="1" min="0.01" step="0.1"></div>
+          </div>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Supplier part</label><input id="shuntPart" placeholder="current part"></div>
+            <div><label class="f">Evidence revision</label><input id="shuntRevision" placeholder="datasheet revision"></div>
+            <div><label class="f">Evidence date</label><input type="date" id="shuntDate"></div>
+          </div>
+        </details>
+
+        <h4 style="margin:14px 0 4px">Fast-fault coordination</h4>
+        <div id="fastProtectionBody"><div class="empty">Run the short-circuit study first.</div></div>
+        <details class="fold" style="margin-top:6px">
+          <summary>Detection and interrupter evidence</summary>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">OCD threshold A</label><input type="number" id="fastThresholdA" min="0" placeholder="auto"></div>
+            <div><label class="f">Total delay ms</label><input type="number" id="fastDelayMs" value="5" min="0.1" step="0.1"></div>
+            <div><label class="f">Sensor peak range A</label><input type="number" id="fastShuntRangeA" min="0" placeholder="supplier"></div>
+          </div>
+          <div class="row3" style="margin-top:6px">
+            <div><label class="f">Interrupter voltage V</label><input type="number" id="fastVoltageV" min="0" placeholder="supplier"></div>
+            <div><label class="f">Interrupt current A</label><input type="number" id="fastCurrentA" min="0" placeholder="supplier"></div>
+            <div><label class="f">Evidence date</label><input type="date" id="fastDate"></div>
+          </div>
+          <div class="row2" style="margin-top:6px">
+            <div><label class="f">Interrupter part</label><input id="fastPart" placeholder="PyroFuse / active fuse part"></div>
+            <div><label class="f">Document revision</label><input id="fastRevision" placeholder="datasheet revision"></div>
+          </div>
+        </details>
+      </div>
       <div class="sec" id="scSec">
         <h3>If it shorts</h3>
         <div id="scSummary"></div>

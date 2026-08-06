@@ -275,6 +275,24 @@ realises ~64% of the geometric ideal — the origin of the tool's default **35%
 integration allowance** for structure, manifolds and crash provision. This gate
 runs on every change; the modelled pack must land within 1% of the real one.
 
+### 7.7 Sensata high-voltage startup, sensing and fast protection
+
+The electrical-protection calculators in `js/electrical-protection.js` use
+official Sensata material as worked engineering references:
+
+| Module | Primary source | What is used |
+|---|---|---|
+| Precharge resistor and sequence | Sensata, [*How to Design a Precharge Circuit for Hybrid and Electric Vehicle Applications*](https://www.sensata.com/sites/default/files/a/sensata-how-to-design-precharge-circuits-evs-whitepaper.pdf), WP-00012, 12 November 2020 | RC voltage/current curves, five-time-constant guidance, resistor energy and power, tolerance/temperature validation, startup sequence, voltage-envelope diagnostics and repeated-start risk |
+| Precharge contactor screening | Sensata, [*GIGAVAC Contactors Selection Guide*](https://www.sensata.com/sites/default/files/a/sensata-gigavac-contactors-selection-guide.pdf) | P105/P115/P125/P195 catalogue voltage and continuous-current screening. Make current, switching life and environmental qualification remain mandatory part-specific inputs. |
+| Current shunt | Sensata/Sendyne, [*SFP200MOD Precision Current Measurement Module Datasheet*](https://www.sensata.com/sites/default/files/a/sensata-sfp200-current-and-voltage-module-datasheet.pdf), Preliminary Rev 1.7 | 18 µΩ shunt, total-error method, published continuous/peak limits, and separate 108 mm² busbar and 1/0 AWG cable thermal anchors |
+| Fast fault interruption | Sensata, [*Maximizing Circuit Protection for Enhanced EV Safety*](https://www.sensata.com/sites/default/files/a/sensata-el-ev-pyrofuse-whitepaper.pdf), 2025 | Shunt-triggered overcurrent concept, the importance of circuit inductance, and the stated 2–5 ms example window. This is not treated as a rating for an unnamed PyroFuse. |
+
+Sensata currently marks [SFP200](https://www.sensata.com/products/current-voltage-sensing/sfp200)
+and [SFP203](https://www.sensata.com/products/current-voltage-sensing/sfp203-current-sensor)
+obsolete. They are included only as archived, reproducible reference profiles;
+the software will not return a green hardware selection until a current supplier
+part and revision-controlled evidence replace them.
+
 ---
 
 ## 8 · Assumptions with no public source
@@ -336,6 +354,7 @@ are exposed as inputs wherever possible, and stated as estimates in the output.
 | Bonding scheme, when it is not described | one representative 250 mm strap of 16 mm² | An illustration, not an answer. Real machines have several bonding paths and the one that fails is the one nobody drew, so the study flags this rather than presenting the single assumed strap as a result |
 | Prospective fault current for bonding | the dead-short prospective current from the fault study | An HV pack floats, so the FIRST isolation fault draws almost nothing — the bond earns its keep on the second. The dead-short current bounds what the pack can drive through anything, which makes it the conservative choice; the real second-fault current depends on where in the string both faults land |
 | Run lengths, when the routing is not given | estimated from the pack envelope | Every wiring number scales with length, so this is the single assumption most worth replacing. Runs derived this way are flagged individually and named in the study's findings, and the CLI takes real lengths (`--pitch`, `--modrun`, `--packrun`) |
+| SFP200 first-order thermal constants | fitted separately to the published 108 mm²-busbar and 1/0-AWG anchors | The datasheet publishes transient temperature-rise curves, not a thermal resistance/capacitance pair. The module fits a transparent first-order model to the stated continuous-rise limit and one stated pulse point in each termination case; it remains a screening simulation and the product is obsolete. |
 
 ---
 

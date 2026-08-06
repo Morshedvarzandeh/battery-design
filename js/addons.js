@@ -59,6 +59,13 @@ export const ADDONS = [
     needs: ['a pack', 'an application'],
   },
   {
+    id: 'electrical-protection', name: 'HV startup, current shunt & fast protection', tier: 'browser', status: 'shipped',
+    module: 'electrical-protection.js', concepts: ['hv-chain', 'fault-study'],
+    what: 'Calculates and simulates the precharge resistor, screens the precharge contactor, evaluates shunt loss, accuracy and installed thermal duty, then coordinates the measured fault threshold with the R–L short-circuit trace.',
+    provides: ['precharge tolerance-corner traces', 'shunt electrical and thermal selection', 'fast-interruption timing and energy'],
+    needs: ['DC-link capacitance and startup target', 'supplier ratings and revision evidence', 'the short-circuit trace'],
+  },
+  {
     id: 'thermal', name: 'Thermal system & BTMS', tier: 'browser', status: 'shipped',
     module: 'btms.js', concepts: ['btms-loop'],
     what: 'Cooling loop selection, coolant flow, chiller cost, and the heater branch winter charging needs.',

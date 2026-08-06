@@ -27,6 +27,7 @@ import { buildSensorPlan } from './sensors.js';
 import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
 import { shortCircuitStudy } from './shortcircuit.js';
+import { prechargeStudy, shuntStudy, fastProtectionStudy } from './electrical-protection.js';
 import { simulateMission, compareCells } from './sim1d.js';
 import { profileForApp, profileById, profileStats } from './loadprofiles.js';
 import { releaseChecklist, appClassOf } from './markets.js';
@@ -47,7 +48,7 @@ import { flightDuty } from './flight.js';
 import { roundTripPlan } from './efficiency.js';
 import { buildEngineeringDiagnostics } from './diagnostics.js';
 
-export const API_VERSION = '1.1';
+export const API_VERSION = '1.2';
 
 // What a specification may contain. Everything except `application` has a
 // defensible default, so the smallest useful call is one field.
@@ -69,6 +70,7 @@ export const SPEC_FIELDS = {
   driveMode: 'eco | normal | sport (default normal)',
   policyId: 'EMS/PMS operating policy id for applications that expose one; converted to a battery sizing profile',
   diagnostics: '{ rest, pulse, relaxation, thermal, aging } booleans describing available battery-model measurements',
+  electricalProtection: '{ precharge, shunt, fast } supplier ratings, evidence and duty overrides for the HV startup/current-measurement protection studies',
   conditionMonitoring: '{ baselineWindows, operatingModes, samplingHz } for engineering vibration anomaly monitoring',
   marine: 'vessel mission overrides: { referenceMassKg, payloadKg, designSpeedKn, serviceSpeedKn, headCurrentKn, headwindKn, propulsionAtDesignW, hotelW, durationH, seaState }',
   flight: 'multirotor mission overrides: { emptyMassKg, payloadKg, rotorCount, rotorDiameterM, flightMinutes, cruiseSpeedMps, headwindMps, altitudeM, temperatureC, propulsiveEfficiency, auxiliaryW, hoverFraction }',
@@ -430,6 +432,103 @@ export function designFromSpec(spec = {}) {
     linkFuseA: spec.linkFuseA ?? null,
   });
 
+  // 4c · The HV startup and current-measurement protection chain. The
+  // Sensata records are reference cases, not invisible approvals: an archived
+  // shunt can reproduce its published electrical/thermal behavior while its
+  // lifecycle diagnostic still prevents it becoming release hardware.
+  const ep = spec.electricalProtection || {};
+  const epPre = ep.precharge || {};
+  const epShunt = ep.shunt || {};
+  const epFast = ep.fast || {};
+  const protectionApplies = summary.vMax > 60;
+  const protectionContinuousA = epShunt.continuousA ?? summary.maxContCurrentA;
+  const protectionPeakA = epShunt.peakA
+    ?? Math.max(protectionContinuousA, (preset?.peakPowerW || summary.maxContPowerW) / Math.max(summary.vMin, 1));
+  const protectionPeakS = epShunt.peakDurationS ?? 5;
+  const protectionPrecharge = architecture.precharge ? prechargeStudy({
+    supplyV: summary.vMax,
+    capacitanceUF: epPre.capacitanceUF ?? architecture.precharge.linkCapUF,
+    targetTimeS: epPre.targetTimeS ?? architecture.precharge.timeToCloseS,
+    closeGapV: epPre.closeGapV ?? architecture.precharge.closeGapV,
+    resistanceOhm: epPre.resistanceOhm ?? null,
+    resistanceTolerancePct: epPre.resistanceTolerancePct ?? 5,
+    loadCurrentA: epPre.loadCurrentA ?? 0,
+    startsPerHour: epPre.startsPerHour ?? architecture.precharge.prechargesPerHour,
+    designMarginPct: epPre.designMarginPct ?? 20,
+    resistorVoltageRatingV: epPre.resistorVoltageRatingV ?? null,
+    resistorPulseEnergyJ: epPre.resistorPulseEnergyJ ?? null,
+    resistorPulsePowerW: epPre.resistorPulsePowerW ?? null,
+    resistorContinuousPowerW: epPre.resistorContinuousPowerW ?? null,
+    contactorId: epPre.contactorId ?? 'auto',
+    contactorMakeA: epPre.contactorMakeA ?? null,
+    contactorMechanicalCycles: epPre.contactorMechanicalCycles ?? null,
+    supplierEvidence: epPre.supplierEvidence ?? null,
+  }) : null;
+  const shuntResistanceWasDefaulted = epShunt.referenceId == null && epShunt.resistanceUOhm == null;
+  const protectionShunt = protectionApplies ? shuntStudy({
+    referenceId: epShunt.referenceId ?? null,
+    supplier: epShunt.supplier ?? null,
+    resistanceUOhm: epShunt.resistanceUOhm ?? 18,
+    resistanceTolerancePct: epShunt.resistanceTolerancePct ?? null,
+    continuousRatingA: epShunt.continuousRatingA ?? null,
+    peakRatingA: epShunt.peakRatingA ?? null,
+    peakDurationRatingS: epShunt.peakDurationRatingS ?? null,
+    conductorAreaMm2: epShunt.conductorAreaMm2 ?? null,
+    maxOperatingC: epShunt.maxOperatingC ?? null,
+    gainErrorPct: epShunt.gainErrorPct ?? null,
+    offsetErrorA: epShunt.offsetErrorA ?? null,
+    noiseErrorA: epShunt.noiseErrorA ?? null,
+    thermalResistanceKPerW: epShunt.thermalResistanceKPerW ?? null,
+    thermalTimeConstantS: epShunt.thermalTimeConstantS ?? null,
+    ambientC: epShunt.ambientC ?? ambientC[1],
+    continuousA: protectionContinuousA,
+    peakA: protectionPeakA,
+    peakDurationS: protectionPeakS,
+    currentSegments: epShunt.currentSegments ?? null,
+    tempcoPpmPerK: epShunt.tempcoPpmPerK ?? 0,
+    requiredAccuracyPct: epShunt.requiredAccuracyPct ?? 1,
+    evidence: epShunt.evidence ?? null,
+  }) : null;
+  if (protectionShunt && shuntResistanceWasDefaulted) {
+    protectionShunt.diagnostics.push({
+      code: 'SHUNT_RESISTANCE_PROVISIONAL', severity: 'review',
+      title: 'Shunt resistance is provisional',
+      detail: 'The unconfigured calculation uses 18 µΩ only as the documented Sensata SFP200MOD reference value; no production shunt has been selected.',
+      action: 'Select a current supplier part and enter its resistance, ratings, error terms, installed thermal evidence and document revision.',
+    });
+    protectionShunt.status = 'review';
+  }
+  const terminalFault = shortCircuit.faults?.find((f) => f.kind.id === 'terminal')?.result;
+  let protectionFast = protectionApplies && protectionShunt && terminalFault ? fastProtectionStudy({
+    faultResult: terminalFault,
+    thresholdA: epFast.thresholdA ?? Math.max(1, protectionContinuousA * 2),
+    totalDelayMs: epFast.totalDelayMs ?? 5,
+    shuntPeakRangeA: epFast.shuntPeakRangeA ?? protectionShunt.ratings.peakA,
+    shuntErrorA: epFast.shuntErrorA ?? protectionShunt.accuracy.atPeak.absoluteA,
+    interrupterVoltageRatingV: epFast.interrupterVoltageRatingV ?? null,
+    interrupterCurrentRatingA: epFast.interrupterCurrentRatingA ?? null,
+    evidence: epFast.evidence ?? null,
+  }) : null;
+  if (protectionFast && epFast.thresholdA == null) {
+    protectionFast.diagnostics.push({
+      code: 'FAST_PROTECTION_THRESHOLD_PROVISIONAL', severity: 'review',
+      title: 'Overcurrent threshold is provisional',
+      detail: `The automatic screen uses 2× continuous current (${protectionFast.thresholdA.toFixed(0)} A); no supplier or safety requirement establishes it as the production threshold.`,
+      action: 'Enter the fault-discrimination threshold and validate nuisance-trip and missed-fault cases.',
+    });
+    if (protectionFast.status === 'pass') protectionFast.status = 'review';
+  }
+  const electricalProtection = {
+    precharge: protectionPrecharge,
+    shunt: protectionShunt,
+    fast: protectionFast,
+  };
+  const protectionFindings = [
+    ...(protectionPrecharge?.diagnostics || []).map((d) => ({ ...d, id: d.code, severity: d.severity === 'review' ? 'warn' : d.severity, category: 'electrical', ref: d.source?.title || 'Sensata precharge study' })),
+    ...(protectionShunt?.diagnostics || []).map((d) => ({ ...d, id: d.code, severity: d.severity === 'review' ? 'warn' : d.severity, category: 'electrical', ref: d.source?.title || 'current-shunt selection' })),
+    ...(protectionFast?.diagnostics || []).map((d) => ({ ...d, id: d.code, severity: d.severity === 'review' ? 'warn' : d.severity, category: 'protection', ref: d.source?.title || 'fast-fault coordination' })),
+  ];
+
   // 5 · The vehicle, when this machine drives.
   let vehicle = null;
   let vehicleTrace = null;
@@ -586,10 +685,11 @@ export function designFromSpec(spec = {}) {
         .flatMap((k) => analysis?.perspectives?.[k] || []),
       ...(simulation?.findings || []),
       ...(shortCircuit?.findings || []),
+      ...protectionFindings,
     ],
     analysis: analysis ? { totals: analysis.totals, disclaimer: analysis.disclaimer } : null,
     architecture, thermal, sensors, diagnostics, charging, v2x, vehicle, marine, flight,
-    energyPerformance, simulation, shortCircuit,
+    energyPerformance, simulation, shortCircuit, electricalProtection,
     cost, co2, checklist, comparison,
     concepts: appNeeds(appId),
     warnings,

@@ -113,6 +113,16 @@ project's provenance-first datasheet pipeline.
   laser for prismatic terminals, ultrasonic for pouch tab stacks — per the
   ASME MSEC2010-34168 joining review), and its findings are folded into the
   Electrical audit pane rather than kept in a silo.
+- **HV startup, shunt and fast protection** — a separate electrical package
+  calculates the precharge resistor from the DC-link target, simulates the
+  voltage/current/power trace and resistance-tolerance corners, screens the
+  precharge contactor, and checks supplier pulse, repetition and switching
+  evidence. The shunt calculator shows voltage burden, I²R loss, measurement
+  error and installed-termination temperature over the stated duty. Its
+  threshold is then replayed against the R–L short-circuit trace to expose
+  detection time, interruption current and loop magnetic energy. Sensata's
+  SFP200MOD cases remain explicitly archived examples—not selectable release
+  hardware—and every production choice requires a current part/revision/date.
 - **Environment & seasons** — the system temperature is not one number:
   climate presets (temperate / cold / hot / indoor) carry per-season ambient
   bands, fill the design temperature window (design case = all year), and a
@@ -475,6 +485,7 @@ is copied into the repository.
 | `js/pack-engine.js` | Pure electrical + layout math (Z-up, mm) |
 | `js/optimizer.js` | Requirement search + space fitting |
 | `js/architecture.js` | Module partition, BMS topology, precharge/contactors/fuse/isolation, comms, welding |
+| `js/electrical-protection.js` | Sensata-grounded precharge time simulation, P-series catalogue screen, shunt loss/accuracy/thermal duty, and fast-interruption coordination |
 | `js/seasons.js` | Climate/season ambient bands + per-season system-temperature outlook |
 | `js/eurules.js` | EU Battery Regulation 2023/1542 timeline + applicability checks |
 | `js/markets.js` | Release checklist per application class × market + chemistry-market gates |

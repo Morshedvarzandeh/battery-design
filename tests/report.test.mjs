@@ -78,6 +78,31 @@ test('report document builds with full and sparse data', () => {
   ok(html3.includes(lfp.name) && html3.includes('(this design)'), 'both cells named, current marked');
   ok(html3.includes('$/kWh delivered'), 'the value column is there');
   ok(!/undefined|NaN/.test(html3), 'comparison section clean');
+
+  const R4 = {
+    ...R,
+    electricalProtection: {
+      precharge: {
+        status: 'review', resistanceOhm: 50,
+        nominal: { peakCurrentA: 8, peakPowerW: 3200, targetV: 390, timeToTargetS: 1.5 },
+        corners: [{ timeToTargetS: 1.4 }, { timeToTargetS: 1.6 }],
+        required: { voltageV: 480, pulseEnergyJ: 576, pulsePowerW: 3840 },
+      },
+      shunt: {
+        status: 'review', reference: { part: 'SFP200MOD' }, resistanceUOhm: 18,
+        continuousA: 600, electrical: { continuousDropMV: 10.8, continuousLossW: 6.48 },
+        accuracy: { atContinuous: { absoluteA: 6.1, percent: 1.02 } },
+        thermal: { calculated: true, maxTempC: 105 },
+      },
+      fast: {
+        status: 'review', conservativeThresholdA: 1200, crossingS: 0.001,
+        interruptS: 0.006, currentAtInterruptA: 4200, inductiveEnergyJ: 18,
+      },
+    },
+  };
+  const html4 = buildReportHTML(R4);
+  ok(html4.includes('HV startup, current shunt') && html4.includes('Fast interruption simulation'),
+    'electrical calculator results reach the customer report');
 });
 
 test('customer cells: validation, normalization, and the private mail path', () => {

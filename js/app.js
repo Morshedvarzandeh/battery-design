@@ -39,6 +39,9 @@ import { initializeWasmCore } from './wasm-core.js';
 import { buildChargingPlan } from './charging.js';
 import { v2xPlan } from './v2x.js';
 import { shortCircuitStudy } from './shortcircuit.js';
+import {
+  prechargeStudy, shuntStudy, fastProtectionStudy, shuntReferenceById,
+} from './electrical-protection.js';
 import { renderGuard } from './limits.js';
 import { detectRunner, knownRunner, runnerStatusLine, runAdvancedModel, buildFmuOnRunner } from './desktop-link.js';
 import {
@@ -113,6 +116,7 @@ let lastLayout = null;
 let lastAnalysis = null;
 let lastArch = null;      // architecture (modules, BMS, HV chain) of the pack
 let lastArchFindings = []; // architecture findings folded into the Electrical pane
+let lastElectricalProtection = null; // detailed precharge, shunt and fast-protection studies
 let lastTherm = null;     // thermal management system (loop, BTMS control, costs)
 let lastThermFindings = []; // loop-choice verdicts folded into the Thermal pane
 let lastForm = 'cylindrical';
@@ -1091,7 +1095,15 @@ function bindControls() {
   });
   // Architecture assumptions and the advanced duty inputs feed the
   // Electrical pane and the cost model, so a change re-runs the full audit.
-  for (const id of ['archCh', 'archCap', 'archTpre', 'archRep', 'archTs', 'archSmod', 'rqRacks', 'rqDod']) {
+  for (const id of ['archCh', 'archCap', 'archTpre', 'archRep', 'archTs', 'archSmod', 'rqRacks', 'rqDod',
+    'epResOhm', 'epResTolerance', 'epLoadA', 'epResVoltage', 'epResEnergy', 'epResPulsePower',
+    'epResContinuous', 'epMargin', 'epContactor', 'epContactorMake', 'epContactorCycles',
+    'epEvidenceDate', 'epEvidencePart', 'epEvidenceRevision',
+    'shuntReference', 'shuntContinuousA', 'shuntPeakA', 'shuntPeakS', 'shuntResistance',
+    'shuntRatingA', 'shuntPeakRatingA', 'shuntPeakRatingS', 'shuntArea', 'shuntMaxC',
+    'shuntGain', 'shuntOffsetMA', 'shuntNoiseMA', 'shuntRth', 'shuntTau', 'shuntAccuracy',
+    'shuntPart', 'shuntRevision', 'shuntDate', 'fastThresholdA', 'fastDelayMs',
+    'fastShuntRangeA', 'fastVoltageV', 'fastCurrentA', 'fastPart', 'fastRevision', 'fastDate']) {
     $(id).onchange = recompute;
   }
   // Climate & season: the picker fills the env-temp window; the design case
@@ -1667,7 +1679,8 @@ function currentReportData() {
     gridLabel: gf.label,
     usage,
     selection: selComponents(),
-    findings: [...engFindings, ...lastArchFindings, ...lastThermFindings, ...lastSimFindings, ...(lastShort?.findings || []), ...lastFindings],
+    findings: [...engFindings, ...lastArchFindings, ...(lastElectricalProtection?.findings || []),
+      ...lastThermFindings, ...lastSimFindings, ...(lastShort?.findings || []), ...lastFindings],
     sensitivity: sensitivityAnalysis({
       cell: c, n: lastSummary.cellCount, energyWh: lastSummary.energyWh, usage,
     }, 20),
@@ -1714,6 +1727,7 @@ function currentReportData() {
     v2x: lastV2x,
     vehicle: lastVehicle,
     shortCircuit: lastShort,
+    electricalProtection: lastElectricalProtection,
     simPng: (() => {
       if (!lastSim || lastSim.unavailable) return null;
       const off = document.createElement('canvas');
@@ -2526,6 +2540,222 @@ function renderShort() {
 }
 
 // ---------------------------------------------------------------------------
+// Sensata-based electrical protection package — detailed precharge, shunt
+// selection and fast-fault coordination. The browser and exported project
+// read the same pure calculation objects from electrical-protection.js.
+// ---------------------------------------------------------------------------
+function inputNumber(id) {
+  const v = parseFloat($(id)?.value);
+  return isFinite(v) ? v : null;
+}
+
+function inputEvidence(partId, revisionId, dateId) {
+  const part = $(partId)?.value?.trim();
+  const revision = $(revisionId)?.value?.trim();
+  const date = $(dateId)?.value?.trim();
+  return (part || revision || date) ? { part, revision, date } : null;
+}
+
+function computeElectricalProtection() {
+  if (!lastSummary) { lastElectricalProtection = null; return; }
+  const contA = inputNumber('shuntContinuousA') ?? lastSummary.maxContCurrentA ?? 0;
+  const requestedPeakPowerW = inputNumber('rqPp');
+  const derivedPeakA = requestedPeakPowerW > 0 && lastSummary.vMin > 0
+    ? requestedPeakPowerW / lastSummary.vMin : contA * 1.5;
+  const peakA = inputNumber('shuntPeakA') ?? Math.max(contA, derivedPeakA);
+  const peakS = inputNumber('shuntPeakS') ?? 5;
+  const ambientC = inputNumber('rqThi') ?? 25;
+  let precharge = null;
+  if (lastSummary.vMax > 60) {
+    precharge = prechargeStudy({
+      supplyV: lastSummary.vMax,
+      capacitanceUF: inputNumber('archCap') ?? 500,
+      targetTimeS: inputNumber('archTpre') ?? 0.5,
+      closeGapV: lastArch?.precharge?.closeGapV ?? 10,
+      resistanceOhm: inputNumber('epResOhm'),
+      resistanceTolerancePct: inputNumber('epResTolerance') ?? 5,
+      loadCurrentA: inputNumber('epLoadA') ?? 0,
+      startsPerHour: inputNumber('archRep') ?? 4,
+      designMarginPct: inputNumber('epMargin') ?? 20,
+      resistorVoltageRatingV: inputNumber('epResVoltage'),
+      resistorPulseEnergyJ: inputNumber('epResEnergy'),
+      resistorPulsePowerW: inputNumber('epResPulsePower'),
+      resistorContinuousPowerW: inputNumber('epResContinuous'),
+      contactorId: $('epContactor')?.value || 'auto',
+      contactorMakeA: inputNumber('epContactorMake'),
+      contactorMechanicalCycles: inputNumber('epContactorCycles'),
+      supplierEvidence: inputEvidence('epEvidencePart', 'epEvidenceRevision', 'epEvidenceDate'),
+    });
+  }
+
+  const protectionApplies = lastSummary.vMax > 60;
+  const refId = $('shuntReference')?.value;
+  const custom = refId === 'custom';
+  const reference = custom ? null : shuntReferenceById(refId);
+  const shunt = protectionApplies ? shuntStudy({
+    referenceId: custom ? null : refId,
+    resistanceUOhm: custom ? inputNumber('shuntResistance') : null,
+    continuousRatingA: custom ? inputNumber('shuntRatingA') : null,
+    peakRatingA: custom ? inputNumber('shuntPeakRatingA') : null,
+    peakDurationRatingS: custom ? inputNumber('shuntPeakRatingS') : null,
+    conductorAreaMm2: custom ? inputNumber('shuntArea') : null,
+    maxOperatingC: custom ? inputNumber('shuntMaxC') : null,
+    gainErrorPct: custom ? inputNumber('shuntGain') : null,
+    offsetErrorA: custom && inputNumber('shuntOffsetMA') != null ? inputNumber('shuntOffsetMA') / 1000 : null,
+    noiseErrorA: custom && inputNumber('shuntNoiseMA') != null ? inputNumber('shuntNoiseMA') / 1000 : null,
+    thermalResistanceKPerW: custom ? inputNumber('shuntRth') : null,
+    thermalTimeConstantS: custom ? inputNumber('shuntTau') : null,
+    ambientC, continuousA: contA, peakA, peakDurationS: peakS,
+    requiredAccuracyPct: inputNumber('shuntAccuracy') ?? 1,
+    supplier: custom ? { part: $('shuntPart')?.value?.trim() || null } : null,
+    evidence: custom ? {
+      revision: $('shuntRevision')?.value?.trim() || null,
+      date: $('shuntDate')?.value?.trim() || null,
+    } : reference?.evidence,
+  }) : null;
+
+  let fast = null;
+  const terminal = lastShort?.faults?.find((f) => f.kind.id === 'terminal')?.result;
+  if (terminal && shunt) {
+    const enteredThreshold = inputNumber('fastThresholdA');
+    const thresholdA = enteredThreshold ?? Math.max(1, contA * 2);
+    fast = fastProtectionStudy({
+      faultResult: terminal, thresholdA,
+      totalDelayMs: inputNumber('fastDelayMs') ?? 5,
+      shuntPeakRangeA: inputNumber('fastShuntRangeA') ?? shunt.ratings.peakA,
+      shuntErrorA: shunt.accuracy.atPeak.absoluteA,
+      interrupterVoltageRatingV: inputNumber('fastVoltageV'),
+      interrupterCurrentRatingA: inputNumber('fastCurrentA'),
+      evidence: inputEvidence('fastPart', 'fastRevision', 'fastDate'),
+    });
+    if (enteredThreshold == null) {
+      fast.diagnostics.push({
+        code: 'FAST_PROTECTION_THRESHOLD_PROVISIONAL', severity: 'review',
+        title: 'Overcurrent threshold is provisional',
+        detail: `The visible automatic screen uses 2× continuous current (${thresholdA.toFixed(0)} A); no supplier or safety requirement establishes that as the production threshold.`,
+        action: 'Enter the fault-discrimination threshold from the protection concept and validate nuisance-trip and missed-fault cases.',
+      });
+      if (fast.status === 'pass') fast.status = 'review';
+    }
+  }
+
+  const findings = [
+    ...(precharge?.diagnostics || []).map((d) => ({ ...d, severity: d.severity === 'review' ? 'warn' : d.severity, category: 'electrical', ref: d.source?.title || 'Sensata precharge study' })),
+    ...(shunt?.diagnostics || []).map((d) => ({ ...d, severity: d.severity === 'review' ? 'warn' : d.severity, category: 'electrical', ref: d.source?.title || 'current-shunt selection' })),
+    ...(fast?.diagnostics || []).map((d) => ({ ...d, severity: d.severity === 'review' ? 'warn' : d.severity, category: 'protection', ref: d.source?.title || 'fast-fault coordination' })),
+  ];
+  lastElectricalProtection = { precharge, shunt, fast, findings };
+  renderElectricalProtection();
+}
+
+const protectionStatusChip = (status) => {
+  const map = { pass: ['pass', 'calculation passes'], review: ['warn', 'review required'], fail: ['fail', 'not workable'] };
+  const [sev, label] = map[status] || ['info', status];
+  return `<span class="chip ${sev}">${esc(label)}</span>`;
+};
+
+function electricalDiagnosticsHtml(diagnostics) {
+  if (!diagnostics?.length) return '<div class="hint">All entered limits pass. Physical validation is still required.</div>';
+  return diagnostics.map((d) => `<div class="finding ${d.severity === 'review' ? 'warn' : esc(d.severity)}" style="margin-top:5px">
+    <div class="t"><span class="chip ${d.severity === 'review' ? 'warn' : esc(d.severity)}">${d.severity === 'review' ? 'review' : esc(d.severity)}</span> ${esc(d.title)}</div>
+    <div class="d">${esc(d.detail)}</div><div class="r">Next: ${esc(d.action)}</div></div>`).join('');
+}
+
+function drawProtectionChart(canvas, trace, kind) {
+  if (!canvas || !trace?.tS?.length) return;
+  const dpr = Math.min(window.devicePixelRatio || 1, 2), W = 640, H = 230;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  const g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const css = (n, fb) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fb;
+  const ink = css('--ink', '#1a1a1a'), mut = css('--muted', '#666'), acc = css('--accent', '#0b6e5f'), bad = css('--missing', '#b3261e');
+  g.fillStyle = css('--ground', '#f4f6f5'); g.fillRect(0, 0, W, H);
+  g.font = '10px ui-monospace, monospace'; g.lineWidth = 1.4;
+  const x0 = 44, x1 = W - 12, n = trace.tS.length;
+  const tEnd = trace.tS.at(-1) || 1;
+  const x = (i) => x0 + (trace.tS[i] / tEnd) * (x1 - x0);
+  const plot = (arr, y0, y1, color, min = null, max = null, dash = false) => {
+    const vals = arr.filter(Number.isFinite);
+    let lo = min ?? Math.min(...vals), hi = max ?? Math.max(...vals);
+    if (!(hi > lo)) hi = lo + 1;
+    const y = (v) => y1 - (v - lo) / (hi - lo) * (y1 - y0);
+    g.strokeStyle = color; if (dash) g.setLineDash([4, 3]);
+    g.beginPath();
+    arr.forEach((v, i) => { if (!Number.isFinite(v)) return; i ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)); });
+    g.stroke(); g.setLineDash([]);
+    return { lo, hi };
+  };
+  if (kind === 'precharge') {
+    const vRange = plot(trace.voltageV, 22, 100, acc, 0);
+    const pRange = plot(trace.powerW, 130, 205, bad, 0);
+    g.fillStyle = ink; g.fillText(`DC-link voltage · 0–${f0(vRange.hi)} V`, 4, 14);
+    g.fillText(`Resistor power · peak ${f0(pRange.hi)} W`, 4, 122);
+  } else {
+    const iRange = plot(trace.currentA, 22, 100, acc, 0);
+    const tRange = plot(trace.tempC, 130, 205, bad);
+    g.fillStyle = ink; g.fillText(`Current duty · peak ${f0(iRange.hi)} A`, 4, 14);
+    g.fillText(`Shunt temperature · ${f1(tRange.lo)}–${f1(tRange.hi)} °C`, 4, 122);
+  }
+  g.fillStyle = mut;
+  for (let k = 0; k <= 4; k++) g.fillText(`${f1(tEnd * k / 4)} s`, x0 + (x1 - x0) * k / 4 - 8, 224);
+}
+
+function clearProtectionChart(canvas) {
+  if (!canvas) return;
+  const g = canvas.getContext('2d');
+  g.clearRect(0, 0, canvas.width, canvas.height);
+  canvas.width = 0;
+  canvas.height = 0;
+}
+
+function renderElectricalProtection() {
+  const E = lastElectricalProtection;
+  if (!E) return;
+  const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
+  const preBox = $('prechargeCalcBody');
+  if (E.precharge) {
+    const P = E.precharge;
+    const times = P.corners.filter((x) => x.timeToTargetS != null).map((x) => x.timeToTargetS);
+    preBox.innerHTML = `${protectionStatusChip(P.status)} <b>${f1(P.resistanceOhm)} Ω ${P.resistanceWasCalculated ? 'calculated' : 'selected'} resistor</b>`
+      + `<div class="hint">The DC link reaches ${f1(P.nominal.targetV)} V in ${P.nominal.timeToTargetS == null ? 'never' : `${P.nominal.timeToTargetS.toFixed(3)} s`}. `
+      + `Tolerance corners: ${times.length ? `${Math.min(...times).toFixed(3)}–${Math.max(...times).toFixed(3)} s` : 'target not reached'}. A timer alone is not accepted.</div>`
+      + stat('Initial stress', `${f1(P.nominal.peakCurrentA)} A · ${f0(P.nominal.peakPowerW)} W`)
+      + stat('Required with margin', `${f0(P.required.voltageV)} V · ${f0(P.required.pulseEnergyJ)} J · ${f0(P.required.pulsePowerW)} W pulse · ${f1(P.required.equivalentContinuousW)} W repeated duty`)
+      + stat('Contactor screen', P.selectedContactor
+        ? `${esc(P.selectedContactor.part)} · ${P.selectedContactor.voltageV} V · ${P.selectedContactor.continuousA} A <span class="chip warn">screen only</span>`
+        : '<span class="chip fail">no listed P-series match</span>')
+      + electricalDiagnosticsHtml(P.diagnostics);
+    drawProtectionChart($('prechargeCalcCanvas'), P.nominal.trace, 'precharge');
+  } else {
+    preBox.innerHTML = '<div class="hint">Pack stays at or below 60 V DC; the HV precharge calculator is not applied.</div>';
+    clearProtectionChart($('prechargeCalcCanvas'));
+  }
+
+  const S = E.shunt;
+  if (S) {
+    $('shuntCalcBody').innerHTML = `${protectionStatusChip(S.status)} <b>${S.reference ? `${esc(S.reference.part)} archived reference` : esc(S.supplier?.part || 'custom supplier shunt')}</b>`
+      + `<div class="hint">At ${f1(S.continuousA)} A: ${f1(S.electrical.continuousDropMV)} mV drop, ${f1(S.electrical.continuousLossW)} W heat and ±${f1(S.accuracy.atContinuous.absoluteA)} A worst-case measurement error. `
+      + `${S.thermal.calculated ? `The stated duty peaks at ${f1(S.thermal.maxTempC)} °C.` : 'Temperature remains unproven without a supplier curve or fitted thermal model.'}</div>`
+      + stat('Peak event', `${f1(S.peakA)} A for ${f1(S.peakDurationS)} s · ${f1(S.electrical.peakDropMV)} mV max · ${f1(S.electrical.peakPowerW)} W max`)
+      + stat('Measurement error', `±${f1(S.accuracy.atContinuous.absoluteA)} A (${f1(S.accuracy.atContinuous.percent)}%) continuous · ±${f1(S.accuracy.atPeak.absoluteA)} A (${f1(S.accuracy.atPeak.percent)}%) peak`)
+      + stat('Installed termination', `${f1(S.ratings.conductorAreaMm2)} mm² · rated ${f1(S.ratings.continuousA)} A continuous / ${f1(S.ratings.peakA)} A for ${f1(S.ratings.peakDurationS)} s`)
+      + electricalDiagnosticsHtml(S.diagnostics);
+    drawProtectionChart($('shuntCalcCanvas'), S.trace, 'shunt');
+  } else {
+    $('shuntCalcBody').innerHTML = '<div class="hint">Pack stays at or below 60 V DC; this high-voltage shunt reference study is not applied.</div>';
+    clearProtectionChart($('shuntCalcCanvas'));
+  }
+
+  const F = E.fast;
+  $('fastProtectionBody').innerHTML = F
+    ? `${protectionStatusChip(F.status)} <b>${f0(F.conservativeThresholdA)} A conservative trip threshold</b>`
+      + `<div class="hint">${F.crossingS == null ? 'The simulated fault never reaches the threshold.'
+        : `The shunt trace crosses in ${(F.crossingS * 1000).toFixed(2)} ms; after the visible ${F.totalDelayMs.toFixed(1)} ms total delay, interruption is requested at ${(F.interruptS * 1000).toFixed(2)} ms and about ${f1(F.currentAtInterruptA / 1000)} kA. The loop stores about ${f1(F.inductiveEnergyJ)} J magnetically.`}</div>`
+      + electricalDiagnosticsHtml(F.diagnostics)
+    : `<div class="empty">${E.shunt ? 'Run the short-circuit study first.' : 'High-voltage fast-interruption coordination is not applied at or below 60 V DC.'}</div>`;
+}
+
+// ---------------------------------------------------------------------------
 // The vehicle — mass, driving mode, and the demand that follows from physics
 // instead of a typed number. Model in js/vehicle.js.
 // ---------------------------------------------------------------------------
@@ -3329,7 +3559,7 @@ function allLiveFindings() {
   const engineering = ['mechanical', 'thermal', 'electrical', 'safety']
     .flatMap((k) => perspectives[k] || []);
   return [
-    ...engineering, ...lastArchFindings, ...lastThermFindings,
+    ...engineering, ...lastArchFindings, ...(lastElectricalProtection?.findings || []), ...lastThermFindings,
     ...lastSimFindings, ...(lastShort?.findings || []), ...lastFindings,
   ];
 }
@@ -3439,6 +3669,7 @@ function runAnalysis() {
   computeCharging();
   computeVehicle();
   computeShort();
+  computeElectricalProtection();
   computeSim();
 
   const perspectives = lastAnalysis?.perspectives || {};
@@ -3457,7 +3688,8 @@ function runAnalysis() {
   };
   renderPane('anMech', perspectives.mechanical);
   renderPane('anTherm', [...(perspectives.thermal || []), ...lastThermFindings]);
-  renderPane('anElec', [...(perspectives.electrical || []), ...lastArchFindings]);
+  renderPane('anElec', [...(perspectives.electrical || []), ...lastArchFindings,
+    ...(lastElectricalProtection?.findings || [])]);
   // Fault-study findings are safety findings: they belong in the safety
   // audit, not only in the panel that produced them.
   renderPane('anSafe', [...(perspectives.safety || []), ...(lastShort?.findings || [])]);
@@ -3486,6 +3718,7 @@ function refreshStatusBadge() {
   const all = [
     ...engineering,
     ...lastArchFindings,
+    ...(lastElectricalProtection?.findings || []),
     ...lastThermFindings,
     ...lastSimFindings,
     ...(lastShort?.findings || []),

@@ -154,6 +154,31 @@ export function buildReportHTML(R) {
   <div style="font-size:11px;color:#666;margin-top:4px">${[...(P.notes || []), ...(B.notes || []), A.dcdc.chargingNote, K.lvNote, A.isolation?.groundingNote].filter(Boolean).map(esc).join(' ')}</div>`;
   })() : ''}
 
+  ${R.electricalProtection ? (() => {
+    const X = R.electricalProtection, P = X.precharge, H = X.shunt, F = X.fast;
+    if (!P && !H && !F) return '';
+    const prechargeTimes = (P?.corners || []).filter((x) => x.timeToTargetS != null).map((x) => x.timeToTargetS);
+    const status = [P && `precharge ${P.status}`, H && `shunt ${H.status}`, F && `fast protection ${F.status}`]
+      .filter(Boolean).map(esc).join(' · ');
+    return `
+  <h2 style="${h2}">HV startup, current shunt &amp; fast protection</h2>
+  ${table([
+    row('Review status', status),
+    ...(P ? [
+      row('Precharge simulation', `${f1(P.resistanceOhm)} Ω · ${f1(P.nominal.peakCurrentA)} A / ${f0(P.nominal.peakPowerW)} W initial stress · target ${f1(P.nominal.targetV)} V in ${P.nominal.timeToTargetS == null ? 'never' : `${f2(P.nominal.timeToTargetS)} s`}`),
+      row('Tolerance / hardware requirement', `${prechargeTimes.length ? `${f2(Math.min(...prechargeTimes))}–${f2(Math.max(...prechargeTimes))} s` : 'target not reached'} · ≥${f0(P.required.voltageV)} V, ${f0(P.required.pulseEnergyJ)} J and ${f0(P.required.pulsePowerW)} W pulse with stated margin`),
+    ] : []),
+    ...(H ? [
+      row('Shunt electrical duty', `${H.reference ? `${esc(H.reference.part)} archived reference` : esc(H.supplier?.part || 'unselected supplier part')} · ${f1(H.resistanceUOhm)} µΩ · ${f1(H.electrical.continuousDropMV)} mV / ${f1(H.electrical.continuousLossW)} W at ${f1(H.continuousA)} A`),
+      row('Shunt accuracy / thermal', `±${f2(H.accuracy.atContinuous.absoluteA)} A (${f2(H.accuracy.atContinuous.percent)}%) at continuous duty · ${H.thermal.calculated ? `${f1(H.thermal.maxTempC)} °C simulated maximum` : 'temperature unproven'}`),
+    ] : []),
+    ...(F ? [row('Fast interruption simulation', F.crossingS == null
+      ? `threshold ${f0(F.conservativeThresholdA)} A is not reached`
+      : `${f0(F.conservativeThresholdA)} A conservative threshold crossed at ${f2(F.crossingS * 1000)} ms · interrupt request at ${f2(F.interruptS * 1000)} ms / ${f0(F.currentAtInterruptA)} A · ${f1(F.inductiveEnergyJ)} J loop magnetic energy`)] : []),
+  ])}
+  <div style="font-size:11px;color:#666;margin-top:4px">Screening calculation only. Current supplier parts, installed thermal behavior, switching envelope and revision-controlled evidence remain release inputs; an archived Sensata reference is never an approval.</div>`;
+  })() : ''}
+
   ${R.vehicle?.drive ? (() => {
     const V = R.vehicle, D = V.drive, b = D.breakdown;
     const spent = b.rolling + b.aero + b.grade + b.accel + b.aux;
