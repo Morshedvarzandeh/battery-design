@@ -94,7 +94,16 @@ test('the FMU declares an interface a host tool can actually couple to', () => {
   ok(new Set(vrs).size === vrs.length, `all ${vrs.length} value references are unique`);
   // The outputs listed in ModelStructure must match the outputs declared.
   const nOutputs = FMU_VARIABLES.filter((v) => v.causality === 'output').length;
-  ok((xml.match(/<Unknown index=/g) || []).length === nOutputs, 'every output appears in the model structure');
+  const outputs = xml.match(/<Outputs>([\s\S]*?)<\/Outputs>/)?.[1] || '';
+  const initialUnknowns = xml.match(/<InitialUnknowns>([\s\S]*?)<\/InitialUnknowns>/)?.[1] || '';
+  ok((outputs.match(/<Unknown index=/g) || []).length === nOutputs, 'every output appears in the model structure');
+  ok((initialUnknowns.match(/<Unknown index=/g) || []).length === nOutputs,
+    'every calculated output is declared as an initial unknown');
+  ok(/<SourceFiles>\s*<File name="BatteryPack\.c"\/>\s*<\/SourceFiles>/.test(xml),
+    'the source representation declares its compilable model-owned file');
+  ok(/<Unit name="mOhm"><BaseUnit[^>]*factor="0\.001"/.test(xml)
+    && /<Unit name="degC"><BaseUnit K="1" offset="273\.15"/.test(xml),
+  'commercial hosts receive dimensional units rather than empty labels');
   ok(/canHandleVariableCommunicationStepSize="true"/.test(xml),
     'and it accepts whatever macro step the master picks, because it sub-steps internally');
   // Design parameters must reach the XML, or the FMU is a different pack.
@@ -112,6 +121,7 @@ test('the generated C implements the FMI API and nothing is missing', () => {
     'fmi2GetTypesPlatform', 'fmi2CancelStep', 'fmi2SetDebugLogging',
     'fmi2GetInteger', 'fmi2SetInteger', 'fmi2GetBoolean', 'fmi2SetBoolean',
     'fmi2GetString', 'fmi2SetString', 'fmi2GetRealStatus',
+    'fmi2SetRealInputDerivatives', 'fmi2GetRealOutputDerivatives',
   ]) ok(c.includes(fn), `${fn} is implemented`);
   ok(c.includes('#define GUID "bd-test"'), 'the guid is compiled in, and must match the XML');
   ok(/strcmp\(fmuGUID, GUID\)/.test(c), 'and is checked on instantiation, as the standard requires');
@@ -136,7 +146,8 @@ test('the FMU package carries everything needed to build and use it', () => {
   const readme = fmu.files['README.md'];
   ok(/ANSYS Twin Builder/.test(readme) && /Simulink/.test(readme) && /GT-SUITE/.test(readme),
     'the README names the tools this is for');
-  ok(/cc -O2 -fPIC -shared/.test(readme), 'and gives the build line');
+  ok(/cc -std=c11 -O2 -fPIC -shared -DFMI2_OVERRIDE_FUNCTION_PREFIX/.test(readme),
+    'and gives the shared-library build line with the unprefixed ABI override');
   ok(/not a\s+loadable FMU yet/i.test(readme) && /sources\/BatteryPack\.c/.test(readme),
     'and identifies itself as a source kit while preserving the FMU directory tree');
   ok(/archive\s+root/.test(readme), 'packaging instructions keep modelDescription, sources and binaries at the archive root');

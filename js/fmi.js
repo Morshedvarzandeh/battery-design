@@ -15,8 +15,8 @@
 //   outputs  V_pack [V],  SoC [-],  T_cell [°C],  Q_loss [W],  V_min_cell [V]
 //
 // This module GENERATES the FMU: the modelDescription.xml that declares the
-// interface, and the C source that implements the FMI 2.0 co-simulation API
-// around the same equivalent-circuit and thermal model as js/sim2.js. The
+// interface, and the C source that implements a reduced one-RC plant model
+// using a documented subset of the coefficients exposed by js/sim2.js. The
 // stepping code is C on purpose — an FMU has to be a compiled shared library,
 // and this is the one place in the project where a compiled language is not
 // an optimisation but a requirement of the format.
@@ -30,8 +30,26 @@
 // the files, the browser can preview them.
 
 import { defaultParams, validateParams } from './sim2.js';
+import { semanticDigest } from './ontology.js';
 
 export const FMI_VERSION = '2.0';
+export const FMI_STANDARD_VERSION = '2.0.5';
+
+// Every symbol an FMI 2.0 Co-Simulation shared library must export, including
+// functions for capabilities this model declares unsupported.
+export const FMI2_REQUIRED_CO_SIMULATION_SYMBOLS = Object.freeze([
+  'fmi2GetTypesPlatform', 'fmi2GetVersion', 'fmi2SetDebugLogging',
+  'fmi2Instantiate', 'fmi2FreeInstance', 'fmi2SetupExperiment',
+  'fmi2EnterInitializationMode', 'fmi2ExitInitializationMode', 'fmi2Terminate', 'fmi2Reset',
+  'fmi2GetReal', 'fmi2GetInteger', 'fmi2GetBoolean', 'fmi2GetString',
+  'fmi2SetReal', 'fmi2SetInteger', 'fmi2SetBoolean', 'fmi2SetString',
+  'fmi2GetFMUstate', 'fmi2SetFMUstate', 'fmi2FreeFMUstate',
+  'fmi2SerializedFMUstateSize', 'fmi2SerializeFMUstate', 'fmi2DeSerializeFMUstate',
+  'fmi2GetDirectionalDerivative', 'fmi2SetRealInputDerivatives',
+  'fmi2GetRealOutputDerivatives', 'fmi2DoStep', 'fmi2CancelStep',
+  'fmi2GetStatus', 'fmi2GetRealStatus', 'fmi2GetIntegerStatus',
+  'fmi2GetBooleanStatus', 'fmi2GetStringStatus',
+]);
 
 // The coupling interface. Kept deliberately small: every variable here is one
 // a vehicle or plant model actually has, and nothing is exposed that the
@@ -57,8 +75,8 @@ export const FMU_PARAMETERS = [
   { name: 'capacity_Ah', unit: 'A.h', description: 'Cell capacity' },
   { name: 'ocv_min', unit: 'V', description: 'Cell voltage at empty' },
   { name: 'ocv_max', unit: 'V', description: 'Cell voltage at full' },
-  { name: 'r0_mOhm', unit: 'Ohm', description: 'Cell series resistance at reference temperature' },
-  { name: 'rc1_mOhm', unit: 'Ohm', description: 'RC branch resistance' },
+  { name: 'r0_mOhm', unit: 'mOhm', description: 'Cell series resistance at reference temperature' },
+  { name: 'rc1_mOhm', unit: 'mOhm', description: 'RC branch resistance' },
   { name: 'rc1_tau_s', unit: 's', description: 'RC branch time constant' },
   { name: 'r0_Ea_J', unit: 'J/mol', description: 'Activation energy for the resistance temperature dependence' },
   { name: 'cp_cell', unit: 'J/(kg.K)', description: 'Cell specific heat' },
@@ -71,22 +89,65 @@ export const FMU_PARAMETERS = [
 const xmlEscape = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
 
+/**
+ * The one set of fixed starts shared by modelDescription.xml and the binary.
+ * FMI importers are allowed to instantiate without writing parameter starts
+ * back into the component, so duplicating these values in C is a correctness
+ * bug rather than a harmless default.
+ */
+export function fmuParameterValues({ cell, s, p, params = null }) {
+  if (!cell || typeof cell !== 'object') throw new TypeError('FMU export requires a cell record.');
+  if (!Number.isInteger(s) || s < 1 || !Number.isInteger(p) || p < 1) {
+    throw new RangeError('FMU series and parallel counts must be positive integers.');
+  }
+  const P = validateParams({ ...defaultParams(cell), ...(params || {}) }).params;
+  const values = {
+    cells_series: s,
+    cells_parallel: p,
+    capacity_Ah: Number(cell.capacityAh),
+    ocv_min: Number(cell.vMin),
+    ocv_max: Number(cell.vMax),
+    r0_mOhm: Number(P.r0Ref),
+    rc1_mOhm: Number(P.rc1R),
+    rc1_tau_s: Number(P.rc1TauS),
+    r0_Ea_J: Number(P.r0EaJ),
+    cp_cell: Number(P.cpCellJkgK),
+    mass_cell_kg: Number(cell.massG ?? 50) / 1000,
+    h_cool_WK: Number(P.hCoolWK),
+    ua_amb_WK: Number(P.uaAmbWK),
+    entropy_VK: Number(P.entropyVK),
+  };
+  if (Object.values(values).some((value) => !Number.isFinite(value))) {
+    throw new TypeError('FMU fixed starts must all be finite numbers.');
+  }
+  if (!(values.capacity_Ah > 0 && values.ocv_min > 0 && values.ocv_max > values.ocv_min
+      && values.rc1_tau_s > 0 && values.cp_cell > 0 && values.mass_cell_kg > 0)) {
+    throw new RangeError('FMU fixed starts violate the battery model physical contract.');
+  }
+  return Object.freeze(values);
+}
+
+/** A content identity that changes with every binary-affecting default. */
+export function fmuGuid({ cell, s, p, params = null, modelName = 'BatteryPack' }) {
+  const digest = semanticDigest({
+    format: 'battery-design/fmi-2.0-co-simulation@1',
+    standardPatch: FMI_STANDARD_VERSION,
+    modelName,
+    cellId: cell?.id || null,
+    defaults: fmuParameterValues({ cell, s, p, params }),
+  });
+  return `{${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}}`;
+}
+
 /** The FMI 2.0 modelDescription.xml — the contract the host tool reads. */
 export function modelDescriptionXml({ cell, s, p, params = null, modelName = 'BatteryPack', guid = null, generatedOn = '1970-01-01T00:00:00Z' }) {
-  const P = validateParams(params || defaultParams(cell)).params;
+  const paramValues = fmuParameterValues({ cell, s, p, params });
   // The GUID must match between the XML and the binary. It is derived from the
   // design so the same design always produces the same FMU — reproducible
   // builds matter when someone asks which pack a result came from.
-  const id = guid || `bd-${s}s${p}p-${(cell.id || 'cell').replace(/[^a-z0-9]/gi, '')}`;
+  const id = guid || fmuGuid({ cell, s, p, params, modelName });
   let vr = 0;
   const next = () => ++vr;
-  const paramValues = {
-    cells_series: s, cells_parallel: p, capacity_Ah: cell.capacityAh,
-    ocv_min: cell.vMin, ocv_max: cell.vMax,
-    r0_mOhm: P.r0Ref, rc1_mOhm: P.rc1R, rc1_tau_s: P.rc1TauS, r0_Ea_J: P.r0EaJ,
-    cp_cell: P.cpCellJkgK, mass_cell_kg: (cell.massG || 50) / 1000,
-    h_cool_WK: P.hCoolWK, ua_amb_WK: P.uaAmbWK, entropy_VK: P.entropyVK,
-  };
   const varLines = [
     ...FMU_PARAMETERS.map((v) => `    <ScalarVariable name="${xmlEscape(v.name)}" valueReference="${next()}" causality="parameter" variability="fixed" description="${xmlEscape(v.description)}">
       <Real start="${paramValues[v.name]}" unit="${xmlEscape(v.unit)}"/>
@@ -105,7 +166,7 @@ export function modelDescriptionXml({ cell, s, p, params = null, modelName = 'Ba
   fmiVersion="${FMI_VERSION}"
   modelName="${xmlEscape(modelName)}"
   guid="${xmlEscape(id)}"
-  description="Battery pack model exported by battery-design (AGPL-3.0-or-later). Equivalent circuit with RC dynamics and a lumped thermal node; the same model as js/sim2.js, with the same parameters."
+  description="Battery pack plant model exported by battery-design (AGPL-3.0-or-later). Reduced one-RC equivalent circuit with Arrhenius resistance and one lumped thermal node."
   generationTool="battery-design"
   generationDateAndTime="${generatedOn}"
   variableNamingConvention="flat"
@@ -120,14 +181,30 @@ export function modelDescriptionXml({ cell, s, p, params = null, modelName = 'Ba
     canNotUseMemoryManagementFunctions="true"
     canGetAndSetFMUstate="false"
     canSerializeFMUstate="false"
-    providesDirectionalDerivative="false"/>
+    providesDirectionalDerivative="false">
+    <SourceFiles>
+      <File name="${xmlEscape(modelName)}.c"/>
+    </SourceFiles>
+  </CoSimulation>
 
   <UnitDefinitions>
-    <Unit name="A"/><Unit name="V"/><Unit name="W"/><Unit name="degC"/>
-    <Unit name="kg/s"/><Unit name="s"/><Unit name="1"/><Unit name="A.h"/>
-    <Unit name="Ohm"/><Unit name="J/mol"/><Unit name="J/(kg.K)"/>
-    <Unit name="kg"/><Unit name="W/K"/><Unit name="V/K"/>
+    <Unit name="A"><BaseUnit A="1"/></Unit>
+    <Unit name="V"><BaseUnit kg="1" m="2" s="-3" A="-1"/></Unit>
+    <Unit name="W"><BaseUnit kg="1" m="2" s="-3"/></Unit>
+    <Unit name="degC"><BaseUnit K="1" offset="273.15"/></Unit>
+    <Unit name="kg/s"><BaseUnit kg="1" s="-1"/></Unit>
+    <Unit name="s"><BaseUnit s="1"/></Unit>
+    <Unit name="1"><BaseUnit/></Unit>
+    <Unit name="A.h"><BaseUnit s="1" A="1" factor="3600"/></Unit>
+    <Unit name="mOhm"><BaseUnit kg="1" m="2" s="-3" A="-2" factor="0.001"/></Unit>
+    <Unit name="J/mol"><BaseUnit kg="1" m="2" s="-2" mol="-1"/></Unit>
+    <Unit name="J/(kg.K)"><BaseUnit m="2" s="-2" K="-1"/></Unit>
+    <Unit name="kg"><BaseUnit kg="1"/></Unit>
+    <Unit name="W/K"><BaseUnit kg="1" m="2" s="-3" K="-1"/></Unit>
+    <Unit name="V/K"><BaseUnit kg="1" m="2" s="-3" A="-1" K="-1"/></Unit>
   </UnitDefinitions>
+
+  <DefaultExperiment startTime="0" stopTime="10" tolerance="0.0001" stepSize="0.1"/>
 
   <ModelVariables>
 ${varLines.join('\n')}
@@ -137,10 +214,37 @@ ${varLines.join('\n')}
     <Outputs>
 ${outputIdx.map(({ idx }) => `      <Unknown index="${idx}"/>`).join('\n')}
     </Outputs>
+    <InitialUnknowns>
+${outputIdx.map(({ idx }) => `      <Unknown index="${idx}"/>`).join('\n')}
+    </InitialUnknowns>
   </ModelStructure>
 </fmiModelDescription>
 `;
 }
+
+const SOURCE_DEFAULTS = Object.freeze({
+  cells_series: 96,
+  cells_parallel: 4,
+  capacity_Ah: 4.9,
+  ocv_min: 2.5,
+  ocv_max: 4.2,
+  r0_mOhm: 35,
+  rc1_mOhm: 17,
+  rc1_tau_s: 15,
+  r0_Ea_J: 20000,
+  cp_cell: 1000,
+  mass_cell_kg: 0.07,
+  h_cool_WK: 6,
+  ua_amb_WK: 2,
+  entropy_VK: -0.0002,
+});
+
+const cNumber = (value) => {
+  if (!Number.isFinite(value)) throw new TypeError('FMU C defaults must be finite.');
+  return Number.isInteger(value) ? `${value}.0` : String(value);
+};
+
+const validModelIdentifier = (value) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(value);
 
 /**
  * The C source implementing FMI 2.0 co-simulation.
@@ -150,26 +254,50 @@ ${outputIdx.map(({ idx }) => `      <Unknown index="${idx}"/>`).join('\n')}
  * take whatever macro step it likes without the RC or thermal state going
  * unstable.
  */
-export function fmuSourceC({ modelName = 'BatteryPack', guid = 'bd-pack' } = {}) {
+export function fmuSourceC({ modelName = 'BatteryPack', guid = '{00000000-0000-0000-0000-000000000000}', defaults = SOURCE_DEFAULTS } = {}) {
+  if (!validModelIdentifier(modelName)) throw new TypeError('Invalid FMI model identifier.');
+  const D = { ...SOURCE_DEFAULTS, ...(defaults || {}) };
+  for (const name of FMU_PARAMETERS.map((parameter) => parameter.name)) {
+    if (!Number.isFinite(D[name])) throw new TypeError(`Missing finite FMU C default: ${name}`);
+  }
   return `/* ${modelName}.c — FMI 2.0 co-simulation battery pack.
  *
- * Generated by battery-design (AGPL-3.0-or-later). The physics matches js/sim2.js:
- * OCV + R0 + one RC branch with Arrhenius temperature dependence, irreversible
+ * Generated by battery-design (AGPL-3.0-or-later). This reduced plant uses
+ * linear OCV + R0 + one RC branch with Arrhenius temperature dependence, irreversible
  * and reversible heat, and a lumped thermal node cooled by a coolant stream
  * through an epsilon-NTU effectiveness, plus loss to ambient.
  *
  * No dependencies beyond the C standard library and the FMI 2.0 headers.
- * Build: see README in this archive.
+ * Build: see README in this archive. A shared-library build defines
+ * FMI2_OVERRIDE_FUNCTION_PREFIX; a source/static build keeps ${modelName}_
+ * symbols as required by the FMI 2.0 source-code convention.
  */
 #include <string.h>
 #include <math.h>
 #include <stdlib.h>
+#define FMI2_FUNCTION_PREFIX ${modelName}_
 #include "fmi2Functions.h"
 
-#define GUID "${guid}"
+#define GUID ${JSON.stringify(String(guid))}
 #define R_GAS 8.314462618
 #define T0K   273.15
-#define MAX_SUB_DT 0.01   /* internal sub-step: the master's step may be large */
+#define MAX_SUB_DT 1.0       /* accuracy bound; RC and thermal updates are stable exponentials */
+#define MAX_COMM_STEP 3600.0 /* reject pathological requests instead of doing unbounded work */
+
+#define DEFAULT_S       ${cNumber(D.cells_series)}
+#define DEFAULT_P       ${cNumber(D.cells_parallel)}
+#define DEFAULT_CAP_AH  ${cNumber(D.capacity_Ah)}
+#define DEFAULT_OCV_MIN ${cNumber(D.ocv_min)}
+#define DEFAULT_OCV_MAX ${cNumber(D.ocv_max)}
+#define DEFAULT_R0_MOHM ${cNumber(D.r0_mOhm)}
+#define DEFAULT_R1_MOHM ${cNumber(D.rc1_mOhm)}
+#define DEFAULT_TAU_S   ${cNumber(D.rc1_tau_s)}
+#define DEFAULT_EA_J    ${cNumber(D.r0_Ea_J)}
+#define DEFAULT_CP      ${cNumber(D.cp_cell)}
+#define DEFAULT_MASS_KG ${cNumber(D.mass_cell_kg)}
+#define DEFAULT_HCOOL   ${cNumber(D.h_cool_WK)}
+#define DEFAULT_UA_AMB  ${cNumber(D.ua_amb_WK)}
+#define DEFAULT_ENTROPY ${cNumber(D.entropy_VK)}
 
 /* Value references must match modelDescription.xml, in declaration order. */
 enum {
@@ -185,13 +313,16 @@ typedef struct {
   /* inputs */
   double iPack, tAmb, flow;
   /* state */
-  double soc, v1, tCell, time;
+  double soc, v1, tCell, time, stopTime;
   /* outputs */
   double vPack, qLoss, vCellMin, pTerm;
   fmi2CallbackLogger logger;
   fmi2ComponentEnvironment env;
   char instanceName[256];
+  int mode, stopTimeDefined;
 } Pack;
+
+enum { MODE_INSTANTIATED = 1, MODE_INITIALIZATION, MODE_STEP, MODE_TERMINATED };
 
 /* Open-circuit voltage of one cell: linear in SoC between the stated window.
  * The richer chemistry-shaped curve lives in the JS model; this is the shape
@@ -200,6 +331,33 @@ static double ocv_cell(Pack *m, double soc) {
   if (soc < 0) { soc = 0; }
   if (soc > 1) { soc = 1; }
   return m->ocvMin + (m->ocvMax - m->ocvMin) * soc;
+}
+
+static void refresh_outputs(Pack *m) {
+  double tK = m->tCell + T0K, tRefK = 25.0 + T0K;
+  double arr = exp((m->ea / R_GAS) * (1.0 / tK - 1.0 / tRefK));
+  double scale = (m->s / m->p) / 1000.0;
+  double r0 = m->r0 * arr * scale;
+  double r1 = m->rc1 * arr * scale;
+  m->vPack = ocv_cell(m, m->soc) * m->s - m->v1 - m->iPack * r0;
+  m->vCellMin = m->vPack / m->s;
+  m->pTerm = m->vPack * m->iPack;
+  m->qLoss = m->iPack * m->iPack * r0
+    + (r1 > 1e-12 ? m->v1 * m->v1 / r1 : 0.0)
+    - m->iPack * tK * m->entropy * m->s;
+}
+
+static void restore_start_values(Pack *m) {
+  m->s = DEFAULT_S; m->p = DEFAULT_P; m->capAh = DEFAULT_CAP_AH;
+  m->ocvMin = DEFAULT_OCV_MIN; m->ocvMax = DEFAULT_OCV_MAX;
+  m->r0 = DEFAULT_R0_MOHM; m->rc1 = DEFAULT_R1_MOHM; m->tau = DEFAULT_TAU_S;
+  m->ea = DEFAULT_EA_J; m->cp = DEFAULT_CP; m->massCell = DEFAULT_MASS_KG;
+  m->hCool = DEFAULT_HCOOL; m->uaAmb = DEFAULT_UA_AMB; m->entropy = DEFAULT_ENTROPY;
+  m->iPack = 0.0; m->tAmb = 25.0; m->flow = 0.05;
+  m->soc = 1.0; m->v1 = 0.0; m->tCell = 25.0; m->time = 0.0;
+  m->stopTime = 0.0; m->stopTimeDefined = 0;
+  refresh_outputs(m);
+  m->mode = MODE_INSTANTIATED;
 }
 
 static void step_once(Pack *m, double dt) {
@@ -212,10 +370,8 @@ static void step_once(Pack *m, double dt) {
   double ocv = ocv_cell(m, m->soc) * m->s;
   double i = m->iPack;
 
-  m->v1 += (i * r1 - m->v1) * (dt / (m->tau > 1e-6 ? m->tau : 1e-6));
-  m->vPack = ocv - m->v1 - i * r0;
-  m->vCellMin = m->vPack / m->s;
-  m->pTerm = m->vPack * i;
+  (void)ocv;
+  m->v1 = i * r1 + (m->v1 - i * r1) * exp(-dt / m->tau);
 
   double capPack = m->capAh * m->p;
   if (capPack > 0) m->soc -= (i * dt / 3600.0) / capPack;
@@ -233,8 +389,14 @@ static void step_once(Pack *m, double dt) {
   double cth = m->massCell * m->s * m->p * m->cp;
   double capRate = m->flow * 3600.0;              /* kg/s * J/(kg.K) for glycol */
   double eff = capRate > 0 ? 1.0 - exp(-m->hCool / capRate) : 0.0;
-  double qOut = eff * capRate * (m->tCell - m->tAmb) + m->uaAmb * (m->tCell - m->tAmb);
-  if (cth > 0) m->tCell += ((m->qLoss - qOut) * dt) / cth;
+  double kOut = eff * capRate + m->uaAmb;
+  if (kOut > 1e-12) {
+    double decay = exp(-kOut * dt / cth);
+    m->tCell = m->tAmb + (m->tCell - m->tAmb) * decay + (m->qLoss / kOut) * (1.0 - decay);
+  } else {
+    m->tCell += (m->qLoss * dt) / cth;
+  }
+  refresh_outputs(m);
 }
 
 /* ---- FMI 2.0 co-simulation entry points ---- */
@@ -245,17 +407,13 @@ const char* fmi2GetVersion(void) { return fmi2Version; }
 fmi2Component fmi2Instantiate(fmi2String instanceName, fmi2Type fmuType,
     fmi2String fmuGUID, fmi2String resourceLocation,
     const fmi2CallbackFunctions *functions, fmi2Boolean visible, fmi2Boolean loggingOn) {
-  (void)fmuType; (void)resourceLocation; (void)visible; (void)loggingOn;
-  if (!fmuGUID || strcmp(fmuGUID, GUID) != 0) return NULL;
+  (void)resourceLocation; (void)visible; (void)loggingOn;
+  if (fmuType != fmi2CoSimulation || !fmuGUID || strcmp(fmuGUID, GUID) != 0) return NULL;
   Pack *m = (Pack *)calloc(1, sizeof(Pack));
   if (!m) return NULL;
   if (functions) { m->logger = functions->logger; m->env = functions->componentEnvironment; }
   if (instanceName) { strncpy(m->instanceName, instanceName, sizeof(m->instanceName) - 1); }
-  /* Defaults; the master overwrites them through fmi2SetReal before init. */
-  m->s = 96; m->p = 4; m->capAh = 4.9; m->ocvMin = 2.5; m->ocvMax = 4.2;
-  m->r0 = 35; m->rc1 = 17; m->tau = 15; m->ea = 20000;
-  m->cp = 1000; m->massCell = 0.07; m->hCool = 6; m->uaAmb = 2; m->entropy = -0.0002;
-  m->tAmb = 25; m->flow = 0.05; m->soc = 1.0; m->tCell = 25;
+  restore_start_values(m);
   return m;
 }
 
@@ -263,29 +421,37 @@ void fmi2FreeInstance(fmi2Component c) { if (c) free(c); }
 
 fmi2Status fmi2SetupExperiment(fmi2Component c, fmi2Boolean toleranceDefined, fmi2Real tolerance,
     fmi2Real startTime, fmi2Boolean stopTimeDefined, fmi2Real stopTime) {
-  (void)toleranceDefined; (void)tolerance; (void)stopTimeDefined; (void)stopTime;
-  Pack *m = (Pack *)c; if (!m) return fmi2Error;
-  m->time = startTime; return fmi2OK;
-}
-
-fmi2Status fmi2EnterInitializationMode(fmi2Component c) { (void)c; return fmi2OK; }
-
-fmi2Status fmi2ExitInitializationMode(fmi2Component c) {
-  Pack *m = (Pack *)c; if (!m) return fmi2Error;
-  m->tCell = m->tAmb;
-  m->vPack = ocv_cell(m, m->soc) * m->s;
-  m->vCellMin = m->vPack / m->s;
+  if (toleranceDefined && (!isfinite(tolerance) || tolerance <= 0.0)) return fmi2Error;
+  Pack *m = (Pack *)c; if (!m || m->mode != MODE_INSTANTIATED || !isfinite(startTime)) return fmi2Error;
+  if (stopTimeDefined && (!isfinite(stopTime) || stopTime < startTime)) return fmi2Error;
+  m->time = startTime; m->stopTimeDefined = stopTimeDefined ? 1 : 0; m->stopTime = stopTime;
   return fmi2OK;
 }
 
-fmi2Status fmi2Terminate(fmi2Component c) { (void)c; return fmi2OK; }
+fmi2Status fmi2EnterInitializationMode(fmi2Component c) {
+  Pack *m = (Pack *)c; if (!m || m->mode != MODE_INSTANTIATED) return fmi2Error;
+  m->mode = MODE_INITIALIZATION; return fmi2OK;
+}
+
+fmi2Status fmi2ExitInitializationMode(fmi2Component c) {
+  Pack *m = (Pack *)c; if (!m || m->mode != MODE_INITIALIZATION) return fmi2Error;
+  m->tCell = m->tAmb;
+  refresh_outputs(m);
+  m->mode = MODE_STEP;
+  return fmi2OK;
+}
+
+fmi2Status fmi2Terminate(fmi2Component c) {
+  Pack *m = (Pack *)c; if (!m || m->mode == MODE_TERMINATED) return fmi2Error;
+  m->mode = MODE_TERMINATED; return fmi2OK;
+}
 fmi2Status fmi2Reset(fmi2Component c) {
   Pack *m = (Pack *)c; if (!m) return fmi2Error;
-  m->soc = 1.0; m->v1 = 0; m->tCell = m->tAmb; m->time = 0; return fmi2OK;
+  restore_start_values(m); return fmi2OK;
 }
 
 fmi2Status fmi2GetReal(fmi2Component c, const fmi2ValueReference vr[], size_t nvr, fmi2Real value[]) {
-  Pack *m = (Pack *)c; if (!m) return fmi2Error;
+  Pack *m = (Pack *)c; if (!m || (nvr && (!vr || !value))) return fmi2Error;
   for (size_t k = 0; k < nvr; k++) {
     switch (vr[k]) {
       case VR_V: value[k] = m->vPack; break;
@@ -318,37 +484,51 @@ fmi2Status fmi2GetReal(fmi2Component c, const fmi2ValueReference vr[], size_t nv
 }
 
 fmi2Status fmi2SetReal(fmi2Component c, const fmi2ValueReference vr[], size_t nvr, const fmi2Real value[]) {
-  Pack *m = (Pack *)c; if (!m) return fmi2Error;
+  Pack *m = (Pack *)c; if (!m || m->mode == MODE_TERMINATED || (nvr && (!vr || !value))) return fmi2Error;
+  Pack trial = *m;
   for (size_t k = 0; k < nvr; k++) {
+    if (!isfinite(value[k])) return fmi2Error;
+    if (vr[k] <= VR_ENTROPY && m->mode != MODE_INSTANTIATED && m->mode != MODE_INITIALIZATION) return fmi2Error;
     switch (vr[k]) {
-      case VR_I: m->iPack = value[k]; break;
-      case VR_TAMB: m->tAmb = value[k]; break;
-      case VR_FLOW: m->flow = value[k]; break;
-      case VR_S: m->s = value[k]; break;
-      case VR_P: m->p = value[k]; break;
-      case VR_CAP: m->capAh = value[k]; break;
-      case VR_OCVMIN: m->ocvMin = value[k]; break;
-      case VR_OCVMAX: m->ocvMax = value[k]; break;
-      case VR_R0: m->r0 = value[k]; break;
-      case VR_RC1: m->rc1 = value[k]; break;
-      case VR_TAU: m->tau = value[k]; break;
-      case VR_EA: m->ea = value[k]; break;
-      case VR_CP: m->cp = value[k]; break;
-      case VR_MASS: m->massCell = value[k]; break;
-      case VR_HCOOL: m->hCool = value[k]; break;
-      case VR_UAAMB: m->uaAmb = value[k]; break;
-      case VR_ENTROPY: m->entropy = value[k]; break;
+      case VR_I: trial.iPack = value[k]; break;
+      case VR_TAMB: trial.tAmb = value[k]; break;
+      case VR_FLOW: trial.flow = value[k]; break;
+      case VR_S: trial.s = value[k]; break;
+      case VR_P: trial.p = value[k]; break;
+      case VR_CAP: trial.capAh = value[k]; break;
+      case VR_OCVMIN: trial.ocvMin = value[k]; break;
+      case VR_OCVMAX: trial.ocvMax = value[k]; break;
+      case VR_R0: trial.r0 = value[k]; break;
+      case VR_RC1: trial.rc1 = value[k]; break;
+      case VR_TAU: trial.tau = value[k]; break;
+      case VR_EA: trial.ea = value[k]; break;
+      case VR_CP: trial.cp = value[k]; break;
+      case VR_MASS: trial.massCell = value[k]; break;
+      case VR_HCOOL: trial.hCool = value[k]; break;
+      case VR_UAAMB: trial.uaAmb = value[k]; break;
+      case VR_ENTROPY: trial.entropy = value[k]; break;
       default: return fmi2Error;
     }
   }
+  if (!(trial.s >= 1.0 && floor(trial.s) == trial.s && trial.p >= 1.0 && floor(trial.p) == trial.p
+      && trial.capAh > 0.0 && trial.ocvMin > 0.0 && trial.ocvMax > trial.ocvMin
+      && trial.r0 >= 0.0 && trial.rc1 >= 0.0 && trial.tau > 0.0 && trial.ea >= 0.0
+      && trial.cp > 0.0 && trial.massCell > 0.0 && trial.hCool >= 0.0 && trial.uaAmb >= 0.0
+      && trial.flow >= 0.0 && trial.tAmb > -T0K)) return fmi2Error;
+  *m = trial;
+  refresh_outputs(m);
   return fmi2OK;
 }
 
 fmi2Status fmi2DoStep(fmi2Component c, fmi2Real currentCommunicationPoint,
     fmi2Real communicationStepSize, fmi2Boolean noSetFMUStatePriorToCurrentPoint) {
   (void)noSetFMUStatePriorToCurrentPoint;
-  Pack *m = (Pack *)c; if (!m) return fmi2Error;
-  if (communicationStepSize < 0) return fmi2Error;
+  Pack *m = (Pack *)c; if (!m || m->mode != MODE_STEP) return fmi2Error;
+  if (!isfinite(currentCommunicationPoint) || !isfinite(communicationStepSize)
+      || communicationStepSize <= 0.0 || communicationStepSize > MAX_COMM_STEP) return fmi2Error;
+  double timeTolerance = 1e-9 * fmax(1.0, fabs(m->time));
+  if (fabs(currentCommunicationPoint - m->time) > timeTolerance) return fmi2Error;
+  if (m->stopTimeDefined && currentCommunicationPoint + communicationStepSize > m->stopTime + timeTolerance) return fmi2Error;
   /* The master may take a large macro step; sub-step internally so the RC and
    * thermal states stay stable whatever it chooses. */
   double remaining = communicationStepSize;
@@ -359,6 +539,15 @@ fmi2Status fmi2DoStep(fmi2Component c, fmi2Real currentCommunicationPoint,
   }
   m->time = currentCommunicationPoint + communicationStepSize;
   return fmi2OK;
+}
+
+fmi2Status fmi2SetRealInputDerivatives(fmi2Component c, const fmi2ValueReference vr[], size_t nvr,
+    const fmi2Integer order[], const fmi2Real value[]) {
+  (void)c; (void)vr; (void)nvr; (void)order; (void)value; return fmi2Error;
+}
+fmi2Status fmi2GetRealOutputDerivatives(fmi2Component c, const fmi2ValueReference vr[], size_t nvr,
+    const fmi2Integer order[], fmi2Real value[]) {
+  (void)c; (void)vr; (void)nvr; (void)order; (void)value; return fmi2Error;
 }
 
 /* Not supported, and honestly declared as such in modelDescription.xml. */
@@ -414,28 +603,33 @@ costs it.
 |---|---|---|---|
 ${FMU_VARIABLES.map((v) => `| ${v.causality} | \`${v.name}\` | ${v.unit} | ${v.description} |`).join('\n')}
 
-Parameters (set once at initialisation) are the same coefficients the desktop
-model uses, so **a model calibrated against your own measurements is the model
-that runs inside your host tool**:
+Parameters (set once at initialisation) are an explicit subset of the desktop
+model coefficients. Calibrated R0/RC1 values are baked into both XML and binary
+starts so the selected reduced plant is the one that runs inside your host:
 
 ${FMU_PARAMETERS.map((v) => `- \`${v.name}\` (${v.unit}) — ${v.description}`).join('\n')}
 
 ## Building it
 
-The C is complete and dependency-free, but you compile it for your own
-platform. Put the FMI 2.0 headers (\`fmi2Functions.h\`, \`fmi2FunctionTypes.h\`,
-\`fmi2TypesPlatform.h\`, from the FMI standard) in \`sources/\`, then run these
-commands from the root of this exported tree:
+The C is complete and dependency-free. Compile it against the official FMI
+${FMI_STANDARD_VERSION} headers (the XML/API version remains FMI 2.0). FMI
+importers supply those standard headers for source builds; do not add them to
+the FMU's declared source list. Set \`FMI2_OVERRIDE_FUNCTION_PREFIX\` when
+building a shared library so it exports the unprefixed dynamic ABI:
 
     # Linux
     mkdir -p binaries/linux64
-    cc -O2 -fPIC -shared -Isources sources/${modelName}.c -o binaries/linux64/${modelName}.so -lm
+    cc -std=c11 -O2 -fPIC -shared -DFMI2_OVERRIDE_FUNCTION_PREFIX \\
+      -I/path/to/fmi-2.0.5/headers sources/${modelName}.c -o binaries/linux64/${modelName}.so -lm
     # macOS
     mkdir -p binaries/darwin64
-    cc -O2 -fPIC -shared -Isources sources/${modelName}.c -o binaries/darwin64/${modelName}.dylib -lm
+    cc -std=c11 -O2 -fPIC -shared -DFMI2_OVERRIDE_FUNCTION_PREFIX \\
+      -I/path/to/fmi-2.0.5/headers sources/${modelName}.c -o binaries/darwin64/${modelName}.dylib -lm
     # Windows (MSVC)
     mkdir binaries\\win64
-    cl /O2 /LD /Isources sources\\${modelName}.c /Fe:binaries\\win64\\${modelName}.dll
+    cl /nologo /std:c11 /O2 /MT /LD /DFMI2_OVERRIDE_FUNCTION_PREFIX \\
+      /I\\path\\to\\fmi-2.0.5\\headers sources\\${modelName}.c \\
+      /Fe:binaries\\win64\\${modelName}.dll
 
 Then zip the *contents* of this directory—not the directory itself—so
 \`modelDescription.xml\`, \`sources/\` and \`binaries/\` remain at the archive
@@ -444,11 +638,11 @@ import check before treating it as a usable binary artifact.
 
 ## What this model is
 
-Equivalent circuit — OCV + R0 + one RC branch, Arrhenius temperature
+Reduced plant model — linear OCV + R0 + one RC branch, Arrhenius temperature
 dependence — with irreversible and reversible (entropic) heat into a lumped
-thermal node cooled by an ε-NTU coolant stream and loss to ambient. It
-sub-steps internally at 10 ms, so your master can take whatever macro step it
-likes without destabilising the RC or thermal states.
+thermal node cooled by an ε-NTU coolant stream and loss to ambient. Stable
+exponential state updates are evaluated on internal steps of at most 1 s; a
+single communication step is bounded to one hour to prevent unbounded work.
 
 ## What this model is not
 
@@ -467,15 +661,16 @@ them, at the cost of a bigger interface.
 
 /** Everything needed to write an FMU to disk, as plain strings. */
 export function buildFmu({ cell, s, p, params = null, modelName = 'BatteryPack', generatedOn = '1970-01-01T00:00:00Z' }) {
-  if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(modelName)) {
+  if (!validModelIdentifier(modelName)) {
     throw new TypeError('FMU modelName must start with a letter or underscore and contain only letters, numbers and underscores (64 characters maximum).');
   }
-  const guid = `bd-${s}s${p}p-${(cell.id || 'cell').replace(/[^a-z0-9]/gi, '')}`;
+  const defaults = fmuParameterValues({ cell, s, p, params });
+  const guid = fmuGuid({ cell, s, p, params, modelName });
   return {
-    guid, modelName,
+    guid, modelName, standardVersion: FMI_STANDARD_VERSION, defaults,
     files: {
       'modelDescription.xml': modelDescriptionXml({ cell, s, p, params, modelName, guid, generatedOn }),
-      [`sources/${modelName}.c`]: fmuSourceC({ modelName, guid }),
+      [`sources/${modelName}.c`]: fmuSourceC({ modelName, guid, defaults }),
       'README.md': fmuReadme({ modelName, cell, s, p }),
     },
     note: 'A path-preserving source FMU build kit: complete, readable C that must be compiled and packaged for the target platform. It is not a loadable .fmu yet.',
