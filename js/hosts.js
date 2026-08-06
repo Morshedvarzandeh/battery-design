@@ -126,6 +126,7 @@ export function hostFor(appId, vesselId = null) {
         dimsLabel: 'published principal particulars; waterline-datum engineering massing envelope; not CAD',
         note: `Waterline is z=0 m, the display baseline is z=${datum.baselineZM.toFixed(2)} m, and the sourced ${datum.topReference} is z=+${datum.zMaxM.toFixed(2)} m. ${datum.basis} ${vessel.mounting.what}`,
         model: vessel.model,
+        asset3dId: vessel.model.assetId,
         evidence: vessel.evidence,
         boundary: `${vessel.model.boundary} Battery-study boundary: ${vessel.boundary}`,
         datum: { ...datum },
@@ -164,6 +165,7 @@ export function hostFor(appId, vesselId = null) {
 
   return {
     kind: base.kind, name: base.name,
+    asset3dId: `host/${base.kind}`,
     sizeM: { x: widthM, y: base.lengthM, z: heightM },
     mount: MOUNTINGS[base.mount],
     dimsFrom,

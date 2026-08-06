@@ -46,6 +46,11 @@ A 3D battery pack designer that runs entirely in the browser — a static page
 with no build step and no server (deployed by GitHub Pages on every merge to
 `main`; Three.js is vendored, so it also works offline).
 
+Cars, vessels, robots and other host visuals live in a separate versioned
+[`assets3d` library](docs/3D_ASSET_LIBRARY.md). The original low-poly assets
+are independently MIT-licensed; the renderer contains no application-specific
+vehicle geometry.
+
 Every rule, threshold and default is traceable to a public datasheet or a named
 standard — and the assumptions that have **no** public source are listed openly
 in [REFERENCES.md §8](REFERENCES.md#8-assumptions-with-no-public-source).
@@ -217,11 +222,17 @@ project's provenance-first datasheet pipeline.
   3-way valve a bowtie, the radiator has fins, the chiller its plate-HX
   zigzag, the heater its element) and the HV chain uses IEC-style fuse and
   contactor-switch glyphs — not one more rigid box.
-- **Two reports** — alongside the customer PDF/Word report, a LAYERED
+- **Three report views** — alongside the customer PDF/Word report, a LAYERED
   architecture report downloads as a standalone HTML file: the reader
   selects a layer (system → pack → module → cell, control hierarchy,
   thermal system, sensor plan) and opens exactly the level they care
-  about, diagrams embedded.
+  about, diagrams embedded. The animated visual decision report is also a
+  self-contained HTML file: in under a minute it presents the selected host,
+  nominal sizing, available mission simulation, the actual selected thermal
+  hardware, findings and the semantic checksum. It projects the same report
+  snapshot and never runs a second calculation or invents a before/after case.
+  An [audited 52-second encoded example](reports/examples/visual-decision-report/README.md)
+  is kept with its calculation data, media digest and full visual attribution.
 - **The engineer's workbook (Excel)** — an export engineers can argue with:
   a SpreadsheetML workbook whose computed cells carry LIVE formulas over
   named inputs (`=CellPrice*SCount*PCount`, `=CEILING(CyclesYr*Years/
@@ -515,6 +526,8 @@ is copied into the repository.
 | `js/vent-layout.js` | Market-isolated supplier vent quantity, enclosure-fit constraint and provisional multi-face coordinates from the calculated high-case area |
 | `js/loop-testing.js` | Executable SIL calculation plans plus HIL I/O/timing/fault contracts and measured-evidence evaluation |
 | `js/ontology-schema.js`, `js/ontology.js` | Architecture-wide classes, typed relations, declarative rules, semantic graph validation and portable exports; see [`docs/ONTOLOGY.md`](docs/ONTOLOGY.md) |
+| `assets3d/catalog.js` | Reusable original car, vessel, machine and robot visual assets with version, digest, licence and portable geometry; see [`docs/3D_ASSET_LIBRARY.md`](docs/3D_ASSET_LIBRARY.md) |
+| `js/visual-report.js` | Self-contained sub-minute animated decision report built only from the existing report snapshot, mission result, semantic identity and portable 3D assets |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |

@@ -17,7 +17,8 @@
 import { CELLS, cellById, provenance } from './cells.js';
 import { clampPack, clampSteps } from './limits.js';
 import { PRESETS } from './presets.js';
-import { layoutPack, summarize, defaultArrangement } from './pack-engine.js';
+import { layoutPack, summarize, defaultArrangement, ARRANGEMENTS_BY_FORM } from './pack-engine.js';
+import { layoutPackBay } from './bay.js';
 import { costModel } from './optimizer.js';
 import { analyze } from './engineering.js';
 import { runChecks } from './standards.js';
@@ -78,6 +79,7 @@ export const SPEC_FIELDS = {
   v2xPolicy: 'off | v2l | v2h | v2g | v2v (default off)',
   isolationStandard: 'named UN R100 topology context: un-r100-separate-dc (default) | un-r100-separate-ac | un-r100-connected-ac-dc | un-r100-connected-ac-dc-protected (legacy aliases remain reproducible)',
   components: '{ busbar, spacer, vent, cooling, tim, housing } — component ids from listComponents(); anything omitted takes the default for the cell format',
+  layout: '{ arrangement, orientation, spacingMm, layerGapMm, wallMm, headroomMm, underMm, rowExtraMm, nx, nz, bay? } — exact pack-layout inputs; defaults preserve the standard engine layout',
   vehicle: 'overrides for the vehicle model: { curbKg, payloadKg, cd, frontalAreaM2, crr, driveEff, regenFrac, auxW }',
   driveMode: 'eco | normal | sport (default normal)',
   policyId: 'EMS/PMS operating policy id for applications that expose one; converted to a battery sizing profile',
@@ -531,6 +533,63 @@ function deriveSP(cell, preset, spec, warnings) {
  * arrangement or re-derive a gap and end up drawing a different pack from
  * the one the audit is about.
  */
+function resolveLayoutOptions(spec, cell, coolingSpace, warnings) {
+  const requested = spec.layout && typeof spec.layout === 'object' && !Array.isArray(spec.layout)
+    ? spec.layout : {};
+  const allowedArrangements = ARRANGEMENTS_BY_FORM[cell.form] || [defaultArrangement(cell)];
+  const allowedOrientations = cell.form === 'cylindrical' ? ['upright', 'lying']
+    : cell.form === 'pouch' ? ['upright', 'flat'] : ['upright'];
+  const choose = (key, allowed, fallback) => {
+    const value = requested[key] ?? (key === 'arrangement' ? spec.arrangement : null);
+    if (value == null) return fallback;
+    if (allowed.includes(value)) return value;
+    warnings.push(`Unsupported layout ${key} "${value}" for ${cell.form}; using ${fallback}.`);
+    return fallback;
+  };
+  const number = (key, fallback, minimum, maximum) => {
+    const value = requested[key];
+    if (value == null) return fallback;
+    if (!Number.isFinite(value) || value < minimum || value > maximum) {
+      warnings.push(`Layout ${key} must be a finite value from ${minimum} to ${maximum}; using ${fallback}.`);
+      return fallback;
+    }
+    return value;
+  };
+  const arrangement = choose('arrangement', allowedArrangements, defaultArrangement(cell));
+  let orientation = choose('orientation', allowedOrientations, 'upright');
+  if (arrangement === 'hex' && orientation === 'lying') {
+    warnings.push('Hex packing is not physical for a cylindrical cell lying on its side; using grid packing.');
+  }
+  const effectiveArrangement = arrangement === 'hex' && orientation === 'lying' ? 'grid' : arrangement;
+  const componentUnderMm = coolingSpace.bottom || 0;
+  const componentRowExtraMm = coolingSpace.rowGap || 0;
+  let underMm = number('underMm', componentUnderMm, 0, 500);
+  let rowExtraMm = number('rowExtraMm', componentRowExtraMm, 0, 500);
+  if (underMm < componentUnderMm) {
+    warnings.push(`Layout underMm was raised to ${componentUnderMm} mm to fit the selected cooling hardware.`);
+    underMm = componentUnderMm;
+  }
+  if (rowExtraMm < componentRowExtraMm) {
+    warnings.push(`Layout rowExtraMm was raised to ${componentRowExtraMm} mm to fit the selected cooling hardware.`);
+    rowExtraMm = componentRowExtraMm;
+  }
+  const bay = requested.bay && typeof requested.bay === 'object' && !Array.isArray(requested.bay)
+    ? JSON.parse(JSON.stringify(requested.bay)) : null;
+  return {
+    arrangement: effectiveArrangement,
+    orientation,
+    spacingMm: number('spacingMm', 1, 0, 100),
+    layerGapMm: number('layerGapMm', 2, 0, 500),
+    wallMm: number('wallMm', 2, 0, 500),
+    headroomMm: number('headroomMm', cell.form === 'cylindrical' ? 8 : 15, 0, 1000),
+    underMm,
+    rowExtraMm,
+    nx: Math.round(number('nx', 0, 0, 300)),
+    nz: Math.round(number('nz', 1, 1, 20)),
+    bay,
+  };
+}
+
 export function layoutForDesign(design) {
   const r = design?.spec?.resolved;
   if (!r) return null;
@@ -538,11 +597,15 @@ export function layoutForDesign(design) {
   if (!cell) return null;
   const space = componentById('cooling', r.components?.cooling)?.spaceMm
     || { bottom: 0, side: 0, rowGap: 0 };
-  return layoutPack(cell, r.s, r.p, {
+  const options = r.layout || {
     arrangement: design.spec?.arrangement || defaultArrangement(cell),
-    spacingMm: 1, wallMm: 2, headroomMm: 8,
-    underMm: space.bottom, rowExtraMm: space.rowGap,
-  });
+    orientation: 'upright', spacingMm: 1, layerGapMm: 2,
+    wallMm: 2, headroomMm: 8, underMm: space.bottom, rowExtraMm: space.rowGap,
+    nx: 0, nz: 1, bay: null,
+  };
+  return options.bay
+    ? layoutPackBay(cell, r.s, r.p, options.bay, options)
+    : layoutPack(cell, r.s, r.p, options);
 }
 
 /**
@@ -609,11 +672,17 @@ export function designFromSpec(spec = {}) {
   // cooling afterwards produces a pack the cooling does not fit inside.
   const selection = resolveComponents(cell, appId, spec, warnings);
   const space = selection.cooling?.spaceMm || { bottom: 0, side: 0, rowGap: 0 };
-  const arrangement = spec.arrangement || defaultArrangement(cell);
-  const layout = layoutPack(cell, s, p, {
-    arrangement, spacingMm: 1, wallMm: 2, headroomMm: 8,
-    underMm: space.bottom, rowExtraMm: space.rowGap,
-  });
+  const layoutOptions = resolveLayoutOptions(spec, cell, space, warnings);
+  let layout = layoutOptions.bay
+    ? layoutPackBay(cell, s, p, layoutOptions.bay, layoutOptions)
+    : layoutPack(cell, s, p, layoutOptions);
+  if (!layout && layoutOptions.bay) {
+    warnings.push('The declared shaped bay cannot hold the resolved topology; the engine used the same free-grid layout fallback as the browser.');
+    layoutOptions.bay = null;
+    layout = layoutPack(cell, s, p, layoutOptions);
+  }
+  if (!layout) throw new Error('The resolved topology could not be laid out with the declared layout inputs.');
+  const arrangement = layout.arrangement;
   const summary = summarize(cell, s, p, layout);
   const marineTraceTargetMet = !marineSizing || explicitMarineParallelTarget
     ? null
@@ -650,7 +719,8 @@ export function designFromSpec(spec = {}) {
     analysis = analyze({
       cell, s, p, pack,
       layout: {
-        arrangement, orientation: 'upright', spacingMm: 1, wallMm: 2,
+        arrangement, orientation: layout.orientation,
+        spacingMm: layout.spacingMm, wallMm: layout.wallMm,
         inner: layout.inner, outer: layout.outer, nx: layout.nx, ny: layout.ny, nz: layout.nz,
       },
       usage: usageCtx, selection, isolationResolution,
@@ -676,7 +746,7 @@ export function designFromSpec(spec = {}) {
 
   const stdCtx = {
     cell, s, p, pack,
-    layout: { spacingMm: 1, arrangement, wallMm: 2 },
+    layout: { spacingMm: layout.spacingMm, arrangement, wallMm: layout.wallMm },
     usage, isolationResolution,
   };
   const findings = runChecks(stdCtx);
@@ -1050,6 +1120,19 @@ export function designFromSpec(spec = {}) {
             ? 'explicit-or-not-applicable'
             : (marineTraceTargetMet ? 'met' : 'unmet-bounded-pack'),
           driveMode: vehicle ? (spec.driveMode || 'normal') : null,
+        },
+        layout: {
+          arrangement: layout.arrangement,
+          orientation: layout.orientation,
+          spacingMm: layout.spacingMm,
+          layerGapMm: layout.layerGapMm,
+          wallMm: layout.wallMm,
+          headroomMm: layout.headroomMm,
+          underMm: layout.underMm || 0,
+          rowExtraMm: layout.rowExtraMm || 0,
+          nx: layout.nx,
+          nz: layout.nz,
+          bay: layoutOptions.bay || null,
         },
         components: Object.fromEntries(
           Object.entries(selection).map(([k, c]) => [k, c?.id ?? null])),

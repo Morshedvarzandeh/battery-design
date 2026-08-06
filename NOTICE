@@ -44,6 +44,13 @@ QUDT and UCUM semantic references  (ontology/ and js/ontology-schema.js)
   UCUM unit codes are used without changing their defined meaning.
   https://ucum.org/license
 
+Visual decision-report example car renders
+  The encoded example under reports/examples/visual-decision-report includes
+  adapted renders of five CC BY 4.0 Sketchfab models by ItsDiyor, yokada000,
+  Nazh Design, tonielpro520 and Nieve5677. Exact model links, attribution and
+  adaptation notes are carried in that directory's CREDITS.md. Their inclusion
+  does not imply endorsement by the creators or vehicle manufacturers.
+
 --------------------------------------------------------------------------------
 DATA, STANDARDS AND ENGINEERING OUTPUT
 

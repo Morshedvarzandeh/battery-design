@@ -221,6 +221,9 @@ __marimo__/
 
 # Screenshots written by local probe scripts
 *.png
+# Multi-frame/SVG review renders are local QA artifacts. Audited media that is
+# intentionally part of a report belongs under reports/examples instead.
+previews/
 # ...but some PNGs are the product, not debris. This blanket rule has now
 # swallowed shipped files twice — the social preview once, and the whole
 # desktop icon set — so every exception is listed here rather than discovered
