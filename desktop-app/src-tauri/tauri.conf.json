@@ -5,13 +5,13 @@
   "identifier": "io.github.morshedvarzandeh.batterydesign",
   "build": {
     "frontendDist": "../runner",
-    "beforeBuildCommand": "node prepare.mjs"
+    "beforeBuildCommand": "node ../prepare.mjs"
   },
   "app": {
     "withGlobalTauri": false,
     "windows": [],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; base-uri 'none'; object-src 'none'; frame-ancestors 'self'; form-action 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-6p13ug9Y/2TWPZMF0aIT0xv2TqxNkp62hhuZFDN2uAM='; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' http://127.0.0.1:*; worker-src 'self' blob:; media-src 'self' blob:"
     }
   },
   "bundle": {
@@ -40,11 +40,6 @@
     "category": "Education",
     "shortDescription": "Battery pack designer",
     "longDescription": "Design a battery pack and see what it costs you: geometry, electrical architecture, thermal system, conductor sizing, grounding, fault study, life-cycle footprint and the release checklist for your market. Runs entirely on your own machine \u2014 no account, no network, nothing uploaded.",
-    "linux": {
-      "deb": {
-        "depends": []
-      }
-    },
     "macOS": {
       "minimumSystemVersion": "10.15"
     },

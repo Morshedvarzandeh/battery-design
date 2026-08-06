@@ -181,7 +181,8 @@ test('compareCells: equivalent packs for the same job, same mission', async () =
   ok(rN.s === 13, `NMC pack lands at 13S (got ${rN.s}S)`);
   ok(rL.s === Math.round(46.8 / lfp.nominalV), `LFP pack S from its own voltage (got ${rL.s}S)`);
   // P from the energy target — and the honest oversize note for the 280 Ah cell.
-  ok(rN.p >= 1 && Math.abs(rN.energyWh - 917) / 917 < 0.35, 'NMC pack lands near the energy target');
+  ok(rN.p >= 1 && rN.energyWh + 1e-9 >= 917,
+    'NMC comparison never undersizes the required energy');
   ok(rL.p === 1 && rL.notes.some((n) => /oversized/.test(n)),
     'a 280 Ah cell cannot scale down to 917 Wh — 1P with the oversize note');
   ok(rN.current === true && rL.current === false, 'current design flagged');
@@ -191,6 +192,22 @@ test('compareCells: equivalent packs for the same job, same mission', async () =
     ok(['pass', 'warn', 'fail'].includes(r.verdict), `${r.cell.id} verdict assigned (${r.verdict})`);
   }
   ok(/same job|equivalent pack/i.test(cmp.basis), 'the comparison states its basis');
+});
+
+test('compareCells rounds parallel strings up for a minimum-energy job', async () => {
+  const { compareCells } = await import('../js/sim1d.js');
+  const { cellById: byId } = await import('../js/cells.js');
+  const cell = byId('samsung-inr21700-50e');
+  const targetEnergyWh = 60_000;
+  const row = compareCells({
+    cells: [cell], targetVNom: 350, targetEnergyWh,
+    profile: { dtS: 1, p: [0] }, scaleW: 1,
+  }).rows[0];
+  const stringWh = row.s * cell.nominalV * cell.capacityAh;
+  ok(row.p === Math.ceil(targetEnergyWh / stringWh),
+    `parallel count is the first whole string that meets the job (${row.p}P)`);
+  ok(row.energyWh + 1e-9 >= targetEnergyWh,
+    `comparison energy meets the ${targetEnergyWh} Wh minimum (${row.energyWh} Wh)`);
 });
 
 test('compareCells: a cell without DCIR gets an honest unavailable row', async () => {

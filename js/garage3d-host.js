@@ -70,9 +70,10 @@ export function mount3D({ container, src = DEFAULT_SRC, onPick = null, onStatus 
     frame = document.createElement('iframe');
     frame.className = 'garage3d-frame';
     frame.setAttribute('title', 'Battery pack, in three dimensions');
-    // The renderer draws data we already have. It has no reason to reach the
-    // network, run top-level navigation, or read anything of ours, so it is
-    // not given the chance to.
+    // The renderer is trusted code from this package and needs same-origin
+    // access to fetch its generated Wasm/PCK payload. The sandbox still
+    // denies navigation, forms, popups and every permission except scripts;
+    // same-origin is a loading requirement, not a separate trust boundary.
     frame.setAttribute('sandbox', 'allow-scripts allow-same-origin');
     frame.src = src;
     frame.onerror = () => fail('the 3D renderer could not be loaded');

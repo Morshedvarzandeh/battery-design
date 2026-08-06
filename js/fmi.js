@@ -396,12 +396,14 @@ fmi2Status fmi2GetDirectionalDerivative(fmi2Component c, const fmi2ValueReferenc
 
 /** The build and use instructions that travel inside the FMU. */
 export function fmuReadme({ modelName = 'BatteryPack', cell, s, p }) {
-  return `# ${modelName} — an FMI ${FMI_VERSION} co-simulation FMU
+  return `# ${modelName} — FMI ${FMI_VERSION} source-FMU build kit
 
-Exported by battery-design (AGPL-3.0-or-later). This is the ${s}S${p}P pack of
-${cell?.name || 'the selected cell'} as a component you can drop into
-ANSYS Twin Builder, Simulink, GT-SUITE, Dymola, OpenModelica, or any other
-tool that speaks FMI.
+Exported by battery-design (AGPL-3.0-or-later) for the ${s}S${p}P pack of
+${cell?.name || 'the selected cell'}. **This directory is source code, not a
+loadable FMU yet.** Compile it for the target platform, preserve the directory
+tree, package it as described below, and validate the resulting component
+before importing it into ANSYS Twin Builder, Simulink, GT-SUITE, Dymola,
+OpenModelica, or another FMI host.
 
 ## The coupling
 
@@ -420,20 +422,25 @@ ${FMU_PARAMETERS.map((v) => `- \`${v.name}\` (${v.unit}) — ${v.description}`).
 
 ## Building it
 
-This is a SOURCE FMU: the C is complete and dependency-free, but you compile it
-for your own platform. Put the FMI 2.0 headers (\`fmi2Functions.h\`,
-\`fmi2FunctionTypes.h\`, \`fmi2TypesPlatform.h\`, from the FMI standard) beside
-the source, then:
+The C is complete and dependency-free, but you compile it for your own
+platform. Put the FMI 2.0 headers (\`fmi2Functions.h\`, \`fmi2FunctionTypes.h\`,
+\`fmi2TypesPlatform.h\`, from the FMI standard) in \`sources/\`, then run these
+commands from the root of this exported tree:
 
     # Linux
-    cc -O2 -fPIC -shared -I. ${modelName}.c -o binaries/linux64/${modelName}.so -lm
+    mkdir -p binaries/linux64
+    cc -O2 -fPIC -shared -Isources sources/${modelName}.c -o binaries/linux64/${modelName}.so -lm
     # macOS
-    cc -O2 -fPIC -shared -I. ${modelName}.c -o binaries/darwin64/${modelName}.dylib -lm
+    mkdir -p binaries/darwin64
+    cc -O2 -fPIC -shared -Isources sources/${modelName}.c -o binaries/darwin64/${modelName}.dylib -lm
     # Windows (MSVC)
-    cl /O2 /LD /I. ${modelName}.c /Fe:binaries/win64/${modelName}.dll
+    mkdir binaries\\win64
+    cl /O2 /LD /Isources sources\\${modelName}.c /Fe:binaries\\win64\\${modelName}.dll
 
-Then zip \`modelDescription.xml\`, \`binaries/\` and \`sources/\` into
-\`${modelName}.fmu\`.
+Then zip the *contents* of this directory—not the directory itself—so
+\`modelDescription.xml\`, \`sources/\` and \`binaries/\` remain at the archive
+root, and name the archive \`${modelName}.fmu\`. Run an FMI conformance or host
+import check before treating it as a usable binary artifact.
 
 ## What this model is
 
@@ -460,6 +467,9 @@ them, at the cost of a bigger interface.
 
 /** Everything needed to write an FMU to disk, as plain strings. */
 export function buildFmu({ cell, s, p, params = null, modelName = 'BatteryPack', generatedOn = '1970-01-01T00:00:00Z' }) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(modelName)) {
+    throw new TypeError('FMU modelName must start with a letter or underscore and contain only letters, numbers and underscores (64 characters maximum).');
+  }
   const guid = `bd-${s}s${p}p-${(cell.id || 'cell').replace(/[^a-z0-9]/gi, '')}`;
   return {
     guid, modelName,
@@ -468,6 +478,6 @@ export function buildFmu({ cell, s, p, params = null, modelName = 'BatteryPack',
       [`sources/${modelName}.c`]: fmuSourceC({ modelName, guid }),
       'README.md': fmuReadme({ modelName, cell, s, p }),
     },
-    note: 'A source FMU: complete, readable C that you compile for your own platform. No binary is shipped that you cannot reproduce.',
+    note: 'A path-preserving source FMU build kit: complete, readable C that must be compiled and packaged for the target platform. It is not a loadable .fmu yet.',
   };
 }

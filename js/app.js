@@ -4,7 +4,9 @@
 
 import { CELLS, CHEMISTRIES, cellById, provenance } from './cells.js';
 import { mountGarage } from './garage-ui.js';
-import { designFromSpec, suggestSP, layoutForDesign, resolveMarineSizing } from './api.js';
+import {
+  DESIGN_SPEC_SCHEMA_VERSION, designFromSpec, suggestSP, layoutForDesign, resolveMarineSizing,
+} from './api.js';
 import { buildScene } from './scene3d.js';
 import { mount3D, rendererAvailable } from './garage3d-host.js';
 import { CellPicker } from './cell-picker.js';
@@ -14,13 +16,13 @@ import { familyIndex, familyOfApp, presetsInFamily } from './families.js';
 import { layoutPack, summarize, ARRANGEMENTS_BY_FORM, defaultArrangement } from './pack-engine.js';
 import { optimizeSpace, suggestDesigns, maxFill, costModel } from './optimizer.js';
 import { layoutPackBay, polygonBounds } from './bay.js';
-import { co2Model, GRID_FACTORS, buildReportHTML, buildWordDocument, buildArchReportHTML } from './report.js';
+import { GRID_FACTORS, buildReportHTML, buildWordDocument, buildArchReportHTML } from './report.js';
 import { buildVisualReportHTML, visualReportFilename } from './visual-report.js';
 import { buildWorkbookXml, workbookFilename } from './excel.js';
 import {
   loadMyCells, saveMyCells, normalizeCustomCell, validateCustomCell, buildMailto, OWNER_EMAIL,
 } from './mycells.js';
-import { sensitivityAnalysis, priceFlipThreshold } from './sensitivity.js';
+import { sensitivityAnalysis } from './sensitivity.js';
 import { parseOutline } from './bay-import.js';
 import {
   LOAD_PROFILES, profileForApp, profilesForApp, profileById, profileStats, profileChecks,
@@ -119,6 +121,7 @@ let viewer = null;        // PackViewer (3D), lazy
 let viewMode = '2d';
 let pack3dDirty = true;
 let lastFindings = [];
+let lastDesign = null;   // immutable canonical engine result for the current UI state
 let lastSummary = null;
 let lastLayout = null;
 let lastAnalysis = null;
@@ -171,10 +174,10 @@ function init() {
   bindVehicle();
   bindShort();
   initRunner();
-  bindShort();
   restoreHash();
   initComponents();
   bindControls();
+  initAccessibility();
   setAudienceMode(localStorage.getItem('bd-audience') === 'engineering' ? 'engineering' : 'customer');
   viewer2d = new PackViewer2D($('viewport2d'));
   syncInputs();
@@ -185,6 +188,158 @@ function init() {
   $('wzSkip').onclick = () => { hideWizard(true); setAudienceMode('engineering'); };
   bindTraining();
   if (!localStorage.getItem('bd-wizard-done')) showWizard();
+}
+
+// Accessibility is wired at runtime so the static, dependency-free app keeps
+// one navigation implementation. The same activation path serves pointer,
+// keyboard and programmatic callers.
+function syncTabAccessibility(activeTab = null) {
+  const tabs = [...document.querySelectorAll('#tabs .tab')];
+  const active = activeTab || tabs.find((tab) => tab.classList.contains('active')) || tabs[0];
+  for (const tab of tabs) {
+    const selected = tab === active;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    const panel = $(`pane-${tab.dataset.tab}`);
+    if (panel) {
+      panel.hidden = !selected;
+      panel.setAttribute('aria-hidden', String(!selected));
+    }
+  }
+}
+
+function initAccessibility() {
+  const tablist = $('tabs');
+  if (tablist) {
+    tablist.setAttribute('role', 'tablist');
+    tablist.setAttribute('aria-label', 'Battery design workspace');
+    const tabs = [...tablist.querySelectorAll('.tab')];
+    for (const tab of tabs) {
+      const key = tab.dataset.tab;
+      const panel = $(`pane-${key}`);
+      tab.id ||= `tab-${key}`;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-controls', panel?.id || `pane-${key}`);
+      if (panel) {
+        panel.setAttribute('role', 'tabpanel');
+        panel.setAttribute('aria-labelledby', tab.id);
+        panel.tabIndex = 0;
+      }
+    }
+    tablist.addEventListener('keydown', (event) => {
+      if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+      const visible = tabs.filter((tab) => !tab.hidden && getComputedStyle(tab).display !== 'none');
+      if (!visible.length) return;
+      const current = Math.max(0, visible.indexOf(document.activeElement));
+      let next = current;
+      if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = visible.length - 1;
+      else next = (current + (event.key === 'ArrowRight' ? 1 : -1) + visible.length) % visible.length;
+      event.preventDefault();
+      visible[next].focus();
+      visible[next].click();
+    });
+    syncTabAccessibility();
+  }
+
+  // Associate the many compact sibling labels without duplicating their text
+  // into aria-label attributes. Dynamic component selectors receive a stable
+  // category name when they are created.
+  let generatedId = 0;
+  for (const label of document.querySelectorAll('label:not([for])')) {
+    const nested = label.querySelector('input,select,textarea');
+    const sibling = label.nextElementSibling?.matches?.('input,select,textarea')
+      ? label.nextElementSibling : null;
+    const inGroup = label.parentElement?.querySelector?.('input,select,textarea');
+    const control = nested || sibling || inGroup;
+    if (!control) continue;
+    control.id ||= `bd-control-${++generatedId}`;
+    label.htmlFor = control.id;
+  }
+  for (const select of document.querySelectorAll('select[data-cat]')) {
+    if (!select.getAttribute('aria-label')) select.setAttribute('aria-label', `${select.dataset.cat} component`);
+  }
+
+  const canvasNames = {
+    diagZoom: 'Expanded engineering diagram',
+    profileChart: 'Selected load profile power over time',
+    sketch: 'Battery bay outline drawing surface',
+    archCanvas: 'Battery system architecture diagram; activate to enlarge',
+    archBmsCanvas: 'Battery management system architecture diagram; activate to enlarge',
+    prechargeCalcCanvas: 'Precharge voltage and resistor power traces',
+    shuntCalcCanvas: 'Current-shunt duty and temperature traces',
+    thermCanvas: 'Battery thermal-management loop diagram; activate to enlarge',
+    simCanvas: 'Mission power, state-of-charge, voltage and temperature traces; activate to enlarge',
+    radarCanvas: 'Selected battery-cell comparison radar chart',
+  };
+  const interactiveCanvas = new Set(['archCanvas', 'archBmsCanvas', 'thermCanvas', 'simCanvas']);
+  for (const [id, name] of Object.entries(canvasNames)) {
+    const canvas = $(id);
+    if (!canvas) continue;
+    canvas.setAttribute('aria-label', name);
+    canvas.setAttribute('role', interactiveCanvas.has(id) ? 'button' : 'img');
+    if (interactiveCanvas.has(id)) {
+      canvas.tabIndex = 0;
+      canvas.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        event.preventDefault();
+        canvas.click();
+      });
+    }
+  }
+
+  const wizard = $('wizard');
+  if (wizard) {
+    wizard.setAttribute('role', 'dialog');
+    wizard.setAttribute('aria-modal', 'true');
+    wizard.setAttribute('aria-labelledby', 'wzTitle');
+    wizard.setAttribute('aria-describedby', 'wzSub');
+    wizard.setAttribute('aria-hidden', wizard.style.display === 'flex' ? 'false' : 'true');
+    $('wzTitle').tabIndex = -1;
+    wizard.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        hideWizard(false);
+        return;
+      }
+      if (event.key !== 'Tab') return;
+      const focusable = [...wizard.querySelectorAll(
+        'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])',
+      )].filter((element) => getComputedStyle(element).visibility !== 'hidden'
+        && getComputedStyle(element).display !== 'none');
+      if (!focusable.length) { event.preventDefault(); $('wzTitle').focus(); return; }
+      const first = focusable[0], last = focusable.at(-1);
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault(); last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault(); first.focus();
+      }
+    });
+    let focusQueued = false;
+    new MutationObserver(() => {
+      if (wizard.style.display !== 'flex' || focusQueued) return;
+      focusQueued = true;
+      queueMicrotask(() => {
+        focusQueued = false;
+        if (wizard.style.display === 'flex') $('wzTitle').focus();
+      });
+    }).observe($('wzBody'), { childList: true });
+  }
+
+  // The diagram and private-cell overlays are dialogs too; naming them keeps
+  // assistive technology out of an undifferentiated full-screen container.
+  const dialogDefs = [
+    ['diagModal', 'diagTitle'],
+    ['cellModal', null],
+  ];
+  for (const [id, titleId] of dialogDefs) {
+    const dialog = $(id);
+    if (!dialog) continue;
+    dialog.setAttribute('role', 'dialog');
+    dialog.setAttribute('aria-modal', 'true');
+    if (titleId) dialog.setAttribute('aria-labelledby', titleId);
+    else dialog.setAttribute('aria-label', 'Private custom cell editor');
+  }
 }
 
 function setAudienceMode(mode) {
@@ -386,17 +541,17 @@ function bindTraining() {
   $('segMarket').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.marketId = b.dataset.mkt;
     $('segMarket').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
+    recompute();
     renderMarketChecklist();
-    computeCharging(); renderCharging();
   });
   $('euCategory').onchange = () => {
     state.batteryCategory = $('euCategory').value || null;
-    renderEu();
+    recompute();
   };
   $('euDate').value = state.evaluationDate;
   $('euDate').onchange = () => {
     state.evaluationDate = $('euDate').value || EU_BATTERY_PASSPORT_EFFECTIVE_DATE;
-    renderEu();
+    recompute();
   };
   // Diagram lightbox: the side panel is narrow, so both architecture
   // drawings open at reading size on a tap (rendered on the white report
@@ -426,32 +581,32 @@ function bindTraining() {
   $('segSimSeason').querySelectorAll('button').forEach((b) => b.onclick = () => {
     simSeason = b.dataset.season;
     $('segSimSeason').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    computeSim(); renderSim();
+    recompute();
   });
   $('simPasses').onchange = () => {
     simPasses = Math.max(1, Math.min(50, Math.round(parseFloat($('simPasses').value) || 1)));
     $('simPasses').value = simPasses;
-    computeSim(); renderSim();
+    recompute();
   };
   $('simSoC').onchange = () => {
     simSoC = Math.max(5, Math.min(100, Math.round(parseFloat($('simSoC').value) || 100)));
     $('simSoC').value = simSoC;
-    computeSim(); renderSim();
+    recompute();
   };
   $('segSimCharge').querySelectorAll('button').forEach((b) => b.onclick = () => {
     simChargeMode = b.dataset.charge;
     $('segSimCharge').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    computeSim(); renderSim();
+    recompute();
   });
   $('simChargeMin').onchange = () => {
     simChargeMin = Math.max(1, Math.min(600, Math.round(parseFloat($('simChargeMin').value) || 15)));
     $('simChargeMin').value = simChargeMin;
-    computeSim(); renderSim();
+    recompute();
   };
   $('segObc').querySelectorAll('button').forEach((b) => b.onclick = () => {
     obcSel = b.dataset.obc;
     $('segObc').querySelectorAll('button').forEach((x) => x.classList.toggle('active', x === b));
-    computeCharging(); renderCharging(); computeSim(); renderSim();
+    recompute();
   });
   $('segLoop').querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.loopOverride = b.dataset.loop;
@@ -723,12 +878,26 @@ function marineProfileForState() {
 function currentProfile() {
   if (state.profileId === 'custom') return customProfile;
   // The physics-derived profile: built from the vehicle, not stored anywhere.
-  if (state.profileId === 'vehicle') return lastVehicle?.drive?.profile || null;
+  if (state.profileId === 'vehicle') {
+    const resolved = lastDesign?.simulation?.profile;
+    return resolved?.p ? {
+      id: resolved.id, name: resolved.name, note: resolved.note,
+      dtS: resolved.dtS, p: resolved.p,
+    } : null;
+  }
   // The vessel duty is generated from the selected NTNU vessel and the
   // visible voyage inputs. The PMS policy transforms that exact trace; it
   // never falls back to the hidden representative marine profile.
   if (state.presetId === 'marine') {
     return marineProfileForState()?.profile || null;
+  }
+  const resolved = lastDesign?.simulation?.profile;
+  if (resolved?.p && (resolved.id === state.profileId || resolved.policyId === state.energyPolicyId)) {
+    return {
+      id: resolved.id, name: resolved.name, note: resolved.note,
+      dtS: resolved.dtS, p: resolved.p, kind: resolved.kind,
+      policyId: resolved.policyId, sourceProfileId: resolved.sourceProfileId,
+    };
   }
   return state.profileId ? profileById(state.profileId) : null;
 }
@@ -924,6 +1093,7 @@ function selectProfile(value) {
     applyProfileToRequirements();
   } else {
     state.profileScaleW = null;
+    recompute();
   }
   renderProfile();
 }
@@ -1089,8 +1259,9 @@ function drawProfileChart(canvas, prof, scaleW, forExport = false) {
 function bindControls() {
   document.querySelectorAll('#tabs .tab').forEach((t) => t.onclick = () => {
     document.querySelectorAll('#tabs .tab').forEach((x) => x.classList.toggle('active', x === t));
-    document.querySelectorAll('.tabpane').forEach((p) =>
+    document.querySelectorAll('.tabpane[id^="pane-"]').forEach((p) =>
       p.classList.toggle('active', p.id === `pane-${t.dataset.tab}`));
+    syncTabAccessibility(t);
     if (t.dataset.tab === 'results') renderResults();
     if (t.dataset.tab === 'eu') renderEu();
     if (t.dataset.tab === 'therm') renderThermal();
@@ -1118,7 +1289,7 @@ function bindControls() {
       picker.render(id);
     },
     () => myCells,
-    () => { computeSim(); renderSim(); renderRadar(); });
+    () => { recompute(); renderRadar(); });
   $('btnBrowse').onclick = () => {
     const panel = $('cellPicker');
     panel.hidden = !panel.hidden;
@@ -1338,15 +1509,24 @@ function onCellChange() {
 let wzPreset = null;
 let wzFamily = null;
 let wzUseSpace = true;
+let wizardReturnFocus = null;
 
 function showWizard() {
+  wizardReturnFocus = document.activeElement && !$('wizard').contains(document.activeElement)
+    ? document.activeElement : $('btnWizard');
   setAudienceMode('customer');
   $('wizard').style.display = 'flex';
+  $('wizard').setAttribute('aria-hidden', 'false');
   wizardStep1();
+  queueMicrotask(() => $('wzTitle').focus());
 }
 function hideWizard(done) {
   $('wizard').style.display = 'none';
+  $('wizard').setAttribute('aria-hidden', 'true');
   if (done) localStorage.setItem('bd-wizard-done', '1');
+  const restore = wizardReturnFocus;
+  wizardReturnFocus = null;
+  queueMicrotask(() => (restore?.isConnected ? restore : $('btnWizard'))?.focus());
 }
 
 function wizardStep1() {
@@ -1726,7 +1906,7 @@ function bindResults() {
 // never included — it stays on the device, as promised.
 function aiBriefText() {
   const R = currentReportData();
-  const S = lastSummary;
+  const S = R.summary;
   const lines = [
     'BATTERY PACK DESIGN — generated by battery-design (open source, AGPL-3.0-or-later).',
     '',
@@ -1734,17 +1914,17 @@ function aiBriefText() {
     `Cell: ${R.cell?.name} (${R.cell?.chemistry}, ${R.cell?.form})`,
     `Pack: ${S.s}S${S.p}P, ${S.cellCount} cells, ${(S.energyWh / 1000).toFixed(2)} kWh, ${S.nominalV.toFixed(1)} V nominal (${S.vMin.toFixed(1)}–${S.vMax.toFixed(1)} V), ${S.massKg.toFixed(1)} kg, ${Math.round(S.dims.x)}×${Math.round(S.dims.y)}×${Math.round(S.dims.z)} mm`,
   ];
-  if (lastVehicle?.drive) {
-    lines.push(`Vehicle: ${Math.round(lastVehicle.drive.massKg)} kg moving, ${f1(lastVehicle.drive.whPerKm)} Wh/km in ${lastVehicle.drive.mode.name}${lastVehicle.range != null ? `, about ${Math.round(lastVehicle.range)} km range` : ''}`);
+  if (R.vehicle?.drive) {
+    lines.push(`Vehicle: ${Math.round(R.vehicle.drive.massKg)} kg moving, ${f1(R.vehicle.drive.whPerKm)} Wh/km in ${R.vehicle.drive.mode.name}${R.vehicle.range != null ? `, about ${Math.round(R.vehicle.range)} km range` : ''}`);
   }
   if (R.marine) {
     lines.push(`Vessel: ${R.marine.vessel?.name || 'selected vessel'} — ${f1(R.marine.distanceNm)} nmi, ${fWh(R.marine.energyWh)} screening mission, ${f1(R.marine.energyPerNmWh / 1000)} kWh/nmi`);
     lines.push(`Vessel-model maturity: ${R.twinShip?.readiness?.label || 'Screening model'} — published particulars and visible assumptions are not class approval.`);
   }
-  if (lastCharging?.t2080) {
-    lines.push(`Charging: ${lastCharging.obc ? `${lastCharging.obc.acKW} kW on-board charger` : lastCharging.arch.name}, 20→80% in ${fmtH(lastCharging.t2080.hours)}`);
+  if (R.charging?.t2080) {
+    lines.push(`Charging: ${R.charging.obc ? `${R.charging.obc.acKW} kW on-board charger` : R.charging.arch.name}, 20→80% in ${fmtH(R.charging.t2080.hours)}`);
   }
-  if (lastV2x?.chosen) lines.push(`Feed-back policy: ${lastV2x.chosen.name} — ${lastV2x.parts.length} parts added`);
+  if (R.v2x?.chosen) lines.push(`Feed-back policy: ${R.v2x.chosen.name} — ${R.v2x.parts.length} parts added`);
   const all = R.findings || [];
   lines.push(`Audit: ${all.filter((f) => f.severity === 'fail').length} fail, ${all.filter((f) => f.severity === 'warn').length} warn`);
   for (const f of all.filter((f) => f.severity === 'fail' || f.severity === 'warn')) {
@@ -1765,30 +1945,33 @@ function aiBriefText() {
 // to share.
 function aiBriefData(R) {
   return {
-    application: R.application, market: state.marketId,
+    schemaVersion: R.design.spec.schemaVersion,
+    application: R.application, market: R.design.spec.resolved.market,
     cell: {
       id: R.cell?.id, name: R.cell?.name, chemistry: R.cell?.chemistry, form: R.cell?.form,
       nominalV: R.cell?.nominalV, capacityAh: R.cell?.capacityAh,
       priceUSD: R.cell?.priceUSD, cycleLife: R.cell?.cycleLife, dataQuality: R.cell?.dataQuality,
     },
-    pack: lastSummary,
-    architecture: lastArch ? {
-      bms: lastArch.bms?.topology?.name, modules: lastArch.partition?.nModules,
-      resistanceMOhm: lastArch.resistance?.totalMOhm,
+    pack: R.summary,
+    architecture: R.architecture ? {
+      bms: R.architecture.bms?.topologyInfo?.name || R.architecture.bms?.topology,
+      modules: R.architecture.partition?.nModules,
+      resistanceMOhm: R.architecture.resistance?.totalMOhm,
     } : null,
-    thermal: lastTherm ? { loop: lastTherm.loop?.name, verdict: lastTherm.assessment?.verdict } : null,
-    charging: lastCharging, v2x: lastV2x,
-    vehicle: lastVehicle ? {
-      vehicle: lastVehicle.vehicle, whPerKm: lastVehicle.drive?.whPerKm,
-      rangeKm: lastVehicle.range, mode: lastVehicle.drive?.mode?.id,
-      breakdown: lastVehicle.drive?.breakdown,
+    thermal: R.thermal ? { loop: R.thermal.loop?.name, verdict: R.thermal.assessment?.verdict } : null,
+    charging: R.charging, v2x: R.v2x,
+    vehicle: R.vehicle ? {
+      vehicle: R.vehicle.vehicle, whPerKm: R.vehicle.drive?.whPerKm,
+      rangeKm: R.vehicle.range, mode: R.vehicle.drive?.mode?.id,
+      breakdown: R.vehicle.drive?.breakdown,
     } : null,
     marine: R.marine,
     twinShip: R.twinShip,
     sizing: R.sizing,
-    simulation: lastSim && !lastSim.unavailable ? lastSim.summary : null,
+    simulation: R.sim?.summary || null,
     cost: R.cost, co2: R.co2,
     semantics: R.semantics,
+    binding: R.resultBinding,
     findings: (R.findings || []).map((f) => ({ severity: f.severity, title: f.title, detail: f.detail })),
   };
 }
@@ -1803,121 +1986,139 @@ function currentGridFactor() {
   return gf;
 }
 
+function currentDesignSnapshot() {
+  if (!lastDesign) recompute();
+  if (!lastDesign) throw new Error('No valid design snapshot is available for this configuration.');
+  return lastDesign;
+}
+
 function currentReportData() {
-  const c = cell();
-  const nv = (id) => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : null; };
-  const usage = { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr'), dod: currentDod() };
+  // One immutable engine result owns every number in every export. Images are
+  // presentation-only renderings of that result; no report recomputes a
+  // default architecture and no semantic checksum is paired with stale last*
+  // state from another UI cycle.
+  const design = currentDesignSnapshot();
+  const c = cellById(design.spec.resolved.cell) || cell();
+  const summary = design.pack;
+  const usage = {
+    cyclesPerYear: design.spec.cyclesPerYear ?? null,
+    targetYears: design.spec.targetYears ?? null,
+    dod: design.spec.resolved.dod,
+  };
   const gf = currentGridFactor();
-  const costM = costModel(c, lastSummary.cellCount, lastSummary.energyWh, usage);
-  const co2M = co2Model({
-    cell: c, energyWh: lastSummary.energyWh,
-    cyclesPerYear: usage.cyclesPerYear, targetYears: usage.targetYears,
-    gridGPerKWh: gf.g, dod: usage.dod,
-  });
-  const engFindings = lastAnalysis
-    ? ['mechanical', 'thermal', 'electrical', 'safety'].flatMap((k) => lastAnalysis.perspectives[k] || [])
-    : [];
-  // One engine evaluation owns the semantic snapshot for every downstream
-  // customer surface.  Re-running it separately for the report, AI brief and
-  // marine projection could cross a freshness-sensitive evidence boundary.
-  const semanticDesign = designFromSpec(currentSpec());
-  const marineDesign = state.presetId === 'marine' ? semanticDesign : null;
+  const selection = Object.fromEntries(Object.entries(design.spec.resolved.components)
+    .map(([key, id]) => [key, id ? componentById(key, id) : null]));
+  const canonicalLayout = layoutForDesign(design);
+  const profile = design.simulation?.profile?.p ? design.simulation.profile : null;
+  const reportSimulation = design.simulation || null;
   return {
+    design,
     date: new Date().toISOString().slice(0, 10),
-    application: state.presetId || 'custom',
+    application: design.spec.resolved.application,
     cell: c,
-    summary: lastSummary,
-    massWithComponentsKg: lastAnalysis?.totals?.packMassWithComponentsKg ?? null,
-    bayLabel: state.appliedBay ? `${state.appliedBay.kind} bay` : 'box',
-    cost: costM,
-    co2: co2M,
+    summary,
+    massWithComponentsKg: design.analysis?.totals?.packMassWithComponentsKg ?? summary.massKg,
+    bayLabel: design.spec.resolved.layout.bay
+      ? `${design.spec.resolved.layout.bay.kind} bay` : 'box',
+    cost: design.cost,
+    co2: design.co2,
     gridLabel: gf.label,
     usage,
-    selection: selComponents(),
-    findings: [...engFindings, ...lastArchFindings, ...(lastElectricalProtection?.findings || []),
-      ...lastThermFindings, ...lastSimFindings, ...(lastShort?.findings || []), ...lastFindings],
+    selection,
+    findings: design.findings,
     sensitivity: sensitivityAnalysis({
-      cell: c, n: lastSummary.cellCount, energyWh: lastSummary.energyWh, usage,
+      cell: c, n: summary.cellCount, energyWh: summary.energyWh, usage,
     }, 20),
-    robustness: (() => {
-      if (!lastFillResults || lastFillResults.length < 2) return null;
-      const [w, r] = lastFillResults;
-      if (w.cell.id !== c.id) return null; // report is not about the fill winner
-      const basis = w.costBasisUsed === 'tco' && w.tco?.tcoUSD != null ? 'tco' : 'upfront';
-      const fl = priceFlipThreshold(w, r, basis);
-      return fl ? { ...fl, runnerUp: r.cell.name } : null;
-    })(),
-    patents: matchPatents({ cell: c, cellCount: lastSummary.cellCount, selection: selComponents() }),
+    // A max-fill ranking is a transient search result, not part of DesignSpec;
+    // excluding it prevents a previous search becoming evidence for this run.
+    robustness: null,
+    patents: matchPatents({ cell: c, cellCount: summary.cellCount, selection }),
     patentsDisclaimer: PATENTS_DISCLAIMER,
-    architecture: lastArch,
-    archAssess: lastArch ? {
+    architecture: design.architecture,
+    archAssess: design.architecture ? {
       topo: assessBmsTopology({
-        topology: lastArch.bms.topology, s: state.s,
-        afeTotal: lastArch.bms.afeTotal, nModules: lastArch.partition.nModules,
+        topology: design.architecture.bms.topology, s: summary.s,
+        afeTotal: design.architecture.bms.afeTotal,
+        nModules: design.architecture.partition.nModules,
       }),
-      ems: lastArch.emsArch ? assessEmsArchitecture(lastArch.emsArch) : null,
+      ems: design.architecture.emsArch
+        ? assessEmsArchitecture(design.architecture.emsArch) : null,
     } : null,
     archPng: (() => {
-      if (!lastArch) return null;
+      if (!design.architecture) return null;
       const off = document.createElement('canvas');
-      drawArchDiagram(off, lastArch, lastSummary, true);
+      drawArchDiagram(off, design.architecture, summary, true);
       return off.toDataURL('image/png');
     })(),
     bmsPng: (() => {
-      if (!lastArch) return null;
+      if (!design.architecture) return null;
       const off = document.createElement('canvas');
-      drawBmsInternals(off, lastArch, true);
+      drawBmsInternals(off, design.architecture, true);
       return off.toDataURL('image/png');
     })(),
-    thermal: lastTherm,
+    thermal: design.thermal,
     thermPng: (() => {
-      if (!lastTherm) return null;
+      if (!design.thermal) return null;
       const off = document.createElement('canvas');
-      drawThermalLoop(off, lastTherm, true);
+      drawThermalLoop(off, design.thermal, true);
       return off.toDataURL('image/png');
     })(),
-    sim: lastSim && !lastSim.unavailable ? lastSim : null,
-    simCompare: lastSimCompare,
-    charging: lastCharging,
-    v2x: lastV2x,
-    vehicle: lastVehicle,
-    marine: marineDesign?.marine || null,
-    twinShip: marineDesign?.twinShip || null,
-    sizing: semanticDesign.spec.resolved.sizing,
-    semantics: semanticDesign.semantics,
+    sim: reportSimulation,
+    simCompare: design.comparison,
+    charging: design.charging,
+    v2x: design.v2x,
+    vehicle: design.vehicle,
+    marine: design.marine,
+    twinShip: design.twinShip,
+    sizing: design.spec.resolved.sizing,
+    semantics: design.semantics,
+    resultBinding: design.binding,
     semanticBinding: {
-      cellId: semanticDesign.spec.resolved.cell,
-      series: semanticDesign.spec.resolved.s,
-      parallel: semanticDesign.spec.resolved.p,
-      cellCount: semanticDesign.pack.cellCount,
-      nominalVoltageV: semanticDesign.pack.nominalV,
-      nominalEnergyWh: semanticDesign.pack.energyWh,
-      preliminaryMassKg: semanticDesign.pack.massKg,
-      outerDimensionsMm: semanticDesign.pack.dims,
-      layout: semanticDesign.spec.resolved.layout,
+      cellId: design.spec.resolved.cell,
+      series: design.spec.resolved.s,
+      parallel: design.spec.resolved.p,
+      cellCount: summary.cellCount,
+      nominalVoltageV: summary.nominalV,
+      nominalEnergyWh: summary.energyWh,
+      preliminaryMassKg: summary.massKg,
+      outerDimensionsMm: summary.dims,
+      layout: design.spec.resolved.layout,
+      designChecksum: design.binding.designChecksum,
+      semanticChecksum: design.binding.semanticChecksum,
     },
-    scene: lastLayout ? buildScene({ design: semanticDesign, layout: lastLayout, showHost: true }) : null,
-    shortCircuit: lastShort,
-    electricalProtection: lastElectricalProtection,
-    simPng: (() => {
-      if (!lastSim || lastSim.unavailable) return null;
+    scene: canonicalLayout
+      ? buildScene({ design, layout: canonicalLayout, showHost: true }) : null,
+    shortCircuit: design.shortCircuit,
+    electricalProtection: design.electricalProtection,
+    // The portable engine intentionally omits raw traces. A UI trace is used
+    // only after its full mission identity and decision summaries match this
+    // immutable engine result, so a stale worker response cannot sit beneath
+    // the report checksum.
+    simPng: reportSimulation ? (() => {
       const off = document.createElement('canvas');
-      drawSimChart(off, lastSim, true);
+      drawSimChart(off, reportSimulation, true);
       return off.toDataURL('image/png');
-    })(),
-    sensors: lastSensors,
+    })() : null,
+    sensors: design.sensors,
     loadProfile: (() => {
-      const prof = currentProfile();
-      if (!prof || !state.profileScaleW) return null;
-      const chk = profileChecks(prof, state.profileScaleW, {
-        nominalV: lastSummary.nominalV, energyWh: lastSummary.energyWh,
-        maxContCurrentA: lastSummary.maxContCurrentA,
-        maxPulseCurrentA: lastSummary.maxPulseCurrentA,
-        maxChargeCurrentA: lastSummary.maxChargeCurrentA,
+      if (!profile || !design.simulation?.profile?.scaleW) return null;
+      const scaleW = design.simulation.profile.scaleW;
+      const chk = profileChecks(profile, scaleW, {
+        nominalV: summary.nominalV, energyWh: summary.energyWh,
+        maxContCurrentA: summary.maxContCurrentA,
+        maxPulseCurrentA: summary.maxPulseCurrentA,
+        maxChargeCurrentA: summary.maxChargeCurrentA,
       }, c);
       const off = document.createElement('canvas');
-      drawProfileChart(off, prof, state.profileScaleW, true);
-      return { name: prof.name, note: prof.note, stats: chk.stats, findings: chk.findings, chartPng: off.toDataURL('image/png') };
+      drawProfileChart(off, profile, scaleW, true);
+      return {
+        name: design.simulation.profile.name,
+        note: design.simulation.profile.note,
+        stats: design.simulation.stats,
+        findings: chk.findings,
+        chartPng: off.toDataURL('image/png'),
+        traceIdentity: design.simulation.profile.traceIdentity,
+      };
     })(),
     disclaimer: `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`,
   };
@@ -1952,7 +2153,7 @@ function renderRadar() {
 
   drawRadar(canvas, cells, { height: 400 });
   $('radarLegend').innerHTML = cells.map((c, i) =>
-    `<span class="k"><span class="rdrkey" style="background:${SERIES[i]}"></span>${c.name}</span>`
+    `<span class="k"><span class="rdrkey" style="background:${SERIES[i]}"></span>${esc(c.name)}</span>`
   ).join('');
   const gaps = missingNotes(cells);
   $('radarGaps').textContent = gaps.length
@@ -2143,6 +2344,7 @@ function initComponents() {
     sec.className = 'sec';
     sec.innerHTML = `<h3>${esc(name)}</h3><select data-cat="${key}"></select><div class="hint"></div>`;
     const sel = sec.querySelector('select');
+    sel.setAttribute('aria-label', `${name} component`);
     for (const o of options) {
       const opt = document.createElement('option');
       opt.value = o.id;
@@ -2302,7 +2504,8 @@ function recompute() {
     // Invalidate every derived surface so nothing keeps describing the
     // previous configuration (stats, 3D, findings, export).
     $('cfgHint').textContent = `${N.toLocaleString()} cells — above the ${MAX_CELLS.toLocaleString()}-cell render cap; reduce S or P.`;
-    lastLayout = null; lastSummary = null; lastFindings = []; lastAnalysis = null; lastArch = null;
+    lastDesign = null; lastLayout = null; lastSummary = null;
+    lastFindings = []; lastAnalysis = null; lastArch = null;
     const emptyMsg = '<div class="empty">Over the cell cap — no pack computed.</div>';
     $('archBody').innerHTML = emptyMsg;
     $('hdrStats').innerHTML = '';
@@ -2318,24 +2521,36 @@ function recompute() {
     return;
   }
   $('btnExport').disabled = false;
-  const cool = coolingSpace();
-  const opts = layoutOpts(cool);
-  let layout = null;
   let bayNote = '';
-  if (state.appliedBay) {
-    // A shaped fill was applied: place the cells inside the real bay outline.
-    layout = layoutPackBay(c, state.s, state.p, state.appliedBay, opts);
-    if (!layout) {
-      state.appliedBay = null; // S·P outgrew the bay — fall back to a free grid
-      bayNote = ' · exceeds bay capacity, showing free grid';
-    }
+  const design = designFromSpec(currentSpec(), { includeTraces: true });
+  // The engine openly falls back when a shaped bay cannot hold the topology.
+  // Reflect that resolution into UI state, then create the one authoritative
+  // snapshot the screen will render.
+  if (state.appliedBay && !design.spec.resolved.layout.bay) {
+    state.appliedBay = null;
+    bayNote = ' · exceeds bay capacity, showing free grid';
   }
-  if (!layout) layout = layoutPack(c, state.s, state.p, opts);
-  if (!layout) layout = layoutPack(c, state.s, state.p, { ...opts, nx: 0 });
-  lastLayout = layout;
-  lastSummary = summarize(c, state.s, state.p, layout);
-  $('cfgHint').textContent = layout.bayZonesOut
-    ? `${N} cells in ${state.appliedBay.kind} bay · ${layout.arrangement}`
+  lastDesign = design;
+  lastLayout = layoutForDesign(design);
+  lastSummary = design.pack;
+  lastAnalysis = design.analysis;
+  lastArch = design.architecture;
+  lastFindings = design.audit?.standards || [];
+  lastElectricalProtection = design.electricalProtection;
+  lastTherm = design.thermal;
+  lastSensors = design.sensors;
+  lastCharging = design.charging;
+  lastV2x = design.v2x;
+  lastVehicle = design.vehicle;
+  lastShort = design.shortCircuit;
+  lastSim = design.simulation || { unavailable: true, why: 'No sizing duty is available for this design.' };
+  lastSimFindings = design.simulation?.findings || [];
+  lastSimCompare = design.comparison;
+  lastArchFindings = archElectricalFindings();
+  lastThermFindings = thermFindings();
+  const layout = lastLayout;
+  $('cfgHint').textContent = layout?.bayZonesOut
+    ? `${N} cells in ${design.spec.resolved.layout.bay?.kind || 'shaped'} bay · ${layout.arrangement}`
     : `${N} cells · ${layout.nx}×${layout.ny}${layout.nz > 1 ? `×${layout.nz}` : ''} ${layout.arrangement}${bayNote}`;
 
   const chemCol = CHEMISTRIES[c.chemistry]?.color;
@@ -2348,9 +2563,12 @@ function recompute() {
   } else {
     pack3dDirty = true; // pushed lazily when the user switches to 3D
   }
-  // Every panel is contained. If one throws, it says so in its own box and
+  // Every panel reads the same immutable result and is contained. If one
+  // renderer throws, it says so in its own box and the others remain usable.
   // the rest of the design still renders — a blank frozen page helps nobody.
   renderGuard('The analysis', $('findings'), runAnalysis);
+  renderGuard('The architecture', $('archBody'), renderArchitecture);
+  renderGuard('Electrical protection', $('prechargeCalcBody'), renderElectricalProtection);
   renderGuard('The pack summary', $('statsBody'), renderStats);
   renderGuard('The component legend', null, renderCompLegend);
   renderGuard('The thermal system', $('thermBody'), renderThermal);
@@ -2535,14 +2753,8 @@ function renderSensors() {
   const box = $('sensorBody');
   if (!box) return;
   if (!lastSummary || !lastArch) { box.innerHTML = '<div class="empty">—</div>'; lastSensors = null; return; }
-  const diagnostics = buildEngineeringDiagnostics({ appId: state.presetId, chemistry: cell().chemistry });
-  lastSensors = buildSensorPlan({
-    cell: cell(), s: state.s, p: state.p, summary: lastSummary,
-    partition: lastArch.partition, bms: lastArch.bms,
-    therm: lastTherm, selection: selComponents(),
-    conditionMonitoring: diagnostics.conditionMonitoring,
-    isolationMonitoring: lastArch.isolationMonitoring,
-  });
+  const diagnostics = lastDesign?.diagnostics
+    || buildEngineeringDiagnostics({ appId: state.presetId, chemistry: cell().chemistry });
   const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
   box.innerHTML = lastSensors.groups.map((gr) => `
     <h3 style="font-family:var(--mono);font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:14px 0 4px">${esc(gr.level)}</h3>
@@ -2637,7 +2849,7 @@ function renderRunnerBox() {
     + `your machine · ${runnerInfo.cores} cores</b></div>`
     + `<div class="hint" style="margin-top:4px">${esc(status.text)}</div>`
     + `<button class="btn" id="btnAdvModel" style="width:100%;margin-top:8px">Run the advanced electro-thermal model</button>`
-    + `<button class="btn" id="btnFmuExport" style="width:100%;margin-top:6px">Export for co-simulation (FMI 2.0)</button>`
+    + `<button class="btn" id="btnFmuExport" style="width:100%;margin-top:6px">Export FMI 2.0 source kit</button>`
     + `<div id="runnerOut" style="margin-top:8px"></div>`;
   $('btnAdvModel').onclick = async () => {
     const out = $('runnerOut');
@@ -2664,17 +2876,23 @@ function renderRunnerBox() {
   };
   $('btnFmuExport').onclick = async () => {
     const out = $('runnerOut');
-    out.innerHTML = '<div class="hint">Building the FMU…</div>';
+    out.innerHTML = '<div class="hint">Building the source-FMU kit…</div>';
     try {
       const fmu = await buildFmuOnRunner({ spec: currentSpec() });
       const names = Object.keys(fmu.files);
-      out.innerHTML = `<div class="hint">Built <b>${esc(fmu.modelName)}</b> (${names.length} files, guid `
+      out.innerHTML = `<div class="hint">Built the <b>${esc(fmu.modelName)}</b> source-FMU kit (${names.length} files, guid `
         + `<span style="font-family:ui-monospace,monospace">${esc(fmu.guid)}</span>). `
-        + `Drop it into ANSYS Twin Builder, Simulink, GT-SUITE or Dymola after compiling — `
-        + `the build line is in its README.</div>`;
-      for (const [name, content] of Object.entries(fmu.files)) {
-        saveTextFile(content, name.split('/').pop());
-      }
+        + `This is source, not a drop-in binary FMU: compile it with the FMI headers, preserve the paths, `
+        + `then package the modelDescription.xml and binaries as described in README.md.</div>`;
+      // A browser cannot create download directories. One portable manifest
+      // preserves every exact FMU-relative path (including sources/) instead
+      // of flattening files into ambiguous names that can no longer be built.
+      saveTextFile(JSON.stringify({
+        format: 'battery-design/source-fmu-kit@1',
+        modelName: fmu.modelName,
+        guid: fmu.guid,
+        files: fmu.files,
+      }, null, 2), `${fmu.modelName || 'BatteryPack'}-source-fmu-kit.json`);
     } catch (e) {
       out.innerHTML = `<div class="hint">Could not build it: ${esc(e.message)}</div>`;
     }
@@ -2694,15 +2912,136 @@ function saveTextFile(content, filename) {
 
 // The design on screen, as the spec the engine speaks.
 function currentSpec() {
-  const profileTrace = state.presetId === 'marine' ? profileTraceForState() : null;
+  const profileTrace = profileTraceForState();
   const cool = coolingSpace();
+  const requirements = sizingRequestFromInputs();
+  const arch = archOptions();
+  const vehicle = vehicleFromInputs();
+  const cl = climateById(state.climateId);
+  const designAmbientC = requirements.envTempC || [0, 40];
+  const missionAmbientC = simSeason === 'winter' && cl ? cl.seasons.winter[0]
+    : simSeason === 'summer' && cl ? cl.seasons.summer[1]
+      : designAmbientC[1];
+  const route = state.vehicleRoute?.points?.length ? {
+    name: state.vehicleRoute.name || 'Selected route',
+    points: state.vehicleRoute.points.map((point) => ({
+      lat: point.lat, lon: point.lon,
+      ...(Number.isFinite(point.eleM) ? { eleM: point.eleM } : {}),
+      ...(Number.isFinite(point.tS) ? { tS: point.tS } : {}),
+    })),
+  } : undefined;
+  const refId = $('shuntReference')?.value || null;
+  const customShunt = refId === 'custom';
+  const electricalProtection = {
+    precharge: {
+      capacitanceUF: inputNumber('archCap'),
+      targetTimeS: inputNumber('archTpre'),
+      resistanceOhm: inputNumber('epResOhm'),
+      resistanceTolerancePct: inputNumber('epResTolerance'),
+      loadCurrentA: inputNumber('epLoadA'),
+      startsPerHour: inputNumber('archRep'),
+      designMarginPct: inputNumber('epMargin'),
+      resistorVoltageRatingV: inputNumber('epResVoltage'),
+      resistorPulseEnergyJ: inputNumber('epResEnergy'),
+      resistorPulsePowerW: inputNumber('epResPulsePower'),
+      resistorContinuousPowerW: inputNumber('epResContinuous'),
+      contactorId: $('epContactor')?.value || 'auto',
+      contactorMakeA: inputNumber('epContactorMake'),
+      contactorMechanicalCycles: inputNumber('epContactorCycles'),
+      supplierEvidence: inputEvidence('epEvidencePart', 'epEvidenceRevision', 'epEvidenceDate'),
+    },
+    shunt: {
+      referenceId: customShunt ? null : refId,
+      resistanceUOhm: customShunt ? inputNumber('shuntResistance') : null,
+      continuousRatingA: customShunt ? inputNumber('shuntRatingA') : null,
+      peakRatingA: customShunt ? inputNumber('shuntPeakRatingA') : null,
+      peakDurationRatingS: customShunt ? inputNumber('shuntPeakRatingS') : null,
+      conductorAreaMm2: customShunt ? inputNumber('shuntArea') : null,
+      maxOperatingC: customShunt ? inputNumber('shuntMaxC') : null,
+      gainErrorPct: customShunt ? inputNumber('shuntGain') : null,
+      offsetErrorA: customShunt && inputNumber('shuntOffsetMA') != null
+        ? inputNumber('shuntOffsetMA') / 1000 : null,
+      noiseErrorA: customShunt && inputNumber('shuntNoiseMA') != null
+        ? inputNumber('shuntNoiseMA') / 1000 : null,
+      thermalResistanceKPerW: customShunt ? inputNumber('shuntRth') : null,
+      thermalTimeConstantS: customShunt ? inputNumber('shuntTau') : null,
+      ambientC: missionAmbientC,
+      continuousA: inputNumber('shuntContinuousA'),
+      peakA: inputNumber('shuntPeakA'),
+      peakDurationS: inputNumber('shuntPeakS'),
+      requiredAccuracyPct: inputNumber('shuntAccuracy'),
+      supplier: customShunt ? { part: $('shuntPart')?.value?.trim() || null } : null,
+      evidence: customShunt ? {
+        revision: $('shuntRevision')?.value?.trim() || null,
+        date: $('shuntDate')?.value?.trim() || null,
+      } : undefined,
+    },
+    fast: {
+      thresholdA: inputNumber('fastThresholdA'),
+      totalDelayMs: inputNumber('fastDelayMs'),
+      shuntPeakRangeA: inputNumber('fastShuntRangeA'),
+      interrupterVoltageRatingV: inputNumber('fastVoltageV'),
+      interrupterCurrentRatingA: inputNumber('fastCurrentA'),
+      evidence: inputEvidence('fastPart', 'fastRevision', 'fastDate'),
+    },
+  };
+  const gf = currentGridFactor();
   return {
+    schemaVersion: DESIGN_SPEC_SCHEMA_VERSION,
     application: state.presetId || undefined,
     cell: cell().id, s: state.s, p: state.p,
-    market: state.marketId, dod: currentDod(),
+    market: state.marketId, dod: currentDod(), gridGPerKWh: gf.g,
     batteryCategory: state.batteryCategory || undefined,
     evaluationDate: state.evaluationDate,
-    v2xPolicy: state.v2xPolicy, driveMode: state.driveMode,
+    regulatory: {
+      batteryCategory: state.batteryCategory || undefined,
+      evaluationDate: state.evaluationDate,
+    },
+    requirements: {
+      ...requirements,
+      ambientC: requirements.envTempC,
+      profileScaleW: state.profileScaleW,
+      busLoad: state.busLoad,
+    },
+    energyWh: requirements.energyWh,
+    contPowerW: requirements.contPowerW,
+    peakPowerW: requirements.peakPowerW,
+    chargeRateC: requirements.chargeRateC,
+    cyclesPerYear: requirements.cyclesPerYear,
+    targetYears: requirements.targetYears,
+    ambientC: requirements.envTempC,
+    climate: {
+      id: state.climateId,
+      season: state.seasonId,
+      ambientC: requirements.envTempC,
+    },
+    v2xPolicy: state.v2xPolicy,
+    driveMode: state.driveMode,
+    vehicle: vehicle || undefined,
+    gradePct: inputNumber('vehGrade') ?? 0,
+    route,
+    architecture: {
+      topology: arch.topology,
+      isolationStandard: arch.isolationStandard,
+      emsOverride: arch.emsOverride,
+      sModOverride: arch.sModOverride,
+      channelsPerIc: arch.channelsPerIc,
+      linkCapUF: arch.linkCapUF,
+      prechargeTimeS: arch.prechargeTimeS,
+      prechargesPerHour: arch.prechargesPerHour,
+      cellsPerTempSensor: arch.cellsPerTempSensor,
+      targetEnergyWh: arch.targetEnergyWh,
+      racksOverride: arch.racksOverride,
+    },
+    isolationStandard: state.archIso,
+    thermal: { loopOverride: state.loopOverride },
+    thermalOverride: state.loopOverride,
+    charging: { obcOverride: obcSel },
+    obcOverride: obcSel,
+    electricalProtection,
+    busbarAreaMm2: inputNumber('scArea'),
+    fuseRatingA: inputNumber('scFuse'),
+    linkFuseA: inputNumber('scLink'),
     components: Object.fromEntries(Object.entries(state.sel)),
     layout: {
       arrangement: state.arrangement,
@@ -2717,11 +3056,20 @@ function currentSpec() {
       nz: state.nz,
       bay: state.appliedBay || undefined,
     },
+    policyId: state.energyPolicyId || undefined,
+    profileId: state.profileId || undefined,
+    profileScaleW: state.profileScaleW || undefined,
+    profileTrace: profileTrace || undefined,
+    mission: {
+      passes: simPasses,
+      startSoC: simSoC / 100,
+      ambientC: missionAmbientC,
+      season: simSeason,
+      charge: { mode: simChargeMode, minutes: simChargeMin },
+    },
+    compareCellIds: picker ? [...picker.selected] : [],
     ...(state.presetId === 'marine' ? {
       marine: { ...state.marine },
-      policyId: state.energyPolicyId || undefined,
-      profileId: state.profileId || undefined,
-      profileTrace: profileTrace || undefined,
     } : {}),
   };
 }
@@ -3120,10 +3468,10 @@ function renderVehicle() {
 // Hand the physics-derived demand to the rest of the tool: it becomes the
 // active load profile, and the scalar requirements follow from it.
 function useVehicleProfile() {
-  computeVehicle();
-  if (!lastVehicle?.drive) return;
   state.profileId = 'vehicle';
-  state.profileScaleW = lastVehicle.drive.scaleW;
+  recompute();
+  if (!lastDesign?.vehicle?.drive) return;
+  state.profileScaleW = lastDesign.vehicle.drive.peakW;
   const sel = $('selProfile');
   if (sel && ![...sel.options].some((o) => o.value === 'vehicle')) rebuildProfileSelect(state.presetId);
   if (sel) sel.value = 'vehicle';
@@ -3143,7 +3491,10 @@ function bindShort() {
 }
 
 function bindVehicle() {
-  const refresh = () => { computeVehicle(); renderVehicle(); if (state.profileId === 'vehicle') useVehicleProfile(); };
+  const refresh = () => {
+    if (state.profileId === 'vehicle') useVehicleProfile();
+    else recompute();
+  };
   for (const id of ['vehMass', 'vehPayload', 'vehCd', 'vehArea', 'vehCrr', 'vehEff', 'vehRegen', 'vehAux', 'vehGrade']) {
     const el = $(id);
     if (el) el.onchange = () => {
@@ -3261,9 +3612,7 @@ function renderCharging() {
   // with it. Choosing one changes parts, budget and the release checklist.
   $('segV2x')?.querySelectorAll('button').forEach((b) => b.onclick = () => {
     state.v2xPolicy = b.dataset.v2x;
-    computeCharging();
-    renderCharging();
-    if (document.querySelector('#pane-eu.active')) renderEu();
+    recompute();
   });
 }
 
@@ -3334,11 +3683,15 @@ function computeSim() {
     if (generation !== simulationGeneration) return;
     lastSim = mission;
     lastSimFindings = lastSim.unavailable ? [] : lastSim.findings;
-    lastSimCompare = comparison;
-    // The VALUE side of the comparison: same duty, each cell's lifetime cost.
-    for (const r of lastSimCompare?.rows || []) {
-      r.cost = costModel(r.cell, r.s * r.p, r.energyWh, usage);
-    }
+    // A legacy worker result is presentation-only. Copy rows before adding
+    // value data so this fallback can never mutate the canonical snapshot.
+    lastSimCompare = comparison ? {
+      ...comparison,
+      rows: (comparison.rows || []).map((row) => ({
+        ...row,
+        cost: costModel(row.cell, row.s * row.p, row.energyWh, usage),
+      })),
+    } : null;
   };
 
   // Worker startup is slower than an ordinary short mission, so only deep
@@ -3389,7 +3742,7 @@ function thermFindings() {
 function renderThermal() {
   const box = $('thermBody');
   if (!lastSummary) { box.innerHTML = '<div class="empty">—</div>'; lastTherm = null; return; }
-  if (!lastTherm) computeThermal();
+  if (!lastTherm) { box.innerHTML = '<div class="empty">No thermal result for this snapshot.</div>'; return; }
   const T = lastTherm;
   $('loopAssess').innerHTML = assessCard({ ...T.assessment, pros: T.loop.pros, cons: T.loop.cons });
   const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
@@ -3718,7 +4071,8 @@ function drawThermalLoop(canvas, T, forExport = false) {
 }
 
 function renderStats() {
-  const S = lastSummary, c = cell();
+  const S = lastSummary;
+  const c = cellById(lastDesign?.spec?.resolved?.cell) || cell();
   const rows = [
     ['sec', 'Configuration'],
     ['Cell', c.name],
@@ -3754,9 +4108,7 @@ function renderStats() {
     if (T.creepageReqMm != null) rows.push(['Creepage req. (~)', `${f1(T.creepageReqMm)} mm`]);
   }
   {
-    const nv = (id) => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : null; };
-    const cm = costModel(c, S.cellCount, S.energyWh,
-      { cyclesPerYear: nv('rqCy'), targetYears: nv('rqYr'), dod: currentDod() });
+    const cm = lastDesign?.cost || {};
     if (cm.upfrontUSD != null || cm.usdPerKWhDelivered != null) {
       rows.push(['sec', 'Cost (cells, estimate)']);
       if (cm.upfrontUSD != null) rows.push(['Upfront', `~$${f0(cm.upfrontUSD)} · ${f0(cm.usdPerKWhCap)} $/kWh`]);
@@ -3796,47 +4148,42 @@ function currentUsage() {
 }
 
 function allLiveFindings() {
-  const perspectives = lastAnalysis?.perspectives || {};
-  const engineering = ['mechanical', 'thermal', 'electrical', 'safety']
-    .flatMap((k) => perspectives[k] || []);
   return [
-    ...engineering, ...lastArchFindings, ...(lastElectricalProtection?.findings || []), ...lastThermFindings,
-    ...lastSimFindings, ...(lastShort?.findings || []), ...lastFindings,
+    ...(lastDesign?.findings || []), ...lastArchFindings, ...lastThermFindings,
   ];
 }
 
 function renderCustomerResult() {
   const box = $('customerResult');
   if (!box) return;
-  if (!state.presetId || !lastSummary) {
+  if (!lastDesign?.application || !lastSummary) {
     box.innerHTML = '<div class="empty">Complete the sizing choices to see one clear recommendation.</div>';
     if ($('customerResultReport')) $('customerResultReport').innerHTML = box.innerHTML;
     return;
   }
-  const req = sizingRequestFromInputs();
+  const req = lastDesign.spec.requirements || sizingRequestFromInputs();
   const dims = lastSummary.dims;
   const limit = req.maxDimsMm;
   const fits = !limit || !dims ||
     (dims.x <= limit.x && dims.y <= limit.y && dims.z <= limit.z) ||
     (dims.y <= limit.x && dims.x <= limit.y && dims.z <= limit.z);
   const assessment = assessSizingCandidate({
-    cell: cell(), s: state.s, p: state.p, summary: lastSummary, fits,
+    cell: cellById(lastDesign.spec.resolved.cell) || cell(),
+    s: lastDesign.spec.resolved.s, p: lastDesign.spec.resolved.p,
+    summary: lastSummary, fits,
   }, req);
   const readiness = customerReadiness(allLiveFindings(), assessment.blockers);
-  const deliveredWh = req.energyWh || lastSummary.energyWh * currentDod();
-  const rte = roundTripPlan({ application: state.presetId, deliveredWh });
-  const cm = costModel(cell(), lastSummary.cellCount, lastSummary.energyWh, {
-    cyclesPerYear: req.cyclesPerYear, targetYears: req.targetYears, dod: currentDod(),
-  });
+  const rte = lastDesign.energyPerformance;
+  const cm = lastDesign.cost;
   const installed = lastSummary.energyWh;
-  const usable = installed * currentDod();
+  const usable = installed * lastDesign.spec.resolved.dod;
   const issueText = readiness.failCount
     ? `${readiness.failCount} blocking ${readiness.failCount === 1 ? 'item' : 'items'} to resolve`
     : readiness.warnCount
       ? `${readiness.warnCount} ${readiness.warnCount === 1 ? 'condition' : 'conditions'} to review`
       : 'No blocking item found';
   const reason = assessment.eligible
-    ? `Meets the stated energy, power and voltage gates${req.maxMassKg ? ', the mass limit' : ''}${limit ? ', and the space limit' : ''} for ${PRESETS.find((p) => p.id === state.presetId)?.name || 'this application'}.`
+    ? `Meets the stated energy, power and voltage gates${req.maxMassKg ? ', the mass limit' : ''}${limit ? ', and the space limit' : ''} for ${lastDesign.application.name || 'this application'}.`
     : assessment.blockers[0];
   box.className = 'customer-result';
   const html = `
@@ -3866,57 +4213,6 @@ function renderCustomerResult() {
 }
 
 function runAnalysis() {
-  const S = lastSummary, c = cell();
-  const pack = {
-    nominalV: S.nominalV, vMax: S.vMax, vMin: S.vMin,
-    capacityAh: S.capacityAh, energyWh: S.energyWh, massKg: S.massKg,
-    massCellsKg: S.massCellsKg,
-    cellCount: S.cellCount, maxContCurrentA: S.maxContCurrentA,
-    maxContPowerW: S.maxContPowerW, dcirMOhm: S.dcirMOhm,
-    dims: S.dims, volumeL: S.volumeL,
-  };
-  const usage = currentUsage();
-  // Architecture is the single resolver for the selected electrical-bus
-  // context. Every downstream perspective consumes this same result.
-  runArchitecture();
-  const isolationResolution = lastArch?.isolation || lastArch?.isolationReview || null;
-  const stdCtx = {
-    cell: c, s: state.s, p: state.p, pack,
-    layout: { spacingMm: state.spacingMm, arrangement: state.arrangement, wallMm: state.wallMm },
-    usage, isolationResolution,
-  };
-  lastFindings = runChecks(stdCtx);
-
-  try {
-    lastAnalysis = analyze({
-      cell: c, s: state.s, p: state.p, pack,
-      layout: {
-        arrangement: state.arrangement, orientation: state.orientation,
-        spacingMm: state.spacingMm, wallMm: state.wallMm,
-        inner: lastLayout.inner, outer: lastLayout.outer,
-        nx: lastLayout.nx, ny: lastLayout.ny, nz: lastLayout.nz,
-      },
-      usage,
-      selection: selComponents(),
-      isolationResolution,
-    });
-  } catch (e) {
-    console.error('analysis failed', e);
-    lastAnalysis = null;
-  }
-
-  // The architecture is part of the electrical picture, not a separate
-  // world: compute it first, then fold its findings into the Electrical
-  // pane, the pass/fail badge and the report.
-  lastArchFindings = archElectricalFindings();
-  computeThermal();
-  lastThermFindings = thermFindings();
-  computeCharging();
-  computeVehicle();
-  computeShort();
-  computeElectricalProtection();
-  computeSim();
-
   const perspectives = lastAnalysis?.perspectives || {};
   refreshStatusBadge();
 
@@ -3957,17 +4253,8 @@ function runAnalysis() {
 // signal aligned with the newly arrived findings without rerunning the whole
 // analysis (which would immediately schedule the same simulation again).
 function refreshStatusBadge() {
-  const perspectives = lastAnalysis?.perspectives || {};
-  const engineering = ['mechanical', 'thermal', 'electrical', 'safety']
-    .flatMap((key) => perspectives[key] || []);
   const all = [
-    ...engineering,
-    ...lastArchFindings,
-    ...(lastElectricalProtection?.findings || []),
-    ...lastThermFindings,
-    ...lastSimFindings,
-    ...(lastShort?.findings || []),
-    ...lastFindings,
+    ...(lastDesign?.findings || []), ...lastArchFindings, ...lastThermFindings,
   ];
   const nFail = all.filter((finding) => finding.severity === 'fail').length;
   const nWarn = all.filter((finding) => finding.severity === 'warn').length;
@@ -4619,33 +4906,39 @@ function runFit() {
 // Export / hash / theme
 // ---------------------------------------------------------------------------
 function exportJSON() {
-  const c = cell();
-  const semanticDesign = designFromSpec(currentSpec());
-  const marineDesign = state.presetId === 'marine' ? semanticDesign : null;
+  const design = currentDesignSnapshot();
+  const c = cellById(design.spec.resolved.cell) || cell();
   const doc = {
     tool: 'battery-data pack designer',
     generated: new Date().toISOString(),
-    cell: c, config: { s: state.s, p: state.p },
-    layout: {
-      arrangement: state.arrangement, orientation: state.orientation,
-      spacingMm: state.spacingMm, wallMm: state.wallMm, headroomMm: state.headroomMm,
-      grid: lastLayout ? { nx: lastLayout.nx, ny: lastLayout.ny, nz: lastLayout.nz } : null,
-    },
-    components: selComponents(),
-    summary: lastSummary,
-    analysis: lastAnalysis,
-    architecture: lastArch,
-    marine: marineDesign?.marine || null,
-    twinShip: marineDesign?.twinShip || null,
-    sizing: semanticDesign.spec.resolved.sizing,
-    semantics: semanticDesign.semantics,
-    standardsFindings: lastFindings,
+    schemaVersion: design.spec.schemaVersion,
+    spec: design.spec,
+    binding: design.binding,
+    // Stable compatibility projections for existing exported-file readers.
+    cell: c,
+    config: { s: design.spec.resolved.s, p: design.spec.resolved.p },
+    layout: design.spec.resolved.layout,
+    components: design.spec.resolved.components,
+    summary: design.pack,
+    analysis: design.analysis,
+    architecture: design.architecture,
+    thermal: design.thermal,
+    charging: design.charging,
+    v2x: design.v2x,
+    vehicle: design.vehicle,
+    marine: design.marine,
+    twinShip: design.twinShip,
+    simulation: design.simulation,
+    sizing: design.spec.resolved.sizing,
+    semantics: design.semantics,
+    standardsFindings: design.findings,
+    result: design,
     disclaimer: `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`,
   };
   const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `pack-${c.id}-${state.s}s${state.p}p.json`;
+  a.download = `pack-${c.id}-${design.pack.s}s${design.pack.p}p.json`;
   a.click();
   URL.revokeObjectURL(a.href);
 }

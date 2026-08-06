@@ -4,7 +4,7 @@
 // registry describes itself honestly — including what is NOT built — and that
 // the FMI export produces something a host tool would actually accept.
 import { test } from 'node:test';
-import { ok } from './helpers.mjs';
+import { ok, throws } from './helpers.mjs';
 import { ADDONS, addonById, addonsFor, capabilityReport, validateAddons } from '../js/addons.js';
 import { FMU_VARIABLES, FMU_PARAMETERS, FMI_VERSION, modelDescriptionXml, fmuSourceC, buildFmu } from '../js/fmi.js';
 import { CONCEPTS } from '../js/knowledge.js';
@@ -137,7 +137,12 @@ test('the FMU package carries everything needed to build and use it', () => {
   ok(/ANSYS Twin Builder/.test(readme) && /Simulink/.test(readme) && /GT-SUITE/.test(readme),
     'the README names the tools this is for');
   ok(/cc -O2 -fPIC -shared/.test(readme), 'and gives the build line');
+  ok(/not a\s+loadable FMU yet/i.test(readme) && /sources\/BatteryPack\.c/.test(readme),
+    'and identifies itself as a source kit while preserving the FMU directory tree');
+  ok(/archive\s+root/.test(readme), 'packaging instructions keep modelDescription, sources and binaries at the archive root');
   ok(/Not electrochemical/.test(readme) && /Linear OCV/.test(readme),
     'and says plainly what this model is not, like every other model here');
   ok(/source FMU/i.test(fmu.note), 'the package admits it needs compiling');
+  throws(() => buildFmu({ cell: CELL, s: 96, p: 44, modelName: '../../escape' }),
+    'the model name cannot escape the source-kit tree');
 });

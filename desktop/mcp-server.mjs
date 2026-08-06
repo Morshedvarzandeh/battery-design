@@ -449,7 +449,7 @@ const HANDLERS = {
       `Profile: ${d.simulation.profile.name}, ${spec.mission.passes} pass(es)`,
       `SoC ${Math.round(s.startSoC * 100)}% → ${Math.round(s.endSoC * 100)}% (minimum ${Math.round(s.minSoC * 100)}%)`,
       `Energy ${s.energyOutWh.toFixed(0)} Wh out, ${s.lossWh.toFixed(0)} Wh lost, ${s.efficiencyPct.toFixed(1)}% efficient`,
-      `Peak cell temperature ${s.tempMaxC?.toFixed(1)} °C, voltage ${s.vMinPack.toFixed(1)}–${s.vMaxPack.toFixed(1)} V`,
+      `Modeled peak cell temperature ${s.maxT?.toFixed(1)} °C (cell limit ${s.tempMaxC?.toFixed(1)} °C), voltage ${s.vMinPack.toFixed(1)}–${s.vMaxPack.toFixed(1)} V`,
       s.unmetWh > 0 ? `RAN OUT: ${s.unmetWh.toFixed(0)} Wh of the mission was not delivered.` : 'The pack completed the mission.',
       ...(s.chargedWh > 0 ? [`Charged ${s.chargedWh.toFixed(0)} Wh${s.chargeRefusedWh > 0 ? `, refused ${s.chargeRefusedWh.toFixed(0)} Wh (too cold)` : ''}`] : []),
       '',

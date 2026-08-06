@@ -25,8 +25,10 @@
 
 import { CONCEPTS, needed } from './knowledge.js';
 
-// tier    — where it runs: 'core' is always there, 'browser' is in the page,
-//           'desktop' needs the local runner because of what it computes.
+// tier    — the execution tier: 'core' is always there, 'browser' is in the
+//           page, 'desktop' needs local modules or the runner.
+// surfaces — where a desktop-tier capability is actually exposed. This keeps
+//           a CLI/MCP feature from being advertised as a GUI button.
 // status  — 'shipped' or 'planned'. Planned entries are listed so the roadmap
 //           is visible in the product rather than in someone's head.
 export const ADDONS = [
@@ -124,6 +126,7 @@ export const ADDONS = [
   },
   {
     id: 'sim2', name: 'Advanced electro-thermal model', tier: 'desktop', status: 'shipped',
+    surfaces: ['desktop-gui', 'cli', 'local-api'],
     module: 'sim2.js', concepts: ['simulation'],
     what: 'The correctable model: OCV + R0 + RC branches with Arrhenius dependence, reversible entropic heat, a per-module thermal network with an ε-NTU coolant stream, and calendar plus cycle aging. Every coefficient is an exposed parameter.',
     provides: ['per-module temperatures', 'aging schedule', 'a model fitted to YOUR cell'],
@@ -132,6 +135,7 @@ export const ADDONS = [
   },
   {
     id: 'search', name: 'Design-space search', tier: 'desktop', status: 'shipped',
+    surfaces: ['cli', 'local-api'],
     module: 'desktop/bd.mjs + desktop/pool.mjs', concepts: ['multi-objective'],
     what: 'Every cell against every energy target, each one fully worked and then ranked by cost per kWh delivered, range, mass or density — across all your cores.',
     provides: ['ranked candidate designs', 'sweeps over any one variable'],
@@ -168,6 +172,7 @@ export const ADDONS = [
   // different kind of arithmetic, and the honest answer changes with it.
   {
     id: 'crush', name: 'Crush & intrusion', tier: 'desktop', status: 'planned',
+    surfaces: ['planned'],
     module: 'planned', concepts: ['crush', 'spaces-why'],
     what: 'What the structure does when something presses on it: intrusion into the cell block, the load path through the frame, and how much of the crush space is actually doing work. The counterpart to the crash tests the release checklist already names — ECE R100 Annex 4, GB 38031, UL 2580 — which prescribe an outcome and leave the dimension to you.',
     provides: ['intrusion depth against the cell block', 'load path and where it fails first', 'how much crush space earns its volume'],
@@ -176,6 +181,7 @@ export const ADDONS = [
   },
   {
     id: 'vibration', name: 'Vibration & shock', tier: 'desktop', status: 'planned',
+    surfaces: ['planned'],
     module: 'planned', concepts: ['vibration'],
     what: 'Mount loads, the first natural frequency, and the random-vibration and shock profiles the standards actually test against. A pack whose first mode sits inside the excitation band fails by fatigue long before anything electrical does.',
     provides: ['mount and fastener loads', 'first natural frequency vs the excitation band', 'a shock and vibration verdict'],
@@ -184,6 +190,7 @@ export const ADDONS = [
   },
   {
     id: 'thermal-field', name: 'Thermal field across the pack', tier: 'desktop', status: 'planned',
+    surfaces: ['planned'],
     module: 'planned', concepts: ['thermal-field'],
     what: 'Not the loop that removes the heat — that is the BTMS add-on — but where the heat IS. The gradient across the pack that ages one module faster than the rest, and turns a fleet-average life figure into a warranty claim on the hot corner.',
     provides: ['temperature field and the gradient across modules', 'which module ages first and how much faster', 'where a sensor would actually tell you something'],
@@ -192,6 +199,7 @@ export const ADDONS = [
   },
   {
     id: 'corrosion-sim', name: 'Corrosion over life', tier: 'desktop', status: 'planned',
+    surfaces: ['planned'],
     module: 'planned — on materials.js + topology.js', concepts: ['corrosion'],
     what: 'The galvanic check the wiring study already runs says whether a joint is a couple. This says what that costs over ten years in the environment the machine lives in: material loss at the interface, the joint resistance climbing as it goes, and when it stops being a joint.',
     provides: ['material loss per joint over life', 'joint resistance drift', 'time to an unacceptable joint'],
@@ -200,6 +208,7 @@ export const ADDONS = [
   },
   {
     id: 'agents', name: 'AI & automation interface', tier: 'desktop', status: 'shipped',
+    surfaces: ['mcp', 'local-api'],
     module: 'desktop/mcp-server.mjs + api.js + brief.js', concepts: ['report', 'simulation'],
     what: 'The whole designer as one JSON call, plus an MCP server so Claude or any agent can size packs, run missions and compare cells by calling the real modules — and review a design the way an engineer would, with every check read into one list ordered so that what could hurt someone comes before what costs money.',
     provides: ['designFromSpec() JSON', 'MCP tools', 'a prioritised design review', 'the questions the tool needs answered, ranked by leverage'],
@@ -216,6 +225,7 @@ export const ADDONS = [
   },
   {
     id: 'wiring', name: 'Wiring, joints & bill of materials', tier: 'desktop', status: 'shipped',
+    surfaces: ['cli', 'mcp'],
     module: 'topology.js + materials.js + wiring.js', concepts: ['conductors', 'corrosion'],
     what: 'The pack as a connection graph rather than a number: every conductor run with its material, length and section, every joint with the two surfaces that meet there. Each run is then sized two ways — by the current-density rule of thumb and by the steady-state heat balance that says how hot it actually gets — and where they disagree the temperature answer wins. Out of the same graph come the interconnect resistance, the voltage drop and loss at continuous current, the galvanic check on every joint, and the bill of materials the customer receives.',
     provides: ['conductor runs and joints', 'temperature and required section per run', 'voltage drop and loss', 'galvanic compatibility per joint', 'bill of materials with mass and cost'],
@@ -224,6 +234,7 @@ export const ADDONS = [
   },
   {
     id: 'grounding', name: 'Grounding & bonding analysis', tier: 'desktop', status: 'shipped',
+    surfaces: ['cli', 'mcp'],
     module: 'grounding.js', concepts: ['bonding'],
     what: 'Isolation keeps fault current off the case; bonding decides what happens when isolation fails, and is asked about far less often. Every bonding path is checked three ways — continuity against the 0.1 Ω limit, touch voltage against the 60 V DC boundary, and whether the strap survives the fault current until protection clears. It catches the anodised housing that is not a bonding path however many bolts go through it, the stainless bond chosen for corrosion rather than conduction, and the machine that is conventionally ungrounded and to which none of these rules apply as written.',
     provides: ['bonding path resistance vs the 0.1 Ω limit', 'touch voltage at the prospective fault current', 'fault survival by the adiabatic rule', 'the ungrounded-system verdict where it applies'],
@@ -232,6 +243,7 @@ export const ADDONS = [
   },
   {
     id: 'lca', name: 'Life-cycle assessment', tier: 'desktop', status: 'shipped',
+    surfaces: ['cli'],
     module: 'lca.js', concepts: ['footprint'],
     what: 'The whole footprint by phase — cells, conductors, enclosure, use-phase losses and recycling recovery — each carrying its own data quality, because they differ by more than an order of magnitude in how well they are known. It answers the question worth asking first: the cells are around 95% of what it costs to build a pack, so chemistry and cell count move the footprint and busbar optimisation does not. It also picks the right comparison for the energy delivered, which for a vehicle is the fuel it replaces and NOT a grid factor.',
     provides: ['footprint by phase with a data-quality label on each', 'kg CO₂e per kWh of capacity and g per kWh delivered', 'the correct displacement basis for this machine', 'what is deliberately not estimated'],
@@ -240,6 +252,7 @@ export const ADDONS = [
   },
   {
     id: 'cosim', name: 'Co-simulation (FMI)', tier: 'desktop', status: 'shipped',
+    surfaces: ['desktop-gui', 'cli', 'local-api'],
     module: 'fmi.js', concepts: ['cosim'],
     what: 'Generate a reproducible FMI 2.0 source-FMU export kit for ANSYS Twin Builder, Simulink, GT-SUITE or Dymola — model description, complete C stepping source and build instructions. This is the compatibility export, not the future block-based Rust solver studio.',
     provides: ['a source-FMU kit that becomes a loadable .fmu after platform compilation', 'a documented coupling interface'],
@@ -248,6 +261,7 @@ export const ADDONS = [
   },
   {
     id: 'swap', name: 'Swappable-pack policy', tier: 'desktop', status: 'shipped',
+    surfaces: ['cli'],
     module: 'swap.js', concepts: ['swappable'],
     what: 'Fixed, swappable or hot-swappable as a design policy that cuts across every application. Choosing it changes four things at once: the mass stops being an outcome and becomes a requirement someone has to lift; the connector stops being a fitting and becomes a wear item with a finite mating count; you buy more packs than machines; and the pack has to survive being off the machine with no host BMS, disconnect or enclosure.',
     provides: ['the parts a fixed pack does not need', 'fleet size and packs per machine', 'connector mating-cycle life against the fleet life', 'the handling method the mass actually allows'],
@@ -256,6 +270,7 @@ export const ADDONS = [
   },
   {
     id: 'runaway', name: 'Runaway propagation', tier: 'desktop', status: 'shipped',
+    surfaces: ['browser-gui', 'cli'],
     module: 'runaway.js + cosim-analysis.js', concepts: ['propagation'],
     what: 'One cell goes — how much does each design decision help? Cell adjacency from the real layout, then conduction, radiation and the interconnect stepped in time with two thermal nodes per cell. It ranks barrier options and spacing against each other, and sizes the energy the enclosure must contain. It does NOT predict whether a pack propagates: the mechanisms that carry a real event are ejecta and flame, which are not modelled, so it under-predicts and can never clear a design.',
     provides: ['barrier and spacing options ranked against each other', 'MJ per cell and per module to contain', 'the effect of state of charge and of a heat-bridging interconnect', 'an attached Co-Simulation Studio safety scenario that can return Fail or Unproven but never Pass'],
@@ -264,6 +279,7 @@ export const ADDONS = [
   },
   {
     id: 'vent-sizing', name: 'Emergency vent sizing', tier: 'desktop', status: 'shipped',
+    surfaces: ['browser-gui'],
     module: 'venting.js + vent-layout.js + cosim-analysis.js', concepts: ['propagation'],
     what: 'A conditional pressure-relief free-area range from declared gas volume, release time, allowable gauge pressure, gas temperature and opening coefficient. A separate supplier-backed layer selects multiple vent units when required, checks market compatibility and enclosure fit, and returns provisional coordinates only on human-screened discharge faces.',
     provides: ['low/high unobstructed free area and equivalent diameter', 'supplier vent quantity and market-profile compatibility', 'enclosure capacity, exact provisional face coordinates and discharge vectors', 'mass-flow, placement and physical-test evidence'],
@@ -280,6 +296,7 @@ export const ADDONS = [
   },
   {
     id: 'hil-contract', name: 'Hardware-in-the-Loop contract & evidence', tier: 'desktop', status: 'shipped',
+    surfaces: ['browser-gui'],
     module: 'loop-testing.js', concepts: ['simulation', 'cosim'],
     what: 'Define and validate the fixed sample period, channel units and ranges, safe output values, overrun action and required sensor/communication/power fault tests. It evaluates measured target evidence but stays Unproven when no real hardware run is supplied.',
     provides: ['versioned HIL I/O contract', 'fault-injection matrix', 'timing/overrun and safe-state verdict from measured evidence'],
@@ -288,6 +305,7 @@ export const ADDONS = [
   },
   {
     id: 'hil-runtime', name: 'Deterministic HIL target runtime', tier: 'desktop', status: 'planned',
+    surfaces: ['planned'],
     module: 'planned', concepts: ['simulation', 'cosim'],
     what: 'Deploy the approved real-time model onto supported target hardware, drive physical controller I/O at a guaranteed period, inject faults and collect signed timing and safe-state evidence.',
     provides: ['target deployment', 'hard real-time execution', 'automated I/O and fault injection', 'signed hardware test reports'],
@@ -310,6 +328,7 @@ export const ADDONS = [
   },
   {
     id: 'showroom-machine', name: 'The machine around the pack', tier: 'desktop', status: 'shipped',
+    surfaces: ['desktop-gui'],
     module: 'hosts.js', concepts: ['host-machine'],
     what: 'The pack shown inside the thing it powers — under the floor of a car, on the roof of a bus, in the hull of a boat, in the torso of a humanoid. Sixteen machines, each with its own shape and its own mounting, because those are four different design problems and the tool has always modelled them separately without ever showing them. The silhouette is a massing block: its cross-section comes from a measured frontal area where the application has one, its length is class-typical, and the scene says which. The PACK inside it is at true scale, so an oversized one visibly bursts out of the machine instead of the machine quietly growing to fit.',
     provides: ['which machine, and where the pack mounts in it', 'whether the pack fits the indicative envelope', 'the pack at true scale inside it'],
@@ -373,6 +392,16 @@ export function addonsFor(appId, { tier = null, includePlanned = true } = {}) {
   });
 }
 
+export const CAPABILITY_SURFACES = Object.freeze([
+  'browser-gui', 'desktop-gui', 'cli', 'mcp', 'local-api', 'planned',
+]);
+
+export function addonsForSurface(surface, { appId = null, includePlanned = surface === 'planned' } = {}) {
+  if (!CAPABILITY_SURFACES.includes(surface)) return [];
+  return addonsFor(appId, { includePlanned })
+    .filter((addon) => addon.surfaces?.includes(surface));
+}
+
 // The honest summary of what this tool can do, for an application or in
 // general — including what is not built yet, marked as such.
 export function capabilityReport(appId = null) {
@@ -409,6 +438,12 @@ export function validateAddons() {
     if (!a.name || !a.what || !a.module) errors.push(`${a.id}: incomplete entry`);
     if (!['core', 'browser', 'desktop'].includes(a.tier)) errors.push(`${a.id}: unknown tier ${a.tier}`);
     if (!['shipped', 'planned'].includes(a.status)) errors.push(`${a.id}: unknown status ${a.status}`);
+    if (a.tier === 'desktop' && !a.surfaces?.length) errors.push(`${a.id}: desktop capability must name its actual surface`);
+    for (const surface of a.surfaces || []) {
+      if (!CAPABILITY_SURFACES.includes(surface)) errors.push(`${a.id}: unknown surface ${surface}`);
+    }
+    if (a.status === 'planned' && !a.surfaces?.includes('planned')) errors.push(`${a.id}: planned capability must use the planned surface`);
+    if (a.status === 'shipped' && a.surfaces?.includes('planned')) errors.push(`${a.id}: shipped capability cannot use the planned surface`);
     if (!a.provides?.length || !a.needs?.length) errors.push(`${a.id}: must say what it provides and needs`);
     if (a.status === 'planned' && !a.why) errors.push(`${a.id}: a planned add-on must justify itself`);
     for (const c of a.concepts || []) {

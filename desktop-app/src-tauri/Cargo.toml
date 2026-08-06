@@ -11,6 +11,7 @@ rust-version = "1.77"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+getrandom = "0.3"
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 

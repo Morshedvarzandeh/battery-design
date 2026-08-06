@@ -5,7 +5,7 @@
 # macOS, so the only honest place to build them is a matrix of real runners.
 #
 # It runs on a tag, or on a manual dispatch naming one. Either way it produces
-# a DRAFT release with an installer per platform plus the FMU, and the draft is
+# a DRAFT release with an installer plus the FMI source kit, and the draft is
 # published by hand — a release is outward-facing and the last look should be a
 # person's.
 name: Release
@@ -20,6 +20,7 @@ on:
         required: true
 
 permissions:
+  actions: read
   contents: write
 
 # On a tag push this is the tag. On a manual run github.ref_name would be the
@@ -27,14 +28,45 @@ permissions:
 # dispatch input wins where it is given.
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  GODOT_VERSION: "4.3"
 
 jobs:
   # The same gates the ordinary CI runs. A release that skipped them
   # would be the one build nobody checked, which is exactly backwards.
   gates:
     runs-on: ubuntu-latest
+    outputs:
+      release_sha: ${{ steps.release_ref.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Verify the requested release ref
+        id: release_ref
+        env:
+          REQUESTED_TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          set -euo pipefail
+          [[ "$REQUESTED_TAG" == v* ]] || { echo "::error::release ref must be a v* tag"; exit 1; }
+          git show-ref --verify --quiet "refs/tags/$REQUESTED_TAG" \
+            || { echo "::error::tag does not exist: $REQUESTED_TAG"; exit 1; }
+          release_sha=$(git rev-parse "refs/tags/$REQUESTED_TAG^{commit}")
+          test "$(git rev-parse HEAD)" = "$release_sha"
+          echo "sha=$release_sha" >> "$GITHUB_OUTPUT"
+      - name: Verify CI accepted this exact release commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          release_sha=$(git rev-parse HEAD)
+          accepted=$(gh run list --repo "${{ github.repository }}" --workflow CI \
+            --commit "$release_sha" --event push --limit 20 \
+            --json conclusion,headSha,status \
+            --jq 'any(.[]; .headSha == "'"$release_sha"'" and .status == "completed" and .conclusion == "success")')
+          test "$accepted" = true || {
+            echo "::error::CI has not accepted release commit $release_sha"
+            exit 1
+          }
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
       - uses: dtolnay/rust-toolchain@stable
@@ -48,25 +80,72 @@ jobs:
       - run: npm run typecheck
       - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs
+      - name: Cache Godot editor and web templates
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-web-v1
+      - name: Fetch Godot
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          mkdir -p ~/godot "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          curl -fsSL -o /tmp/godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d ~/godot
+          curl -fsSL -o /tmp/templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q /tmp/templates.tpz -d /tmp/tpl
+          cp /tmp/tpl/templates/web_nothreads_release.zip \
+             /tmp/tpl/templates/web_release.zip \
+             "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+      - name: Import, exercise and export the Vessel Twin renderer
+        run: |
+          set -euo pipefail
+          godot=$(find ~/godot -name 'Godot_v*_linux.x86_64' | head -1)
+          chmod +x "$godot"
+          cd garage3d
+          mkdir -p build
+          "$godot" --headless --import .
+          timeout 60s "$godot" --headless --path . --script res://tests/vessel_payload_smoke.gd
+          "$godot" --headless --export-release "Web" build/index.html
+          test -s build/index.html
+          test -s build/index.wasm
+          test -s build/index.pck
+      - name: Install the pinned real browser
+        run: npx playwright install --with-deps chromium
+      - name: Exercise the static and authenticated-runner browser paths
+        run: npm run test:e2e
+      - name: Preserve the verified renderer for desktop packaging
+        uses: actions/upload-artifact@v4
+        with:
+          name: garage3d-web
+          path: garage3d/build
+          if-no-files-found: error
+          retention-days: 1
 
-  # The FMU is the artefact the battery market actually consumes — it drops
-  # into Twin Builder, Simulink, GT-SUITE or Dymola as a component. It is
-  # platform-independent source, so it is built once.
+  # This repository currently generates FMI metadata and portable C source,
+  # not a precompiled platform FMU. Build the source kit once and label it
+  # precisely so users do not mistake it for a drop-in simulation component.
   fmu:
     needs: gates
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gates.outputs.release_sha }}
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
-      - name: Export the co-simulation FMU
+      - name: Export the FMI 2.0 source kit
         run: |
           node desktop/bd.mjs fmu --app ev --energy 60000 --out ./fmu-ev
-          cd fmu-ev && zip -r ../battery-design-ev.fmu.zip . && cd ..
+          cd fmu-ev && zip -r ../battery-design-ev-fmi-source-kit.zip . && cd ..
       - uses: actions/upload-artifact@v4
         with:
-          name: fmu
-          path: battery-design-ev.fmu.zip
+          name: fmi-source-kit
+          path: battery-design-ev-fmi-source-kit.zip
 
   # LINUX ONLY, deliberately.
   #
@@ -91,6 +170,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gates.outputs.release_sha }}
 
       - uses: actions/setup-node@v4
         with: { node-version: '22' }
@@ -109,7 +190,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
-            librsvg2-dev patchelf libssl-dev build-essential curl wget file
+            librsvg2-dev patchelf libssl-dev build-essential curl wget file xdg-utils xvfb
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -132,10 +213,18 @@ jobs:
           fi
           ls -la desktop-app/src-tauri/binaries/
 
-      - name: Stage the application
+      - name: Build the shared Rust/Wasm calculation core
         run: |
           npm run wasm:build
+      - name: Restore the Godot export accepted by the release gate
+        uses: actions/download-artifact@v4
+        with:
+          name: garage3d-web
+          path: garage3d/build
+      - name: Stage and verify the complete application tree
+        run: |
           node desktop-app/prepare.mjs
+          npm run test:packaged
 
       # The icon set is committed, so there is nothing to generate here. It
       # used to be regenerated on every runner, which quietly papered over the
@@ -151,7 +240,7 @@ jobs:
           done
           echo "icon set complete"
 
-      - uses: tauri-apps/tauri-action@v0
+      - uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -175,11 +264,11 @@ jobs:
             morshedvarzandeh.github.io/battery-design, or from a clone with
             `node desktop/bd.mjs serve`.
 
-            **Already have a simulation toolchain?** Take `battery-design-ev.fmu.zip`
-            instead. It is an FMI 2.0 co-simulation component: your vehicle or plant
-            model drives it, and the pack answers with voltage, current, temperature
-            and state of charge each coupling step. Works in ANSYS Twin Builder,
-            Simulink, GT-SUITE and Dymola.
+            **Building an FMI integration?** Take
+            `battery-design-ev-fmi-source-kit.zip`. It contains FMI 2.0 model
+            metadata and C source. Compile it with FMI headers for your target,
+            add the platform binary, and package the resulting FMU before importing
+            it into a simulation tool. It is not a precompiled drop-in FMU.
 
             The package is unsigned, which some software centres will mention.
 
@@ -188,15 +277,23 @@ jobs:
           prerelease: false
           args: --target ${{ matrix.target }}
 
+      - name: Install and launch-smoke both Linux packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          deb=$(find desktop-app/src-tauri/target/${{ matrix.target }}/release/bundle/deb -name '*.deb' -type f -print -quit)
+          appimage=$(find desktop-app/src-tauri/target/${{ matrix.target }}/release/bundle/appimage -name '*.AppImage' -type f -print -quit)
+          tools/smoke-installed-linux.sh "$deb" "$appimage"
+
   attach-fmu:
     needs: [desktop, fmu]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
-        with: { name: fmu }
-      - name: Attach the FMU to the release
+        with: { name: fmi-source-kit }
+      - name: Attach the FMI source kit to the release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "${{ env.RELEASE_TAG }}" battery-design-ev.fmu.zip \
+          gh release upload "${{ env.RELEASE_TAG }}" battery-design-ev-fmi-source-kit.zip \
             --repo "${{ github.repository }}" --clobber

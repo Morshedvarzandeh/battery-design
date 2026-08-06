@@ -144,23 +144,34 @@ test('new customer interactions are keyboard-visible and semantic', () => {
   assert.match(app, /b\.className = 'wz-opt'/);
 });
 
-test('report, AI brief and JSON export share one generated ontology snapshot', () => {
+test('UI, report, AI brief and JSON export share one canonical design snapshot', () => {
   assert.match(html, /id="btnVisualRep"/);
   assert.match(app, /buildVisualReportHTML\(R\)/);
   const reportStart = app.indexOf('function currentReportData()');
   const reportEnd = app.indexOf('function currentReportHTML()', reportStart);
   const report = app.slice(reportStart, reportEnd);
-  assert.equal((report.match(/designFromSpec\(/g) || []).length, 1,
-    'current report data performs one freshness-sensitive design evaluation');
-  assert.match(report, /const semanticDesign = designFromSpec\(currentSpec\(\)\)/);
-  assert.match(report, /const marineDesign = state\.presetId === 'marine' \? semanticDesign : null/);
-  assert.match(report, /semantics: semanticDesign\.semantics/);
+  assert.equal((report.match(/designFromSpec\(/g) || []).length, 0,
+    'current report never creates an independent engineering result');
+  assert.match(report, /const design = currentDesignSnapshot\(\)/);
+  assert.match(report, /semantics: design\.semantics/);
   assert.match(report, /semanticBinding: \{/);
-  assert.match(report, /outerDimensionsMm: semanticDesign\.pack\.dims/);
-  assert.match(report, /scene: lastLayout \? buildScene\(\{ design: semanticDesign, layout: lastLayout, showHost: true \}\) : null/,
-    'the visual report receives the same evaluated design and existing layout');
-  assert.match(report, /sizing: semanticDesign\.spec\.resolved\.sizing/,
+  assert.match(report, /outerDimensionsMm: summary\.dims/);
+  assert.match(report, /scene: canonicalLayout\s*\? buildScene\(\{ design, layout: canonicalLayout, showHost: true \}\) : null/,
+    'the visual report receives the canonical design and its resolved layout');
+  assert.match(report, /sizing: design\.spec\.resolved\.sizing/,
     'report data carries the resolved policy, profile and trace identity');
+
+  const recomputeStart = app.indexOf('function recompute()');
+  const recomputeEnd = app.indexOf('// ---------------------------------------------------------------------------\n// Sensors', recomputeStart);
+  const recompute = app.slice(recomputeStart, recomputeEnd);
+  assert.equal((recompute.match(/designFromSpec\(/g) || []).length, 1,
+    'one canonical engine run owns each UI recompute');
+  for (const projection of ['lastDesign = design', 'lastSummary = design.pack',
+    'lastAnalysis = design.analysis', 'lastArch = design.architecture',
+    'lastTherm = design.thermal', 'lastCharging = design.charging',
+    'lastVehicle = design.vehicle', 'lastSim = design.simulation']) {
+    assert.ok(recompute.includes(projection), `UI projection is hydrated from snapshot: ${projection}`);
+  }
 
   const briefStart = app.indexOf('function aiBriefData(R)');
   const briefEnd = app.indexOf('function currentGridFactor()', briefStart);
@@ -170,10 +181,11 @@ test('report, AI brief and JSON export share one generated ontology snapshot', (
   const exportStart = app.indexOf('function exportJSON()');
   const exportEnd = app.indexOf('function saveHash()', exportStart);
   const exported = app.slice(exportStart, exportEnd);
-  assert.equal((exported.match(/designFromSpec\(/g) || []).length, 1,
-    'JSON export also performs exactly one design evaluation');
-  assert.match(exported, /semantics: semanticDesign\.semantics/);
-  assert.match(exported, /sizing: semanticDesign\.spec\.resolved\.sizing/,
+  assert.equal((exported.match(/designFromSpec\(/g) || []).length, 0,
+    'JSON export never creates an independent engineering result');
+  assert.match(exported, /const design = currentDesignSnapshot\(\)/);
+  assert.match(exported, /semantics: design\.semantics/);
+  assert.match(exported, /sizing: design\.spec\.resolved\.sizing/,
     'JSON export carries the same resolved sizing identity');
 });
 

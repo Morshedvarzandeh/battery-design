@@ -20,8 +20,9 @@
 //   node desktop/bd.mjs serve  --port 8080
 //   node desktop/bd.mjs apps | node desktop/bd.mjs cells --chemistry LFP
 
-import { createReadStream, existsSync, statSync, writeFileSync, readFileSync } from 'node:fs';
+import { createReadStream, existsSync, statSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -44,10 +45,126 @@ import { propagationStudy, BARRIERS } from '../js/runaway.js';
 import { swapPlan, POLICIES as SWAP_POLICIES } from '../js/swap.js';
 import { layoutPack } from '../js/pack-engine.js';
 import { materialById } from '../js/materials.js';
-import { ADDONS, addonsFor, capabilityReport } from '../js/addons.js';
+import { ADDONS, addonsFor, addonsForSurface, capabilityReport } from '../js/addons.js';
 import { mkdirSync } from 'node:fs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const REAL_ROOT = realpathSync(ROOT);
+
+// The runner is a local engineering service, not a public web server. These
+// limits make that boundary explicit and keep malformed input from turning a
+// desktop click into an unbounded allocation or CPU job.
+const RUNNER_HOST = '127.0.0.1';
+const RUNNER_ID = 'battery-design-desktop-v1';
+const TOKEN_HEADER = 'x-battery-design-token';
+const MAX_BODY_BYTES = 4 * 1024 * 1024;
+const MAX_JSON_ITEMS = 500_000;
+const MAX_PROFILE_SAMPLES = 100_000;
+const MAX_CALIBRATION_SAMPLES = 10_000;
+const MAX_SIM_WORK = 5_000_000;
+const MAX_CALIBRATION_WORK = 2_000_000;
+const MAX_RANGE_POINTS = 5_000;
+const MAX_SEARCH_CANDIDATES = 5_000;
+const CSP_DIRECTIVES = [
+  "default-src 'self'",
+  "base-uri 'none'",
+  "object-src 'none'",
+  // The Godot showroom is a same-origin iframe. It must be embeddable by the
+  // designer, but never by another origin.
+  "frame-ancestors 'self'",
+  "form-action 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self' data:",
+  "connect-src 'self'",
+  "worker-src 'self' blob:",
+  "media-src 'self' blob:",
+];
+
+// Every shipped HTML document gets hashes for its own inline scripts. This is
+// important for both the main import map and the generated Godot shell: a
+// single hard-coded hash either breaks the renderer or quietly tempts a future
+// change to add unsafe-inline. WebAssembly compilation is needed by both the
+// Rust calculation core and Godot, while ordinary eval remains forbidden.
+function contentSecurityPolicy(file = null) {
+  const sources = ["'self'", "'wasm-unsafe-eval'"];
+  if (file && path.extname(file).toLowerCase() === '.html') {
+    const html = readFileSync(file, 'utf8');
+    for (const match of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)) {
+      if (/\bsrc\s*=/i.test(match[1])) continue;
+      const digest = createHash('sha256').update(match[2]).digest('base64');
+      const source = `'sha256-${digest}'`;
+      if (!sources.includes(source)) sources.push(source);
+    }
+  }
+  return [...CSP_DIRECTIVES, `script-src ${sources.join(' ')}`].join('; ');
+}
+
+const BASE_CSP = contentSecurityPolicy();
+
+class RequestError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+
+function boundedRange(from, to, step, { label = 'range', maxPoints = MAX_RANGE_POINTS, positive = false } = {}) {
+  if (![from, to, step].every(Number.isFinite)) throw new RequestError(400, `${label}: from, to and step must be finite numbers.`);
+  if (positive && (from <= 0 || to <= 0)) throw new RequestError(400, `${label}: from and to must be greater than zero.`);
+  if (step === 0) throw new RequestError(400, `${label}: step must not be zero.`);
+  if ((to - from) * step < 0) throw new RequestError(400, `${label}: step points away from the end of the range.`);
+  const points = Math.floor(Math.abs((to - from) / step) + 1 + 1e-12);
+  if (!Number.isSafeInteger(points) || points < 1 || points > maxPoints) {
+    throw new RequestError(400, `${label}: ${points || 'too many'} points requested; the limit is ${maxPoints}.`);
+  }
+  return { from, to, step, points };
+}
+
+function rangeValues(range) {
+  return Array.from({ length: range.points }, (_, index) => range.from + index * range.step);
+}
+
+function jsonComplexity(value, depth = 0) {
+  if (depth > 32) throw new RequestError(400, 'JSON nesting is too deep.');
+  if (Array.isArray(value)) return value.length + value.reduce((n, item) => n + jsonComplexity(item, depth + 1), 0);
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value);
+    return entries.length + entries.reduce((n, [, item]) => n + jsonComplexity(item, depth + 1), 0);
+  }
+  return 1;
+}
+
+function assertJsonWork(value) {
+  if (jsonComplexity(value) > MAX_JSON_ITEMS) {
+    throw new RequestError(413, `JSON contains too many values; the limit is ${MAX_JSON_ITEMS.toLocaleString()}.`);
+  }
+}
+
+function finiteInRange(value, fallback, { label, min, max, integer = false }) {
+  const selected = value == null ? fallback : Number(value);
+  if (!Number.isFinite(selected) || selected < min || selected > max || (integer && !Number.isInteger(selected))) {
+    throw new RequestError(400, `${label} must be ${integer ? 'an integer ' : ''}between ${min} and ${max}.`);
+  }
+  return selected;
+}
+
+function validateProfile(profile, { maxSamples = MAX_PROFILE_SAMPLES, label = 'profile' } = {}) {
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) throw new RequestError(400, `${label} must be an object.`);
+  const dtS = finiteInRange(profile.dtS, null, { label: `${label}.dtS`, min: 0.001, max: 3600 });
+  const values = Array.isArray(profile.w) ? profile.w : Array.isArray(profile.i) ? profile.i : null;
+  if (!values?.length) throw new RequestError(400, `${label} needs a non-empty w[] or i[] series.`);
+  if (values.length > maxSamples) throw new RequestError(400, `${label} has ${values.length.toLocaleString()} samples; the limit is ${maxSamples.toLocaleString()}.`);
+  if (!values.every(Number.isFinite)) throw new RequestError(400, `${label} samples must all be finite numbers.`);
+  return { dtS, samples: values.length };
+}
+
+function workForProfile({ dtS, samples }, maxDtS, modules = 1, repetitions = 1) {
+  return samples * Math.ceil(dtS / maxDtS) * modules * repetitions;
+}
+
+function safeTokenEqual(received, expected) {
+  if (typeof received !== 'string' || typeof expected !== 'string') return false;
+  const a = Buffer.from(received), b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 // --- argument parsing, the smallest thing that works ------------------------
 function parseArgs(argv) {
@@ -222,10 +339,12 @@ const COMMANDS = {
     } else if (vary === 'mass' || vary === 'payload') {
       const from = num(args.from, 1000), to = num(args.to, 2500), step = num(args.step, 100);
       const field = vary === 'mass' ? 'curbKg' : 'payloadKg';
-      for (let v = from; v <= to; v += step) add(v, { ...base, vehicle: { ...(base.vehicle || {}), [field]: v } });
+      const range = boundedRange(from, to, step, { label: `${vary} sweep` });
+      for (const v of rangeValues(range)) add(v, { ...base, vehicle: { ...(base.vehicle || {}), [field]: v } });
     } else if (vary === 'energy') {
       const from = num(args.from, 10000), to = num(args.to, 100000), step = num(args.step, 10000);
-      for (let v = from; v <= to; v += step) add(v, { ...base, energyWh: v });
+      const range = boundedRange(from, to, step, { label: 'energy sweep', positive: true });
+      for (const v of rangeValues(range)) add(v, { ...base, energyWh: v });
     } else {
       console.error(`Unknown --vary "${vary}". Supported: cell, mass, payload, energy.`);
       process.exit(2);
@@ -261,7 +380,7 @@ const COMMANDS = {
       `Mission detail (${d.simulation.profile.name}, ${spec.mission.passes} passes)`,
       `  SoC        ${Math.round(s.startSoC * 100)}% → ${Math.round(s.endSoC * 100)}% (minimum ${Math.round(s.minSoC * 100)}%)`,
       `  Energy     ${s.energyOutWh.toFixed(0)} Wh out, ${s.energyInWh.toFixed(0)} Wh recovered, ${s.lossWh.toFixed(0)} Wh lost (${s.efficiencyPct.toFixed(1)}% efficient)`,
-      `  Thermal    peak ${s.tempMaxC?.toFixed(1)} °C, ${s.peakHeatW.toFixed(0)} W peak heat, ${s.avgHeatW.toFixed(0)} W average`,
+      `  Thermal    modeled peak ${s.maxT?.toFixed(1)} °C (cell limit ${s.tempMaxC?.toFixed(1)} °C), ${s.peakHeatW.toFixed(0)} W peak heat, ${s.avgHeatW.toFixed(0)} W average`,
       `  Voltage    ${s.vMinPack.toFixed(1)}–${s.vMaxPack.toFixed(1)} V`,
       ...(s.unmetWh > 0 ? [`  UNMET      ${s.unmetWh.toFixed(0)} Wh — the pack ran out before the mission ended`] : []),
       ...(s.chargedWh > 0 ? [`  Charged    ${s.chargedWh.toFixed(0)} Wh accepted${s.chargeRefusedWh > 0 ? `, ${s.chargeRefusedWh.toFixed(0)} Wh refused (too cold)` : ''}`] : []),
@@ -282,7 +401,8 @@ const COMMANDS = {
     const packMassKg = num(args.packmass, energyWh / 1000 * 6); // ~6 kg/kWh pack class
     const from = num(args.from, veh.curbKg), to = num(args.to, veh.curbKg + 800), step = num(args.step, 100);
     const rows = [];
-    for (let m = from; m <= to; m += step) {
+    const range = boundedRange(from, to, step, { label: 'mass range' });
+    for (const m of rangeValues(range)) {
       for (const mode of ['eco', 'normal', 'sport']) {
         const r = driveCyclePower({ trace, vehicle: { ...veh, curbKg: m }, mode, packMassKg });
         rows.push({
@@ -310,9 +430,16 @@ const COMMANDS = {
     const base = specFrom(args);
     const pool = args.chemistry ? CELLS.filter((c) => c.chemistry === args.chemistry) : CELLS;
     const from = num(args.from, 20000), to = num(args.to, 100000), step = num(args.step, 2000);
+    const energyRange = boundedRange(from, to, step, {
+      label: 'design-search energy range', maxPoints: MAX_SEARCH_CANDIDATES, positive: true,
+    });
+    const candidateCount = pool.length * energyRange.points;
+    if (candidateCount > MAX_SEARCH_CANDIDATES) {
+      throw new RequestError(400, `Design search requests ${candidateCount.toLocaleString()} candidates; the limit is ${MAX_SEARCH_CANDIDATES.toLocaleString()}. Narrow the energy range or chemistry.`);
+    }
     const jobs = [];
     for (const c of pool) {
-      for (let e = from; e <= to; e += step) {
+      for (const e of rangeValues(energyRange)) {
         jobs.push({
           index: jobs.length, variable: 'cell×energy',
           value: `${c.id} @ ${(e / 1000).toFixed(0)} kWh`,
@@ -331,7 +458,7 @@ const COMMANDS = {
     };
     if (!KEYS[rank]) { console.error(`Unknown --rank "${rank}". Supported: ${Object.keys(KEYS).join(', ')}.`); process.exit(2); }
     const [key, dir, unit] = KEYS[rank];
-    console.error(`Searching ${jobs.length.toLocaleString()} complete designs (${pool.length} cells × ${Math.floor((to - from) / step) + 1} energy targets) on ${coreCount()} cores…`);
+    console.error(`Searching ${jobs.length.toLocaleString()} complete designs (${pool.length} cells × ${energyRange.points} energy targets) on ${coreCount()} cores…`);
     const t0 = Date.now();
     const { rows, workers, mode } = await runPool(jobs, { jobs: args.jobs != null ? num(args.jobs) : null });
     const ms = Date.now() - t0;
@@ -504,8 +631,8 @@ const COMMANDS = {
     console.log(lines.join('\n'));
   },
 
-  // Export the pack as an FMI 2.0 co-simulation FMU, so the rest of the
-  // toolchain — ANSYS Twin Builder, Simulink, GT-SUITE, Dymola — can drive it.
+  // Export the source-FMU build kit. It becomes a loadable FMI 2.0 component
+  // only after the target-platform binary is compiled and the tree packaged.
   fmu(args) {
     const spec = specFrom(args);
     const d = designFromSpec(spec);
@@ -522,13 +649,13 @@ const COMMANDS = {
       writeFileSync(full, content);
     }
     console.log([
-      `FMI 2.0 co-simulation FMU for ${d.pack.s}S${d.pack.p}P ${cell.name}`,
+      `FMI 2.0 source-FMU build kit for ${d.pack.s}S${d.pack.p}P ${cell.name}`,
       `  written to ${dir}/`,
       ...Object.keys(built.files).map((f) => `    ${f}`),
       `  model ${built.modelName}, guid ${built.guid}`,
       '',
       built.note,
-      `Build it with the command in ${dir}/README.md, then load the .fmu in your host tool.`,
+      `Compile and package it with the commands in ${dir}/README.md, then validate the resulting .fmu in your host tool.`,
     ].join('\n'));
   },
 
@@ -536,14 +663,22 @@ const COMMANDS = {
   addons(args) {
     const rep = capabilityReport(args.app || null);
     if (args.json || args.out) { emit(args, rep, ''); return; }
-    const line = (a) => `  ${a.status === 'shipped' ? '✓' : '·'} ${pad(a.id, 14)}${pad(a.tier, 9)}${a.name}`
+    const line = (a) => `  ${a.status === 'shipped' ? '✓' : '·'} ${pad(a.id, 19)}${a.name}`
       + `\n      ${a.what}`
       + (a.status === 'planned' ? `\n      NOT BUILT YET — ${a.why}` : '');
+    const relevant = (surface) => addonsForSurface(surface, { appId: args.app || null })
+      .filter((addon) => rep.addons.includes(addon));
     console.log([
       rep.note, '',
       'CORE — always present', ...rep.addons.filter((a) => a.tier === 'core').map(line), '',
-      'IN THE PAGE', ...rep.addons.filter((a) => a.tier === 'browser').map(line), '',
-      'DESKTOP RUNNER', ...rep.addons.filter((a) => a.tier === 'desktop').map(line),
+      'BROWSER GUI', ...[...new Set([
+        ...rep.addons.filter((a) => a.tier === 'browser'), ...relevant('browser-gui'),
+      ])].map(line), '',
+      'DESKTOP GUI EXTRAS', ...relevant('desktop-gui').map(line), '',
+      'CLI', ...relevant('cli').map(line), '',
+      'MCP / AUTOMATION', ...relevant('mcp').map(line), '',
+      'LOCAL API (not a visible button)', ...relevant('local-api').map(line), '',
+      'PLANNED — not shipped', ...relevant('planned').map(line),
       ...(rep.notRelevant.length ? ['', `NOT FOR THIS APPLICATION: ${rep.notRelevant.map((a) => a.id).join(', ')}`] : []),
     ].join('\n'));
   },
@@ -864,37 +999,120 @@ const COMMANDS = {
 
   // The web UI, served from your own machine — offline, no CDN, no telemetry.
   serve(args) {
-    const port = num(args.port, 8080);
+    const port = finiteInRange(args.port, 8080, { label: 'port', min: 0, max: 65535, integer: true });
+    if (port > 0 && port < 1024) {
+      throw new RequestError(400, 'port must be 0 (automatic) or between 1024 and 65535.');
+    }
+    if (args.token === true) throw new RequestError(400, '--token needs a value.');
+    const token = args.token == null ? randomBytes(32).toString('base64url') : String(args.token);
+    if (token.length < 32 || token.length > 256) {
+      throw new RequestError(400, '--token must contain between 32 and 256 characters. Omit it to generate a secure token.');
+    }
     const MIME = {
       '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
       '.css': 'text/css', '.json': 'application/json', '.png': 'image/png',
       '.svg': 'image/svg+xml', '.md': 'text/markdown; charset=utf-8',
+      '.wasm': 'application/wasm', '.pck': 'application/octet-stream',
+      '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json',
     };
+    let boundPort = port;
     const server = createServer((req, res) => {
-      const url = decodeURIComponent(req.url.split('?')[0]);
-      const json = (code, obj) => {
-        res.writeHead(code, { 'content-type': 'application/json' });
-        res.end(JSON.stringify(obj));
+      const commonHeaders = {
+        'content-security-policy': BASE_CSP,
+        'x-content-type-options': 'nosniff',
+        'referrer-policy': 'no-referrer',
+        'cross-origin-resource-policy': 'same-origin',
+        'x-battery-design-runner': RUNNER_ID,
       };
+      const write = (code, headers = {}) => res.writeHead(code, { ...commonHeaders, ...headers });
+      const json = (code, obj) => {
+        if (res.headersSent) return;
+        const payload = JSON.stringify(obj);
+        write(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(payload);
+      };
+      let requestTimedOut = false;
+      req.setTimeout(10_000, () => {
+        requestTimedOut = true;
+        json(408, { error: 'Request timed out before its body was received.' });
+        req.resume();
+      });
+      let requestUrl;
+      let url;
+      try {
+        requestUrl = new URL(req.url || '/', `http://${RUNNER_HOST}:${boundPort}`);
+        url = decodeURIComponent(requestUrl.pathname);
+        if (url.includes('\0')) throw new URIError('NUL byte');
+      } catch {
+        return json(400, { error: 'Malformed request URL.' });
+      }
+
+      const expectedHost = `${RUNNER_HOST}:${boundPort}`;
+      if (req.headers.host !== expectedHost) {
+        return json(421, { error: 'Request host does not match this loopback runner.' });
+      }
+
+      const isApi = url === '/api' || url.startsWith('/api/');
+      if (isApi) {
+        const expectedOrigin = `http://${expectedHost}`;
+        if (req.headers.origin && req.headers.origin !== expectedOrigin) {
+          return json(403, { error: 'This local API accepts requests only from its own desktop window.' });
+        }
+        if (!safeTokenEqual(req.headers[TOKEN_HEADER], token)) {
+          return json(401, { error: 'Missing or invalid desktop runner token.' });
+        }
+      }
+
       // Read a JSON body, then hand it to a handler. Every desktop endpoint
       // answers with either a result or a readable reason — never a stack.
       const withBody = (handler) => {
-        let body = '';
-        req.on('data', (c) => { body += c; });
-        req.on('end', () => {
-          try { json(200, handler(JSON.parse(body || '{}'))); }
-          catch (e) { json(400, { error: e.message }); }
+        const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+        if (contentType !== 'application/json') return json(415, { error: 'Expected application/json.' });
+        const chunks = [];
+        let bytes = 0;
+        let rejected = false;
+        req.on('data', (chunk) => {
+          if (rejected || requestTimedOut) return;
+          bytes += chunk.length;
+          if (bytes > MAX_BODY_BYTES) {
+            rejected = true;
+            chunks.length = 0;
+            json(413, { error: `Request body exceeds the ${MAX_BODY_BYTES / 1024 / 1024} MiB limit.` });
+            req.resume();
+            return;
+          }
+          chunks.push(chunk);
         });
+        req.on('end', () => {
+          if (rejected || requestTimedOut) return;
+          req.setTimeout(0); // body is complete; bounded compute may legitimately take longer
+          try {
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
+            assertJsonWork(body);
+            Promise.resolve(handler(body))
+              .then((result) => json(200, result))
+              .catch((error) => json(error.status || 400, { error: error.message }));
+          } catch (error) {
+            json(error.status || 400, { error: error.message });
+          }
+        });
+        req.on('error', () => json(400, { error: 'Could not read the request body.' }));
       };
 
       // The page asks this first. Its answer is what turns the desktop
       // capabilities on in the interface: same UI, ceiling removed.
-      if (url === '/api/capabilities') {
+      if (url === '/api/capabilities' && req.method === 'GET') {
+        const guiCapabilities = addonsForSurface('desktop-gui');
+        const cliCapabilities = addonsForSurface('cli');
+        const mcpCapabilities = addonsForSurface('mcp');
         return json(200, {
-          runner: 'battery-design desktop', apiVersion: API_VERSION,
+          runner: 'battery-design desktop', runnerId: RUNNER_ID, apiVersion: API_VERSION,
           cores: coreCount(),
-          capabilities: ADDONS.filter((a) => a.tier === 'desktop' && a.status === 'shipped')
+          capabilities: guiCapabilities
             .map((a) => ({ id: a.id, name: a.name, what: a.what })),
+          cliCapabilities: cliCapabilities.map((a) => ({ id: a.id, name: a.name })),
+          mcpCapabilities: mcpCapabilities.map((a) => ({ id: a.id, name: a.name })),
+          plannedCapabilities: addonsForSurface('planned').map((a) => ({ id: a.id, name: a.name })),
           endpoints: ['/api/design', '/api/ontology', '/api/sim2', '/api/calibrate', '/api/search', '/api/fmu'],
         });
       }
@@ -937,11 +1155,21 @@ const COMMANDS = {
             }
             throw new Error('Nothing to simulate: pick an application on the Usage tab, or send a profile of your own.');
           })();
+          const profileMetrics = validateProfile(prof);
+          const nModules = finiteInRange(body.nModules, 4, { label: 'nModules', min: 1, max: 64, integer: true });
+          const maxDtS = finiteInRange(body.params?.maxDtS, defaultParams(cell).maxDtS, {
+            label: 'params.maxDtS', min: 0.001, max: 60,
+          });
+          const work = workForProfile(profileMetrics, maxDtS, nModules);
+          if (work > MAX_SIM_WORK) {
+            throw new RequestError(400, `Simulation requests ${work.toLocaleString()} integration-module steps; the limit is ${MAX_SIM_WORK.toLocaleString()}. Shorten/downsample the profile or increase maxDtS.`);
+          }
           const r = simulate({
             cell, s: d.pack.s, p: d.pack.p, params: body.params || null, profile: prof,
             startSoC: body.startSoC ?? 1, ambientC: body.ambientC ?? 25,
-            nModules: body.nModules ?? 4,
-            years: body.years ?? 8, cyclesPerYear: body.cyclesPerYear ?? 250,
+            nModules,
+            years: finiteInRange(body.years, 8, { label: 'years', min: 0, max: 100 }),
+            cyclesPerYear: finiteInRange(body.cyclesPerYear, 250, { label: 'cyclesPerYear', min: 0, max: 5000 }),
           });
           // The full series would be megabytes over the wire for no gain.
           return {
@@ -965,38 +1193,62 @@ const COMMANDS = {
       if (url === '/api/calibrate' && req.method === 'POST') {
         return withBody((body) => {
           const cell = cellById(body.cell) || cellById('samsung-inr21700-50e');
+          const measuredMetrics = validateProfile(
+            { dtS: body.measured?.dtS, i: body.measured?.i },
+            { maxSamples: MAX_CALIBRATION_SAMPLES, label: 'measured' },
+          );
+          for (const key of ['v', 't']) {
+            const values = body.measured?.[key];
+            if (key === 't' && values == null) continue;
+            if (!Array.isArray(values) || values.length !== measuredMetrics.samples || !values.every(Number.isFinite)) {
+              throw new RequestError(400, `measured.${key} must contain ${measuredMetrics.samples.toLocaleString()} finite samples.`);
+            }
+          }
+          if (body.fit != null && (!Array.isArray(body.fit) || body.fit.length < 1 || body.fit.length > 8)) {
+            throw new RequestError(400, 'fit must contain between 1 and 8 parameter names.');
+          }
+          const nModules = finiteInRange(body.nModules, 1, { label: 'nModules', min: 1, max: 64, integer: true });
+          const maxIter = finiteInRange(body.maxIter, 100, { label: 'maxIter', min: 1, max: 300, integer: true });
+          const maxDtS = finiteInRange(body.params?.maxDtS, defaultParams(cell).maxDtS, {
+            label: 'params.maxDtS', min: 0.001, max: 60,
+          });
+          const work = workForProfile(measuredMetrics, maxDtS, nModules, maxIter);
+          if (work > MAX_CALIBRATION_WORK) {
+            throw new RequestError(400, `Calibration requests ${work.toLocaleString()} integration-module iterations; the limit is ${MAX_CALIBRATION_WORK.toLocaleString()}. Downsample the data or reduce maxIter.`);
+          }
           return calibrate({
             cell, s: body.s ?? 1, p: body.p ?? 1, measured: body.measured,
             params: body.params || null, fit: body.fit || ['r0Ref', 'rc1R', 'rc1TauS'],
             startSoC: body.startSoC ?? 1, ambientC: body.ambientC ?? 25,
-            nModules: body.nModules ?? 1,
+            nModules, maxIter,
           });
         });
       }
 
       // Design-space search across every core.
       if (url === '/api/search' && req.method === 'POST') {
-        let body = '';
-        req.on('data', (c) => { body += c; });
-        req.on('end', async () => {
-          try {
-            const b = JSON.parse(body || '{}');
-            const pool = b.chemistry ? CELLS.filter((c) => c.chemistry === b.chemistry) : CELLS;
-            const from = b.from ?? 20000, to = b.to ?? 100000, step = b.step ?? 5000;
-            const jobs = [];
-            for (const c of pool) {
-              for (let e = from; e <= to; e += step) {
-                jobs.push({
-                  index: jobs.length, variable: 'cell×energy', value: `${c.id} @ ${(e / 1000).toFixed(0)} kWh`,
-                  meta: { targetWh: e }, spec: { ...(b.spec || {}), cell: c.id, energyWh: e },
-                });
-              }
+        return withBody(async (body) => {
+          const pool = body.chemistry ? CELLS.filter((c) => c.chemistry === body.chemistry) : CELLS;
+          const range = boundedRange(
+            Number(body.from ?? 20000), Number(body.to ?? 100000), Number(body.step ?? 5000),
+            { label: 'design-search energy range', maxPoints: MAX_SEARCH_CANDIDATES, positive: true },
+          );
+          const candidateCount = pool.length * range.points;
+          if (candidateCount > MAX_SEARCH_CANDIDATES) {
+            throw new RequestError(400, `Design search requests ${candidateCount.toLocaleString()} candidates; the limit is ${MAX_SEARCH_CANDIDATES.toLocaleString()}. Narrow the range or chemistry.`);
+          }
+          const jobs = [];
+          for (const c of pool) {
+            for (const energyWh of rangeValues(range)) {
+              jobs.push({
+                index: jobs.length, variable: 'cell×energy', value: `${c.id} @ ${(energyWh / 1000).toFixed(0)} kWh`,
+                meta: { targetWh: energyWh }, spec: { ...(body.spec || {}), cell: c.id, energyWh },
+              });
             }
-            const { rows, workers, mode } = await runPool(jobs);
-            json(200, { searched: rows.length, workers, mode, rows: rows.filter((r) => !r.error) });
-          } catch (e) { json(400, { error: e.message }); }
+          }
+          const { rows, workers, mode } = await runPool(jobs);
+          return { searched: rows.length, workers, mode, rows: rows.filter((row) => !row.error) };
         });
-        return;
       }
 
       // Co-simulation export: the FMU as files the page can offer as a download.
@@ -1008,17 +1260,62 @@ const COMMANDS = {
             modelName: body.modelName || 'BatteryPack' });
         });
       }
-      let file = path.join(ROOT, url);
-      if (!file.startsWith(ROOT)) { res.writeHead(403); res.end(); return; }
-      if (existsSync(file) && statSync(file).isDirectory()) file = path.join(file, 'index.html');
-      if (!existsSync(file)) { res.writeHead(404); res.end('Not found'); return; }
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream' });
-      createReadStream(file).pipe(res);
+      if (isApi) {
+        if (['GET', 'POST'].includes(req.method || '')) return json(404, { error: 'Unknown desktop API endpoint.' });
+        return json(405, { error: 'Method not allowed.' });
+      }
+      if (!['GET', 'HEAD'].includes(req.method || '')) {
+        write(405, { allow: 'GET, HEAD', 'content-type': 'text/plain; charset=utf-8' });
+        res.end('Method not allowed');
+        return;
+      }
+
+      const pathname = url === '/' ? '/index.html' : url;
+      // Backslashes are ordinary URL characters on POSIX but path separators
+      // on Windows. Treat both forms identically so an encoded `\\.git\\`
+      // cannot bypass the hidden-segment rule in a future Windows package.
+      if (pathname.split(/[\\/]/).some((segment) => segment.startsWith('.'))) {
+        write(404, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('Not found');
+        return;
+      }
+      let file = path.resolve(REAL_ROOT, `.${pathname}`);
+      let relative = path.relative(REAL_ROOT, file);
+      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+        write(403, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('Forbidden');
+        return;
+      }
+      try {
+        if (statSync(file).isDirectory()) file = path.join(file, 'index.html');
+        file = realpathSync(file);
+        relative = path.relative(REAL_ROOT, file);
+        if (relative.startsWith('..') || path.isAbsolute(relative) || !statSync(file).isFile()) throw new RequestError(403, 'Forbidden');
+      } catch (error) {
+        const status = error.status || (existsSync(file) ? 403 : 404);
+        write(status, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end(status === 403 ? 'Forbidden' : 'Not found');
+        return;
+      }
+      write(200, {
+        'content-type': MIME[path.extname(file).toLowerCase()] || 'application/octet-stream',
+        'cache-control': 'no-store',
+        'content-security-policy': contentSecurityPolicy(file),
+      });
+      if (req.method === 'HEAD') res.end();
+      else createReadStream(file).on('error', () => res.destroy()).pipe(res);
     });
-    server.listen(port, () => {
-      console.log(`Battery designer running at http://localhost:${port}`);
-      console.log(`The full interface, with the desktop capabilities unlocked: `
-        + ADDONS.filter((a) => a.tier === 'desktop' && a.status === 'shipped').map((a) => a.name).join(', ') + '.');
+    server.on('clientError', (_error, socket) => {
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+    });
+    server.listen(port, RUNNER_HOST, () => {
+      const address = server.address();
+      boundPort = typeof address === 'object' && address ? address.port : port;
+      const launchUrl = `http://${RUNNER_HOST}:${boundPort}/index.html?token=${encodeURIComponent(token)}`;
+      console.log(`Battery designer running at ${launchUrl}`);
+      console.log('Desktop GUI extras: '
+        + addonsForSurface('desktop-gui').map((a) => a.name).join(', ') + '.');
+      console.log('Additional CLI/MCP capabilities are listed by: node desktop/bd.mjs addons');
       console.log(`Using ${coreCount()} cores. Offline, on your machine. Nothing is sent anywhere. Ctrl-C to stop.`);
     });
   },
@@ -1096,7 +1393,7 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   sweep     one variable across a range        --vary cell|mass|payload|energy [--from --to --step]
   search    the whole design space, ranked     --app ev --rank cost|range|mass|density|upfront [--top N]
   range     drive-cycle study, mass × mode     --app ev --energy 60000 [--from --to --step]
-  fmu       export as an FMI 2.0 co-sim FMU    --app ev [--out ./fmu] [--params p.json]
+  fmu       export an FMI 2.0 source-FMU kit   --app ev [--out ./fmu] [--params p.json]
   addons    what this tool can do, and cannot   [--app ev]
   bom       every conductor sized, every       --app ev [--install bundled] [--env harsh]
             joint checked, and the bill of     [--modrun 300 --packrun 400 --pitch 25]
@@ -1115,7 +1412,7 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   apps      the application presets
   vessels   the two NTNU Vessel Twin models
   cells     the cell library                   [--chemistry LFP] [--form cylindrical]
-  serve     the web UI from your own machine   [--port 8080]
+  serve     the web UI from your own machine   [--port 8080] [--token SECRET]
 
 Common flags
   --app ID          application preset (see: apps)          --market eu|us|cn|intl
@@ -1159,6 +1456,8 @@ Big runs use every core. Small ones stay on one thread on purpose: starting a
 worker costs more than the few designs it would have saved. Serial and
 parallel runs return identical rows.
 
+The serve command binds only to 127.0.0.1. It generates a per-launch API token
+and prints the private URL; --token is reserved for the packaged app and tests.
 Everything runs locally. No network, no account, no telemetry.`;
 
 // --- entry ------------------------------------------------------------------
@@ -1170,5 +1469,11 @@ if (!fn) {
   console.log(HELP);
   process.exit(2);
 }
-// Some commands fan out across worker threads and are therefore async.
-await fn(args);
+// Some commands fan out across worker threads and are therefore async. User
+// input errors stay readable and never dump an implementation stack.
+try {
+  await fn(args);
+} catch (error) {
+  console.error(error?.message || String(error));
+  process.exitCode = 2;
+}
