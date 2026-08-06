@@ -7,8 +7,9 @@
 // The two are not alternatives, they are the two halves of one argument:
 //
 //   ISOLATION keeps fault current from reaching the case at all. The tool
-//   already sizes that floor, and refuses to average the two standards that
-//   disagree about it (500 Ω/V vs 100 Ω/V).
+//   already resolves that floor from the declared road-vehicle bus topology:
+//   100 Ω/V for the UN R100 DC case and 500 Ω/V for the AC case. Those values
+//   are not competing standards and are never inferred from charger coupling.
 //
 //   BONDING assumes isolation has already failed. Every metal part a person
 //   can touch must be tied together and to the reference well enough that
@@ -221,6 +222,7 @@ export function faultFromShortCircuit(shortCircuit) {
  */
 export function groundingStudy({
   topology, application = null, packVMax = null, isolation = null,
+  isolationMonitoring = null,
   bonds = null, faultA = null, clearingS = null, faultBasis = null,
   finish = 'bare', method = 'bolt-serrated', strapMaterial = 'copper',
 }) {
@@ -260,6 +262,13 @@ export function groundingStudy({
       title: 'This machine is conventionally ungrounded — bonding rules do not apply as written',
       detail: `${ungrounded.what} ${ungrounded.instead}`,
     });
+    if (isolationMonitoring?.required === false) {
+      findings.push({
+        severity: 'warn', category: 'safety',
+        title: 'Marine first-fault monitoring is not active in the architecture',
+        detail: `The declared ungrounded boundary requires insulation-fault monitoring, but the architecture reports “${isolationMonitoring.status || 'unknown'}”. Resolve that architecture state before release; this bonding study cannot substitute for it.`,
+      });
+    }
   }
   if (lowVoltage) {
     findings.push({
@@ -317,6 +326,8 @@ export function groundingStudy({
   return {
     verdict, paths: assessed, findings, ungrounded: !!ungrounded, lowVoltage, estimated,
     isolation: isolation || null,
+    isolationMonitoring: isolationMonitoring || null,
+    ontologyRuleId: isolation?.ontologyRule?.id || isolationMonitoring?.ontologyRuleId || null,
     totals: {
       pathsChecked: assessed.length,
       failing: failing.length, costly: costly.length, unproven: unproven.length,

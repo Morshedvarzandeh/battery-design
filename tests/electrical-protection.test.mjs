@@ -129,7 +129,7 @@ test('official Sensata evidence is registered in the repository', () => {
 
 test('the headless electrical result carries all three coordinated studies', () => {
   const d = designFromSpec({ application: 'ev', energyWh: 60000 });
-  ok(d.apiVersion === '1.2', 'the API contract version records the new result');
+  ok(d.apiVersion === '1.3', 'the API contract version records the ontology-backed result');
   ok(d.electricalProtection.precharge?.nominal.trace.tS.length > 20, 'precharge time simulation is present');
   ok(d.electricalProtection.shunt?.trace.tempC.length > 20, 'shunt thermal duty simulation is present');
   ok(d.electricalProtection.fast?.crossingS != null, 'fault threshold is coordinated with the R-L trace');

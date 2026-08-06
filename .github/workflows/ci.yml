@@ -27,3 +27,47 @@ jobs:
       - run: npm run typecheck
       - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs
+
+  # Vessel Twin changes renderer-owned code as well as JavaScript payloads.
+  # The Pages workflow already builds Godot after merge; doing the same on a
+  # pull request prevents a GDScript/import/export defect reaching main first.
+  godot-web:
+    runs-on: ubuntu-latest
+    env:
+      GODOT_VERSION: "4.3"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache Godot editor and web templates
+        id: godot-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/godot
+            ~/.local/share/godot/export_templates
+          key: godot-${{ env.GODOT_VERSION }}-web-v1
+      - name: Fetch Godot
+        if: steps.godot-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-stable"
+          mkdir -p ~/godot "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable"
+          curl -fsSL -o /tmp/godot.zip "$base/Godot_v${GODOT_VERSION}-stable_linux.x86_64.zip"
+          unzip -q /tmp/godot.zip -d ~/godot
+          curl -fsSL -o /tmp/templates.tpz "$base/Godot_v${GODOT_VERSION}-stable_export_templates.tpz"
+          unzip -q /tmp/templates.tpz -d /tmp/tpl
+          cp /tmp/tpl/templates/web_nothreads_release.zip \
+             /tmp/tpl/templates/web_release.zip \
+             "$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.stable/"
+      - name: Import, exercise and export the Vessel Twin renderer
+        run: |
+          set -euo pipefail
+          godot=$(find ~/godot -name 'Godot_v*_linux.x86_64' | head -1)
+          chmod +x "$godot"
+          cd garage3d
+          mkdir -p build
+          "$godot" --headless --import .
+          timeout 60s "$godot" --headless --path . --script res://tests/vessel_payload_smoke.gd
+          "$godot" --headless --export-release "Web" build/index.html
+          test -s build/index.html
+          test -s build/index.wasm
+          test -s build/index.pck

@@ -57,11 +57,11 @@ than one that prints them.
 
 | Reference | Title / scope | Used for | Module |
 |---|---|---|---|
-| **UN ECE R100** (incl. **UN ECE R100 Annex 4**) | Uniform provisions concerning the approval of vehicles with regard to specific requirements for the electric power train | Vehicle approval; **Annex 4** mechanical/crush tests behind the wall-thickness guidance; the 500 Ω/V isolation option | `standards.js`, `architecture.js`, `engineering.js` |
+| [**UN Regulation No. 100, Revision 3**](https://unece.org/sites/default/files/2024-01/R0100r3e.pdf) (customer checklist aliases: **UN ECE R100** and **UN ECE R100 Annex 4**) | Uniform provisions concerning approval of **road vehicles** with regard to electric-power-train requirements | Vehicle approval; **Annex 4** mechanical/crush tests behind the wall-thickness guidance; topology-aware isolation resistance: **100 Ω/V for a DC bus** and **500 Ω/V for an AC bus**, with the connected AC/DC cases resolved from the protection topology. The tool does not infer 500 Ω/V merely because charging equipment exists and does not transfer this vehicle rule to a marine IT system | `standards.js`, `architecture.js`, `engineering.js` |
 | **UN ECE R10** | Electromagnetic compatibility | Vehicle and auxiliary classes | `standards.js` |
 | **FMVSS 305 / 305a** | US Federal Motor Vehicle Safety Standard No. 305 — electric-powered vehicles: electrolyte spillage and electrical shock protection (305a is the updated rule) | The US vehicle gate, the counterpart to ECE R100 in the EU checklist | `markets.js` |
 | **ISO 6469-1** | Electrically propelled road vehicles — Safety specifications — Part 1: Rechargeable energy storage system | Vehicle RESS requirements | `standards.js` |
-| **ISO 6469-3** | Part 3: Electrical safety | The **100 Ω/V DC** isolation option — deliberately in conflict with ECE R100's 500 Ω/V, which is why the tool makes the standard an explicit choice and refuses to average them. Also the **0.1 Ω** continuity limit between exposed conductive parts, measured at ≥0.2 A, which is the bonding check | `architecture.js`, `grounding.js` |
+| **ISO 6469-3** | Electrically propelled road vehicles — Safety specifications — Part 3: Electrical safety | Road-vehicle electrical-safety context and the **0.1 Ω** continuity limit between exposed conductive parts, measured at ≥0.2 A, used by the bonding check. It is not presented as a competing blanket 100 Ω/V value against a blanket UN R100 500 Ω/V value | `architecture.js`, `grounding.js` |
 | **ISO 12405** | Test specification for lithium-ion traction battery packs and systems | Vehicle pack testing | `standards.js` |
 | **ISO 26262** | Road vehicles — Functional safety (ASIL) | BMS functional-safety expectation per hazard analysis | `standards.js`, `architecture.js` |
 | **IEC 61508** | Functional safety of electrical/electronic/programmable electronic safety-related systems | Industrial functional-safety counterpart | `standards.js` |
@@ -76,6 +76,27 @@ than one that prints them.
 | **Class society type approval** — DNV, Lloyd's Register, Bureau Veritas (and equivalents) | Battery-system type approval under the society's own rules | For commercial vessels the **class society is the gate**, not a product norm — the checklist says so explicitly | `markets.js` |
 | **MGN 550** | UK Maritime & Coastguard Agency Marine Guidance Note for battery-powered vessels | UK marine expectation | `markets.js` |
 | **USCG** requirements / class approval | United States Coast Guard commercial-vessel requirements | US marine gate | `markets.js` |
+
+### 3.1 NTNU TwinShip and the marine vessel workspace
+
+| Primary source | What it establishes | Used for | Module |
+|---|---|---|---|
+| NTNU Intelligent Systems Lab, [*Digital Twins for Vessel Life Cycle Service (TwinShip)*](https://intelligentsystemslab.org.ntnu.no/project/twinship.html), 2018–2021 | The project's stated scope: an open vessel co-simulation/digital-twin platform spanning design, operation and maintenance; prediction/early warning; and subsystem/operation verification demonstrators | Project identity, lifecycle scope and the boundary between a research architecture and a finished product | `marine-workspace.js`, `addons.js` |
+| Hatledal et al., [*Co-simulation as a Fundamental Technology for Twin Ships*](https://www.mic-journal.no/PDF/2020/MIC-2020-4-2.pdf), *Modeling, Identification and Control* 41(4), 2020 | FMI 1.0/2.0 co-simulation, SSP system configuration, a central orchestration master, 48 model-variable connections and the preliminary R/V Gunnerus replay case comparing measured and simulated course, speed and propulsion power | Component/signal architecture, governed replay outputs and model-maturity limits; the product's 11 visible links are explicitly a logical-family abstraction, not the paper's SSP graph | `marine-workspace.js`, `api.js`, `report.js` |
+| NTNU TwinShip [work package 1](https://hozh.folk.ntnu.no/Project-KPN/wp1.html), [work package 2](https://hozh.folk.ntnu.no/Project-KPN/wp2.html) and [work package 3](https://hozh.folk.ntnu.no/Project-KPN/wp3.html) | Model/data interfaces and HIL; storage, prediction, PHM and optimization; and thruster/DP verification demonstrators | Browser-versus-desktop execution boundary and roadmap context | `marine-workspace.js`, `addons.js` |
+| NTNU, [*R/V Gunnerus technical specifications*](https://www.ntnu.edu/documents/1262202806/0/Specifications%2BRV%2BGUNNERUS.pdf/6a6540e0-00ae-b7a2-a51d-bf365302bf61?t=1584611463564) | Current sheet: 24.90 m waterline length and 72 t deadweight, plus dimensions, propulsion units, generator sets, bow thruster and speed data. The TwinShip paper's Table 2 instead reports 29.90 m and 165 t. | The named Gunnerus model uses the current technical sheet, records both conflicting published values and requires owner/as-built reconciliation for release; deadweight is not silently treated as displacement or lightship mass | `vessels.js`, `marine.js` |
+| NTNU, [*milliAmpere: An Autonomous Ferry Prototype*](https://torarnj.folk.ntnu.no/icmass%20milliampere%202022.pdf) | Published prototype dimensions, light weight, passenger count, two 2 kW azimuth units, speed, 24 V/24 kWh battery and stated endurance | The named milliAmpere1 model and its published-point mission defaults | `vessels.js`, `marine.js` |
+
+TwinShip is used as an **architecture and research-demonstrator reference**.
+It does not supply this project with a certified marine battery model, a
+production battery retrofit for Gunnerus, or proof of a live digital twin. The
+published Gunnerus exercise was preliminary and replayed recorded data; it
+omitted environmental current and the bow tunnel thruster, simplified the aft
+thruster commands, and identified further hull-model tuning/validation as
+necessary. Accordingly, `marine-workspace.js` reports screening, calibrated,
+validated and digital-twin maturity separately; replay residuals are early
+warning evidence rather than named fault isolation, and class approval remains
+outside the software result.
 
 ## 4 · China
 
@@ -95,7 +116,7 @@ than one that prints them.
 | Reference | Scope | Used for | Module |
 |---|---|---|---|
 | **ISO 11898** | Road vehicles — Controller area network (CAN) | Vehicle bus | `architecture.js` |
-| **ISO 14229 (UDS)** | Unified diagnostic services | Diagnostics; also the route by which live state-of-health is exposed for the EU battery passport | `architecture.js`, `eurules.js` |
+| **ISO 14229 (UDS)** | Unified diagnostic services | Road-vehicle diagnostics. UDS can be one implementation path for current state-of-health data, but Regulation (EU) 2023/1542 Articles 14 and 77 do **not** mandate this protocol and a UDS label alone does not prove passport compliance | `architecture.js`, `eurules.js` |
 | **ISO 15118 / DIN 70121** | Vehicle-to-grid communication interface / DC charging communication | Charge-session control in the supervisory layer | `architecture.js` |
 | **SAE J1939** | Serial control and communications heavy-duty vehicle network | Buses, trucks, lift trucks | `architecture.js` |
 | **CANopen (CiA)** | Industrial device profile | AGVs and industrial trucks | `architecture.js` |
@@ -123,7 +144,7 @@ than one that prints them.
 
 | Reference | Scope | Used for | Module |
 |---|---|---|---|
-| **Regulation (EU) 2023/1542** | Batteries and waste batteries (repealing Directive 2006/66/EC) | The Rules tab timeline and applicability: carbon-footprint declaration, digital battery passport (>2 kWh industrial and all EV batteries), recycled-content targets for Co/Ni/Li/Pb, collection targets, and the two distinct metrics the tool deliberately keeps apart — **recycling efficiency** (mass of the battery recovered) versus **material recovery** (per-element recovery) | `eurules.js` |
+| [**Regulation (EU) 2023/1542**](https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32023R1542) | Batteries and waste batteries (repealing Directive 2006/66/EC) | The Rules tab timeline and applicability: Article 77 passport for LMT batteries, EV batteries and industrial batteries >2 kWh from 18 February 2027; Article 14 state-of-health access; carbon footprint; recycled-content targets; and the deliberately separate **recycling efficiency** and **material recovery** metrics. Non-EV/LMT applications require a declared battery category rather than an energy-based industrial guess | `eurules.js` |
 
 ## 7 · Literature, data sources and prior art
 
@@ -254,7 +275,7 @@ that.
 |---|---|
 | Recycling efficiency (65% by mass end-2025, 70% end-2030) | Regulation (EU) 2023/1542, Annex XII Part B |
 | Per-element recovery (Li 50%/80%, Co-Cu-Ni-Pb 90%/95%) | Regulation (EU) 2023/1542, Annex XII Part C |
-| Digital battery passport, from 18 February 2027 | Regulation (EU) 2023/1542, Articles 77–78 |
+| Digital battery passport, from 18 February 2027; current state-of-health data access without a mandated communications protocol | Regulation (EU) 2023/1542, Articles 14 and 77–78 |
 | Extended producer responsibility and free take-back | Regulation (EU) 2023/1542, Articles 56–58 |
 | Prohibition on landfill and incineration of waste batteries | Regulation (EU) 2023/1542, Article 61 |
 | Lithium batteries in transport (UN 3480 / UN 3481, Class 9) | UN Model Regulations; ADR / IMDG / IATA-DGR as adopted locally |
@@ -293,6 +314,30 @@ obsolete. They are included only as archived, reproducible reference profiles;
 the software will not return a green hardware selection until a current supplier
 part and revision-controlled evidence replace them.
 
+### 7.8 Architecture-wide ontology and semantic traceability
+
+The ontology in `ontology/` and its dependency-free runtime in
+`js/ontology.js` use these primary semantic-web contracts:
+
+| Contract | Role in this project |
+|---|---|
+| W3C [RDF 1.1 Concepts](https://www.w3.org/TR/rdf11-concepts/) and [OWL 2 RL](https://www.w3.org/TR/owl2-profiles/) | Canonical graph meaning and a scalable reasoning profile. OWL is not used as a substitute for missing-data validation. |
+| W3C [SHACL Recommendation](https://www.w3.org/TR/shacl/) | Closed-world calculation, release, twin and HIL profiles. The small JavaScript validator mirrors the calculation-ready subset in browser and Node. |
+| W3C [JSON-LD 1.1](https://www.w3.org/TR/json-ld11/) | Portable browser, API, desktop, MCP and report graph exchange. |
+| W3C [PROV-O](https://www.w3.org/TR/prov-o/) | Model-run, calculation, evidence, derivation and approval lineage. |
+| [QUDT](https://www.qudt.org/pages/QUDToverviewPage.html) and [UCUM](https://ucum.org/ucum) | Explicit quantity kinds, units and interoperable unit codes. UCUM codes are used without changing their meaning. |
+| W3C [SOSA/SSN](https://www.w3.org/TR/vocab-ssn/) | Physical sensor observations only. Simulated values remain engineering results, not observations. |
+| W3C [SKOS](https://www.w3.org/TR/skos-reference/) and [OWL-Time](https://www.w3.org/TR/owl-time/) | Controlled vocabularies and time/session/voyage semantics. |
+
+Neo4j output is a parameterized, validated property-graph projection. It is
+not the ontology authority, and the software does not require a Neo4j server,
+driver, credentials or network access. Battery-domain mappings may later align
+to [BattINFO](https://github.com/BIG-MAP/BattINFO), but BattINFO is kept as a
+separately versioned mapping target rather than used as the upper system
+ontology. Supplier claims, physical observations, calculated results,
+assumptions and approvals remain distinct even when they describe the same
+engineering quantity.
+
 ---
 
 ## 8 · Assumptions with no public source
@@ -320,7 +365,7 @@ are exposed as inputs wherever possible, and stated as estimates in the output.
 | Cell swelling allowance | 10–20% thickness growth over life | Design practice, not a standard requirement |
 | Wall thickness | **not prescribed** | No standard specifies a millimetre value. The crash/crush **tests** (ECE R100 Annex 4, GB 38031, UL 2580) prescribe outcomes; the wall must pass them. The tool says this rather than inventing a number |
 | Daisy-chain node limit | 62 nodes | Common AFE-family device limit; treated as a hard architectural limit and named as the reason in the verdict |
-| Temperature-sensor ratio | 1 per 6 cells (1 per 3 for full observability) | Design practice; both figures are reported so the trade-off is visible |
+| Temperature-sensor ratio | Configurable (1 per 6 default); 1 per 3 shown as an optional benchmark | Assumption-labelled design practice, not a universal requirement. Counts use total monitored cells and are raised when necessary to keep at least one NTC in every physical module |
 | OBC efficiency | 93% | Class-typical AC→DC conversion efficiency; exposed as a named input in the workbook and stated wherever charge times are shown |
 | CV taper model | CC to 80% SoC, then 0.45× average rate | A class simplification of the constant-voltage tail — real taper curves are cell-specific and unpublished |
 | Mission charge power | the cell's rated continuous charge current (base charging additionally throttled by the OBC) | Mission-charging power in the simulation comes from the cell's own datasheet rating, not an invented charger |

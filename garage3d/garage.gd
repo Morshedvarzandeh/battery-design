@@ -241,7 +241,7 @@ func _build_ui() -> void:
 	_spec = VBoxContainer.new()
 	_spec.set_anchors_preset(Control.PRESET_TOP_LEFT)
 	_spec.position = Vector2(16, 96)
-	_spec.custom_minimum_size = Vector2(280, 0)
+	_spec.custom_minimum_size = Vector2(380, 0)
 	_spec.add_theme_constant_override("separation", 2)
 	layer.add_child(_spec)
 
@@ -290,6 +290,24 @@ func _spec_head(text: String) -> void:
 	_spec.add_child(l)
 
 
+func _spec_note(key: String, value: String, tint: Color) -> void:
+	var box := VBoxContainer.new()
+	box.custom_minimum_size = Vector2(380, 0)
+	var k := Label.new()
+	k.text = key
+	k.add_theme_font_size_override("font_size", 10)
+	k.modulate = Color(1, 1, 1, 0.5)
+	var v := Label.new()
+	v.text = value
+	v.add_theme_font_size_override("font_size", 11)
+	v.modulate = tint
+	v.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	v.custom_minimum_size = Vector2(370, 0)
+	box.add_child(k)
+	box.add_child(v)
+	_spec.add_child(box)
+
+
 # Everything here is READ from the payload. Not one value is derived, which is
 # the whole reason a renderer in another language is allowed near these numbers.
 func _fill_spec(scene: Dictionary) -> void:
@@ -321,11 +339,35 @@ func _fill_spec(scene: Dictionary) -> void:
 		_spec_row("Envelope", "%.2f × %.2f × %.2f m" % [float(hs.get("x", 0)), float(hs.get("y", 0)), float(hs.get("z", 0))], white)
 		# Whether the silhouette is measured or indicative is not a footnote —
 		# it decides how much weight the picture is allowed to carry.
-		_spec_row("Silhouette", "measured cross-section" if str(host.get("dimsFrom", "")) == "frontal-area" else "indicative (class-typical)",
+		var dims_label := str(host.get("dimsLabel", ""))
+		if dims_label == "":
+			dims_label = "measured cross-section" if str(host.get("dimsFrom", "")) == "frontal-area" else "indicative (class-typical)"
+		_spec_row("Silhouette", dims_label,
 				Color(1, 1, 1, 0.55))
-		if host.get("fits", true) == false:
+		var fit_label := str(host.get("fitLabel", ""))
+		if fit_label != "":
+			_spec_row("Fit", fit_label, Color(0.95, 0.72, 0.35))
+		elif host.get("fits", true) == false:
 			_spec_row("Fit", "larger than the envelope on " + ", ".join(host.get("over", [])),
 					Color(0.95, 0.72, 0.35))
+
+		var model = host.get("model", null)
+		if typeof(model) == TYPE_DICTIONARY and not model.is_empty():
+			_spec_head("VESSEL MODEL · NOT CAD")
+			_spec_row("Model", "engineering massing v%s" % str(model.get("version", "—")), white)
+			_spec_row("Datum", "design waterline z=0 · z up", Color(0.52, 0.82, 0.96))
+			_spec_row("Baseline", "z=%+.2f m" % float(hs.get("baselineZ", hs.get("zMin", 0.0))), white)
+			_spec_row("Vertical range", "%+.2f to %+.2f m" % [float(hs.get("zMin", 0.0)), float(hs.get("zMax", 0.0))], white)
+			var evidence: Dictionary = host.get("evidence", {})
+			var source_title := str(evidence.get("title", ""))
+			if source_title != "":
+				_spec_note("Source", source_title, Color(1, 1, 1, 0.72))
+			var evidence_basis := str(evidence.get("basis", ""))
+			if evidence_basis != "":
+				_spec_note("Evidence basis", evidence_basis, Color(1, 1, 1, 0.62))
+			var boundary := str(host.get("boundary", ""))
+			if boundary != "":
+				_spec_note("Model / study boundary", boundary, Color(0.95, 0.72, 0.35))
 
 	for part in scene.get("parts", []):
 		var nm := str(part.get("name", ""))
@@ -467,6 +509,8 @@ func _build_studio(host: Dictionary, outer: Dictionary) -> void:
 	var hw := float(size.get("x", 2.0))
 	var hl := float(size.get("y", 4.0))
 	var hh := float(size.get("z", 1.5))
+	var z_min := float(size.get("zMin", 0.0))
+	var waterline_y := float(size.get("waterlineZ", 0.0)) - z_min
 	var stage_r: float = maxf(hw, hl) * 1.15
 
 	# A dark studio floor with a lit disc under the machine — the turntable a
@@ -499,11 +543,21 @@ func _build_studio(host: Dictionary, outer: Dictionary) -> void:
 	spot.light_color = Color(1.0, 0.98, 0.94)
 	_room.add_child(spot)
 
-	# The machine, massed to its kind. A car reads as a car, a boat as a boat,
-	# a humanoid as a humanoid — from a handful of blocks, in glass, so the pack
-	# inside stays the subject. A solid body would hide the only part of this
-	# that is measured.
-	_build_machine(str(host.get("kind", "box")), hw, hh, hl)
+	# The studio floor is the supplied lowest display baseline. This translucent
+	# plane marks the separately supplied design waterline, so underwater hull
+	# and propulsion geometry remains visible below z=0 rather than being folded
+	# into an ambiguous all-positive envelope.
+	_add_waterline_marker(hw, hl, waterline_y)
+
+	# Selected vessels arrive as a complete primitive payload from vessels.js.
+	# Sizes and positions are not re-derived here: the renderer maps the
+	# repository's z-up axes to Godot's y-up axes and draws every supplied box.
+	# Other machines keep the established generic massing renderer.
+	var model = host.get("model", null)
+	if typeof(model) == TYPE_DICTIONARY and not model.is_empty():
+		_build_payload_model(model, -z_min)
+	else:
+		_build_machine(str(host.get("kind", "box")), hw, hh, hl)
 	_add_wireframe(Vector3(hw, hh, hl), Vector3(0, hh * 0.5, 0), Color(0.36, 0.78, 0.72))
 
 	# The pack, seated where the mounting puts it. Mount decides the seat, so a
@@ -519,6 +573,17 @@ func _build_studio(host: Dictionary, outer: Dictionary) -> void:
 	# the inside reads as a bug, not as a vehicle.
 	_frame_span = maxf(maxf(hw, hl), hh)
 	_scale_note = "%s · %s" % [str(host.get("name", "")), str(host.get("mount", {}).get("name", ""))]
+
+
+func _add_waterline_marker(width_m: float, length_m: float, at_y: float) -> void:
+	var marker := _slab(
+			Vector3(width_m * 1.04, 0.012, length_m * 1.04),
+			Vector3(0, at_y, 0), Color(0.20, 0.58, 0.78, 0.10), 0.35, 0.0)
+	marker.name = "DesignWaterlineZ0"
+	var material: StandardMaterial3D = (marker.mesh as BoxMesh).surface_get_material(0)
+	material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	material.cull_mode = BaseMaterial3D.CULL_DISABLED
+	_room.add_child(marker)
 
 
 # Edges only. A box with visible edges reads as an envelope; a box without them
@@ -770,6 +835,40 @@ func _glass(size: Vector3, at: Vector3, tint := Color(0.42, 0.52, 0.56, 0.13)) -
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.cull_mode = BaseMaterial3D.CULL_DISABLED
 	_room.add_child(inst)
+
+
+# Draw-only payload consumer for identified vessel models. Every primitive's
+# size, position, role and colour is supplied by JavaScript. Axis mapping is a
+# renderer concern; geometry or compartment-fit calculations are not.
+func _build_payload_model(model: Dictionary, vertical_offset_m: float) -> void:
+	var primitive_index := 0
+	for raw in model.get("primitives", []):
+		if typeof(raw) != TYPE_DICTIONARY:
+			continue
+		var primitive: Dictionary = raw
+		if str(primitive.get("kind", "")) != "box":
+			continue
+		var size_m: Dictionary = primitive.get("sizeM", {})
+		var at_m: Dictionary = primitive.get("atM", {})
+		var tint := Color(str(primitive.get("tint", "#5f8f96")))
+		tint.a = 0.20
+		var render_size := Vector3(
+				float(size_m.get("x", 0.0)),
+				float(size_m.get("z", 0.0)),
+				float(size_m.get("y", 0.0)))
+		var render_at := Vector3(
+				float(at_m.get("x", 0.0)),
+				float(at_m.get("z", 0.0)) + vertical_offset_m,
+				float(at_m.get("y", 0.0)))
+		_glass(render_size, render_at, tint)
+		var role := str(primitive.get("role", "vessel-part"))
+		_pickables.append({
+			"aabb": AABB(render_at - render_size * 0.5, render_size),
+			"name": str(primitive.get("name", role)),
+			"category": "Vessel " + role.capitalize(),
+			"id": "vessel:%s:%d" % [role, primitive_index],
+		})
+		primitive_index += 1
 
 
 func _wheel(r: float, w: float, at: Vector3) -> void:

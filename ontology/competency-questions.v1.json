@@ -1,0 +1,62 @@
+{
+  "ontologyVersion": "1.0.0",
+  "questions": [
+    {
+      "id": "CQ-01",
+      "question": "Which exact inputs, model version and solver produced this engineering result?",
+      "answerPath": [
+        "bd:usesInput",
+        "bd:usesModel",
+        "bd:usesSolver",
+        "bd:produces"
+      ]
+    },
+    {
+      "id": "CQ-02",
+      "question": "Which requirement, evidence record or assumption supports or blocks this design?",
+      "answerPath": [
+        "bd:hasRequirement",
+        "bd:requiresEvidence",
+        "bd:supportedByEvidence",
+        "bd:basedOnAssumption"
+      ]
+    },
+    {
+      "id": "CQ-03",
+      "question": "Which capabilities are available in browser, desktop, API, MCP and reports?",
+      "answerPath": [
+        "bd:implementsCapability",
+        "bd:availableOn"
+      ]
+    },
+    {
+      "id": "CQ-04",
+      "question": "Is a vessel result a catalog model, installation study, validated model or physical-asset-bound digital twin?",
+      "answerPath": [
+        "bd:targetsAssetModel",
+        "bd:studiesInstallationOf",
+        "bd:boundToAsset",
+        "bd:representsAsset"
+      ]
+    },
+    {
+      "id": "CQ-05",
+      "question": "Can evidence from one vessel, model or design version be reused for another?",
+      "answerPath": [
+        "bd:instanceOf",
+        "bd:modelOf",
+        "bd:observesAsset",
+        "bd:evaluatesModel"
+      ]
+    },
+    {
+      "id": "CQ-06",
+      "question": "What human approval and passing test evidence authorize this exact release?",
+      "answerPath": [
+        "bd:verifies",
+        "bd:authorizes",
+        "bd:releases"
+      ]
+    }
+  ]
+}

@@ -75,6 +75,22 @@ test('the validation anchor and its number are documented', () => {
     'the integration allowance is traced to that anchor');
 });
 
+test('the marine TwinShip basis cites primary NTNU evidence without overstating it', () => {
+  for (const required of [
+    'intelligentsystemslab.org.ntnu.no/project/twinship.html',
+    'MIC-2020-4-2.pdf',
+    'R/V Gunnerus technical specifications',
+    'milliAmpere: An Autonomous Ferry Prototype',
+  ]) ok(flat.includes(required), `marine evidence names ${required}`);
+  ok(/architecture and research-demonstrator reference/i.test(flat),
+    'TwinShip is identified as an architecture/research reference');
+  ok(/does not supply.*certified marine battery model/i.test(flat)
+    && /class approval remains outside/i.test(flat),
+  'the references refuse certification and class-approval claims');
+  ok(/deadweight is not silently treated as displacement/i.test(flat),
+    'the Gunnerus mass evidence boundary is documented');
+});
+
 test('the page describes itself for link previews and search', () => {
   const html = read('index.html');
   ok(/<meta name="description"/.test(html), 'meta description present');

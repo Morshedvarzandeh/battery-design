@@ -17,6 +17,7 @@ import { K_ADIABATIC } from '../js/shortcircuit.js';
 import { buildTopology } from '../js/topology.js';
 import { designFromSpec } from '../js/api.js';
 import { cellById } from '../js/cells.js';
+import { buildArchitecture } from '../js/architecture.js';
 
 const bond = (over = {}) => ({
   id: 'b1', materialId: 'copper', lengthMm: 250, areaMm2: 16, ...over,
@@ -143,14 +144,35 @@ test('the fault current comes from the short-circuit study, framed as the second
 });
 
 test('an ungrounded machine is told the question does not apply, not graded against it', () => {
-  const { topo } = evTopo();
-  const g = groundingStudy({ topology: topo, application: 'marine', packVMax: 400, faultA: 6000, clearingS: 0.2 });
+  const { d, topo } = evTopo();
+  const marineArchitecture = buildArchitecture({
+    cell: cellById(d.cell.id), s: d.pack.s, p: d.pack.p, summary: d.pack,
+    options: { appId: 'marine' },
+  });
+  const g = groundingStudy({
+    topology: topo, application: 'marine', packVMax: 400,
+    isolation: marineArchitecture.isolationReview,
+    isolationMonitoring: marineArchitecture.isolationMonitoring,
+    faultA: 6000, clearingS: 0.2,
+  });
   ok(g.ungrounded, 'marine is flagged as conventionally ungrounded');
   ok(g.verdict === 'unproven', 'so the verdict is not a pass or a fail');
   const warn = g.findings.find((f) => /ungrounded/i.test(f.title));
   ok(warn && /corrosion/i.test(warn.detail), 'the reason is the galvanic one, not a hand-wave');
   ok(/insulation monitoring/i.test(warn.detail), 'and it names what IS required instead');
   ok(/completeness/i.test(g.headline), 'and the headline captions the numbers rather than grading them');
+  ok(g.isolationMonitoring.status === 'required-first-fault-monitoring'
+    && g.ontologyRuleId === 'bd:rule/un-r100-isolation',
+  'grounding study consumes the architecture monitoring decision and preserves ontology lineage');
+  ok(!g.findings.some((f) => /not active in the architecture/i.test(f.title)),
+    'a consistent marine architecture creates no monitoring mismatch');
+
+  const mismatch = groundingStudy({
+    topology: topo, application: 'marine', packVMax: 400,
+    isolationMonitoring: { status: 'not-required', required: false },
+  });
+  ok(mismatch.findings.some((f) => /not active in the architecture/i.test(f.title)),
+    'an inconsistent first-fault monitoring state is surfaced for review');
 
   // Having said the rule does not govern, it must not then report failures
   // against that rule as failures — even when a path genuinely fails it.

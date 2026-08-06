@@ -12,6 +12,22 @@ import {
   COMPONENT_CATEGORIES, COMPONENTS, DEFAULTS_BY_FORM, componentsFor, componentById,
 } from '../js/components.js';
 import { PRESETS } from '../js/presets.js';
+import { existsSync, readFileSync } from 'node:fs';
+import {
+  ARCHITECTURE_MODULE_DEFINITIONS,
+  CLASS_DEFINITIONS,
+  COMPETENCY_QUESTIONS,
+  ENGINEERING_RULE_DEFINITIONS,
+  JSON_LD_CONTEXT,
+  MODULE_DEFINITIONS,
+  ONTOLOGY,
+  RELATION_DEFINITIONS,
+} from '../js/ontology-schema.js';
+import { validateEngineeringRule } from '../js/ontology-rules.js';
+import {
+  generatedCompetencyQuestionsJson, generatedContextJson, generatedCoreTurtle,
+} from './generate-ontology.mjs';
+import { validateGraph as validateKnowledgeGraph } from '../js/knowledge.js';
 
 let errors = 0;
 const err = (msg) => { console.error('  ✗', msg); errors++; };
@@ -140,6 +156,64 @@ console.log(`presets.js — ${PRESETS.length} presets`);
     }
     if (!Array.isArray(p.preferredChemistries) || p.preferredChemistries.some((c) => !CHEMISTRIES[c])) {
       w('preferredChemistries must name known chemistries');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log(`ontology ${ONTOLOGY.version} — ${Object.keys(CLASS_DEFINITIONS).length} classes, ${Object.keys(RELATION_DEFINITIONS).length} relations, ${Object.keys(MODULE_DEFINITIONS).length} modules`);
+{
+  const knownOrExternal = (id) => !!CLASS_DEFINITIONS[id] || /^(prov|sosa|qudt|skos|time):/.test(id || '');
+  for (const [id, definition] of Object.entries(CLASS_DEFINITIONS)) {
+    if (!id.startsWith('bd:')) err(`${id}: local ontology class id must use bd:`);
+    for (const parent of (Array.isArray(definition.parent) ? definition.parent : [definition.parent]).filter(Boolean)) {
+      if (!knownOrExternal(parent)) err(`${id}: unknown parent ${parent}`);
+    }
+  }
+  for (const [id, definition] of Object.entries(RELATION_DEFINITIONS)) {
+    if (!id.startsWith('bd:')) err(`${id}: local relation id must use bd:`);
+    if (!knownOrExternal(definition.domain)) err(`${id}: unknown domain ${definition.domain}`);
+    if (!knownOrExternal(definition.range)) err(`${id}: unknown range ${definition.range}`);
+  }
+  for (const [key, definition] of Object.entries(MODULE_DEFINITIONS)) {
+    if (!existsSync(new URL(`../${definition.module}`, import.meta.url))) err(`module:${key}: missing implementation ${definition.module}`);
+    if (!CLASS_DEFINITIONS[definition.runType]) err(`module:${key}: unknown run type ${definition.runType}`);
+  }
+  for (const [key, definition] of Object.entries(ARCHITECTURE_MODULE_DEFINITIONS)) {
+    for (const implementation of definition.implementation) {
+      if (!existsSync(new URL(`../${implementation}`, import.meta.url))) err(`architecture-module:${key}: missing implementation ${implementation}`);
+    }
+  }
+  for (const [key, definition] of Object.entries(ENGINEERING_RULE_DEFINITIONS)) {
+    for (const problem of validateEngineeringRule(definition)) err(`rule:${key}: ${problem}`);
+    if (!ARCHITECTURE_MODULE_DEFINITIONS[definition.module]) err(`rule:${key}: unknown architecture module ${definition.module}`);
+    if (!existsSync(new URL(`../${definition.implementation}`, import.meta.url))) err(`rule:${key}: missing implementation ${definition.implementation}`);
+  }
+  for (const question of COMPETENCY_QUESTIONS) {
+    for (const relation of question.answerPath) if (!RELATION_DEFINITIONS[relation]) err(`${question.id}: unknown answer-path relation ${relation}`);
+  }
+  for (const problem of validateKnowledgeGraph()) err(`knowledge projection: ${problem}`);
+  for (const file of ['context.v1.jsonld', 'data-inventory.v1.json', 'competency-questions.v1.json']) {
+    try { JSON.parse(readFileSync(new URL(`../ontology/${file}`, import.meta.url), 'utf8')); }
+    catch (e) { err(`ontology/${file}: invalid JSON (${e.message})`); }
+  }
+  const checkedContext = JSON.parse(readFileSync(new URL('../ontology/context.v1.jsonld', import.meta.url), 'utf8'))['@context'];
+  if (JSON.stringify(checkedContext) !== JSON.stringify(JSON_LD_CONTEXT)) err('context.v1.jsonld does not exactly match the runtime JSON-LD context');
+  const ttl = readFileSync(new URL('../ontology/core.v1.ttl', import.meta.url), 'utf8');
+  const shapes = readFileSync(new URL('../ontology/shapes.v1.ttl', import.meta.url), 'utf8');
+  if (!ttl.includes(`owl:versionInfo "${ONTOLOGY.version}"`)) err('core.v1.ttl version does not match the runtime ontology');
+  if (ttl !== generatedCoreTurtle()) err('core.v1.ttl drifted from ontology-schema.js; run node tools/generate-ontology.mjs --write');
+  if (readFileSync(new URL('../ontology/context.v1.jsonld', import.meta.url), 'utf8') !== generatedContextJson()) {
+    err('context.v1.jsonld drifted from ontology-schema.js; run node tools/generate-ontology.mjs --write');
+  }
+  if (readFileSync(new URL('../ontology/competency-questions.v1.json', import.meta.url), 'utf8') !== generatedCompetencyQuestionsJson()) {
+    err('competency-questions.v1.json drifted from ontology-schema.js; run node tools/generate-ontology.mjs --write');
+  }
+  if (!shapes.includes('bd:QuantityValueShape') || !shapes.includes('bd:ModelRunShape')) err('SHACL file is missing calculation-ready core shapes');
+  for (const block of shapes.matchAll(/sh:sparql\s*\[(.*?)\]\s*\./gs)) {
+    const query = block[1].match(/sh:select\s*"""([\s\S]*?)"""/)?.[1] || '';
+    if (/\bbd:/.test(query) && !/PREFIX\s+bd:\s*<https:\/\/morshedvarzandeh\.github\.io\/battery-design\/ontology\/core#>/i.test(query)) {
+      err('SHACL SPARQL query uses bd: without declaring its prefix inside the query');
     }
   }
 }

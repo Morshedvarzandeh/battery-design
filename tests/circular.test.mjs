@@ -64,6 +64,8 @@ test('a rule that has not started yet does not apply yet', () => {
   ok(!before.includes('eu-battery-passport'), 'not in force in 2025');
   ok(after.includes('eu-battery-passport'), 'in force in 2027');
   ok(GATES['eu-battery-passport'].from === '2027-02-18', 'and the date is the one in the regulation');
+  ok(GATES['eu-battery-passport'].ontologyRuleId === 'bd:rule/eu-battery-passport',
+    'the lifecycle gate projects the canonical ontology rule instead of owning another date');
   // With no date given, everything on the books is shown — the safe default
   // for someone asking "what will apply to this".
   ok(gatesFor('repurposed', 'eu').map((g) => g.id).includes('eu-battery-passport'), 'undated asks show it');

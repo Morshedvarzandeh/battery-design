@@ -270,21 +270,24 @@ export const PRESETS = [
       'advertised roughly-one-hour recharge.'
   },
   {
-    id: 'marine', name: 'Marine trolling / house', icon: '⛵',
-    desc: 'Boat house bank or trolling-motor battery',
-    systemV: [12, 48], typicalV: 12.8,
-    energyWh: [1000, 10000], typicalEnergyWh: 3000,
-    contPowerW: 1000, peakPowerW: 2000,
-    maxMassKg: 25,
-    maxDimsMm: { x: 330, y: 173, z: 240 },  // BCI Group 31 box footprint
+    id: 'marine', name: 'NTNU Vessel Twin', icon: '⛵',
+    desc: 'Battery and voyage studies for milliAmpere1 and R/V Gunnerus',
+    systemV: [24, 750], typicalV: 24,
+    energyWh: [24000, 1000000], typicalEnergyWh: 24000,
+    contPowerW: 4000, peakPowerW: 4880,
+    maxMassKg: null,
+    // Neither NTNU source publishes a lithium battery-compartment envelope.
+    // The workspace shows the pack at an indicative study seat but refuses a
+    // compartment-fit verdict until actual dimensions are supplied.
+    maxDimsMm: null,
     chargeRateC: 0.5,
     envTempC: [-5, 45],
     cyclesPerYear: 150, targetYears: 8,
     preferredChemistries: ['LFP'],
-    notes: 'Drop-in replacement for Group 24-31 lead-acid boxes, so the envelope ' +
-      'is fixed and LFP safety in an enclosed hull is decisive. A 55 lb-thrust ' +
-      'trolling motor draws ~600 W; house loads and 24/36 V trolling systems ' +
-      'push continuous power toward 1 kW.'
+    notes: 'The default reproduces milliAmpere1\'s published 24 V, 24 kWh and ' +
+      'two-by-2 kW design point. R/V Gunnerus is a separate selectable battery-study ' +
+      'scenario around its published diesel-electric vessel particulars. Neither ' +
+      'model invents an unpublished battery compartment or claims class approval.'
   }
 ];
 

@@ -1,11 +1,16 @@
 // Report — the CO2/report models and the private customer-cell logic.
 import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { ok } from './helpers.mjs';
 import { cellById } from '../js/cells.js';
 import { costModel } from '../js/optimizer.js';
-import { co2Model, CO2_MFG_PER_KWH, buildReportHTML, buildWordDocument } from '../js/report.js';
+import { designFromSpec } from '../js/api.js';
+import {
+  co2Model, CO2_MFG_PER_KWH, buildReportHTML, buildWordDocument, semanticTraceForReport,
+} from '../js/report.js';
 import { normalizeCustomCell, validateCustomCell, buildMailto, OWNER_EMAIL } from '../js/mycells.js';
 import { compareCells } from '../js/sim1d.js';
+import { semanticDigest } from '../js/ontology.js';
 
 test('CO2 arithmetic on a ~14 kWh LFP ESS', () => {
   const lfp = cellById('eve-lf280k'); // 3.2V 280Ah, 6000 cycles class
@@ -54,6 +59,33 @@ test('report document builds with full and sparse data', () => {
   ok(html.includes('Battery pack design report') && html.includes('CO2 payback point')
     && html.includes('Total cost of ownership'), 'report sections present');
   ok(!/undefined|NaN/.test(html), 'no undefined/NaN leaks into the report');
+  const legacyTrace = semanticTraceForReport(R);
+  assert.equal(legacyTrace.authority.kind, 'legacy-reconstructed-fallback');
+  ok(html.includes('Legacy reconstructed fallback')
+    && /not the authoritative design graph and cannot support release/i.test(html),
+  'an old report without the engine snapshot is visibly labelled as a non-authoritative fallback');
+  const suppliedSemantics = {
+    ontology: { version: 'snapshot-7', checksum: 'snapshot-checksum-only' },
+    rootId: 'https://example.test/design/snapshot-7',
+    profile: 'supplied-report-profile', conforms: false,
+    counts: { nodes: 7, edges: 9, modelRuns: 2 },
+    feasibility: 'review', evidenceMaturity: 'provisional',
+    unresolvedEvidence: [{ id: 'req:one', label: 'Supplied evidence boundary' }],
+    issues: [{ code: 'SUPPLIED_TEST_ISSUE' }],
+    graph: {
+      rootId: 'https://example.test/design/snapshot-7',
+      checksum: 'snapshot-checksum-only',
+    },
+  };
+  const semanticHtml = buildReportHTML({ ...R, semantics: suppliedSemantics });
+  ok(semanticHtml.includes('snapshot-7') && semanticHtml.includes('snapshot-checksum-only')
+    && semanticHtml.includes('supplied-report-profile') && semanticHtml.includes('Supplied evidence boundary'),
+  'the report renders the supplied semantic snapshot exactly rather than deriving a replacement');
+  ok(semanticHtml.includes('Supplied snapshot — integrity not proven')
+    && !semanticHtml.includes('Authoritative engine snapshot'),
+  'matching claimed strings alone cannot make an incomplete, nonconforming graph authoritative');
+  ok(/INVALID.*RELEASE BLOCKED/.test(semanticHtml),
+    'semantic nonconformance is visible and release-blocking in the customer report');
   const doc = buildWordDocument(html, 'T');
   ok(doc.includes('urn:schemas-microsoft-com:office:word'), 'Word wrapper present');
   // Sparse: no price, no cycles, no usage.
@@ -103,6 +135,150 @@ test('report document builds with full and sparse data', () => {
   const html4 = buildReportHTML(R4);
   ok(html4.includes('HV startup, current shunt') && html4.includes('Fast interruption simulation'),
     'electrical calculator results reach the customer report');
+
+  const R5 = {
+    ...R,
+    application: 'marine',
+    marine: {
+      vessel: {
+        id: 'ntnu-gunnerus', name: 'NTNU R/V Gunnerus', segment: 'research-vessel',
+        boundary: 'TwinShip did not publish a production battery retrofit; this is a governed design scenario.',
+      },
+      inputs: { vesselId: 'ntnu-gunnerus', durationH: 1, seaState: 'calm' },
+      distanceNm: 10, energyWh: 650000, continuousW: 640000, peakW: 780000,
+      energyPerNmWh: 65000, maturity: 'screening',
+      policyId: 'marine-load-levelling',
+      metrics: { speedGroundKn: 10, speedWaterKn: 10 },
+      assumptions: ['First-order displacement-hull screening.'],
+    },
+    twinShip: {
+      architecture: {
+        components: Array.from({ length: 9 }, (_, i) => ({ id: `c${i}` })),
+        connections: Array.from({ length: 11 }, (_, i) => ({ id: `e${i}` })),
+        reference: { statement: 'Architecture reference and research demonstrator; not a certified battery model.' },
+      },
+      readiness: {
+        label: 'Screening model', maturity: 'screening',
+        missing: ['Measured or supplied vessel power basis', 'Governed calibration trial'],
+        statement: 'Do not present this result as a live or validated vessel digital twin.',
+      },
+      replay: {
+        status: 'unproven',
+        diagnostics: [{ detail: 'At least two aligned samples are required.' }],
+        limitation: 'Residuals are early-warning evidence, not fault isolation.',
+      },
+    },
+  };
+  const html5 = buildReportHTML(R5);
+  ok(html5.includes('Marine vessel, voyage &amp; TwinShip evidence')
+    && html5.includes('NTNU R/V Gunnerus') && html5.includes('650 kWh')
+    && html5.includes('marine-load-levelling'),
+  'a distinct marine section carries vessel identity and voyage duty');
+  ok(html5.includes('Screening model (screening)') && html5.includes('At least two aligned samples are required'),
+    'missing twin and replay evidence stays visible');
+  ok(/not fault isolation/.test(html5) && /neither result is class approval/.test(html5)
+    && /not a certified battery model/.test(html5),
+  'the report cannot turn the TwinShip research architecture into certification or diagnosis');
+  ok(!/undefined|NaN/.test(html5), 'marine evidence section has no undefined or NaN leaks');
+
+  const html6 = buildReportHTML({
+    ...R5,
+    twinShip: {
+      ...R5.twinShip,
+      readiness: {
+        label: 'Digital twin', maturity: 'digital-twin', missing: [],
+        assetId: 'SECRET-PHYSICAL-ASSET',
+        calibrationTrialId: 'SECRET-CALIBRATION-TRIAL',
+        statement: 'The declared evidence satisfies the governed software contract.',
+      },
+    },
+  });
+  ok(/raw trial and physical-asset identifiers are intentionally omitted/.test(html6),
+    'a satisfied readiness contract explains why its identities are absent');
+  ok(!/Missing evidence:\s*none/i.test(html6)
+    && !/SECRET-PHYSICAL-ASSET|SECRET-CALIBRATION-TRIAL/.test(html6),
+  'the report neither claims missing none nor echoes private identifiers');
+});
+
+test('report verifies graph integrity without treating an unsigned digest as authority', () => {
+  const design = designFromSpec({ application: 'marine', marine: { vesselId: 'ntnu-gunnerus' } });
+  const report = {
+    date: '2026-08-06', application: design.application.id,
+    cell: design.cell, summary: design.pack, cost: design.cost, co2: design.co2,
+    gridLabel: 'World grid average', usage: { cyclesPerYear: 250, targetYears: 8 },
+    selection: {}, findings: design.findings, semantics: design.semantics,
+    marine: design.marine, twinShip: design.twinShip, disclaimer: 'Screening only.',
+  };
+  const trace = semanticTraceForReport(report);
+  assert.equal(trace.authority.kind, 'self-consistent-origin-unverified');
+  assert.equal(trace.authority.authoritative, false);
+  assert.equal(trace.semantics.rootId, design.semantics.rootId);
+  assert.equal(trace.semantics.rootId, design.semantics.graph.rootId);
+  assert.equal(trace.semantics.ontology.checksum, design.semantics.ontology.checksum);
+  assert.equal(trace.semantics.ontology.checksum, design.semantics.graph.checksum);
+
+  const html = buildReportHTML(report);
+  assert.ok(html.includes(design.semantics.rootId), 'the exact API design root reaches the report');
+  assert.ok(html.includes(design.semantics.ontology.checksum), 'the exact API checksum reaches the report');
+  assert.match(html, /Self-consistent semantic snapshot — origin unverified/);
+  assert.match(html, /RELEASE BLOCKED|NOT RELEASE-AUTHORITATIVE/);
+
+  const mismatched = JSON.parse(JSON.stringify(design.semantics));
+  mismatched.rootId = `${mismatched.rootId}-different`;
+  const rejected = semanticTraceForReport({ ...report, semantics: mismatched });
+  assert.equal(rejected.authority.kind, 'supplied-snapshot-integrity-failure');
+  assert.equal(rejected.authority.authoritative, false);
+  const rejectedHtml = buildReportHTML({ ...report, semantics: mismatched });
+  assert.match(rejectedHtml, /Supplied snapshot — integrity not proven/);
+  assert.match(rejectedHtml, /root id does not match the graph/);
+  assert.match(rejectedHtml, /RELEASE BLOCKED|NOT RELEASE-AUTHORITATIVE/);
+
+  const checksumMismatch = JSON.parse(JSON.stringify(design.semantics));
+  checksumMismatch.ontology.checksum = `${checksumMismatch.ontology.checksum}-different`;
+  const rejectedChecksum = semanticTraceForReport({ ...report, semantics: checksumMismatch });
+  assert.equal(rejectedChecksum.authority.kind, 'supplied-snapshot-integrity-failure');
+  assert.match(rejectedChecksum.authority.detail, /checksum does not match the graph/);
+
+  const forgedContent = JSON.parse(JSON.stringify(design.semantics));
+  forgedContent.graph.nodes[0].label = 'forged result';
+  const rejectedContent = semanticTraceForReport({ ...report, semantics: forgedContent });
+  assert.equal(rejectedContent.authority.kind, 'supplied-snapshot-integrity-failure');
+  assert.match(rejectedContent.authority.detail, /node and relation content/);
+
+  const nonconforming = JSON.parse(JSON.stringify(design.semantics));
+  nonconforming.graph.edges[0].type = 'bd:notARealRelation';
+  const attackerChecksum = semanticDigest({
+    nodes: nonconforming.graph.nodes, edges: nonconforming.graph.edges,
+  });
+  nonconforming.graph.checksum = attackerChecksum;
+  nonconforming.ontology.checksum = attackerChecksum;
+  const rejectedShape = semanticTraceForReport({ ...report, semantics: nonconforming });
+  assert.equal(rejectedShape.authority.kind, 'supplied-snapshot-integrity-failure');
+  assert.match(rejectedShape.authority.detail, /does not conform/);
+
+  const recomputedForgery = JSON.parse(JSON.stringify(design.semantics));
+  const quantity = recomputedForgery.graph.nodes.find((node) =>
+    node.types?.includes('bd:QuantityValue'));
+  quantity.properties.numericValue = 999999;
+  const forgedChecksum = semanticDigest({
+    nodes: recomputedForgery.graph.nodes, edges: recomputedForgery.graph.edges,
+  });
+  recomputedForgery.graph.checksum = forgedChecksum;
+  recomputedForgery.ontology.checksum = forgedChecksum;
+  const selfConsistentForgery = semanticTraceForReport({ ...report, semantics: recomputedForgery });
+  assert.equal(selfConsistentForgery.authority.kind, 'self-consistent-origin-unverified');
+  assert.equal(selfConsistentForgery.authority.authoritative, false,
+    'a caller can recompute a public digest, so self-consistency never proves producer authenticity');
+
+  const incomplete = semanticTraceForReport({ ...report, semantics: { counts: {} } });
+  assert.equal(incomplete.authority.kind, 'supplied-snapshot-integrity-failure',
+    'an incomplete supplied claim cannot be disguised as a legacy reconstruction');
+  assert.match(incomplete.authority.detail, /graph payload is missing/);
+
+  const emptyIdentity = semanticTraceForReport({ ...report, semantics: { counts: {}, graph: {} } });
+  assert.equal(emptyIdentity.authority.kind, 'supplied-snapshot-integrity-failure');
+  assert.match(emptyIdentity.authority.detail, /snapshot root id is missing/);
+  assert.match(emptyIdentity.authority.detail, /graph checksum is missing/);
 });
 
 test('customer cells: validation, normalization, and the private mail path', () => {

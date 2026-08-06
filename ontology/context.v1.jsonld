@@ -1,0 +1,61 @@
+{
+  "@context": {
+    "@vocab": "https://morshedvarzandeh.github.io/battery-design/ontology/core#",
+    "bd": "https://morshedvarzandeh.github.io/battery-design/ontology/core#",
+    "bdr": "https://morshedvarzandeh.github.io/battery-design/resource/",
+    "prov": "http://www.w3.org/ns/prov#",
+    "qudt": "http://qudt.org/schema/qudt/",
+    "unitVocabulary": "http://qudt.org/vocab/unit/",
+    "sosa": "http://www.w3.org/ns/sosa/",
+    "skos": "http://www.w3.org/2004/02/skos/core#",
+    "time": "http://www.w3.org/2006/time#",
+    "xsd": "http://www.w3.org/2001/XMLSchema#",
+    "id": "@id",
+    "type": "@type",
+    "label": "http://www.w3.org/2000/01/rdf-schema#label",
+    "from": {
+      "@id": "bd:from",
+      "@type": "@id"
+    },
+    "to": {
+      "@id": "bd:to",
+      "@type": "@id"
+    },
+    "predicate": {
+      "@id": "bd:predicate",
+      "@type": "@id"
+    },
+    "numericValue": {
+      "@id": "qudt:numericValue",
+      "@type": "xsd:double"
+    },
+    "unit": {
+      "@id": "qudt:unit",
+      "@type": "@id"
+    },
+    "unitCode": "bd:unitCode",
+    "quantityKind": "bd:quantityKind",
+    "revision": "bd:revision",
+    "issuedAt": {
+      "@id": "bd:issuedAt",
+      "@type": "xsd:dateTime"
+    },
+    "result": "bd:result",
+    "designChecksum": "bd:designChecksum",
+    "contentDigest": "bd:contentDigest",
+    "kind": "bd:kind",
+    "authorities": "bd:authorities",
+    "wasGeneratedBy": {
+      "@id": "prov:wasGeneratedBy",
+      "@type": "@id"
+    },
+    "wasDerivedFrom": {
+      "@id": "prov:wasDerivedFrom",
+      "@type": "@id"
+    },
+    "used": {
+      "@id": "prov:used",
+      "@type": "@id"
+    }
+  }
+}

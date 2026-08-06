@@ -1,0 +1,94 @@
+{
+  "format": "battery-design/data-inventory@1",
+  "ontologyVersion": "1.0.0",
+  "sourceRepositoryCheckpoint": "8db0d4a",
+  "axesMustRemainDistinct": [
+    "application family",
+    "application class",
+    "physics/market domain",
+    "geographic market",
+    "physical asset versus model/specification",
+    "calculated result versus measured observation",
+    "diagnostic severity versus evidence maturity versus feasibility versus workflow versus release"
+  ],
+  "priorityDomains": [
+    {
+      "priority": "P0",
+      "id": "identity",
+      "sources": ["js/presets.js", "js/families.js", "js/markets.js", "types/core.ts"],
+      "problem": "Different classification axes reuse plain ids such as marine and road.",
+      "migration": "Namespaced immutable semantic ids with legacy aliases."
+    },
+    {
+      "priority": "P0",
+      "id": "quantities",
+      "sources": ["js/pack-engine.js", "js/sim1d.js", "js/sim2.js", "js/marine.js", "js/charging.js"],
+      "problem": "Units are encoded in field suffixes and several dimensions use incompatible scales.",
+      "migration": "QuantityValue nodes with finite numeric value, quantity kind and UCUM-compatible unit."
+    },
+    {
+      "priority": "P0",
+      "id": "evidence",
+      "sources": ["js/cells.js", "js/components.js", "js/electrical-protection.js", "js/marine-workspace.js", "js/standards.js"],
+      "problem": "Multiple incompatible evidence shapes and incomplete field-level provenance.",
+      "migration": "Governed EvidenceRecord metadata and Claim basis; raw/private evidence stays outside portable graphs."
+    },
+    {
+      "priority": "P0",
+      "id": "status",
+      "sources": ["types/core.ts", "js/engineering.js", "js/governance.js", "js/loop-testing.js"],
+      "problem": "Pass, review, unproven, approved and released are incorrectly comparable strings.",
+      "migration": "Separate diagnostic, evidence, feasibility, workflow and release vocabularies."
+    },
+    {
+      "priority": "P1",
+      "id": "product-and-materials",
+      "sources": ["js/cells.js", "js/components.js", "js/materials.js", "js/architecture.js", "js/topology.js"],
+      "problem": "No common system hierarchy and component/material aliases do not always resolve.",
+      "migration": "System/pack/module/cell/component/material identities plus hasPart, specifiedBy and selects relations."
+    },
+    {
+      "priority": "P1",
+      "id": "host-and-duty",
+      "sources": ["js/vehicle.js", "js/vessels.js", "js/marine.js", "js/operating-policy.js", "js/loadprofiles.js"],
+      "problem": "Catalog model, physical host, installation study, policy and generated profile are conflated.",
+      "migration": "Separate HostAsset, AssetModel, InstallationStudy, Mission, policy and profile identities."
+    },
+    {
+      "priority": "P1",
+      "id": "models-and-verification",
+      "sources": ["js/cosim-graph.js", "js/sim1d.js", "js/sim2.js", "js/fmi.js", "js/loop-testing.js", "rust-core/src/equations.rs"],
+      "problem": "No registry links model, solver, run, input, output, trace, test and evidence.",
+      "migration": "EngineeringModel, Solver, ModelRun, EngineeringResult, SILRun and HILRun lineage."
+    },
+    {
+      "priority": "P1",
+      "id": "charging",
+      "sources": ["js/charging.js", "js/v2x.js", "js/efficiency.js"],
+      "problem": "Cell acceptance, charger, source, interface and strategy are implicit maps.",
+      "migration": "Charging remains a domain extension under the common ontology; missing marine shore equipment is an unresolved Requirement."
+    },
+    {
+      "priority": "P1",
+      "id": "thermal-safety",
+      "sources": ["js/shortcircuit.js", "js/runaway.js", "js/venting.js", "js/vent-layout.js", "js/grounding.js"],
+      "problem": "Barrier, spacer and vent identities are duplicated between catalog and analysis modules.",
+      "migration": "Typed safety component, requirement, calculation result, placement and evidence relations."
+    },
+    {
+      "priority": "P2",
+      "id": "governance-and-reporting",
+      "sources": ["js/governance.js", "js/api.js", "js/brief.js", "js/report.js"],
+      "problem": "Approvals and reports cannot trace conclusions to exact assertions and model runs.",
+      "migration": "Version-bound Approval activities and report ontology checksum/trace summary."
+    }
+  ],
+  "knownIdentifierCollisions": [
+    ["app:marine", "family:marine", "class:marine", "domain:marine"],
+    ["bms-topology:centralized", "ems-architecture:centralized"],
+    ["component-cooling:passive-air", "thermal-loop:passive-air"],
+    ["policy:marine-load-levelling", "profile:marine-load-levelling"],
+    ["addon:vent-sizing", "model:vent-sizing"]
+  ],
+  "privacyBoundary": "Do not place raw replay samples, customer documents, local paths, credentials, personal identities or physical asset identifiers in portable ontology graphs."
+}

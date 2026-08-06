@@ -1,8 +1,11 @@
 // standards.js — standards-awareness rule engine for the pack designer.
 // Audits a computed pack design against public battery standards and good
-// engineering practice. Pure functions, no state, no DOM, no imports.
+// engineering practice. Pure functions, no state and no DOM.
 //
 // This module provides GUIDANCE ONLY — see DISCLAIMER below.
+
+import { resolveIsolationRule } from './isolation-rule.js';
+import { appClassOf } from './markets.js';
 
 export const DISCLAIMER =
   'These checks are engineering guidance derived from publicly documented ' +
@@ -89,7 +92,9 @@ export const STANDARDS_INFO = [
     scope:
       'Approval requirements for electric power trains of road vehicles. ' +
       'Defines voltage class B (> 60 V and ≤ 1500 V DC), and requires ' +
-      'isolation resistance (≥ 100 Ω/V for DC buses, 500 Ω/V AC), ' +
+      'topology-specific isolation resistance: 100 Ω/V for a separate DC bus, ' +
+      '500 Ω/V for a separate AC bus, and 500 Ω/V for connected AC/DC buses ' +
+      '(with a documented 100 Ω/V protection exception), ' +
       'protection against direct/indirect contact, HV marking and REESS abuse tests.'
   },
   {
@@ -250,6 +255,31 @@ function fmt(n, digits) {
 
 function pct(ratio) {
   return fmt(ratio * 100, ratio * 100 >= 100 ? 0 : 1) + '%';
+}
+
+// Orchestrated designs pass the exact immutable architecture result so this
+// standards surface cannot drift to another topology. Context re-resolution
+// remains only for standalone/legacy module callers.
+function isolationForConsumer(ctx, workingVoltageV) {
+  if (Object.hasOwn(ctx || {}, 'isolationResolution')) {
+    const resolved = ctx.isolationResolution || null;
+    if (resolved?.workingVoltageV != null
+      && Math.abs(resolved.workingVoltageV - workingVoltageV) > 1e-9) return null;
+    return resolved;
+  }
+  const rawContext = ctx?.isolationContext || null;
+  const applicationContext = rawContext && typeof rawContext === 'object'
+    ? rawContext.applicationContext
+    : (ctx?.usage?.application === 'marine' ? 'marine-it' : null);
+  try {
+    return resolveIsolationRule({
+      ...(typeof rawContext === 'string' ? { contextId: rawContext } : (rawContext || {})),
+      workingVoltageV,
+      applicationContext,
+    });
+  } catch {
+    return null;
+  }
 }
 
 function finding(id, severity, category, title, detail, ref) {
@@ -453,24 +483,55 @@ function ruleVoltageClass(ctx) {
     );
   }
   if (pack.vMax > 60) {
+    const isolation = isolationForConsumer(ctx, pack.vMax);
+    const isolationText = isolation && isolation.applies
+      ? ' The declared ' + isolation.busType.toUpperCase() + ' ' +
+        isolation.topology.replace('galvanically-', 'galvanically ') + ' case resolves to ' +
+        isolation.ohmsPerVolt + ' Ω/V (' + fmt(isolation.floorKOhm, 0) + ' kΩ at this working voltage) ' +
+        'under UN R100 §' + isolation.clause + '.'
+      : isolation && isolation.status === 'review-required'
+        ? ' No UN R100 numeric floor is applied: ' + isolation.basis
+        : ' No numeric isolation floor is asserted until the bus type and galvanic topology are declared; ' +
+          'UN R100 distinguishes separate DC (100 Ω/V), separate AC (500 Ω/V), and connected AC/DC ' +
+          '(500 Ω/V baseline) cases.';
+    const nonRoad = isolation && isolation.status === 'review-required';
+    const voltageIntro = nonRoad
+      ? 'At ' + fmt(pack.vMax) + ' V maximum, this pack exceeds 60 V DC and requires a declared ' +
+        'high-voltage protection and earthing basis for its actual installation.'
+      : 'At ' + fmt(pack.vMax) + ' V maximum, this pack exceeds 60 V DC and is voltage class B under ' +
+        'ECE R100 / ISO 6469-3.';
     return finding(
       'voltage-class', 'warn', 'electrical',
-      'Voltage class B — HV safety measures required',
-      'At ' + fmt(pack.vMax) + ' V maximum, this pack exceeds 60 V DC and is voltage class B under ' +
-      'ECE R100 / ISO 6469-3. Required measures include double or reinforced insulation, touch protection to ' +
-      'at least IPXXB on live parts, isolation resistance of at least 100 Ω/V (DC) with isolation ' +
-      'monitoring where applicable, a high-voltage interlock loop (HVIL) on serviceable connections, and ' +
-      'orange marking of HV wiring.',
-      'ECE R100; ISO 6469-3'
+      nonRoad ? 'High-voltage safety basis required' : 'Voltage class B — HV safety measures required',
+      voltageIntro + ' Required measures include double or reinforced insulation, touch protection to ' +
+      'at least IPXXB on live parts, topology-appropriate isolation protection and monitoring where applicable, ' +
+      'a high-voltage interlock loop (HVIL) on serviceable connections, and orange marking of HV wiring.' +
+      isolationText,
+      nonRoad ? 'applicable marine class / flag-state requirements' : 'ECE R100; ISO 6469-3'
+    );
+  }
+  const applicationClass = appClassOf(ctx.usage?.application);
+  if (applicationClass !== 'vehicle') {
+    const marine = applicationClass === 'marine';
+    return finding(
+      'voltage-class', 'info', 'electrical',
+      marine ? 'Below the project 60 V DC boundary — marine basis still required' : 'Below the project 60 V DC boundary',
+      'The pack maximum voltage of ' + fmt(pack.vMax) + ' V is at or below the project boundary. ' +
+      'UN R100 and ISO 6469-3 are road-vehicle references, so this result does not use their voltage-class label ' +
+      'or claim that they waive protection for this application. ' +
+      (marine
+        ? 'Declare the vessel distribution, earthing philosophy, class rules and flag-state requirements; an intentionally unearthed marine system may still need first-fault monitoring.'
+        : 'Apply the governing product, industrial or installation standard for the declared application.'),
+      marine ? 'applicable marine class / flag-state requirements' : 'applicable product / installation standard'
     );
   }
   return finding(
     'voltage-class', 'pass', 'electrical',
     'Voltage class A (≤ 60 V DC)',
-    'The pack maximum voltage of ' + fmt(pack.vMax) + ' V is at or below 60 V DC, so it is voltage class A ' +
-    '(SELV-adjacent) under ECE R100 / ISO 6469-3. The dedicated high-voltage shock-protection measures ' +
-    '(HVIL, isolation monitoring, orange marking) are not mandated, though good insulation practice still applies.',
-    'ECE R100; ISO 6469-3'
+    'The road-vehicle pack maximum voltage of ' + fmt(pack.vMax) + ' V is at or below 60 V DC, so it is voltage class A ' +
+    'under UN R100 / ISO 6469-3. The dedicated high-voltage shock-protection measures ' +
+    '(HVIL, isolation monitoring, orange marking) are not mandated by those vehicle provisions, though good insulation practice still applies.',
+    'UN R100; ISO 6469-3'
   );
 }
 

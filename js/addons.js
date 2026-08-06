@@ -87,6 +87,14 @@ export const ADDONS = [
     needs: ['a load profile', 'a pack'],
   },
   {
+    id: 'marine-twinship', name: 'Marine vessel twin & voyage replay', tier: 'browser', status: 'shipped',
+    module: 'marine.js + vessels.js + marine-workspace.js', concepts: ['vessel-twin', 'hull-resistance', 'cosim'],
+    what: 'Select one of the evidenced NTNU vessels, inspect the TwinShip-inspired component and signal contract, calculate a first-order voyage duty, grade model readiness, and compare governed measured/predicted speed, course and power samples without calling a screening model a live digital twin.',
+    provides: ['named vessel and source boundary', 'TwinShip component and connection contract', 'screening voyage energy and power', 'five-level twin-readiness result', 'replay residuals and sustained-threshold alarms'],
+    needs: ['an identified vessel', 'visible voyage assumptions', 'a measured power basis for vessel-grade use', 'separate calibration and validation trials', 'aligned replay data and governed model identity'],
+    why: 'TwinShip demonstrated modular co-simulation and recorded-voyage comparison, not a certified battery retrofit or a production live twin. Keeping readiness and replay evidence explicit prevents an attractive vessel view from overstating model maturity.',
+  },
+  {
     id: 'vehicle', name: 'Vehicle & driving', tier: 'browser', status: 'shipped',
     module: 'vehicle.js', concepts: ['vehicle-dynamics'],
     what: 'Road load from the machine itself — mass, drag, rolling resistance, gradient, driving mode — giving Wh/km and range, with the pack carrying its own weight.',

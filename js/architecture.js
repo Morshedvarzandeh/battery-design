@@ -11,17 +11,26 @@
 // BMS topology has NO quantitative crossover in any source, so it is an
 // input with a scale-based suggestion (§8.4); precharge equations and
 // closing sequence (§5.5); fuse rules of thumb (§5.5); isolation thresholds
-// conflict between sources, so the governing standard is an explicit
-// argument — never averaged, never silently defaulted (§5.6); 400 V and
+// depend on the declared vehicle-bus topology, so the governing context is
+// explicit — never averaged, never silently inferred (§5.6); 400 V and
 // 800 V are power-semiconductor classes, not electrochemistry (§5.7).
 // Where the sources give no number (wireless-BMS latency, contactor timing,
 // aux DC-DC budget) this module says so instead of inventing one.
+
+import {
+  AC_PROTECTION_TYPES,
+  ISOLATION_CONTEXTS,
+  LEGACY_ISOLATION_CONTEXT_ALIASES,
+  resolveIsolationRule,
+} from './isolation-rule.js';
+import { evaluateRuleApplicability, ruleDefinition } from './ontology-rules.js';
 
 // AFE (analogue front-end) ICs run 14–25 cell channels at ±0.8–3 mV;
 // daisy chains support up to 62 nodes.
 export const AFE_CHANNELS_DEFAULT = 16;
 export const AFE_CHANNELS_RANGE = [14, 25];
 export const DAISY_NODE_LIMIT = 62;
+export const DEFAULT_ROAD_ISOLATION_CONTEXT = 'un-r100-separate-dc';
 
 // The §8.4 table, verbatim intent — shown to the customer so the topology
 // choice is understandable, not hidden.
@@ -69,13 +78,51 @@ export function assessBmsTopology({ topology, s, afeTotal, nModules }) {
   return { ...t, verdict, why };
 }
 
-// Isolation floors — the two source standards CONFLICT (500 Ω/V citing
-// UN ECE R100 vs 100 Ω/V DC per ISO 6469-3), so the governing standard is
-// a required argument. Never average, never default silently.
-export const ISOLATION_STANDARDS = {
-  'ece-r100': { label: 'UN ECE R100', ohmsPerVolt: 500 },
-  'iso-6469-dc': { label: 'ISO 6469-3 (DC circuits)', ohmsPerVolt: 100 },
-};
+// Backward-compatible selector catalog. The old ids now identify explicit
+// UN R100 topology cases; they no longer imply that one number governs the
+// whole regulation or that ISO and UN values should be compared/averaged.
+// Numeric coefficients are resolved through the ontology-backed calculator;
+// this compatibility catalog never owns a second copy of 100/500 Ω/V.
+function governedIsolationCatalogEntry(contextId, metadata) {
+  const acProtection = metadata.requiresAcProtectionEvidence
+    ? AC_PROTECTION_TYPES[0]
+    : 'none';
+  if (metadata.requiresAcProtectionEvidence && !acProtection) {
+    throw new Error('The governed UN R100 ontology rule has no protected connected-bus evidence type.');
+  }
+  const resolution = resolveIsolationRule({
+    workingVoltageV: 100,
+    applicationContext: 'road-vehicle',
+    contextId,
+    acProtection,
+  });
+  return Object.freeze({ ...metadata, ohmsPerVolt: resolution.ohmsPerVolt });
+}
+
+const GOVERNED_ISOLATION_CONTEXTS = Object.freeze(Object.fromEntries(
+  Object.entries(ISOLATION_CONTEXTS).map(([contextId, metadata]) => [
+    contextId,
+    governedIsolationCatalogEntry(contextId, metadata),
+  ])
+));
+
+export const ISOLATION_STANDARDS = Object.freeze({
+  'ece-r100': Object.freeze({
+    label: 'UN R100 — connected AC/DC buses (legacy selector)',
+    contextId: LEGACY_ISOLATION_CONTEXT_ALIASES['ece-r100'],
+    ohmsPerVolt: GOVERNED_ISOLATION_CONTEXTS[
+      LEGACY_ISOLATION_CONTEXT_ALIASES['ece-r100']
+    ].ohmsPerVolt,
+  }),
+  'iso-6469-dc': Object.freeze({
+    label: 'UN R100 — separate DC bus (legacy selector)',
+    contextId: LEGACY_ISOLATION_CONTEXT_ALIASES['iso-6469-dc'],
+    ohmsPerVolt: GOVERNED_ISOLATION_CONTEXTS[
+      LEGACY_ISOLATION_CONTEXT_ALIASES['iso-6469-dc']
+    ].ohmsPerVolt,
+  }),
+  ...GOVERNED_ISOLATION_CONTEXTS,
+});
 
 export function divisors(n) {
   const out = [];
@@ -147,7 +194,7 @@ export function modulePartition(s, p, cell, opts = {}) {
   const sMod = cands[cands.length - 1];
   const part = mk(sMod, p, false);
   if (part.lvModule) {
-    notes.push('Each module stays at or below the 60 V DC boundary (UN ECE R100) — it can be handled as a low-voltage part on its own.');
+    notes.push('Each module stays at or below the project\'s 60 V DC high-voltage boundary. The governing application rule still has to be checked; a road-vehicle approval rule is not silently transferred to a vessel or plant.');
   } else {
     notes.push('A single module already exceeds 60 V DC — it is a high-voltage part even outside the pack.');
   }
@@ -192,13 +239,13 @@ export function voltageClass(vMaxV) {
   if (vMaxV <= 60) {
     return {
       id: 'lv', label: 'Low voltage (≤60 V DC)',
-      note: 'Below the UN ECE R100 60 V DC boundary — no HVIL or isolation-monitoring burden. This is the entire reason 48 V systems exist.',
+      note: 'At or below the project\'s 60 V DC high-voltage boundary. Road-vehicle HV provisions are not activated here; the governing marine, stationary or product regime may still impose other protective measures.',
     };
   }
   if (vMaxV <= 300) {
     return {
       id: 'hv', label: 'High voltage (>60 V DC)',
-      note: 'Above 60 V DC: isolation monitoring, HVIL, creepage rules and HV PPE all become mandatory.',
+      note: 'Above the project\'s 60 V DC boundary: select the application, electrical reference and governing rule before assigning isolation monitoring, HVIL or other protective measures.',
     };
   }
   if (vMaxV <= 500) {
@@ -243,12 +290,38 @@ export function bmsArchitecture({ s, cellCount, partition, topology = 'auto', ch
   if (topo === 'wireless') {
     notes.push('Wireless eliminates the intra-pack LV harness, but no latency or reliability data exists in the sources — evaluate with the vendor before committing.');
   }
-  // Temperature sensors: production reality spans 1 per 3 cells (BMW i3) to
-  // 1 per 73 (Hyundai Kona) — a 24× spread. The ratio is an input; the
-  // observability-optimal figure (1 per 3) is the justified maximum.
-  const ratio = Math.max(1, cellsPerTempSensor);
-  const tempSensors = Math.max(1, Math.ceil(cellCount / ratio));
-  const tempSensorsObservability = Math.max(1, Math.ceil(cellCount / 3));
+  // Temperature coverage is calculated over every monitored physical cell,
+  // not just the series-group count. The requested ratio is a design input,
+  // then a hard allocation floor keeps every physical module observable.
+  // The 1:3 comparison is retained only as an optional project assumption;
+  // it is not a universal requirement or a substitute for hazard analysis.
+  if (!Number.isInteger(cellCount) || cellCount < 1) {
+    throw new RangeError('cellCount must be a positive integer so temperature coverage includes every monitored cell.');
+  }
+  if (!Number.isInteger(cellsPerTempSensor) || cellsPerTempSensor < 1) {
+    throw new RangeError('cellsPerTempSensor must be a positive integer.');
+  }
+  const ratio = cellsPerTempSensor;
+  const monitoredCellCount = cellCount;
+  const tempSensorsFromConfiguredRatio = Math.ceil(monitoredCellCount / ratio);
+  const tempSensorsModuleFloor = partition.virtual ? 1 : Math.max(1, partition.nModules);
+  const tempSensors = Math.max(tempSensorsFromConfiguredRatio, tempSensorsModuleFloor);
+  const observabilityRule = ruleDefinition('temperature-sensor-benchmark');
+  if (!observabilityRule?.advisory?.numericValue) {
+    throw new Error('The ontology is missing the temperature-sensor-benchmark advisory.');
+  }
+  const observabilityEvaluation = evaluateRuleApplicability('temperature-sensor-benchmark', {
+    pack: { seriesCount: { value: s, unit: 'one' } },
+  });
+  const advisoryRatio = observabilityRule.advisory.numericValue;
+  const tempSensorsOptionalTarget = {
+    status: 'assumption-only',
+    ontologyRuleId: observabilityRule.id,
+    ruleApplicability: observabilityEvaluation.applies ? 'applicable' : 'not-applicable',
+    cellsPerSensor: advisoryRatio,
+    count: Math.max(Math.ceil(monitoredCellCount / advisoryRatio), tempSensorsModuleFloor),
+    note: `Optional 1:${advisoryRatio} observability target from an assumed design-practice rule; it is not a universal requirement or governing minimum.`,
+  };
   return {
     topology: topo,
     topologyInfo: BMS_TOPOLOGIES.find((t) => t.id === topo) || null,
@@ -256,7 +329,9 @@ export function bmsArchitecture({ s, cellCount, partition, topology = 'auto', ch
     afeTotal, afePerModule, daisyNodes,
     senseWiresPerModule: partition.senseWiresPerModule,
     senseWiresTotal: partition.senseWiresTotal,
-    tempSensors, cellsPerTempSensor: ratio, tempSensorsObservability,
+    tempSensors, cellsPerTempSensor: ratio, monitoredCellCount,
+    tempSensorsFromConfiguredRatio, tempSensorsModuleFloor,
+    tempSensorsOptionalTarget,
     accuracyNote: 'AFE cell-voltage accuracy ±0.8–3 mV; current sensing better than 1%.',
     notes,
   };
@@ -329,20 +404,84 @@ export function contactorsAndFuse({ contA, vMaxV }) {
 }
 
 // ---------------------------------------------------------------------------
-// Isolation floor (§5.6). The standard is a REQUIRED argument because the
-// sources conflict; this function refuses to guess.
+// Isolation floor (§5.6). The selector is a REQUIRED argument because UN
+// R100 assigns different floors to separate DC, separate AC and connected
+// AC/DC buses. Legacy ids remain accepted only as named topology aliases.
 // ---------------------------------------------------------------------------
-export function isolationRequirement(vMaxV, standard) {
-  const std = ISOLATION_STANDARDS[standard];
-  if (!std) {
-    throw new Error(`isolationRequirement needs the governing standard as an explicit argument (${Object.keys(ISOLATION_STANDARDS).join(' | ')}) — the sources conflict (500 Ω/V vs 100 Ω/V DC) and must not be averaged or silently defaulted.`);
+export function isolationRequirement(vMaxV, context, options = {}) {
+  const contextInput = typeof context === 'string' ? { contextId: context } : (context || {});
+  const applicationContext = options.applicationContext || contextInput.applicationContext || 'road-vehicle';
+  if (!context && applicationContext === 'road-vehicle') {
+    throw new Error(
+      'isolationRequirement needs an explicit UN R100 bus context ' +
+      '(separate DC, separate AC, or connected AC/DC); no topology may be guessed.'
+    );
   }
-  return {
-    standard, standardLabel: std.label, ohmsPerVolt: std.ohmsPerVolt,
-    floorKOhm: (vMaxV * std.ohmsPerVolt) / 1000,
-    oemPracticeNote: 'Observed OEM design targets sit an order of magnitude above the floor — >1.5 MΩ; one manufacturer specifies >3 MΩ contactors-open, >2 MΩ closed.',
-    groundingNote: 'Assumes a chassis-referenced ground. Do not apply to ungrounded/IT topologies (conventional in marine DC systems).',
-  };
+  const resolved = resolveIsolationRule({
+    ...contextInput,
+    workingVoltageV: vMaxV,
+    applicationContext,
+    outOfScopeOutcome: options.outOfScopeOutcome || contextInput.outOfScopeOutcome,
+  });
+  return Object.freeze({
+    ...resolved,
+    workingVoltageV: vMaxV,
+    ontologyRule: resolved.ontologyRule,
+  });
+}
+
+function isolationApplicationContext(options) {
+  if (options.isolationApplicationContext) return options.isolationApplicationContext;
+  if (options.appId === 'marine') return 'marine-it';
+  if (options.appId === 'ev' || options.appId === 'ebus') return 'road-vehicle';
+  // Legacy programmatic calls supplied an explicit UN R100 selector before
+  // application ids existed. Preserve those reproducibly, but never infer a
+  // road-vehicle rule once an actual non-road application is known.
+  if (!options.appId && (options.isolationContext || options.isolationStandard)) return 'road-vehicle';
+  return 'non-road';
+}
+
+function isolationMonitoringStatus(vMaxV, isolationResolution, applicationContext) {
+  if (!(vMaxV > 60)) {
+    if (applicationContext === 'marine-it') {
+      return Object.freeze({
+        status: 'review-required-marine-it-low-voltage', required: null, highVoltage: false,
+        hvilRequired: null, reviewRequired: true,
+        basis: 'The road-vehicle 60 V DC boundary does not decide monitoring for an intentionally unearthed marine distribution system. Select the class and flag-state rule for this vessel and voltage.',
+        ontologyRuleId: 'bd:rule/un-r100-isolation',
+      });
+    }
+    return Object.freeze({
+      status: 'not-required-low-voltage', required: false, highVoltage: false,
+      hvilRequired: false, reviewRequired: false,
+      basis: 'At or below the project 60 V DC high-voltage boundary.',
+      ontologyRuleId: 'bd:rule/un-r100-isolation',
+    });
+  }
+  if (applicationContext === 'marine-it') {
+    return Object.freeze({
+      status: 'required-first-fault-monitoring', required: true, highVoltage: true,
+      hvilRequired: null, reviewRequired: true,
+      basis: 'The declared marine IT system is intentionally unearthed: monitor and alarm the first insulation fault. The numerical floor and interlock scheme remain subject to the selected class and flag-state rules.',
+      ontologyRuleId: 'bd:rule/un-r100-isolation',
+    });
+  }
+  if (applicationContext === 'road-vehicle' && isolationResolution?.applies) {
+    const connectedBusReview = isolationResolution.busType === 'ac-dc';
+    return Object.freeze({
+      status: connectedBusReview ? 'required-road-vehicle-connected-bus-review' : 'required-road-vehicle',
+      required: true, highVoltage: true,
+      hvilRequired: true, reviewRequired: connectedBusReview,
+      basis: `${isolationResolution.standardLabel}; selected vehicle-bus topology, not a charging-coupling inference.`,
+      ontologyRuleId: isolationResolution.ontologyRule?.id || 'bd:rule/un-r100-isolation',
+    });
+  }
+  return Object.freeze({
+    status: 'review-required', required: null, highVoltage: true,
+    hvilRequired: null, reviewRequired: true,
+    basis: 'This is a high-voltage non-road system. Select its electrical reference, governing standard or class rule, and monitoring philosophy; UN R100 is not applied outside road vehicles.',
+    ontologyRuleId: 'bd:rule/un-r100-isolation',
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -436,12 +575,12 @@ export const COMMS_BY_APP = {
   ev: {
     primary: 'CAN 2.0B / CAN FD (ISO 11898) + UDS diagnostics (ISO 14229)',
     alternates: ['SAE J1939 for heavy/commercial vehicles', 'ISO 15118 / DIN 70121 to the DC charger'],
-    note: 'Automotive BMS report on the vehicle CAN and expose diagnostics (incl. live SoH for the EU battery passport) over UDS; heavy trucks and buses use the J1939 flavor instead.',
+    note: 'Automotive BMS report on vehicle CAN and commonly expose diagnostics over UDS; heavy trucks and buses use the J1939 flavor instead. UDS can carry state-of-health data, but the EU battery-passport Regulation does not mandate that protocol.',
   },
   ebus: {
     primary: 'SAE J1939 (heavy-vehicle CAN, PGN-based)',
     alternates: ['CAN FD + UDS (ISO 14229) diagnostics', 'ISO 15118 / OppCharge to the pantograph or plug charger'],
-    note: 'Buses and heavy trucks live on the J1939 bus — the battery reports as a J1939 node; diagnostics and passport SoH access still ride UDS.',
+    note: 'Buses and heavy trucks live on the J1939 bus — the battery reports as a J1939 node and may add UDS diagnostics. The EU battery-passport Regulation requires accessible current data but does not prescribe UDS.',
   },
   robot: {
     primary: 'CANopen (CiA 301, battery profile CiA 418)',
@@ -772,11 +911,31 @@ export function buildArchitecture({ cell, s, p, summary, options = {} }) {
     prechargesPerHour: options.prechargesPerHour,
   }) : null;
   const contactors = contactorsAndFuse({ contA: summary.maxContCurrentA, vMaxV: summary.vMax });
-  // Below 60 V DC there is no isolation-monitoring burden — that is the
-  // point of the LV boundary; above it the standard must be stated.
-  const isolation = summary.vMax > 60
-    ? isolationRequirement(summary.vMax, options.isolationStandard)
+  // The architecture owns monitoring applicability. Consumers (including the
+  // sensor plan) use this status instead of independently re-deriving it from
+  // voltage. UN R100 is only evaluated for a declared road-vehicle context.
+  const isolationContext = isolationApplicationContext(options);
+  const isolationResolution = summary.vMax > 60
+    ? isolationRequirement(
+      summary.vMax,
+      // Existing projects stored `ece-r100` before bus topology was a field.
+      // At the pack-architecture boundary the designed source is DC, so the
+      // default is the explicit 100 Ω/V DC context. Connected AC/DC remains
+      // available only through `isolationContext`; charging never selects it.
+      options.isolationContext
+        || (options.isolationStandard === 'ece-r100'
+          ? DEFAULT_ROAD_ISOLATION_CONTEXT
+          : options.isolationStandard),
+      { applicationContext: isolationContext, outOfScopeOutcome: 'review' }
+    )
     : null;
+  // Keep numeric consumers backward-compatible and safe: `isolation` means
+  // a resolved numeric rule; a non-road/marine refusal travels separately.
+  const isolation = isolationResolution?.applies === false ? null : isolationResolution;
+  const isolationReview = isolationResolution?.status === 'review-required'
+    ? isolationResolution
+    : null;
+  const isolationMonitoring = isolationMonitoringStatus(summary.vMax, isolationResolution, isolationContext);
   const dcdc = dcdcConverter({
     vMin: summary.vMin, vMax: summary.vMax,
     lvBusV: options.lvBusV, auxPowerW: options.auxPowerW,
@@ -807,7 +966,11 @@ export function buildArchitecture({ cell, s, p, summary, options = {} }) {
   const welding = weldingForCell(cell);
   const supervisor = supervisorForApp(options.appId);
   const emsArch = emsArchitectureFor(options.appId, system?.racks ?? 1, options.emsOverride);
-  return { partition, voltageClass: vc, bms, precharge, contactors, isolation, dcdc, resistance, system, comms, welding, supervisor, emsArch };
+  return {
+    partition, voltageClass: vc, bms, precharge, contactors,
+    isolation, isolationReview, isolationMonitoring,
+    dcdc, resistance, system, comms, welding, supervisor, emsArch,
+  };
 }
 
 const round2 = (v) => Math.round(v * 100) / 100;

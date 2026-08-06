@@ -43,9 +43,12 @@ test('the roadmap is in the product, not in someone\'s head', () => {
 test('an application sees only the add-ons that are its business', () => {
   const wearable = addonsFor('wearable').map((a) => a.id);
   const ev = addonsFor('ev').map((a) => a.id);
+  const marine = addonsFor('marine').map((a) => a.id);
   ok(!wearable.includes('vehicle'), 'a watch is not a vehicle');
   ok(!wearable.includes('v2x'), 'nor does it feed the grid');
   ok(ev.includes('vehicle') && ev.includes('v2x'), 'an EV gets both');
+  ok(marine.includes('marine-twinship') && !ev.includes('marine-twinship')
+    && !wearable.includes('marine-twinship'), 'the TwinShip add-on belongs only to marine designs');
   ok(ev.length > wearable.length, 'so an EV has more to think about than a wearable');
   ok(addonsFor('wearable').every((a) => a.tier !== 'core' || true), 'core add-ons are never filtered away');
   ok(addonsFor('wearable').filter((a) => a.tier === 'core').length === ADDONS.filter((a) => a.tier === 'core').length,
@@ -53,6 +56,17 @@ test('an application sees only the add-ons that are its business', () => {
   ok(addonsFor(null).length === ADDONS.length, 'no application chosen means nothing is hidden yet');
   ok(addonsFor('ev', { includePlanned: false }).every((a) => a.status === 'shipped'), 'planned entries can be excluded');
   ok(addonsFor('ev', { tier: 'desktop' }).every((a) => a.tier === 'desktop'), 'and filtered by tier');
+});
+
+test('the marine twin add-on states the research and evidence boundary', () => {
+  const twin = addonById('marine-twinship');
+  ok(twin?.status === 'shipped' && twin.tier === 'browser',
+    'the inspectable architecture/readiness/replay contract is shipped');
+  ok(twin.concepts[0] === 'vessel-twin', 'its defining knowledge edge is vessel-specific');
+  ok(/not a certified battery retrofit|not a certified battery/i.test(twin.why),
+    'the NTNU demonstrator is not described as a certified battery product');
+  ok(/aligned replay data/.test(twin.needs.join(' ')) && /separate calibration and validation/.test(twin.needs.join(' ')),
+    'a model cannot earn twin status from its architecture alone');
 });
 
 test('the capability report answers "what can this do" with numbers', () => {

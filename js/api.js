@@ -21,7 +21,7 @@ import { layoutPack, summarize, defaultArrangement } from './pack-engine.js';
 import { costModel } from './optimizer.js';
 import { analyze } from './engineering.js';
 import { runChecks } from './standards.js';
-import { buildArchitecture } from './architecture.js';
+import { buildArchitecture, DEFAULT_ROAD_ISOLATION_CONTEXT } from './architecture.js';
 import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
 import { buildChargingPlan } from './charging.js';
@@ -33,6 +33,9 @@ import { profileForApp, profileById, profileStats } from './loadprofiles.js';
 import { releaseChecklist, appClassOf } from './markets.js';
 import { co2Model } from './report.js';
 import {
+  batteryCategoryForApplication, EU_BATTERY_PASSPORT_EFFECTIVE_DATE, euChecks,
+} from './eurules.js';
+import {
   appNeeds, needed, primarySizingDecision, sizingOptionsFor, defaultSizingOption, sizingInputsForApp,
 } from './knowledge.js';
 import {
@@ -42,13 +45,20 @@ import {
   vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare, modeComparison,
 } from './vehicle.js';
 import { buildRoute, routeToTrace, validateRoute } from './route.js';
-import { batteryProfileForPolicy } from './operating-policy.js';
+import { batteryProfileForPolicy, operatingPolicyById } from './operating-policy.js';
 import { marineDuty } from './marine.js';
+import {
+  VESSEL_MODELS, assessVoyageReplay, twinReadiness, twinShipArchitecture,
+} from './marine-workspace.js';
 import { flightDuty } from './flight.js';
 import { roundTripPlan } from './efficiency.js';
 import { buildEngineeringDiagnostics } from './diagnostics.js';
+import {
+  buildArchitectureSemanticGraph, buildDesignSemanticGraph, describeOntology, querySemanticGraph,
+  semanticDigest, semanticGraphSummary, toJsonLd, toNeo4jProjection, traceSemanticPath,
+} from './ontology.js';
 
-export const API_VERSION = '1.2';
+export const API_VERSION = '1.3';
 
 // What a specification may contain. Everything except `application` has a
 // defensible default, so the smallest useful call is one field.
@@ -59,12 +69,14 @@ export const SPEC_FIELDS = {
   p: 'cells in parallel (default: derived from the energy target)',
   energyWh: 'energy target used to derive p when s/p are not given',
   market: 'eu | us | cn | intl (default eu)',
+  batteryCategory: 'Regulation (EU) 2023/1542 category: ev | lmt | industrial | portable | sli; required when application identity does not determine EV/LMT',
+  evaluationDate: `YYYY-MM-DD date for time-gated regulatory rules (deterministic default: ${EU_BATTERY_PASSPORT_EFFECTIVE_DATE})`,
   dod: 'usable depth of discharge, 0–1 (default 0.8)',
   cyclesPerYear: 'duty for the cost model (default: the preset\'s)',
   targetYears: 'service life for the cost model (default: the preset\'s)',
   ambientC: '[low, high] design ambient (default: the preset\'s)',
   v2xPolicy: 'off | v2l | v2h | v2g | v2v (default off)',
-  isolationStandard: 'ece-r100 | iso-6469-dc — the sources conflict, so this is stated, never averaged (default ece-r100)',
+  isolationStandard: 'named UN R100 topology context: un-r100-separate-dc (default) | un-r100-separate-ac | un-r100-connected-ac-dc | un-r100-connected-ac-dc-protected (legacy aliases remain reproducible)',
   components: '{ busbar, spacer, vent, cooling, tim, housing } — component ids from listComponents(); anything omitted takes the default for the cell format',
   vehicle: 'overrides for the vehicle model: { curbKg, payloadKg, cd, frontalAreaM2, crr, driveEff, regenFrac, auxW }',
   driveMode: 'eco | normal | sport (default normal)',
@@ -72,12 +84,15 @@ export const SPEC_FIELDS = {
   diagnostics: '{ rest, pulse, relaxation, thermal, aging } booleans describing available battery-model measurements',
   electricalProtection: '{ precharge, shunt, fast } supplier ratings, evidence and duty overrides for the HV startup/current-measurement protection studies',
   conditionMonitoring: '{ baselineWindows, operatingModes, samplingHz } for engineering vibration anomaly monitoring',
-  marine: 'vessel mission overrides: { referenceMassKg, payloadKg, designSpeedKn, serviceSpeedKn, headCurrentKn, headwindKn, propulsionAtDesignW, hotelW, durationH, seaState }',
+  vesselId: 'marine vessel model id — see listVessels(); top-level alias for marine.vesselId and ignored outside the marine application',
+  marine: 'vessel mission and TwinShip inputs: voyage fields; governed shoreConnection equipment/evidence; twinEvidence { powerBasis, assetEvidence, modelEvidence, calibrationEvidence, validationEvidence, replayEvidence }; aligned replaySamples and replayOptions',
+  twinShip: 'optional top-level alias: { readiness: { powerBasis, assetEvidence, modelEvidence, calibrationEvidence, validationEvidence, replayEvidence }, replay: { samples, options } }; evidence must be vessel/asset/model-bound and content-addressed, and raw evidence is never copied into output',
   flight: 'multirotor mission overrides: { emptyMassKg, payloadKg, rotorCount, rotorDiameterM, flightMinutes, cruiseSpeedMps, headwindMps, altitudeM, temperatureC, propulsiveEfficiency, auxiliaryW, hoverFraction }',
   efficiency: 'round-trip chain overrides: { chargeEff, batteryEff, dischargeEff, auxiliaryW, cycleHours }; all efficiencies are 0–1',
   gradePct: 'route gradient in percent (default 0)',
   route: '{ points: [{ lat, lon, eleM?, tS? }], name?, targetKph? } — local or client-supplied route for road sizing',
   profileId: 'battery/load profile id, or "vehicle" to derive it from vehicle physics (kept for backward compatibility)',
+  profileTrace: 'governed custom battery/load trace: { id, name?, revision?, dtS, p, scaleW, note? }; p is normalized to ±1 and the resolved result is content-addressed',
   mission: '{ passes, startSoC, ambientC, charge: { mode, powerW, minutes } }',
   compareCellIds: 'cell ids to run against the same mission for comparison',
 };
@@ -131,6 +146,103 @@ export function listComponents({ category = null, form = null } = {}) {
         defaultFor: Object.entries(DEFAULTS_BY_FORM)
           .filter(([, d]) => d[cat] === c.id).map(([f]) => f),
       })));
+}
+
+// The named marine models are discoverable without shipping their complete
+// renderer geometry through every software client. Published facts stay
+// separate from provisional mission inputs, and the evidence boundary travels
+// with each choice.
+export function listVessels() {
+  return VESSEL_MODELS.map((vessel) => ({
+    id: vessel.id,
+    name: vessel.name,
+    shortName: vessel.shortName,
+    segment: vessel.segment,
+    description: vessel.description,
+    dimensionsM: vessel.dimensionsM,
+    published: vessel.published,
+    missionDefaults: vessel.missionDefaults,
+    policyId: vessel.policyId,
+    mounting: vessel.mounting,
+    evidence: vessel.evidence,
+    boundary: vessel.boundary,
+  }));
+}
+
+// Evidence may change a readiness verdict, but raw trials and physical-asset
+// identifiers do not belong in the portable design specification returned by
+// the API.  The evaluated TwinShip result below carries boolean checks,
+// maturity and residual summaries; callers retain their governed source data.
+function portableSpec(spec) {
+  // Semantic claims are outputs of the governed ontology builder.  Keeping
+  // caller-supplied lookalikes in the portable spec would let an input such
+  // as `{ semantics: { conforms: true } }` masquerade as evaluated evidence.
+  const {
+    twinShip: _privateTwinShip,
+    profileTrace: _privateProfileTrace,
+    ontology: _callerOntology,
+    semantics: _callerSemantics,
+    ...portable
+  } = spec;
+  if (portable.marine && typeof portable.marine === 'object' && !Array.isArray(portable.marine)) {
+    const {
+      twinEvidence: _privateTwinEvidence,
+      replaySamples: _privateReplaySamples,
+      ...marine
+    } = portable.marine;
+    portable.marine = marine;
+  }
+  return portable;
+}
+
+function portableTwinReadiness(readiness) {
+  if (!readiness) return readiness;
+  const { evidence, ...summary } = readiness;
+  const assetBindingDigest = evidence?.asset ? semanticDigest({
+    assetId: evidence.asset.assetId,
+    vesselId: evidence.asset.vesselId,
+  }) : null;
+  const modelBindingDigest = evidence?.model && assetBindingDigest ? semanticDigest({
+    assetBindingDigest,
+    artifactId: evidence.model.artifactId,
+    version: evidence.model.version,
+    sha256: evidence.model.sha256,
+  }) : null;
+  // These controlled identifiers and timestamps are release metadata, not
+  // physical-asset identity. Preserve only the fields needed to validate the
+  // evidence chain; raw asset/model ids, dataset hashes and measurements stay
+  // behind the portable boundary and are represented by opaque digests.
+  const safeMetadata = (kind, record, recordDigest) => {
+    const metadata = {};
+    if (kind === 'asset' && record.revision != null) metadata.revision = record.revision;
+    if (kind === 'model' && record.version != null) metadata.revision = record.version;
+    // Trial/replay identifiers can expose private project naming. Their
+    // content digest is the portable, immutable record version instead.
+    if (metadata.revision == null) metadata.revision = recordDigest;
+    const issuedAt = record.issuedAt ?? record.completedAt ?? record.recordedAt ?? null;
+    if (issuedAt != null) metadata.issuedAt = issuedAt;
+    if (kind === 'validation' && record.result != null) metadata.result = record.result;
+    if (kind === 'replay') metadata.result = summary.replay?.status || 'unproven';
+    return metadata;
+  };
+  const safeEvidence = Object.fromEntries(Object.entries(evidence || {}).map(([kind, record]) => {
+    if (!record) return [kind, null];
+    const recordDigest = semanticDigest(record);
+    return [kind, {
+      recordDigest,
+      assetBindingDigest,
+      modelBindingDigest,
+      ...safeMetadata(kind, record, recordDigest),
+    }];
+  }));
+  const result = {
+    ...summary,
+    evidenceAccepted: evidence ? Object.fromEntries(
+      Object.entries(evidence).map(([kind, record]) => [kind, record != null]),
+    ) : {},
+    evidenceBindings: safeEvidence,
+  };
+  return result;
 }
 
 // DEFAULTS_BY_FORM picks by cell FORMAT and knows nothing about scale, which
@@ -231,15 +343,170 @@ function defaultCellFor(preset) {
   return CELLS.find(complete) || CELLS[0];
 }
 
+function governedProfileTrace(input) {
+  if (input == null) return null;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    throw new TypeError('profileTrace must be an object.');
+  }
+  const id = String(input.id || '').trim();
+  if (!id) throw new RangeError('profileTrace.id must be a non-empty stable identifier.');
+  const dtS = Number(input.dtS);
+  const scaleW = Number(input.scaleW ?? input.uploadedPeakW);
+  if (!(dtS > 0) || !Number.isFinite(dtS)) {
+    throw new RangeError('profileTrace.dtS must be a positive finite number.');
+  }
+  if (!(scaleW > 0) || !Number.isFinite(scaleW)) {
+    throw new RangeError('profileTrace.scaleW must be a positive finite number.');
+  }
+  if (!Array.isArray(input.p) || input.p.length < 2 || input.p.length > 500
+      || input.p.some((value) => !Number.isFinite(value) || Math.abs(value) > 1 + 1e-9)) {
+    throw new RangeError('profileTrace.p must contain 2–500 finite samples normalized to ±1.');
+  }
+  const revision = input.revision == null ? null : String(input.revision).trim() || null;
+  return {
+    profile: {
+      id,
+      name: String(input.name || id),
+      family: 'custom-trace', kind: 'governed-custom-trace',
+      policyId: null, sourceProfileId: id,
+      dtS, p: [...input.p],
+      note: String(input.note || 'Caller-supplied normalized trace; content identity is recorded in the resolved sizing contract.'),
+      ...(revision ? { revision } : {}),
+    },
+    scaleW,
+  };
+}
+
+function traceEnergyWindowWh(profile, scaleW) {
+  let cumulativeWh = 0;
+  let lowWh = 0;
+  let highWh = 0;
+  for (const fraction of profile?.p || []) {
+    cumulativeWh += (fraction * scaleW * profile.dtS) / 3600;
+    lowWh = Math.min(lowWh, cumulativeWh);
+    highWh = Math.max(highWh, cumulativeWh);
+  }
+  return highWh - lowWh;
+}
+
+function traceIdentity(profile, scaleW) {
+  if (!profile) return null;
+  return {
+    id: profile.id,
+    checksum: semanticDigest({
+      format: 'battery-power-trace/v1', id: profile.id,
+      kind: profile.kind || 'duty', policyId: profile.policyId || null,
+      sourceProfileId: profile.sourceProfileId || null,
+      revision: profile.revision || null,
+      dtS: profile.dtS, scaleW, p: profile.p,
+    }),
+  };
+}
+
+// One canonical marine sizing seam for browser, API and desktop consumers.
+// It binds the selected vessel to its default PMS, applies that policy to the
+// actual voyage (or a governed caller trace), and gives the pack-sizing energy
+// as the cumulative trace excursion divided by usable DoD.
+export function resolveMarineSizing(spec = {}) {
+  if (spec == null || typeof spec !== 'object' || Array.isArray(spec)) {
+    throw new TypeError('Marine sizing specification must be an object.');
+  }
+  const warnings = [];
+  const marineSpec = spec.marine && typeof spec.marine === 'object' && !Array.isArray(spec.marine)
+    ? spec.marine : {};
+  const requestedVesselId = marineSpec.vesselId ?? spec.vesselId ?? null;
+  if (requestedVesselId && !VESSEL_MODELS.some((vessel) => vessel.id === requestedVesselId)) {
+    warnings.push(`Unknown vesselId "${requestedVesselId}" — using ${VESSEL_MODELS[0].id} instead. Use listVessels() for the real ids.`);
+  }
+  const {
+    twinEvidence: _twinEvidence,
+    replaySamples: _replaySamples,
+    replayOptions: _replayOptions,
+    ...marineDutyInput
+  } = marineSpec;
+  const marine = marineDuty({ ...marineDutyInput, vesselId: requestedVesselId });
+  const allowedPolicies = sizingOptionsFor('marine', 'energy-policy');
+  const profileIdPolicy = allowedPolicies.includes(spec.profileId) ? spec.profileId : null;
+  let policyId = spec.policyId || profileIdPolicy || null;
+  let rejectedPolicyId = null;
+  if (policyId && !allowedPolicies.includes(policyId)) {
+    rejectedPolicyId = policyId;
+    policyId = null;
+  }
+
+  const custom = governedProfileTrace(spec.profileTrace);
+  let sourceProfile = custom?.profile || null;
+  let sourceScaleW = custom?.scaleW || null;
+  if (!sourceProfile && spec.profileId && !profileIdPolicy) {
+    const foreignPolicy = operatingPolicyById(spec.profileId);
+    sourceProfile = foreignPolicy
+      ? null
+      : (spec.profileId === 'marine-physics' ? marine.profile : profileById(spec.profileId));
+    if (foreignPolicy) {
+      warnings.push(`Policy profile "${spec.profileId}" belongs to ${foreignPolicy.appId}, not marine; it was refused.`);
+    } else if (!sourceProfile) {
+      warnings.push(`Profile "${spec.profileId}" is not available; using the selected vessel PMS default instead.`);
+    } else {
+      sourceScaleW = marine.scaleW;
+    }
+  }
+
+  if (rejectedPolicyId) {
+    warnings.push(sourceProfile
+      ? `Policy "${rejectedPolicyId}" is not available for marine; using profile "${sourceProfile.id}" without that policy.`
+      : `Policy "${rejectedPolicyId}" is not available for marine; using the selected vessel default instead.`);
+  }
+
+  const vessel = VESSEL_MODELS.find((candidate) => candidate.id === marine.vessel.id);
+  if (!policyId && !sourceProfile) policyId = vessel?.policyId || null;
+  let profile;
+  let scaleW;
+  if (policyId) {
+    const demandProfile = sourceProfile || marine.profile;
+    const demandScaleW = sourceScaleW || marine.scaleW;
+    profile = batteryProfileForPolicy(policyId, { demandProfile });
+    scaleW = demandScaleW * (profile?.sourceScaleFactor || 1);
+  } else {
+    profile = sourceProfile || marine.profile;
+    scaleW = sourceScaleW || marine.scaleW;
+  }
+  if (!profile) throw new RangeError('The selected marine policy did not produce a battery trace.');
+
+  const energyWindowWh = traceEnergyWindowWh(profile, scaleW);
+  const dod = Number.isFinite(spec.dod) && spec.dod > 0 ? spec.dod : 0.8;
+  const identity = traceIdentity(profile, scaleW);
+  const resolved = {
+    marine,
+    policyId: profile.policyId || policyId || null,
+    profileId: profile.id,
+    profile,
+    scaleW,
+    energyWindowWh,
+    requiredEnergyWh: energyWindowWh / dod,
+    traceIdentity: identity,
+    warnings,
+  };
+  marine.policyId = resolved.policyId;
+  marine.profileId = resolved.profileId;
+  marine.traceIdentity = { ...identity };
+  marine.energyWindowWh = energyWindowWh;
+  marine.requiredPackEnergyWh = resolved.requiredEnergyWh;
+  return resolved;
+}
+
 // Series/parallel from intent: series follows the voltage window, parallel
 // follows the energy target. Exactly the arithmetic the UI does.
 function deriveSP(cell, preset, spec, warnings) {
   const targetV = spec.nominalV ?? preset?.typicalV ?? 48;
   const targetWh = spec.energyWh ?? preset?.typicalEnergyWh ?? 1000;
-  const perStringWh = targetV > 0 ? Math.max(1, Math.round(targetV / cell.nominalV)) * cell.nominalV * cell.capacityAh : 0;
+  const targetS = spec.s ?? Math.max(1, Math.round(targetV / cell.nominalV));
+  const perStringWh = targetV > 0 ? targetS * cell.nominalV * cell.capacityAh : 0;
   const wanted = {
-    s: spec.s ?? Math.max(1, Math.round(targetV / cell.nominalV)),
-    p: spec.p ?? Math.max(1, Math.round(targetWh / (perStringWh || 1))),
+    s: targetS,
+    // An energy target is a minimum requirement. Whole-cell sizing therefore
+    // rounds parallel strings up; rounding to nearest can undersize the
+    // declared mission by almost half a string.
+    p: spec.p ?? Math.max(1, Math.ceil(targetWh / (perStringWh || 1))),
   };
   // A pack cannot have half a cell or minus one. Clamping is right — doing it
   // silently is not, since the caller would read the answer as the design
@@ -298,21 +565,33 @@ export function designFromSpec(spec = {}) {
   // A null spec is a caller's mistake, not a reason to throw at them.
   if (spec == null || typeof spec !== 'object') spec = {};
   const warnings = [];
+  if (Object.prototype.hasOwnProperty.call(spec, 'ontology')
+      || Object.prototype.hasOwnProperty.call(spec, 'semantics')) {
+    warnings.push('Caller-supplied ontology or semantics were ignored; semantic claims are generated and validated by the architecture ontology.');
+  }
   const preset = PRESETS.find((p) => p.id === spec.application) || null;
   if (spec.application && !preset) {
     warnings.push(`Unknown application "${spec.application}" — falling back to generic defaults. Use listApplications() for the real ids.`);
   }
+  const appId = preset?.id || 'custom';
   const cell = (spec.cell ? cellById(spec.cell) : null) || defaultCellFor(preset || { preferredChemistries: [] });
   if (spec.cell && !cellById(spec.cell)) {
     warnings.push(`Unknown cell "${spec.cell}" — using ${cell.id} instead. Use listCells() for the real ids.`);
   }
-  const derived = deriveSP(cell, preset, spec, warnings);
+  const marineSizing = appId === 'marine' ? resolveMarineSizing(spec) : null;
+  if (marineSizing) warnings.push(...marineSizing.warnings);
+  // Series and parallel are independent choices. An explicit series count
+  // must not suppress voyage-energy sizing of an omitted parallel count.
+  const explicitMarineParallelTarget = marineSizing && (spec.p != null || spec.energyWh != null);
+  const sizingSpec = marineSizing && !explicitMarineParallelTarget && marineSizing.requiredEnergyWh > 0
+    ? { ...spec, energyWh: marineSizing.requiredEnergyWh }
+    : spec;
+  const derived = deriveSP(cell, preset, sizingSpec, warnings);
   // Guard rails before any geometry is attempted: a slipped keystroke must
   // not become ten billion cells and a frozen application.
   const bounded = clampPack(derived.s, derived.p);
   warnings.push(...bounded.notes);
   const { s, p } = bounded;
-  const appId = preset?.id || 'custom';
   const market = spec.market || 'eu';
   const dod = spec.dod ?? 0.8;
   const usageCtx = {
@@ -336,6 +615,12 @@ export function designFromSpec(spec = {}) {
     underMm: space.bottom, rowExtraMm: space.rowGap,
   });
   const summary = summarize(cell, s, p, layout);
+  const marineTraceTargetMet = !marineSizing || explicitMarineParallelTarget
+    ? null
+    : summary.energyWh + 1e-9 >= marineSizing.requiredEnergyWh;
+  if (marineSizing && !explicitMarineParallelTarget && !marineTraceTargetMet) {
+    warnings.push(`Marine policy trace requires ${Math.ceil(marineSizing.requiredEnergyWh)} Wh, but the bounded pack provides ${Math.round(summary.energyWh)} Wh; automatic trace sizing is unmet.`);
+  }
   const pack = {
     nominalV: summary.nominalV, vMax: summary.vMax, vMin: summary.vMin,
     capacityAh: summary.capacityAh, energyWh: summary.energyWh, massKg: summary.massKg,
@@ -343,6 +628,16 @@ export function designFromSpec(spec = {}) {
     maxContCurrentA: summary.maxContCurrentA, maxContPowerW: summary.maxContPowerW,
     dcirMOhm: summary.dcirMOhm, dims: summary.dims, volumeL: summary.volumeL,
   };
+
+  // Resolve the electrical-isolation context once, before any engineering
+  // consumer runs. Standards, engineering, sensors and the architecture
+  // report all receive this same governed result, so their findings cannot
+  // drift because each inferred a different bus topology.
+  const isolationStandard = spec.isolationStandard || DEFAULT_ROAD_ISOLATION_CONTEXT;
+  const architecture = buildArchitecture({
+    cell, s, p, summary, options: { appId, isolationStandard },
+  });
+  const isolationResolution = architecture.isolation || architecture.isolationReview || null;
 
   // 2 · The four engineering perspectives and the standards audit.
   const usage = {
@@ -358,7 +653,7 @@ export function designFromSpec(spec = {}) {
         arrangement, orientation: 'upright', spacingMm: 1, wallMm: 2,
         inner: layout.inner, outer: layout.outer, nx: layout.nx, ny: layout.ny, nz: layout.nz,
       },
-      usage: usageCtx, selection,
+      usage: usageCtx, selection, isolationResolution,
     });
   } catch (e) {
     warnings.push(`Engineering analysis unavailable: ${e.message}`);
@@ -382,18 +677,16 @@ export function designFromSpec(spec = {}) {
   const stdCtx = {
     cell, s, p, pack,
     layout: { spacingMm: 1, arrangement, wallMm: 2 },
-    usage,
+    usage, isolationResolution,
   };
   const findings = runChecks(stdCtx);
 
   // 3 · Architecture, thermal system, sensors.
-  // The isolation standard is never defaulted silently — ECE R100 and
-  // ISO 6469 disagree (500 Ω/V vs 100 Ω/V) and the module rightly refuses to
-  // average them. The spec states it; the answer records which one was used.
-  const isolationStandard = spec.isolationStandard || 'ece-r100';
-  const architecture = buildArchitecture({
-    cell, s, p, summary, options: { appId, isolationStandard },
-  });
+  // UN R100 contains different topology cases, not competing values to
+  // average. The product default is the ordinary separate DC traction-bus
+  // context; a connected AC/DC topology must be selected explicitly. The
+  // resolved architecture records that choice. Non-road applications receive
+  // a review boundary, not this vehicle calculation.
   const thermal = buildThermalSystem({
     heatContW: analysis?.totals?.heatContW ?? null,
     ambientC, cooling: selection.cooling || null, cell, override: 'auto', appId,
@@ -406,12 +699,14 @@ export function designFromSpec(spec = {}) {
   const sensors = buildSensorPlan({
     cell, s, p, summary, partition: architecture.partition, bms: architecture.bms,
     therm: thermal, selection, conditionMonitoring: diagnostics.conditionMonitoring,
+    isolationMonitoring: architecture.isolationMonitoring,
   });
 
   // 4 · The AC side, and what feeding power back would cost.
   const charging = buildChargingPlan({
     appId, marketId: market, energyWh: summary.energyWh,
     vNomV: summary.nominalV, cell, obcOverride: 'auto',
+    shoreConnection: appId === 'marine' ? spec.marine?.shoreConnection : null,
   });
   const v2x = v2xPlan({
     appId, cell, cellCount: summary.cellCount, energyWh: summary.energyWh, dod,
@@ -579,38 +874,81 @@ export function designFromSpec(spec = {}) {
   // The two other movement domains. They deliberately do not pass through
   // vehicle.js: a hull works against water and a multirotor must continuously
   // buy lift. Both still end at the same profile seam as every other duty.
-  const marine = appId === 'marine' ? marineDuty(spec.marine || {}) : null;
+  //
+  // Existing callers keep the complete voyage under `marine`; the top-level
+  // alias is useful to generic clients that select the host before exposing
+  // domain inputs. If both are supplied, the established nested value wins.
+  const marineSpec = spec.marine && typeof spec.marine === 'object' ? spec.marine : {};
+  const {
+    twinEvidence: nestedTwinEvidence,
+    replaySamples: nestedReplaySamples,
+    replayOptions: nestedReplayOptions,
+  } = marineSpec;
+  const marine = marineSizing?.marine || null;
+
+  // TwinShip is an evidence contract layered over the transparent mission
+  // model. Architecture is always inspectable for a marine design; maturity
+  // and replay are evaluated only from evidence the caller supplies. An empty
+  // replay therefore returns `unproven`, never a synthetic clean result.
+  const twinInput = spec.twinShip && typeof spec.twinShip === 'object' ? spec.twinShip : {};
+  const readinessInput = nestedTwinEvidence && typeof nestedTwinEvidence === 'object'
+    ? nestedTwinEvidence
+    : (twinInput.readiness && typeof twinInput.readiness === 'object'
+      ? twinInput.readiness
+      : (twinInput.evidence && typeof twinInput.evidence === 'object' ? twinInput.evidence : {}));
+  const replayInput = Array.isArray(twinInput.replay)
+    ? { samples: twinInput.replay }
+    : (twinInput.replay && typeof twinInput.replay === 'object' ? twinInput.replay : {});
+  const replaySamples = Array.isArray(nestedReplaySamples) ? nestedReplaySamples : replayInput.samples;
+  const replayOptions = nestedReplayOptions && typeof nestedReplayOptions === 'object'
+    ? nestedReplayOptions
+    : (replayInput.options && typeof replayInput.options === 'object'
+      ? replayInput.options
+      : (replayInput.thresholds && typeof replayInput.thresholds === 'object' ? replayInput.thresholds : {}));
+  const replayResult = marine ? assessVoyageReplay(replaySamples, replayOptions) : null;
+  const evaluatedReadiness = marine ? twinReadiness({
+      ...readinessInput,
+      vesselId: marine.vessel.id,
+      replaySamples,
+      replayOptions,
+    }) : null;
+  const twinShip = marine ? {
+    architecture: twinShipArchitecture(marine.vessel.id),
+    readiness: portableTwinReadiness(evaluatedReadiness),
+    replay: replayResult,
+  } : null;
   const flight = appId === 'drone' ? flightDuty(spec.flight || {}) : null;
 
   // 6 · The mission over time.
   let policyProfileId = null;
-  if (spec.policyId) {
+  if (!marine && spec.policyId) {
     const allowed = sizingOptionsFor(appId, 'energy-policy');
     if (allowed.includes(spec.policyId)) policyProfileId = spec.policyId;
-    else warnings.push(`Policy "${spec.policyId}" is not available for ${appId}; using the knowledge-graph default instead.`);
+    else warnings.push(`Policy "${spec.policyId}" is not available for ${appId}; using the selected design default instead.`);
   }
   const defaultPolicyId = defaultSizingOption(appId, 'energy-policy');
-  const selectedProfileId = policyProfileId || spec.profileId;
-  const generatedPolicyId = policyProfileId || (!spec.profileId ? defaultPolicyId : null);
-  const profile = selectedProfileId === 'vehicle' && vehicle
+  const selectedProfileId = marineSizing?.profileId || policyProfileId || spec.profileId;
+  const generatedPolicyId = marineSizing?.policyId
+    ?? (policyProfileId || (!spec.profileId ? defaultPolicyId : null));
+  const profile = marineSizing?.profile || (selectedProfileId === 'vehicle' && vehicle
     ? driveCyclePower({
       trace: vehicleTrace || traceForApp(appId), vehicle: { ...vehBase, ...(spec.vehicle || {}) },
       mode: spec.driveMode || 'normal', packMassKg: summary.massKg, gradePct: spec.gradePct ?? 0,
     }).profile
-    : generatedPolicyId && marine
-      ? batteryProfileForPolicy(generatedPolicyId, { demandProfile: marine.profile })
-      : (!spec.profileId && flight)
-        ? flight.profile
-        : (selectedProfileId ? profileById(selectedProfileId) : profileForApp(appId));
+    : (!spec.profileId && flight)
+      ? flight.profile
+      : (generatedPolicyId
+        ? batteryProfileForPolicy(generatedPolicyId)
+        : (selectedProfileId ? profileById(selectedProfileId) : profileForApp(appId))));
   let simulation = null;
+  let missionScaleW = null;
   if (profile) {
-    const scaleW = selectedProfileId === 'vehicle' && vehicle
+    const scaleW = marineSizing?.scaleW ?? (selectedProfileId === 'vehicle' && vehicle
       ? vehicle.drive.peakW
-      : generatedPolicyId && marine
-        ? marine.scaleW * (profile.sourceScaleFactor || 1)
-        : (!spec.profileId && flight)
-          ? flight.scaleW
-          : (preset?.peakPowerW ?? summary.maxContPowerW);
+      : (!spec.profileId && flight)
+        ? flight.scaleW
+        : (preset?.peakPowerW ?? summary.maxContPowerW));
+    missionScaleW = scaleW;
     const m = spec.mission || {};
     const sim = simulateMission({
       cell, s, p, profile, scaleW,
@@ -627,6 +965,8 @@ export function designFromSpec(spec = {}) {
         id: profile.id, name: profile.name, dtS: profile.dtS, note: profile.note,
         kind: profile.kind || 'duty', policyId: profile.policyId || null,
         sourceProfileId: profile.sourceProfileId || null,
+        scaleW,
+        traceIdentity: marineSizing?.traceIdentity || traceIdentity(profile, scaleW),
       },
       stats: profileStats(profile, scaleW),
     };
@@ -636,7 +976,8 @@ export function designFromSpec(spec = {}) {
   const cost = costModel(cell, summary.cellCount, summary.energyWh, usageCtx);
   const energyPerformance = roundTripPlan({
     application: appId,
-    deliveredWh: spec.deliveredWh ?? spec.energyWh ?? preset?.typicalEnergyWh ?? summary.energyWh * dod,
+    deliveredWh: spec.deliveredWh ?? spec.energyWh ?? marineSizing?.requiredEnergyWh
+      ?? preset?.typicalEnergyWh ?? summary.energyWh * dod,
     ...(spec.efficiency || {}),
   });
   const co2 = co2Model({
@@ -647,6 +988,16 @@ export function designFromSpec(spec = {}) {
   const checklist = releaseChecklist({
     market, application: appId, chemistry: cell.chemistry, v2x: spec.v2xPolicy || 'off',
   });
+  const evaluationDate = spec.evaluationDate || EU_BATTERY_PASSPORT_EFFECTIVE_DATE;
+  const batteryCategory = batteryCategoryForApplication(appId, spec.batteryCategory ?? null);
+  const euFindings = euChecks({
+    energyWh: summary.energyWh,
+    application: appId,
+    chemistry: cell.chemistry,
+    commsPrimary: architecture.comms?.primary,
+    batteryCategory: spec.batteryCategory ?? null,
+    evaluationDate,
+  });
 
   // 8 · Comparison against other cells on the same mission.
   let comparison = null;
@@ -655,21 +1006,49 @@ export function designFromSpec(spec = {}) {
       .filter((c, i, arr) => arr.findIndex((x) => x.id === c.id) === i);
     comparison = compareCells({
       cells, targetVNom: summary.nominalV, targetEnergyWh: summary.energyWh,
-      profile, scaleW: preset?.peakPowerW ?? summary.maxContPowerW,
+      profile, scaleW: missionScaleW ?? summary.maxContPowerW,
       ambientC: ambientC[1], uaWK: 3, currentId: cell.id,
     });
+    comparison.mission = {
+      profileId: profile.id,
+      policyId: profile.policyId || null,
+      traceIdentity: marineSizing?.traceIdentity || traceIdentity(profile, missionScaleW ?? summary.maxContPowerW),
+      scaleW: missionScaleW ?? summary.maxContPowerW,
+      targetEnergyWh: summary.energyWh,
+    };
   }
 
-  return {
+  // This rule is part of the semantic input, so it must exist before the
+  // first conformance graph is built. Its evaluated presentation is filled
+  // below, then a final authoritative graph is rebuilt from the final result.
+  const ontologyRule = {
+    code: 'ONTOLOGY-CONFORMANCE', scope: 'review',
+    title: 'Architecture ontology conformance',
+    note: 'Ontology conformance is pending graph evaluation.',
+  };
+  checklist.rules.unshift(ontologyRule);
+
+  const result = {
     apiVersion: API_VERSION,
     spec: {
-      ...spec,
+      ...portableSpec(spec),
       resolved: {
         application: appId, cell: cell.id, s, p, market, dod,
+        isolationContext: architecture.isolation?.contextId || architecture.isolationReview?.contextId || null,
+        isolationStatus: architecture.isolation?.status || architecture.isolationReview?.status || 'not-applicable',
+        vesselId: marine?.vessel?.id || null,
         sizing: {
           decision: primarySizingDecision(appId),
-          profileId: profile?.id || null,
-          policyId: profile?.policyId || null,
+          profileId: marineSizing?.profileId || profile?.id || null,
+          policyId: marineSizing?.policyId ?? profile?.policyId ?? null,
+          traceIdentity: marineSizing?.traceIdentity || (profile ? traceIdentity(profile, missionScaleW) : null),
+          scaleW: missionScaleW,
+          energyWindowWh: marineSizing?.energyWindowWh ?? null,
+          requiredEnergyWh: marineSizing?.requiredEnergyWh ?? null,
+          autoSizedFromTrace: !!marineSizing && !explicitMarineParallelTarget && marineTraceTargetMet,
+          traceSizingStatus: !marineSizing || explicitMarineParallelTarget
+            ? 'explicit-or-not-applicable'
+            : (marineTraceTargetMet ? 'met' : 'unmet-bounded-pack'),
           driveMode: vehicle ? (spec.driveMode || 'normal') : null,
         },
         components: Object.fromEntries(
@@ -680,20 +1059,50 @@ export function designFromSpec(spec = {}) {
     cell: listCells().find((c) => c.id === cell.id) || { id: cell.id, name: cell.name },
     pack: summary,
     findings: [
+      ...(marineSizing && !explicitMarineParallelTarget && !marineTraceTargetMet ? [{
+        id: 'MARINE_TRACE_ENERGY_UNMET', severity: 'fail', category: 'application',
+        title: 'Bounded pack cannot meet the marine policy trace energy',
+        detail: `The governed trace requires ${Math.ceil(marineSizing.requiredEnergyWh)} Wh but the bounded pack provides ${Math.round(summary.energyWh)} Wh. Increase the pack limits or revise the governed mission; automatic sizing is not complete.`,
+      }] : []),
       ...findings,
       ...['mechanical', 'thermal', 'electrical', 'safety']
         .flatMap((k) => analysis?.perspectives?.[k] || []),
       ...(simulation?.findings || []),
       ...(shortCircuit?.findings || []),
       ...protectionFindings,
+      ...euFindings,
     ],
     analysis: analysis ? { totals: analysis.totals, disclaimer: analysis.disclaimer } : null,
-    architecture, thermal, sensors, diagnostics, charging, v2x, vehicle, marine, flight,
+    architecture, thermal, sensors, diagnostics, charging, v2x, vehicle, marine, twinShip, flight,
     energyPerformance, simulation, shortCircuit, electricalProtection,
     cost, co2, checklist, comparison,
+    eu: { batteryCategory, evaluationDate, findings: euFindings },
     concepts: appNeeds(appId),
     warnings,
   };
+  const evaluatedGraph = buildDesignSemanticGraph(result);
+  const evaluatedSemantics = semanticGraphSummary(evaluatedGraph);
+  ontologyRule.scope = evaluatedSemantics.conforms ? 'pass' : 'blocker';
+  ontologyRule.note = evaluatedSemantics.conforms
+    ? `The generated graph conforms to ontology ${evaluatedSemantics.ontology.version}; engineering evidence and approval gates remain separate.`
+    : 'Release is blocked until the generated semantic graph validates against the versioned ontology contract.';
+  // Semantic integrity is a release invariant, not a cosmetic report field.
+  // Normal generated graphs conform; if a future ontology/schema regression
+  // does not, the ordinary audit and market-release seam both fail closed.
+  if (!evaluatedSemantics.conforms) {
+    result.findings.push({
+      id: 'ONTOLOGY_GRAPH_INVALID', severity: 'fail', category: 'governance',
+      title: 'Architecture ontology graph is invalid',
+      detail: `${evaluatedSemantics.issues.length} semantic validation issue(s) prevent a traceable release.`,
+      ref: `battery-design ontology ${evaluatedSemantics.ontology.version}`,
+    });
+  }
+  const semanticGraph = buildDesignSemanticGraph(result);
+  result.semantics = {
+    ...semanticGraphSummary(semanticGraph),
+    graph: semanticGraph,
+  };
+  return result;
 }
 
 // A one-screen answer for a human or an agent: the numbers that decide, in
@@ -709,6 +1118,23 @@ export function briefFromDesign(d) {
   lines.push(`${energy} · ${d.pack.nominalV.toFixed(1)} V nominal · ${d.pack.cellCount} cells · ${mass} · ${mm(d.pack.dims.x)}×${mm(d.pack.dims.y)}×${mm(d.pack.dims.z)} mm`);
   if (d.vehicle) {
     lines.push(`Consumption ${d.vehicle.drive.whPerKm.toFixed(1)} Wh/km in ${d.vehicle.drive.mode.name}${d.vehicle.range != null ? ` → about ${Math.round(d.vehicle.range)} km of range` : ''} (${Math.round(d.vehicle.drive.massKg)} kg moving, ${Math.round(d.vehicle.packMassKg)} kg of it battery)`);
+  }
+  if (d.marine) {
+    lines.push(`${d.marine.vessel.name}: ${d.marine.distanceNm.toFixed(1)} nmi at ${d.marine.metrics.speedGroundKn.toFixed(1)} kn · ${Math.round(d.marine.energyWh / 1000)} kWh mission demand · ${Math.round(d.marine.peakW / 1000)} kW peak · PMS ${d.spec.resolved.sizing.policyId || 'not selected'}`);
+  }
+  if (d.twinShip) {
+    const replay = d.twinShip.replay;
+    lines.push(`TwinShip evidence: ${d.twinShip.readiness.label}; replay ${replay.status}${replay.samples ? ` (${replay.samples} aligned samples)` : ''}. ${d.twinShip.readiness.statement}`);
+  }
+  if (d.semantics) {
+    const s = d.semantics;
+    lines.push(`Semantic trace: ontology ${s.ontology.version} · ${s.counts.nodes} entities / ${s.counts.edges} relations · ${s.counts.modelRuns} model runs · ${s.conforms ? 'conforms' : 'INVALID — release blocked'}`
+      + `${s.unresolvedEvidence.length ? ` · ${s.unresolvedEvidence.length} unresolved evidence requirement(s)` : ''}`);
+  }
+  if (d.eu && d.spec?.resolved?.market === 'eu') {
+    const passport = d.eu.findings?.find((finding) =>
+      finding.ontologyRuleId === 'bd:rule/eu-battery-passport');
+    lines.push(`EU assessment: category ${d.eu.batteryCategory || 'unresolved'} · ${d.eu.evaluationDate} · ${passport?.title || 'battery-passport applicability not evaluated'}`);
   }
   if (d.charging?.t2080) {
     lines.push(`Charges via ${d.charging.obc ? `${d.charging.obc.acKW} kW on-board charger` : d.charging.arch.name} · 20→80% in ${d.charging.t2080.hours.toFixed(1)} h (${d.charging.t2080.limitedBy === 'pack' ? 'pack-limited' : 'charger-limited'})`);
@@ -748,3 +1174,16 @@ export {
   scopeForApplication,
   transitionDesign,
 } from './governance.js';
+
+// Semantic-control API. Neo4j remains an offline validated projection; no
+// network connection or credentials are used here.
+export {
+  buildArchitectureSemanticGraph,
+  buildDesignSemanticGraph,
+  describeOntology,
+  querySemanticGraph,
+  semanticGraphSummary,
+  toJsonLd,
+  toNeo4jProjection,
+  traceSemanticPath,
+};

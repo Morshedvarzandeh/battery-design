@@ -38,6 +38,12 @@ Godot Engine  (runtime inside the 3D garage build, garage3d/build/)
   under the AGPL. MIT permits inclusion in an AGPL work and is not changed by
   it.
 
+QUDT and UCUM semantic references  (ontology/ and js/ontology-schema.js)
+  Quantity-kind semantics and unit identifiers reference QUDT, which is
+  available under CC BY 4.0. https://github.com/qudt/qudt-public-repo/blob/main/LICENSE.md
+  UCUM unit codes are used without changing their defined meaning.
+  https://ucum.org/license
+
 --------------------------------------------------------------------------------
 DATA, STANDARDS AND ENGINEERING OUTPUT
 

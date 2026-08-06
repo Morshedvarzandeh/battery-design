@@ -1,7 +1,7 @@
 // engineering.js — four-perspective engineering analysis engine for the pack
 // designer: mechanical / thermal / electrical / safety.
 //
-// Pure functions, no state, no DOM, no imports. Consumes the precomputed
+// Pure functions, no state and no DOM. Consumes the precomputed
 // design context (cell, s, p, pack, layout, usage, component selection) and
 // never recomputes pack electricals. Component objects follow the shapes
 // published by components.js but are duck-typed here — any of them may be
@@ -9,6 +9,8 @@
 //
 // Finding shape (shared with standards.js so the UI can reuse rendering):
 //   { id, severity: 'fail'|'warn'|'pass'|'info', title, detail, ref }
+
+import { resolveIsolationRule } from './isolation-rule.js';
 
 export const ANALYSIS_DISCLAIMER =
   'These are first-order, steady-state engineering estimates computed from ' +
@@ -67,6 +69,32 @@ function mid(range) {
     return (range[0] + range[1]) / 2;
   }
   return isNum(range) ? range : null;
+}
+
+// API/browser orchestration resolves the isolation topology once in
+// architecture.js and passes that exact immutable result to every consumer.
+// Standalone callers may still provide the older context object; only that
+// fallback invokes the low-level resolver.
+function isolationForConsumer(ctx, workingVoltageV) {
+  if (Object.hasOwn(ctx || {}, 'isolationResolution')) {
+    const resolved = ctx.isolationResolution || null;
+    if (resolved?.workingVoltageV != null
+      && Math.abs(resolved.workingVoltageV - workingVoltageV) > 1e-9) return null;
+    return resolved;
+  }
+  const rawContext = ctx?.isolationContext || null;
+  const applicationContext = rawContext && typeof rawContext === 'object'
+    ? rawContext.applicationContext
+    : (ctx?.usage?.application === 'marine' ? 'marine-it' : null);
+  try {
+    return resolveIsolationRule({
+      ...(typeof rawContext === 'string' ? { contextId: rawContext } : (rawContext || {})),
+      workingVoltageV,
+      applicationContext,
+    });
+  } catch {
+    return null;
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -347,17 +375,37 @@ function electricalFindings(ctx, q) {
     }
   }
 
-  // 5. Isolation / leakage for HV packs.
+  // 5. Isolation / leakage for HV packs. A numeric floor is emitted only
+  // when the caller supplies the vehicle-bus topology context used by the
+  // shared UN R100 resolver. Otherwise this perspective explicitly refuses
+  // the old blanket 100 Ω/V claim and directs the user to Architecture.
   if (q.vMax != null && q.vMax > 60) {
-    const minIso = q.vMax * 100; // ohms
-    out.push(finding(
-      'hv-isolation', 'info', 'Isolation resistance and leakage',
-      'Above 60 V DC this pack is voltage class B: ECE R100 requires isolation resistance of at ' +
-      'least 100 Ω/V, i.e. ' + fmt(minIso / 1000, 0) + ' kΩ between the ' + fmt(q.vMax) +
-      ' V bus and chassis/enclosure. Common commissioning practice is a 500 VDC insulation-resistance ' +
-      'test expecting well above 1 MΩ, plus a touch/leakage-current check on any exposed conductive parts.',
-      'ECE R100'
-    ));
+    const isolation = isolationForConsumer(ctx, q.vMax);
+    if (isolation && isolation.applies) {
+      out.push(finding(
+        'hv-isolation', 'info', 'Isolation resistance and leakage',
+        'For the declared ' + isolation.busType.toUpperCase() + ' ' +
+        isolation.topology.replace('galvanically-', 'galvanically ') + ' vehicle-bus case, UN R100 ' +
+        '§' + isolation.clause + ' sets ' + isolation.ohmsPerVolt + ' Ω/V: ' +
+        fmt(isolation.floorKOhm, 0) + ' kΩ at ' + fmt(q.vMax) + ' V working voltage. ' +
+        'A project or manufacturer target above this floor must be recorded separately.',
+        isolation.standard
+      ));
+    } else if (isolation && isolation.status === 'review-required') {
+      out.push(finding(
+        'hv-isolation-context', 'warn', 'Marine isolation basis requires review',
+        isolation.basis + ' ' + isolation.groundingNote,
+        'marine class rules / flag-state requirements'
+      ));
+    } else {
+      out.push(finding(
+        'hv-isolation-context', 'warn', 'Isolation topology not declared',
+        'No numeric isolation floor is asserted here. UN R100 uses different cases for a separate DC bus ' +
+        '(100 Ω/V), a separate AC bus (500 Ω/V), and galvanically connected AC/DC buses ' +
+        '(500 Ω/V baseline). Declare the bus type and galvanic topology in Architecture; never average them.',
+        'UN R100 Rev. 3 §§5.1.3.1–5.1.3.2'
+      ));
+    }
   }
 
   // 6. TIM dielectric withstand across a metal cooling plate.

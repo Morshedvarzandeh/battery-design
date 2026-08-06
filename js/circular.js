@@ -36,6 +36,9 @@
 // vocabulary.
 
 import { appClassOf } from './markets.js';
+import {
+  EU_BATTERY_PASSPORT_EFFECTIVE_DATE, EU_BATTERY_PASSPORT_RULE_ID,
+} from './eurules.js';
 
 // ---------------------------------------------------------------------------
 // Stages — where a battery can be in its life
@@ -161,7 +164,8 @@ export const GATES = {
   },
   'eu-battery-passport': {
     id: 'eu-battery-passport', places: ['eu'], appliesTo: ['new', 'reused', 'repurposed', 'remanufactured'],
-    kind: 'obligation', from: '2027-02-18',
+    kind: 'obligation', from: EU_BATTERY_PASSPORT_EFFECTIVE_DATE,
+    ontologyRuleId: EU_BATTERY_PASSPORT_RULE_ID,
     what: 'From 18 February 2027 every LMT battery, industrial battery over 2 kWh and EV battery placed on the EU market must carry a digital battery passport. Repurposing makes you the one placing it on the market, so the obligation lands on the repurposer, not the original maker.',
     source: 'Regulation (EU) 2023/1542, Articles 77–78',
   },

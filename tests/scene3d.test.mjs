@@ -11,6 +11,7 @@
 // here it fails silently over there, and the customer sees a pack from two
 // swaps ago rather than an error.
 import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 import { ok, near } from './helpers.mjs';
 import { buildScene, SCENE_VERSION, MSG, isSceneMessage } from '../js/scene3d.js';
 import { designFromSpec } from '../js/api.js';
@@ -20,6 +21,7 @@ import { componentById } from '../js/components.js';
 import { PRESETS } from '../js/presets.js';
 import { hostFor, packSeat, fitInHost } from '../js/hosts.js';
 import { vehicleDefaultsFor } from '../js/vehicle.js';
+import { VESSEL_MODELS } from '../js/vessels.js';
 
 // Build a design and the layout that goes with it, the way the app does:
 // the cooling system is chosen first because it takes space out of the box.
@@ -218,4 +220,105 @@ test('the seat comes from the mounting, so the pack moves and the machine does n
   const bus = hostFor('ebus');
   ok(packSeat(bus, { x: 1, y: 1, z: 0.2 }).z > bus.sizeM.z / 2, 'a roof pack sits above the roof');
   ok(packSeat(hostFor('drone'), { x: 0.2, y: 0.2, z: 0.05 }).z < 0, 'a belly pack hangs below');
+});
+
+test('the two selected vessels carry their complete source models into the scene', () => {
+  for (const vessel of VESSEL_MODELS) {
+    const host = hostFor('marine', vessel.id);
+    ok(host?.vesselId === vessel.id, `${vessel.id}: selected by id`);
+    near(host.sizeM.x, vessel.dimensionsM.beam, 1e-12, `${vessel.id}: published beam`);
+    near(host.sizeM.y, vessel.dimensionsM.length, 1e-12, `${vessel.id}: published length`);
+    near(host.sizeM.z, vessel.model.datum.verticalExtentM, 1e-12, `${vessel.id}: full baseline-to-top extent`);
+    near(host.sizeM.zMin, vessel.model.datum.zMinM, 1e-12, `${vessel.id}: negative-draught lower bound`);
+    near(host.sizeM.zMax, vessel.model.datum.zMaxM, 1e-12, `${vessel.id}: sourced upper bound`);
+    near(host.sizeM.waterlineZ, 0, 1e-12, `${vessel.id}: waterline datum`);
+    ok(host.dimsFrom === 'published-particulars', `${vessel.id}: dimensions are not labelled class-typical`);
+    ok(/waterline-datum engineering massing envelope; not CAD/i.test(host.dimsLabel),
+      `${vessel.id}: host labels the model boundary`);
+    ok(/waterline is z=0/i.test(host.note), `${vessel.id}: datum is visible in host text`);
+    ok(/not CAD/i.test(host.boundary) && host.boundary.includes(vessel.boundary),
+      `${vessel.id}: model and battery-study boundaries both survive`);
+    ok(host.model.version === vessel.model.version, `${vessel.id}: model version survives`);
+    ok(JSON.stringify(host.model.primitives) === JSON.stringify(vessel.model.primitives),
+      `${vessel.id}: every source primitive, coordinate and size survives unchanged`);
+
+    const design = designFromSpec({ application: 'marine', marine: { vesselId: vessel.id } });
+    const cell = cellById(design.spec.resolved.cell);
+    const cool = componentById('cooling', design.spec.resolved.components.cooling);
+    const space = cool?.spaceMm || { bottom: 0, side: 0, rowGap: 0 };
+    const layout = layoutPack(cell, design.pack.s, design.pack.p, {
+      arrangement: defaultArrangement(cell), spacingMm: 1, wallMm: 2, headroomMm: 8,
+      underMm: space.bottom, rowExtraMm: space.rowGap,
+    });
+    const scene = buildScene({ design, layout, showHost: true });
+    ok(scene.host?.vesselId === vessel.id, `${vessel.id}: design selection reaches the renderer payload`);
+    near(scene.host.sizeM.zMin, vessel.model.datum.zMinM, 1e-12, `${vessel.id}: renderer receives zMin`);
+    near(scene.host.sizeM.zMax, vessel.model.datum.zMaxM, 1e-12, `${vessel.id}: renderer receives zMax`);
+    near(scene.host.sizeM.z, vessel.model.datum.verticalExtentM, 1e-12, `${vessel.id}: renderer receives full extent`);
+    near(scene.host.seatM.z + scene.host.sizeM.z / 2,
+      vessel.packSeatM.z - vessel.model.datum.zMinM, 1e-12,
+      `${vessel.id}: waterline-relative study seat maps into the baseline-relative scene`);
+    ok(scene.host.evidence.title === vessel.evidence.title, `${vessel.id}: source title reaches the viewer`);
+    ok(/not CAD/i.test(scene.host.boundary), `${vessel.id}: non-CAD boundary reaches the viewer`);
+    ok(JSON.stringify(scene.host.model.primitives) === JSON.stringify(vessel.model.primitives),
+      `${vessel.id}: scene carries the complete renderer-ready model without rebuilding it`);
+    ok(JSON.parse(JSON.stringify(scene)).host.model.primitives.length === vessel.model.primitives.length,
+      `${vessel.id}: vessel payload survives structured clone`);
+  }
+});
+
+test('published vessel dimensions never masquerade as battery-compartment fit', () => {
+  for (const vessel of VESSEL_MODELS) {
+    const host = hostFor('marine', vessel.id);
+    const fit = fitInHost(host, { x: 0.1, y: 0.1, z: 0.1 });
+    ok(fit.fits === null && fit.status === 'unproven', `${vessel.id}: even a tiny pack is not called a fit`);
+    ok(/compartment dimensions unpublished/i.test(fit.label), `${vessel.id}: the missing evidence is visible`);
+    ok(/overall dimensions cannot establish/i.test(fit.note), `${vessel.id}: overall vessel size is rejected as a fit proxy`);
+
+    const design = designFromSpec({ application: 'marine', marine: { vesselId: vessel.id } });
+    const cell = cellById(design.spec.resolved.cell);
+    const layout = layoutPack(cell, design.pack.s, design.pack.p, {
+      arrangement: defaultArrangement(cell), spacingMm: 1, wallMm: 2, headroomMm: 8,
+    });
+    const scene = buildScene({ design, layout, showHost: true });
+    ok(scene.host.fits === null && scene.host.fitStatus === 'unproven', `${vessel.id}: no green fit crosses the scene boundary`);
+    ok(scene.host.fitLabel === fit.label, `${vessel.id}: Godot receives the already-decided fit label`);
+  }
+});
+
+test('the vessel renderer consumes payload primitives rather than owning vessel geometry', () => {
+  const gd = readFileSync(new URL('../garage3d/garage.gd', import.meta.url), 'utf8');
+  ok(/model\.get\("primitives"/.test(gd), 'Godot iterates the supplied primitive payload');
+  ok(/primitive\.get\("sizeM"/.test(gd) && /primitive\.get\("atM"/.test(gd),
+    'and reads supplied sizes and positions');
+  for (const vessel of VESSEL_MODELS) {
+    ok(!gd.includes(vessel.id), `${vessel.id}: no selected vessel id or second model is hardcoded in Godot`);
+  }
+  const payloadStart = gd.indexOf('func _build_payload_model');
+  const payloadEnd = gd.indexOf('\nfunc ', payloadStart + 5);
+  const payloadRenderer = gd.slice(payloadStart, payloadEnd);
+  ok(/vertical_offset_m/.test(payloadRenderer) && /_pickables\.append/.test(payloadRenderer),
+    'waterline-relative vessel primitives become named pickable viewer objects');
+  ok(/AABB\(render_at - render_size \* 0\.5, render_size\)/.test(payloadRenderer),
+    'vessel picking uses the exact rendered primitive bounds');
+  ok(/_add_waterline_marker/.test(gd) && /design waterline z=0/.test(gd),
+    'the viewer marks and labels the supplied waterline datum');
+  ok(/host\.get\("evidence"/.test(gd) && /host\.get\("boundary"/.test(gd)
+    && /VESSEL MODEL · NOT CAD/.test(gd),
+  'the viewer visibly carries source and model/study boundary text');
+  const car = hostFor('ev', VESSEL_MODELS[0].id);
+  ok(car.kind === 'car' && car.model == null, 'a vessel id cannot replace a road host');
+});
+
+test('CI executes the vessel renderer before exporting the Web build', () => {
+  const workflow = readFileSync(new URL('../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const smoke = readFileSync(new URL('../garage3d/tests/vessel_payload_smoke.gd', import.meta.url), 'utf8');
+  ok(/--script res:\/\/tests\/vessel_payload_smoke\.gd/.test(workflow),
+    'CI runs the headless Godot vessel payload smoke test');
+  ok(/--export-release "Web"/.test(workflow) && /test -s build\/index\.html/.test(workflow)
+    && /test -s build\/index\.wasm/.test(workflow),
+    'the same gate exports and checks the browser runtime');
+  ok(/_build_studio/.test(smoke) && /_pickables/.test(smoke)
+    && /malformed primitive is refused/.test(smoke),
+  'the runtime smoke pairs valid picking with malformed-payload refusal');
 });

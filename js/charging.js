@@ -1,7 +1,9 @@
 // charging.js — the AC side of the battery system, round one: how THIS
 // application charges. The charging architecture differs by class and the
 // tool says so instead of bolting an "on-board charger" onto everything:
-//   · vehicles / RVs / boats  → a real on-board charger (or DC depot gear)
+//   · vehicles / RVs          → a real on-board charger (or DC depot gear)
+//   · vessels                 → a project-specific shore connection; never
+//                               silently reuse an automotive plug/OBC class
 //   · e-bikes, tools, gadgets → the charger is an external brick — nothing
 //     on the pack to design
 //   · stationary storage      → the PCS / hybrid inverter IS the AC side
@@ -60,15 +62,386 @@ export const AC_INTERFACE_BY_MARKET = {
 };
 export const acInterfaceFor = (marketId) => AC_INTERFACE_BY_MARKET[marketId] || AC_INTERFACE_BY_MARKET.intl;
 
+export const MARINE_SHORE_INTERFACE = Object.freeze({
+  connector: 'Project-specific marine shore connection — supplier, port and class evidence required',
+  dcConnector: 'No automotive CCS assumption; declare the vessel-side AC or DC interface',
+  comms: 'Declare shore-connection control, interlocks, earthing/isolation and emergency-disconnect contract',
+});
+
+// A declared power and the power reconstructed from voltage/current must
+// agree within this relative tolerance. This is a data-consistency screen,
+// not a connector or installation rating.
+export const MARINE_SHORE_POWER_TOLERANCE = 0.05;
+
+const AUTOMOTIVE_CONNECTOR_PATTERN = /(type\s*2|j1772|ccs|combo\s*[12]|nacs|j3400|gb\s*\/?\s*t\s*20234|chademo)/i;
+const missing = (value) => value === null || value === undefined || value === '';
+const finiteNumber = (value) => typeof value === 'number' && Number.isFinite(value);
+const cleanText = (value) => typeof value === 'string' && value.trim() ? value.trim() : null;
+
+function shoreDiagnostic(code, severity, field, detail, action) {
+  return { code, severity, field, detail, action };
+}
+
+function shoreStatus(diagnostics) {
+  return diagnostics.some((item) => item.severity === 'fail')
+    ? 'fail'
+    : diagnostics.some((item) => item.severity === 'review') ? 'review' : 'pass';
+}
+
+function validCalendarDate(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value || '')) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+/**
+ * Validate one project- or supplier-declared marine shore connection.
+ *
+ * Contract shape (all fields are required unless AC-only is noted):
+ * {
+ *   mode: 'ac' | 'dc', voltageV, ratedPowerKW, ratedCurrentA, efficiency,
+ *   phases, frequencyHz, powerFactor, // AC only
+ *   outputVoltageMinV, outputVoltageMaxV,
+ *   connector: { id, name },
+ *   earthing: { declared: true, scheme },
+ *   isolation: { declared: true, method },
+ *   interlock: { declared: true, description },
+ *   emergencyDisconnect: { declared: true, description },
+ *   evidence: { kind: 'supplier' | 'project', source, revision, date }
+ * }
+ *
+ * No connector, voltage, power or standard is inferred here. Invalid caller
+ * values are never echoed as NaN/Infinity in the result.
+ */
+export function evaluateMarineShoreConnection({ shoreConnection = null, vNomV, packChargeKW } = {}) {
+  const diagnostics = [];
+  const supplied = shoreConnection && typeof shoreConnection === 'object' && !Array.isArray(shoreConnection);
+  const input = supplied ? shoreConnection : {};
+  const normalized = {
+    mode: null,
+    voltageV: null,
+    phases: null,
+    frequencyHz: null,
+    powerFactor: null,
+    ratedPowerKW: null,
+    ratedCurrentA: null,
+    efficiency: null,
+    outputVoltageMinV: null,
+    outputVoltageMaxV: null,
+    connector: { id: null, name: null },
+    earthing: { declared: false, scheme: null },
+    isolation: { declared: false, method: null },
+    interlock: { declared: false, description: null },
+    emergencyDisconnect: { declared: false, description: null },
+    evidence: { kind: null, source: null, revision: null, date: null },
+  };
+
+  if (!supplied) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_CONNECTION_REQUIRED', 'review', 'shoreConnection',
+      'No governed marine shore-connection contract was supplied, so turnaround time is unproven.',
+      'Enter the actual vessel/port equipment contract and its supplier or project evidence.',
+    ));
+  }
+
+  const modeText = cleanText(input.mode)?.toLowerCase() || null;
+  if (!modeText) {
+    if (supplied) diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_MODE_REQUIRED', 'review', 'mode',
+      'Declare whether the shore equipment supplies AC or DC.',
+      "Set mode to 'ac' or 'dc' from the project equipment evidence.",
+    ));
+  } else if (!['ac', 'dc'].includes(modeText)) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_MODE_INVALID', 'fail', 'mode',
+      `The declared shore mode ${JSON.stringify(modeText)} is not AC or DC.`,
+      "Use the evidenced value 'ac' or 'dc'.",
+    ));
+  } else {
+    normalized.mode = modeText;
+  }
+
+  const positiveField = (field, codeStem) => {
+    const raw = input[field];
+    if (missing(raw)) {
+      if (supplied) diagnostics.push(shoreDiagnostic(
+        `MARINE_SHORE_${codeStem}_REQUIRED`, 'review', field,
+        `${field} is required by the shore-connection contract.`,
+        `Enter ${field} from the supplier or project evidence.`,
+      ));
+      return null;
+    }
+    if (!finiteNumber(raw) || raw <= 0) {
+      diagnostics.push(shoreDiagnostic(
+        `MARINE_SHORE_${codeStem}_INVALID`, 'fail', field,
+        `${field} must be a finite number greater than zero.`,
+        `Correct ${field} using the evidenced equipment rating.`,
+      ));
+      return null;
+    }
+    return raw;
+  };
+
+  normalized.voltageV = positiveField('voltageV', 'VOLTAGE');
+  normalized.ratedPowerKW = positiveField('ratedPowerKW', 'RATED_POWER');
+  normalized.ratedCurrentA = positiveField('ratedCurrentA', 'RATED_CURRENT');
+  normalized.outputVoltageMinV = positiveField('outputVoltageMinV', 'OUTPUT_VOLTAGE_MIN');
+  normalized.outputVoltageMaxV = positiveField('outputVoltageMaxV', 'OUTPUT_VOLTAGE_MAX');
+
+  if (missing(input.efficiency)) {
+    if (supplied) diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_EFFICIENCY_REQUIRED', 'review', 'efficiency',
+      'End-to-pack conversion efficiency is required; it is not inferred from equipment type.',
+      'Enter the evidenced efficiency as a fraction greater than zero and no greater than one.',
+    ));
+  } else if (!finiteNumber(input.efficiency) || input.efficiency <= 0 || input.efficiency > 1) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_EFFICIENCY_INVALID', 'fail', 'efficiency',
+      'Efficiency must be a finite fraction greater than zero and no greater than one.',
+      'Correct the end-to-pack efficiency from equipment evidence.',
+    ));
+  } else {
+    normalized.efficiency = input.efficiency;
+  }
+
+  if (normalized.mode === 'ac') {
+    if (missing(input.phases)) {
+      diagnostics.push(shoreDiagnostic(
+        'MARINE_SHORE_PHASES_REQUIRED', 'review', 'phases',
+        'AC phase count is required.', 'Enter the evidenced AC phase count (one or three).',
+      ));
+    } else if (!Number.isInteger(input.phases) || ![1, 3].includes(input.phases)) {
+      diagnostics.push(shoreDiagnostic(
+        'MARINE_SHORE_PHASES_INVALID', 'fail', 'phases',
+        'AC phase count must be the integer 1 or 3.', 'Correct the phase count from the shore equipment evidence.',
+      ));
+    } else {
+      normalized.phases = input.phases;
+    }
+    normalized.frequencyHz = positiveField('frequencyHz', 'FREQUENCY');
+    if (missing(input.powerFactor)) {
+      diagnostics.push(shoreDiagnostic(
+        'MARINE_SHORE_POWER_FACTOR_REQUIRED', 'review', 'powerFactor',
+        'AC power factor is required to reconcile rated voltage, current and real power.',
+        'Enter the equipment power factor as a fraction greater than zero and no greater than one.',
+      ));
+    } else if (!finiteNumber(input.powerFactor) || input.powerFactor <= 0 || input.powerFactor > 1) {
+      diagnostics.push(shoreDiagnostic(
+        'MARINE_SHORE_POWER_FACTOR_INVALID', 'fail', 'powerFactor',
+        'AC power factor must be a finite fraction greater than zero and no greater than one.',
+        'Correct powerFactor from the equipment evidence.',
+      ));
+    } else {
+      normalized.powerFactor = input.powerFactor;
+    }
+  } else if (normalized.mode === 'dc') {
+    const acOnly = ['phases', 'frequencyHz', 'powerFactor'].filter((field) => !missing(input[field]));
+    if (acOnly.length) diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_DC_AC_FIELDS_INCOMPATIBLE', 'fail', acOnly.join(','),
+      `DC mode cannot carry the AC-only field(s): ${acOnly.join(', ')}.`,
+      'Remove AC-only fields or correct the declared mode.',
+    ));
+  }
+
+  if (normalized.outputVoltageMinV != null && normalized.outputVoltageMaxV != null
+    && normalized.outputVoltageMinV > normalized.outputVoltageMaxV) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_OUTPUT_RANGE_INVALID', 'fail', 'outputVoltageMinV,outputVoltageMaxV',
+      'The declared minimum charger output voltage exceeds its maximum.',
+      'Correct the evidenced charger output-voltage range.',
+    ));
+  }
+
+  if (!finiteNumber(vNomV) || vNomV <= 0) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_PACK_VOLTAGE_INVALID', 'fail', 'vNomV',
+      'A finite positive pack nominal voltage is required for shore-equipment compatibility.',
+      'Correct the battery design nominal voltage.',
+    ));
+  } else if (normalized.outputVoltageMinV != null && normalized.outputVoltageMaxV != null
+    && normalized.outputVoltageMinV <= normalized.outputVoltageMaxV
+    && (vNomV < normalized.outputVoltageMinV || vNomV > normalized.outputVoltageMaxV)) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_PACK_VOLTAGE_INCOMPATIBLE', 'fail', 'vNomV',
+      `The ${vNomV} V nominal pack lies outside the declared ${normalized.outputVoltageMinV}–${normalized.outputVoltageMaxV} V charger output range.`,
+      'Select compatible conversion equipment or correct the evidenced output-voltage range.',
+    ));
+  }
+
+  const connector = input.connector && typeof input.connector === 'object' ? input.connector : {};
+  normalized.connector.id = cleanText(connector.id);
+  normalized.connector.name = cleanText(connector.name);
+  for (const field of ['id', 'name']) {
+    if (!normalized.connector[field] && supplied) diagnostics.push(shoreDiagnostic(
+      `MARINE_SHORE_CONNECTOR_${field.toUpperCase()}_REQUIRED`, 'review', `connector.${field}`,
+      `A project-specific connector ${field} is required; the software will not select one.`,
+      `Enter connector.${field} from the vessel/port equipment record.`,
+    ));
+  }
+  const connectorIdentity = `${normalized.connector.id || ''} ${normalized.connector.name || ''}`;
+  if (connectorIdentity.trim() && AUTOMOTIVE_CONNECTOR_PATTERN.test(connectorIdentity)) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_AUTOMOTIVE_CONNECTOR_REFUSED', 'fail', 'connector',
+      'An automotive charging connector identity cannot be accepted as a governed marine shore connection.',
+      'Enter the actual non-automotive vessel/port connector identity and evidence.',
+    ));
+  }
+
+  const declaration = (field, textField, label) => {
+    const raw = input[field] && typeof input[field] === 'object' ? input[field] : {};
+    const declaredPresent = Object.prototype.hasOwnProperty.call(raw, 'declared');
+    const detail = cleanText(raw[textField]);
+    normalized[field] = { declared: raw.declared === true, [textField]: detail };
+    if (!declaredPresent) {
+      if (supplied) diagnostics.push(shoreDiagnostic(
+        `MARINE_SHORE_${field.replace(/([A-Z])/g, '_$1').toUpperCase()}_DECLARATION_REQUIRED`,
+        'review', `${field}.declared`, `${label} declaration is required.`,
+        `Set ${field}.declared only after the project record confirms it.`,
+      ));
+    } else if (raw.declared !== true) {
+      diagnostics.push(shoreDiagnostic(
+        `MARINE_SHORE_${field.replace(/([A-Z])/g, '_$1').toUpperCase()}_NOT_DECLARED`,
+        'fail', `${field}.declared`, `${label} is explicitly not declared.`,
+        `Resolve and document ${label.toLowerCase()} before calculating turnaround time.`,
+      ));
+    }
+    if (!detail && supplied) diagnostics.push(shoreDiagnostic(
+      `MARINE_SHORE_${field.replace(/([A-Z])/g, '_$1').toUpperCase()}_DETAIL_REQUIRED`,
+      'review', `${field}.${textField}`, `${label} method or implementation detail is required.`,
+      `Enter ${field}.${textField} from project or supplier evidence.`,
+    ));
+  };
+  declaration('earthing', 'scheme', 'Earthing');
+  declaration('isolation', 'method', 'Isolation');
+  declaration('interlock', 'description', 'Connection interlock');
+  declaration('emergencyDisconnect', 'description', 'Emergency disconnect');
+
+  const evidence = input.evidence && typeof input.evidence === 'object' ? input.evidence : {};
+  normalized.evidence.kind = cleanText(evidence.kind)?.toLowerCase() || null;
+  normalized.evidence.source = cleanText(evidence.source);
+  normalized.evidence.revision = cleanText(evidence.revision);
+  normalized.evidence.date = cleanText(evidence.date);
+  if (!normalized.evidence.kind) {
+    if (supplied) diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_EVIDENCE_KIND_REQUIRED', 'review', 'evidence.kind',
+      'Evidence must identify whether its authority is the supplier or this vessel project.',
+      "Set evidence.kind to 'supplier' or 'project'.",
+    ));
+  } else if (!['supplier', 'project'].includes(normalized.evidence.kind)) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_EVIDENCE_KIND_INVALID', 'fail', 'evidence.kind',
+      'Evidence kind must be supplier or project.', "Use 'supplier' or 'project' and retain the source record.",
+    ));
+  }
+  for (const field of ['source', 'revision', 'date']) {
+    if (!normalized.evidence[field] && supplied) diagnostics.push(shoreDiagnostic(
+      `MARINE_SHORE_EVIDENCE_${field.toUpperCase()}_REQUIRED`, 'review', `evidence.${field}`,
+      `Evidence ${field} is required.`, `Enter evidence.${field} from the controlled source record.`,
+    ));
+  }
+  if (normalized.evidence.date && !validCalendarDate(normalized.evidence.date)) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_EVIDENCE_DATE_INVALID', 'fail', 'evidence.date',
+      'Evidence date must be a real calendar date in YYYY-MM-DD form.',
+      'Correct the controlled-source date without substituting the current date.',
+    ));
+  }
+
+  let currentDerivedPowerKW = null;
+  const powerInputsComplete = normalized.mode === 'dc'
+    ? normalized.voltageV != null && normalized.ratedCurrentA != null
+    : normalized.mode === 'ac'
+      && normalized.voltageV != null && normalized.ratedCurrentA != null
+      && normalized.phases != null && normalized.powerFactor != null;
+  if (normalized.voltageV != null && normalized.ratedCurrentA != null) {
+    if (normalized.mode === 'dc') {
+      const calculated = normalized.voltageV * normalized.ratedCurrentA / 1000;
+      if (Number.isFinite(calculated)) currentDerivedPowerKW = calculated;
+    } else if (normalized.mode === 'ac' && normalized.phases != null && normalized.powerFactor != null) {
+      const phaseFactor = normalized.phases === 3 ? Math.sqrt(3) : 1;
+      const calculated = phaseFactor * normalized.voltageV * normalized.ratedCurrentA * normalized.powerFactor / 1000;
+      if (Number.isFinite(calculated)) currentDerivedPowerKW = calculated;
+    }
+  }
+  let ratedPowerErrorPct = null;
+  if (currentDerivedPowerKW == null && powerInputsComplete) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_POWER_CALCULATION_INVALID', 'fail', 'ratedPowerKW,ratedCurrentA',
+      'The declared ratings overflow or cannot produce a finite electrical power check.',
+      'Correct the equipment voltage, current, phase and power-factor ratings.',
+    ));
+  } else if (currentDerivedPowerKW != null && normalized.ratedPowerKW != null) {
+    const error = Math.abs(currentDerivedPowerKW - normalized.ratedPowerKW)
+      / normalized.ratedPowerKW * 100;
+    if (!Number.isFinite(error)) {
+      diagnostics.push(shoreDiagnostic(
+        'MARINE_SHORE_POWER_CALCULATION_INVALID', 'fail', 'ratedPowerKW,ratedCurrentA',
+        'The declared ratings cannot produce a finite power-consistency result.',
+        'Correct the equipment voltage, current, phase, power-factor and power ratings.',
+      ));
+    } else {
+      ratedPowerErrorPct = error;
+      if (ratedPowerErrorPct > MARINE_SHORE_POWER_TOLERANCE * 100 + 1e-10) diagnostics.push(shoreDiagnostic(
+        'MARINE_SHORE_POWER_CURRENT_MISMATCH', 'fail', 'ratedPowerKW,ratedCurrentA',
+        `The voltage/current-derived power differs from ratedPowerKW by ${ratedPowerErrorPct.toFixed(2)}%, above the ${(MARINE_SHORE_POWER_TOLERANCE * 100).toFixed(0)}% consistency tolerance.`,
+        'Reconcile the evidenced voltage, current, phase, power-factor and power ratings.',
+      ));
+    }
+  }
+
+  const packLimitKW = finiteNumber(packChargeKW) && packChargeKW > 0 ? packChargeKW : null;
+  if (packLimitKW == null) diagnostics.push(shoreDiagnostic(
+    'MARINE_SHORE_PACK_ACCEPTANCE_REQUIRED', 'review', 'packChargeKW',
+    'A finite positive pack charge-acceptance limit is required before turnaround can be calculated.',
+    'Complete the cell-derived pack charge-acceptance calculation.',
+  ));
+
+  const candidateShoreToPackKW = normalized.ratedPowerKW != null && normalized.efficiency != null
+    ? normalized.ratedPowerKW * normalized.efficiency : null;
+  if (candidateShoreToPackKW != null
+    && (!Number.isFinite(candidateShoreToPackKW) || candidateShoreToPackKW <= 0
+      || !Number.isFinite(1 / candidateShoreToPackKW)
+      || !Number.isFinite(normalized.ratedPowerKW * 1000))) {
+    diagnostics.push(shoreDiagnostic(
+      'MARINE_SHORE_CONVERSION_POWER_INVALID', 'fail', 'ratedPowerKW,efficiency',
+      'The declared power and efficiency do not produce a finite positive conversion-power result.',
+      'Correct the evidenced rated power and efficiency.',
+    ));
+  }
+
+  const status = shoreStatus(diagnostics);
+  const shoreToPackKW = status === 'pass' ? candidateShoreToPackKW : null;
+  const effectiveChargeKW = status === 'pass'
+    ? Math.min(shoreToPackKW, packLimitKW) : null;
+  return {
+    status,
+    complete: status === 'pass',
+    compatible: status === 'pass',
+    diagnostics,
+    normalized,
+    calculated: {
+      currentDerivedPowerKW,
+      ratedPowerErrorPct,
+      ratedPowerTolerancePct: MARINE_SHORE_POWER_TOLERANCE * 100,
+      shoreToPackKW,
+      packChargeKW: packLimitKW,
+      effectiveChargeKW,
+      limitedBy: status === 'pass' ? (packLimitKW < shoreToPackKW ? 'pack' : 'source') : null,
+    },
+    sourceLabel: status === 'pass'
+      ? `${normalized.connector.name} (${normalized.mode.toUpperCase()} shore equipment)` : null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Charging architecture per application — the who-needs-what of the AC side.
-// kind: 'obc' | 'external' | 'pcs' | 'dock' | 'host'
+// kind: 'obc' | 'shore' | 'external' | 'pcs' | 'dock' | 'host'
 // ---------------------------------------------------------------------------
 export const CHARGING_ARCH_BY_APP = {
   ev: { kind: 'obc', name: 'On-board charger (AC) + CCS/NACS DC fast charging', note: 'The OBC converts AC to pack DC on the vehicle; DC fast charging bypasses it entirely and is limited by the CELL, not the charger.' },
   ebus: { kind: 'obc', name: 'DC depot / pantograph charging; AC OBC optional', note: 'City buses charge from DC depot chargers or opportunity pantographs — many carry no AC OBC at all. Where one exists it is a low-power service/limp-home path.' },
   rv: { kind: 'obc', name: 'Shore-power inverter/charger', note: 'The RV house bank charges from campground AC through an inverter/charger (and from the alternator while driving).' },
-  marine: { kind: 'obc', name: 'Shore-power charger / inverter-charger', note: 'Vessels charge from shore AC through marine chargers; class rules apply to the installation.' },
+  marine: { kind: 'shore', name: 'Marine shore-power connection and charger', note: 'No shore rating, connector or conversion equipment is inferred from the vessel model. Supply the actual port/vessel interface, charger rating, isolation/earthing design and class evidence before calculating turnaround time.' },
   ebike: { kind: 'external', name: 'External charger brick (typ. 2–4 A)', note: 'The charger is an off-board brick — nothing to design on the pack beyond the charge port and the BMS charge path.' },
   escooter: { kind: 'external', name: 'External charger brick', note: 'Off-board brick; the pack carries only the port and protection.' },
   powertool: { kind: 'external', name: 'Dock/cradle charger (off-board)', note: 'The pack slots into a mains-powered cradle; AC/DC conversion lives in the cradle.' },
@@ -179,9 +552,11 @@ export function chargeTime({ energyWh, socFrom = 0.2, socTo = 1.0, sourceKW, sou
 // ---------------------------------------------------------------------------
 // The orchestrated plan the UI and report consume.
 // ---------------------------------------------------------------------------
-export function buildChargingPlan({ appId, marketId, energyWh, vNomV, cell, obcOverride = 'auto' }) {
+export function buildChargingPlan({
+  appId, marketId, energyWh, vNomV, cell, obcOverride = 'auto', shoreConnection = null,
+}) {
   const arch = chargingArchitectureFor(appId);
-  const iface = acInterfaceFor(marketId);
+  const iface = appId === 'marine' ? MARINE_SHORE_INTERFACE : acInterfaceFor(marketId);
   const strategies = strategiesFor(appId);
 
   // The pack's charge acceptance, from the ONE number cells actually
@@ -207,9 +582,19 @@ export function buildChargingPlan({ appId, marketId, energyWh, vNomV, cell, obcO
 
   // Charge times: the daily story (20→80% on the OBC/standard source) and
   // the full story (10→100% with the CV tail).
-  const sourceKW = obc ? obc.acKW : packChargeKW;
-  const sourceLabel = obc ? `${obc.acKW} kW OBC` : 'rated-current charger';
-  const efficiency = obc ? OBC_EFFICIENCY : 1.0;
+  // Cell charge acceptance is not a shore-source rating. Without declared
+  // marine connection/charger equipment there is no honest turnaround time.
+  const governedShore = arch.kind === 'shore'
+    ? evaluateMarineShoreConnection({ shoreConnection, vNomV, packChargeKW }) : null;
+  const sourceKW = arch.kind === 'shore'
+    ? (governedShore.status === 'pass' ? governedShore.normalized.ratedPowerKW : null)
+    : (obc ? obc.acKW : packChargeKW);
+  const sourceLabel = arch.kind === 'shore'
+    ? (governedShore.sourceLabel || 'unproven marine shore equipment')
+    : (obc ? `${obc.acKW} kW OBC` : 'rated-current charger');
+  const efficiency = arch.kind === 'shore'
+    ? (governedShore.status === 'pass' ? governedShore.normalized.efficiency : null)
+    : (obc ? OBC_EFFICIENCY : 1.0);
   const t2080 = sourceKW ? chargeTime({ energyWh, socFrom: 0.2, socTo: 0.8, sourceKW, sourceLabel, efficiency, packChargeKW }) : null;
   const t10100 = sourceKW ? chargeTime({ energyWh, socFrom: 0.1, socTo: 1.0, sourceKW, sourceLabel, efficiency, packChargeKW }) : null;
 
@@ -218,8 +603,12 @@ export function buildChargingPlan({ appId, marketId, energyWh, vNomV, cell, obcO
     packChargeKW, chargeC,
     t2080, t10100,
     obcEfficiency: obc ? OBC_EFFICIENCY : null,
+    ...(arch.kind === 'shore' ? { shoreConnection: governedShore } : {}),
     notes: [
       arch.note,
+      ...(arch.kind === 'shore' && governedShore.status === 'pass'
+        ? [`Turnaround uses the declared ${governedShore.normalized.ratedPowerKW} kW ${governedShore.normalized.mode.toUpperCase()} shore rating at ${(governedShore.normalized.efficiency * 100).toFixed(1)}% end-to-pack efficiency, limited by the smaller of source and cell-derived pack acceptance.`]
+        : []),
       ...(arch.kind === 'obc' && packChargeKW != null
         ? [`DC fast charging bypasses the OBC entirely — but the ceiling stays the cell's own charge rating (${packChargeKW.toFixed(1)} kW pack-level, ${chargeC.toFixed(1)}C), and holding it needs the cooling system, not the charger, to keep up.`]
         : []),

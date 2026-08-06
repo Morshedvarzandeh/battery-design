@@ -1,0 +1,179 @@
+@prefix bd: <https://morshedvarzandeh.github.io/battery-design/ontology/core#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix prov: <http://www.w3.org/ns/prov#> .
+@prefix qudt: <http://qudt.org/schema/qudt/> .
+@prefix sosa: <http://www.w3.org/ns/sosa/> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+<https://morshedvarzandeh.github.io/battery-design/ontology/core>
+  a owl:Ontology ;
+  owl:versionIRI <https://morshedvarzandeh.github.io/battery-design/ontology/core/1.0.0> ;
+  owl:versionInfo "1.0.0" ;
+  rdfs:label "battery-design architecture ontology" ;
+  rdfs:comment "Architecture-wide semantics for battery products, host applications, calculations, simulations, evidence, verification and governance. Charging is one peer domain module." .
+
+# Classes — generated from CLASS_DEFINITIONS.
+bd:Agent a owl:Class ; rdfs:label "Agent" ; rdfs:comment "A human, organization, system or AI actor." ; rdfs:subClassOf bd:Entity, prov:Agent .
+bd:Application a owl:Class ; rdfs:label "Application" ; rdfs:comment "A product/application profile." ; rdfs:subClassOf bd:AssetModel .
+bd:ApplicationClass a owl:Class ; rdfs:label "Application class" ; rdfs:comment "A regulatory/technical classification." ; rdfs:subClassOf bd:AssetModel .
+bd:ApplicationFamily a owl:Class ; rdfs:label "Application family" ; rdfs:comment "A business/product grouping." ; rdfs:subClassOf bd:AssetModel .
+bd:Approval a owl:Class ; rdfs:label "Approval" ; rdfs:comment "A qualified human approval of an exact design version." ; rdfs:subClassOf bd:Entity, prov:Activity .
+bd:AssetModel a owl:Class ; rdfs:label "Asset model" ; rdfs:comment "A model or catalog description, not a serial physical asset." ; rdfs:subClassOf bd:Entity, prov:Entity .
+bd:Assumption a owl:Class ; rdfs:label "Assumption" ; rdfs:comment "An input not yet supported as measured or supplier fact." ; rdfs:subClassOf bd:Claim .
+bd:BatterySystem a owl:Class ; rdfs:label "Battery system" ; rdfs:comment "Battery packs plus system equipment." ; rdfs:subClassOf bd:System .
+bd:CalculationRun a owl:Class ; rdfs:label "Calculation run" ; rdfs:comment "A deterministic engineering calculation." ; rdfs:subClassOf bd:ModelRun .
+bd:CalibrationTrial a owl:Class ; rdfs:label "Calibration trial" ; rdfs:comment "A governed dataset used to fit an identified model." ; rdfs:subClassOf bd:EvidenceRecord, prov:Activity .
+bd:Capability a owl:Class ; rdfs:label "Capability" ; rdfs:comment "A user-visible engineering capability." ; rdfs:subClassOf bd:AssetModel .
+bd:CellSpecification a owl:Class ; rdfs:label "Cell specification" ; rdfs:comment "A cell product or generic cell specification." ; rdfs:subClassOf bd:AssetModel .
+bd:Charger a owl:Class ; rdfs:label "Charger" ; rdfs:comment "Power-conversion equipment controlling charge." ; rdfs:subClassOf bd:Component .
+bd:ChargeSession a owl:Class ; rdfs:label "Charge session" ; rdfs:comment "A bounded charging execution." ; rdfs:subClassOf bd:Mission .
+bd:ChargingInterface a owl:Class ; rdfs:label "Charging interface" ; rdfs:comment "Electrical/mechanical connection at the charging boundary." ; rdfs:subClassOf bd:Component .
+bd:ChargingSource a owl:Class ; rdfs:label "Charging source" ; rdfs:comment "External AC, DC, shore, dock or PCS supply." ; rdfs:subClassOf bd:Component .
+bd:ChargingStrategy a owl:Class ; rdfs:label "Charging strategy" ; rdfs:comment "Operational charging policy." ; rdfs:subClassOf bd:AssetModel .
+bd:ChemistryFamily a owl:Class ; rdfs:label "Chemistry family" ; rdfs:comment "A controlled battery-chemistry family." ; rdfs:subClassOf bd:AssetModel .
+bd:Claim a owl:Class ; rdfs:label "Claim" ; rdfs:comment "A published, supplier, measured, calculated, derived or assumed assertion." ; rdfs:subClassOf bd:Entity .
+bd:Component a owl:Class ; rdfs:label "Component" ; rdfs:comment "A selected or catalogued system component." ; rdfs:subClassOf bd:AssetModel .
+bd:Concept a owl:Class ; rdfs:label "Concept" ; rdfs:comment "A customer or engineering concept." ; rdfs:subClassOf bd:AssetModel .
+bd:Constraint a owl:Class ; rdfs:label "Constraint" ; rdfs:comment "A closed-world limit evaluated against facts." ; rdfs:subClassOf bd:Entity .
+bd:Design a owl:Class ; rdfs:label "Design" ; rdfs:comment "A versioned engineering proposal." ; rdfs:subClassOf bd:Entity, prov:Entity .
+bd:DesignSpecification a owl:Class ; rdfs:label "Design specification" ; rdfs:comment "Inputs and requirements defining a design." ; rdfs:subClassOf bd:Entity .
+bd:Diagnostic a owl:Class ; rdfs:label "Diagnostic" ; rdfs:comment "A calculation finding with an explicit severity vocabulary." ; rdfs:subClassOf bd:Entity .
+bd:DigitalTwin a owl:Class ; rdfs:label "Digital twin" ; rdfs:comment "A validated model bound to an identified physical asset and current representative evidence." ; rdfs:subClassOf bd:AssetModel .
+bd:Domain a owl:Class ; rdfs:label "Domain" ; rdfs:comment "A physics and market domain." ; rdfs:subClassOf bd:AssetModel .
+bd:DomainModule a owl:Class ; rdfs:label "Domain module" ; rdfs:comment "A system-wide architectural module shared by product surfaces." ; rdfs:subClassOf bd:SoftwareModule .
+bd:EngineeringFeasibility a owl:Class ; rdfs:label "Engineering feasibility" ; rdfs:comment "Pass/review/fail feasibility, separate from workflow." ; rdfs:subClassOf bd:Entity .
+bd:EngineeringMassingModel a owl:Class ; rdfs:label "Engineering massing model" ; rdfs:comment "A versioned low-detail geometry representation, not production CAD." ; rdfs:subClassOf bd:EngineeringModel .
+bd:EngineeringModel a owl:Class ; rdfs:label "Engineering model" ; rdfs:comment "A versioned equation, policy or simulation model." ; rdfs:subClassOf bd:AssetModel .
+bd:EngineeringResult a owl:Class ; rdfs:label "Engineering result" ; rdfs:comment "A result generated by a model run." ; rdfs:subClassOf bd:Entity, prov:Entity .
+bd:EngineeringRule a owl:Class ; rdfs:label "Engineering rule" ; rdfs:comment "Declarative applicability, evidence and implementation metadata; equations remain in calculators." ; rdfs:subClassOf bd:AssetModel .
+bd:Entity a owl:Class ; rdfs:label "Entity" ; rdfs:comment "Anything with a stable semantic identity." .
+bd:EquationSet a owl:Class ; rdfs:label "Equation set" ; rdfs:comment "A versioned collection of equations." ; rdfs:subClassOf bd:EngineeringModel .
+bd:EvidenceMaturity a owl:Class ; rdfs:label "Evidence maturity" ; rdfs:comment "Evidence completeness/maturity, separate from feasibility." ; rdfs:subClassOf bd:Entity .
+bd:EvidenceRecord a owl:Class ; rdfs:label "Evidence record" ; rdfs:comment "Governed metadata for a document or dataset." ; rdfs:subClassOf bd:Entity, prov:Entity .
+bd:GovernanceActivity a owl:Class ; rdfs:label "Governance activity" ; rdfs:comment "A workflow transition or review event, not an engineering calculation." ; rdfs:subClassOf bd:Entity, prov:Activity .
+bd:HILRun a owl:Class ; rdfs:label "HIL run" ; rdfs:comment "Execution on identified hardware with measured timing." ; rdfs:subClassOf bd:SimulationRun .
+bd:HostAsset a owl:Class ; rdfs:label "Host asset" ; rdfs:comment "The machine or site that hosts the battery." ; rdfs:subClassOf bd:PhysicalAsset .
+bd:InstallationStudy a owl:Class ; rdfs:label "Installation study" ; rdfs:comment "A proposed installation that is not as-built." ; rdfs:subClassOf bd:Design .
+bd:LoadProfile a owl:Class ; rdfs:label "Load profile" ; rdfs:comment "A versioned or generated time-series duty description." ; rdfs:subClassOf bd:EngineeringResult .
+bd:Material a owl:Class ; rdfs:label "Material" ; rdfs:comment "A controlled material definition." ; rdfs:subClassOf bd:AssetModel .
+bd:Mission a owl:Class ; rdfs:label "Mission" ; rdfs:comment "A bounded operational duty." ; rdfs:subClassOf bd:Entity .
+bd:ModelRun a owl:Class ; rdfs:label "Model run" ; rdfs:comment "An execution using stated inputs and a model." ; rdfs:subClassOf bd:Entity, prov:Activity .
+bd:ModuleDesign a owl:Class ; rdfs:label "Module design" ; rdfs:comment "A module partition in a pack design." ; rdfs:subClassOf bd:System .
+bd:Observation a owl:Class ; rdfs:label "Observation" ; rdfs:comment "A physical observation, not a simulation result." ; rdfs:subClassOf bd:Entity, sosa:Observation .
+bd:OperatingPolicy a owl:Class ; rdfs:label "Operating policy" ; rdfs:comment "A governed EMS, PMS or duty-dispatch policy." ; rdfs:subClassOf bd:EngineeringModel .
+bd:PackDesign a owl:Class ; rdfs:label "Pack design" ; rdfs:comment "A battery pack design, distinct from an as-built pack." ; rdfs:subClassOf bd:System .
+bd:PhysicalAsset a owl:Class ; rdfs:label "Physical asset" ; rdfs:comment "An identified real-world asset." ; rdfs:subClassOf bd:Entity, prov:Entity .
+bd:ProductSurface a owl:Class ; rdfs:label "Product surface" ; rdfs:comment "Browser, desktop, API, MCP or report surface." ; rdfs:subClassOf bd:AssetModel .
+bd:QuantityValue a owl:Class ; rdfs:label "Quantity value" ; rdfs:comment "A numeric value with explicit quantity kind and unit." ; rdfs:subClassOf bd:Entity .
+bd:Relation a owl:Class ; rdfs:label "Relation" ; rdfs:comment "A reified relationship used when edge metadata travels in JSON-LD." ; rdfs:subClassOf bd:Entity .
+bd:ReleaseDecision a owl:Class ; rdfs:label "Release decision" ; rdfs:comment "A human release decision on an exact version." ; rdfs:subClassOf bd:Entity, prov:Activity .
+bd:ReplayDataset a owl:Class ; rdfs:label "Replay dataset" ; rdfs:comment "A governed representative operational replay." ; rdfs:subClassOf bd:EvidenceRecord .
+bd:Requirement a owl:Class ; rdfs:label "Requirement" ; rdfs:comment "A mandatory need that can be satisfied or violated." ; rdfs:subClassOf bd:Entity .
+bd:SafetyBarrier a owl:Class ; rdfs:label "Safety barrier" ; rdfs:comment "A thermal/safety barrier product or study selection." ; rdfs:subClassOf bd:Component .
+bd:SILRun a owl:Class ; rdfs:label "SIL run" ; rdfs:comment "Software-in-the-loop execution." ; rdfs:subClassOf bd:SimulationRun .
+bd:SimulationRun a owl:Class ; rdfs:label "Simulation run" ; rdfs:comment "A time-domain or scenario simulation." ; rdfs:subClassOf bd:ModelRun .
+bd:SoftwareModule a owl:Class ; rdfs:label "Software module" ; rdfs:comment "An implementation module with a declared scope." ; rdfs:subClassOf bd:AssetModel .
+bd:Solver a owl:Class ; rdfs:label "Solver" ; rdfs:comment "A numerical solver implementation." ; rdfs:subClassOf bd:AssetModel .
+bd:Standard a owl:Class ; rdfs:label "Standard" ; rdfs:comment "A versioned standard or regulation." ; rdfs:subClassOf bd:EvidenceRecord .
+bd:System a owl:Class ; rdfs:label "System" ; rdfs:comment "A bounded engineered system." ; rdfs:subClassOf bd:Entity .
+bd:TestEvidence a owl:Class ; rdfs:label "Test evidence" ; rdfs:comment "A governed test result bound to an exact design or model." ; rdfs:subClassOf bd:EvidenceRecord .
+bd:ThermalPath a owl:Class ; rdfs:label "Thermal path" ; rdfs:comment "A conduction, convection or radiation path." ; rdfs:subClassOf bd:AssetModel .
+bd:TwinMaturity a owl:Class ; rdfs:label "Twin maturity" ; rdfs:comment "Model-to-asset readiness, separate from cell or document evidence maturity." ; rdfs:subClassOf bd:Entity .
+bd:Unit a owl:Class ; rdfs:label "Unit" ; rdfs:comment "A controlled unit with a UCUM-compatible code." ; rdfs:subClassOf bd:AssetModel .
+bd:ValidationTrial a owl:Class ; rdfs:label "Validation trial" ; rdfs:comment "An independent governed dataset used to validate an identified model." ; rdfs:subClassOf bd:EvidenceRecord, prov:Activity .
+bd:VentPlacement a owl:Class ; rdfs:label "Vent placement" ; rdfs:comment "A reviewed geometric placement and discharge direction." ; rdfs:subClassOf bd:InstallationStudy .
+bd:VentProduct a owl:Class ; rdfs:label "Vent product" ; rdfs:comment "Supplier-qualified pressure-relief hardware." ; rdfs:subClassOf bd:Component .
+bd:VentRequirement a owl:Class ; rdfs:label "Vent requirement" ; rdfs:comment "Calculated required unobstructed free area." ; rdfs:subClassOf bd:Requirement .
+bd:VesselModel a owl:Class ; rdfs:label "Vessel model" ; rdfs:comment "A generic vessel model, not an identified vessel." ; rdfs:subClassOf bd:AssetModel .
+bd:Voyage a owl:Class ; rdfs:label "Voyage" ; rdfs:comment "A marine mission." ; rdfs:subClassOf bd:Mission .
+bd:WorkflowState a owl:Class ; rdfs:label "Workflow state" ; rdfs:comment "Draft/validated/reviewed/approved/released state." ; rdfs:subClassOf bd:Entity .
+
+# Object properties — generated from RELATION_DEFINITIONS.
+bd:appliesRule a owl:ObjectProperty ; rdfs:label "applies rule" ; rdfs:comment "A declarative rule matched this entity using explicit facts." ; rdfs:domain bd:Entity ; rdfs:range bd:EngineeringRule .
+bd:approves a owl:ObjectProperty ; rdfs:label "approves" ; rdfs:comment "Approval of an exact design version." ; rdfs:domain bd:Approval ; rdfs:range bd:Design .
+bd:authorizes a owl:ObjectProperty ; rdfs:label "authorizes" ; rdfs:comment "A qualified human approval authorizes one release decision." ; rdfs:domain bd:Approval ; rdfs:range bd:ReleaseDecision .
+bd:availableOn a owl:ObjectProperty ; rdfs:label "available on" ; rdfs:comment "Product-surface availability." ; rdfs:domain bd:Capability ; rdfs:range bd:ProductSurface .
+bd:basedOnAssumption a owl:ObjectProperty ; rdfs:label "based on assumption" ; rdfs:comment "Explicit assumption lineage." ; rdfs:domain bd:Entity ; rdfs:range bd:Assumption .
+bd:belongsToDomain a owl:ObjectProperty ; rdfs:label "belongs to domain" ; rdfs:comment "Physics/market domain." ; rdfs:domain bd:Entity ; rdfs:range bd:Domain .
+bd:boundToAsset a owl:ObjectProperty ; rdfs:label "bound to asset" ; rdfs:comment "Serial-asset binding." ; rdfs:domain bd:Entity ; rdfs:range bd:PhysicalAsset .
+bd:calibrates a owl:ObjectProperty ; rdfs:label "calibrates" ; rdfs:comment "A governed trial calibrates an identified model version." ; rdfs:domain bd:CalibrationTrial ; rdfs:range bd:EngineeringModel .
+bd:classifiedAs a owl:ObjectProperty ; rdfs:label "classified as" ; rdfs:comment "Technical/regulatory classification." ; rdfs:domain bd:Entity ; rdfs:range bd:ApplicationClass .
+bd:connectsTo a owl:ObjectProperty ; rdfs:label "connects to" ; rdfs:comment "Typed interface connection." ; rdfs:domain bd:Entity ; rdfs:range bd:Entity .
+bd:dependsOn a owl:ObjectProperty ; rdfs:label "depends on" ; rdfs:comment "Explicit semantic dependency." ; rdfs:domain bd:Entity ; rdfs:range bd:Entity .
+bd:derivedFrom a owl:ObjectProperty ; rdfs:label "derived from" ; rdfs:comment "Derivation lineage." ; rdfs:domain bd:Entity ; rdfs:range bd:Entity ; rdfs:subPropertyOf prov:wasDerivedFrom .
+bd:evaluates a owl:ObjectProperty ; rdfs:label "evaluates" ; rdfs:comment "Entity or claim evaluated by a diagnostic." ; rdfs:domain bd:Diagnostic ; rdfs:range bd:Entity .
+bd:evaluatesModel a owl:ObjectProperty ; rdfs:label "evaluates model" ; rdfs:comment "Evidence or replay evaluates an identified model." ; rdfs:domain bd:EvidenceRecord ; rdfs:range bd:EngineeringModel .
+bd:forAssetModel a owl:ObjectProperty ; rdfs:label "for asset model" ; rdfs:comment "A mission is scoped to one host model." ; rdfs:domain bd:Mission ; rdfs:range bd:AssetModel .
+bd:generatedBy a owl:ObjectProperty ; rdfs:label "generated by" ; rdfs:comment "Inverse run-output lineage." ; rdfs:domain bd:EngineeringResult ; rdfs:range bd:ModelRun ; rdfs:subPropertyOf prov:wasGeneratedBy .
+bd:generatesProfile a owl:ObjectProperty ; rdfs:label "generates profile" ; rdfs:comment "Policy-to-profile relation." ; rdfs:domain bd:OperatingPolicy ; rdfs:range bd:LoadProfile .
+bd:governedBy a owl:ObjectProperty ; rdfs:label "governed by" ; rdfs:comment "Versioned evidence or standard governing a rule." ; rdfs:domain bd:EngineeringRule ; rdfs:range bd:EvidenceRecord .
+bd:hasAlias a owl:ObjectProperty ; rdfs:label "has legacy alias" ; rdfs:comment "Legacy catalog identifier mapping." ; rdfs:domain bd:Entity ; rdfs:range bd:Entity .
+bd:hasCandidateHostModel a owl:ObjectProperty ; rdfs:label "has candidate host model" ; rdfs:comment "A specification exposes a governed host-model choice." ; rdfs:domain bd:DesignSpecification ; rdfs:range bd:VesselModel .
+bd:hasChemistry a owl:ObjectProperty ; rdfs:label "has chemistry" ; rdfs:comment "Battery chemistry classification." ; rdfs:domain bd:Entity ; rdfs:range bd:ChemistryFamily .
+bd:hasEvidenceMaturity a owl:ObjectProperty ; rdfs:label "has evidence maturity" ; rdfs:comment "Evidence status only." ; rdfs:domain bd:Entity ; rdfs:range bd:EvidenceMaturity .
+bd:hasFeasibility a owl:ObjectProperty ; rdfs:label "has feasibility" ; rdfs:comment "Engineering feasibility only." ; rdfs:domain bd:Entity ; rdfs:range bd:EngineeringFeasibility .
+bd:hasFinding a owl:ObjectProperty ; rdfs:label "has finding" ; rdfs:comment "Audit finding on a design." ; rdfs:domain bd:Design ; rdfs:range bd:Diagnostic .
+bd:hasPart a owl:ObjectProperty ; rdfs:label "has part" ; rdfs:comment "Structural containment inside an engineered system." ; rdfs:domain bd:System ; rdfs:range bd:Entity .
+bd:hasQuantity a owl:ObjectProperty ; rdfs:label "has quantity" ; rdfs:comment "Explicit quantified property." ; rdfs:domain bd:Entity ; rdfs:range bd:QuantityValue .
+bd:hasReleaseDecision a owl:ObjectProperty ; rdfs:label "has release decision" ; rdfs:comment "Release decision only." ; rdfs:domain bd:Design ; rdfs:range bd:ReleaseDecision .
+bd:hasRepresentation a owl:ObjectProperty ; rdfs:label "has representation" ; rdfs:comment "A model has a versioned visual or geometric representation." ; rdfs:domain bd:AssetModel ; rdfs:range bd:EngineeringMassingModel .
+bd:hasRequirement a owl:ObjectProperty ; rdfs:label "has requirement" ; rdfs:comment "Requirement applicable to an entity." ; rdfs:domain bd:Entity ; rdfs:range bd:Requirement .
+bd:hasSpecification a owl:ObjectProperty ; rdfs:label "has specification" ; rdfs:comment "Links a proposal to its distinct input specification." ; rdfs:domain bd:Design ; rdfs:range bd:DesignSpecification .
+bd:hasStudy a owl:ObjectProperty ; rdfs:label "has study" ; rdfs:comment "A design contains a proposed installation study." ; rdfs:domain bd:Design ; rdfs:range bd:InstallationStudy .
+bd:hasTwinMaturity a owl:ObjectProperty ; rdfs:label "has twin maturity" ; rdfs:comment "Vessel-twin readiness only." ; rdfs:domain bd:InstallationStudy ; rdfs:range bd:TwinMaturity .
+bd:hasUnit a owl:ObjectProperty ; rdfs:label "has unit" ; rdfs:comment "Unit of a quantity." ; rdfs:domain bd:QuantityValue ; rdfs:range bd:Unit ; rdfs:subPropertyOf qudt:unit .
+bd:hasWorkflowState a owl:ObjectProperty ; rdfs:label "has workflow state" ; rdfs:comment "Governance state only." ; rdfs:domain bd:Design ; rdfs:range bd:WorkflowState .
+bd:implementedBy a owl:ObjectProperty ; rdfs:label "implemented by" ; rdfs:comment "Separates engineering meaning from code implementation." ; rdfs:domain bd:EngineeringModel ; rdfs:range bd:SoftwareModule .
+bd:implementsCapability a owl:ObjectProperty ; rdfs:label "implements capability" ; rdfs:comment "Implementation ownership." ; rdfs:domain bd:SoftwareModule ; rdfs:range bd:Capability .
+bd:implementsRule a owl:ObjectProperty ; rdfs:label "implements rule" ; rdfs:comment "A module implements the executable side of a declarative rule." ; rdfs:domain bd:SoftwareModule ; rdfs:range bd:EngineeringRule .
+bd:installedIn a owl:ObjectProperty ; rdfs:label "installed in" ; rdfs:comment "An as-built system is installed in an identified physical host asset." ; rdfs:domain bd:System ; rdfs:range bd:HostAsset .
+bd:instanceOf a owl:ObjectProperty ; rdfs:label "instance of" ; rdfs:comment "A serial physical asset instantiates a catalog/model identity." ; rdfs:domain bd:PhysicalAsset ; rdfs:range bd:AssetModel .
+bd:memberOf a owl:ObjectProperty ; rdfs:label "member of" ; rdfs:comment "Membership in a controlled grouping." ; rdfs:domain bd:Entity ; rdfs:range bd:Entity .
+bd:modelOf a owl:ObjectProperty ; rdfs:label "model of" ; rdfs:comment "A versioned engineering model represents an asset model." ; rdfs:domain bd:EngineeringModel ; rdfs:range bd:AssetModel .
+bd:observes a owl:ObjectProperty ; rdfs:label "observes" ; rdfs:comment "Feature/property observed." ; rdfs:domain bd:Observation ; rdfs:range bd:Entity ; rdfs:subPropertyOf sosa:hasFeatureOfInterest .
+bd:observesAsset a owl:ObjectProperty ; rdfs:label "observes asset" ; rdfs:comment "Evidence was collected from one identified physical asset." ; rdfs:domain bd:EvidenceRecord ; rdfs:range bd:PhysicalAsset .
+bd:partOf a owl:ObjectProperty ; rdfs:label "part of" ; rdfs:comment "Inverse structural containment." ; rdfs:domain bd:Entity ; rdfs:range bd:System .
+bd:performedBy a owl:ObjectProperty ; rdfs:label "performed by" ; rdfs:comment "Responsible actor." ; rdfs:domain prov:Activity ; rdfs:range bd:Agent ; rdfs:subPropertyOf prov:wasAssociatedWith .
+bd:produces a owl:ObjectProperty ; rdfs:label "produces" ; rdfs:comment "Run output." ; rdfs:domain bd:ModelRun ; rdfs:range bd:EngineeringResult ; rdfs:subPropertyOf prov:generated .
+bd:referencesRule a owl:ObjectProperty ; rdfs:label "references rule" ; rdfs:comment "Standard/rule cited by a finding." ; rdfs:domain bd:Diagnostic ; rdfs:range bd:Standard .
+bd:releases a owl:ObjectProperty ; rdfs:label "releases" ; rdfs:comment "A release decision applies to one exact design version." ; rdfs:domain bd:ReleaseDecision ; rdfs:range bd:Design .
+bd:representsAsset a owl:ObjectProperty ; rdfs:label "represents asset" ; rdfs:comment "A digital twin represents exactly one physical asset." ; rdfs:domain bd:DigitalTwin ; rdfs:range bd:PhysicalAsset .
+bd:requiresCapability a owl:ObjectProperty ; rdfs:label "requires capability" ; rdfs:comment "Capability required by an application." ; rdfs:domain bd:Application ; rdfs:range bd:Capability .
+bd:requiresEvidence a owl:ObjectProperty ; rdfs:label "requires evidence" ; rdfs:comment "Evidence needed before a claim/release." ; rdfs:domain bd:Entity ; rdfs:range bd:Requirement .
+bd:satisfies a owl:ObjectProperty ; rdfs:label "satisfies" ; rdfs:comment "Requirement satisfaction." ; rdfs:domain bd:Entity ; rdfs:range bd:Requirement .
+bd:selects a owl:ObjectProperty ; rdfs:label "selects" ; rdfs:comment "A design selects a catalog/model entity." ; rdfs:domain bd:Design ; rdfs:range bd:Entity .
+bd:specifiedBy a owl:ObjectProperty ; rdfs:label "specified by" ; rdfs:comment "Instance/design specification relation." ; rdfs:domain bd:Entity ; rdfs:range bd:AssetModel .
+bd:specifiesSystem a owl:ObjectProperty ; rdfs:label "specifies system" ; rdfs:comment "A specification defines a proposed system." ; rdfs:domain bd:DesignSpecification ; rdfs:range bd:System .
+bd:studiesInstallationOf a owl:ObjectProperty ; rdfs:label "studies installation of" ; rdfs:comment "A study evaluates a proposed system installation without asserting an as-built relationship." ; rdfs:domain bd:InstallationStudy ; rdfs:range bd:System .
+bd:supportedBy a owl:ObjectProperty ; rdfs:label "supported by" ; rdfs:comment "Evidence support for an entity without weakening claim-specific provenance." ; rdfs:domain bd:Entity ; rdfs:range bd:EvidenceRecord .
+bd:supportedByEvidence a owl:ObjectProperty ; rdfs:label "supported by evidence" ; rdfs:comment "Evidence support." ; rdfs:domain bd:Claim ; rdfs:range bd:EvidenceRecord ; rdfs:subPropertyOf prov:wasDerivedFrom .
+bd:targetsAssetModel a owl:ObjectProperty ; rdfs:label "targets asset model" ; rdfs:comment "The exact host catalog model targeted by an installation study." ; rdfs:domain bd:InstallationStudy ; rdfs:range bd:AssetModel .
+bd:usesInput a owl:ObjectProperty ; rdfs:label "uses input" ; rdfs:comment "Input lineage." ; rdfs:domain bd:ModelRun ; rdfs:range bd:Entity ; rdfs:subPropertyOf prov:used .
+bd:usesModel a owl:ObjectProperty ; rdfs:label "uses model" ; rdfs:comment "Model execution lineage." ; rdfs:domain bd:ModelRun ; rdfs:range bd:EngineeringModel ; rdfs:subPropertyOf prov:used .
+bd:usesPolicy a owl:ObjectProperty ; rdfs:label "uses policy" ; rdfs:comment "A mission uses one governed operating policy." ; rdfs:domain bd:Mission ; rdfs:range bd:OperatingPolicy .
+bd:usesSolver a owl:ObjectProperty ; rdfs:label "uses solver" ; rdfs:comment "Numerical implementation lineage." ; rdfs:domain bd:ModelRun ; rdfs:range bd:Solver .
+bd:validates a owl:ObjectProperty ; rdfs:label "validates" ; rdfs:comment "An independent governed trial validates an identified model version." ; rdfs:domain bd:ValidationTrial ; rdfs:range bd:EngineeringModel .
+bd:verifies a owl:ObjectProperty ; rdfs:label "verifies" ; rdfs:comment "Passing governed test evidence verifies an exact design version." ; rdfs:domain bd:TestEvidence ; rdfs:range bd:Design .
+bd:violates a owl:ObjectProperty ; rdfs:label "violates" ; rdfs:comment "Requirement violation." ; rdfs:domain bd:Entity ; rdfs:range bd:Requirement .
+
+# Portable literal properties used by JSON-LD and SHACL.
+bd:basis a owl:DatatypeProperty ; rdfs:domain bd:Claim ; rdfs:range xsd:string .
+bd:quantityKind a owl:DatatypeProperty ; rdfs:domain bd:QuantityValue ; rdfs:range xsd:string .
+bd:revision a owl:DatatypeProperty ; rdfs:domain bd:EvidenceRecord ; rdfs:range xsd:string .
+bd:issuedAt a owl:DatatypeProperty ; rdfs:domain bd:EvidenceRecord ; rdfs:range xsd:dateTime .
+bd:result a owl:DatatypeProperty ; rdfs:range xsd:string .
+bd:designChecksum a owl:DatatypeProperty ; rdfs:range xsd:string .
+bd:contentDigest a owl:DatatypeProperty ; rdfs:range xsd:string .
+bd:kind a owl:DatatypeProperty ; rdfs:range xsd:string .
+bd:authorities a owl:DatatypeProperty ; rdfs:range xsd:string .
+bd:unitCode a owl:DatatypeProperty ; rdfs:domain bd:QuantityValue ; rdfs:range xsd:string .
+bd:targetIdentity a owl:DatatypeProperty ; rdfs:domain bd:HILRun ; rdfs:range xsd:string .
+bd:samplePeriodS a owl:DatatypeProperty ; rdfs:domain bd:HILRun ; rdfs:range xsd:double .
+bd:measuredTiming a owl:DatatypeProperty ; rdfs:domain bd:HILRun .
+bd:safeStateEvidence a owl:DatatypeProperty ; rdfs:domain bd:HILRun .
+bd:faultEvidence a owl:DatatypeProperty ; rdfs:domain bd:HILRun .
+bd:from a owl:ObjectProperty ; rdfs:domain bd:Relation ; rdfs:range bd:Entity .
+bd:to a owl:ObjectProperty ; rdfs:domain bd:Relation ; rdfs:range bd:Entity .
+bd:predicate a owl:ObjectProperty ; rdfs:domain bd:Relation .

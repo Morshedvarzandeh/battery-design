@@ -4,6 +4,7 @@
 // classes, the layered architecture HTML report, and the engineer's
 // workbook with live formulas and no hardcoded contact address in source.
 import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { readFileSync } from 'fs';
 import { ok } from './helpers.mjs';
 import { cellById } from '../js/cells.js';
@@ -42,6 +43,16 @@ test('who needs what: the wearable is the acid test', () => {
   ok(!needed('ebike', 'ems-arch'), 'e-bike has no EMS');
   ok(needed(null, 'stacks-racks'), 'no application chosen -> nothing hidden yet');
   ok(!appNeeds('wearable').includes('stacks-racks'), 'appNeeds traces the same answer');
+  ok(needed('marine', 'vessel-twin') && appNeeds('marine').includes('vessel-twin'),
+    'marine designs expose vessel identity, readiness and replay evidence');
+  ok(!needed('ev', 'vessel-twin') && !needed('wearable', 'vessel-twin'),
+    'a TwinShip evidence contract cannot leak into road or portable applications');
+  ok(needed('ebus', 'payload') && !needed('ev', 'payload'),
+    'the existing payload concept covers e-bus loading without a duplicate passenger concept');
+  ok(!CONCEPTS['passenger-load'] && !NEEDS['passenger-load'],
+    'passenger-load is not a competing ontology term');
+  assert.throws(() => needed('ev', 'not-a-real-concept'), RangeError,
+    'unknown concepts fail closed instead of becoming universally visible');
 });
 
 test('sizing exposes one simple decision while keeping the internal layers separate', () => {
