@@ -9,6 +9,7 @@ import {
   divisors, modulePartition, systemPlan, voltageClass, bmsArchitecture,
   prechargeDesign, contactorsAndFuse, isolationRequirement, dcdcConverter,
   packResistanceModel, buildArchitecture, DAISY_NODE_LIMIT,
+  DEFAULT_ROAD_ISOLATION_CONTEXT,
   commsForApp, weldingForCell,
   assessBmsTopology, BMS_TOPOLOGIES, assessEmsArchitecture, emsArchitectureFor,
 } from '../js/architecture.js';
@@ -82,8 +83,25 @@ test('BMS architecture: topology suggestion, AFE counts, honest notes', () => {
   const ctp = modulePartition(13, 4, cyl, { channelsPerIc: 16 });
   const bmsC = bmsArchitecture({ s: 13, cellCount: 52, partition: ctp, topology: 'auto', channelsPerIc: 16 });
   ok(bmsC.topology === 'centralized', 'one group -> centralized suggested');
-  ok(bmsC.tempSensors === Math.ceil(52 / 6), 'temp sensor count from ratio');
-  ok(bmsC.tempSensorsObservability === Math.ceil(52 / 3), 'observability-optimal 1:3 reported');
+  ok(bmsC.monitoredCellCount === 52 && bmsC.tempSensors === Math.ceil(52 / 6),
+    'temperature ratio uses all 52 cells, not the 13 series groups');
+  ok(bmsC.tempSensorsOptionalTarget.count === Math.ceil(52 / 3),
+    'optional 1:3 comparison uses the total monitored-cell population');
+  ok(bmsC.tempSensorsOptionalTarget.status === 'assumption-only'
+    && /not a universal requirement/.test(bmsC.tempSensorsOptionalTarget.note)
+    && bmsC.tempSensorsOptionalTarget.ontologyRuleId === 'bd:rule/temperature-sensor-benchmark',
+  '1:3 is an ontology-linked optional assumption, never a governing rule');
+  const manyModules = modulePartition(12, 1, cyl, { channelsPerIc: 2 });
+  const sparseTemperatureInput = bmsArchitecture({
+    s: 12, cellCount: 12, partition: manyModules,
+    topology: 'master-slave', channelsPerIc: 2, cellsPerTempSensor: 73,
+  });
+  ok(manyModules.nModules === 6 && sparseTemperatureInput.tempSensorsFromConfiguredRatio === 1,
+    'sparse configured ratio would request only one NTC');
+  ok(sparseTemperatureInput.tempSensorsModuleFloor === 6 && sparseTemperatureInput.tempSensors === 6,
+    'physical-module floor enforces at least one NTC in each of six modules');
+  throws(() => bmsArchitecture({ s: 12, cellCount: 0, partition: manyModules }),
+    'missing monitored-cell population fails closed');
   // Daisy-chain node limit surfaces as a note, not silence.
   const bigPart = { sMod: 2, pMod: 1, nModules: 150, senseWiresPerModule: 3, senseWiresTotal: 450 };
   const big = bmsArchitecture({ s: 300, cellCount: 300, partition: bigPart, topology: 'master-slave', channelsPerIc: 2 });
@@ -122,12 +140,33 @@ test('contactors, fuse, isolation, DC-DC, pack resistance', () => {
   ok(k.lvNote === null, 'no LV note on an HV pack');
   ok(contactorsAndFuse({ contA: 100, vMaxV: 48 }).lvNote != null, 'LV packs get the solid-state note');
 
-  // Isolation: the standard is an explicit argument. 400 V -> 200 kOhm at
-  // 500 Ohm/V, 40 kOhm at 100 Ohm/V DC — never averaged.
-  near(isolationRequirement(400, 'ece-r100').floorKOhm, 200, 1e-9, 'ECE R100 floor');
-  near(isolationRequirement(400, 'iso-6469-dc').floorKOhm, 40, 1e-9, 'ISO 6469-3 DC floor');
-  near(isolationRequirement(800, 'ece-r100').floorKOhm, 400, 1e-9, '800 V floor');
-  throws(() => isolationRequirement(400), 'missing standard throws instead of defaulting silently');
+  // Isolation: low-level legacy aliases stay reproducible, while the pack
+  // orchestrator below maps its ordinary DC vehicle source to 100 ohm/V.
+  const legacyConnected = isolationRequirement(400, 'ece-r100');
+  near(legacyConnected.floorKOhm, 200, 1e-9, 'legacy connected-bus selector remains reproducible');
+  near(isolationRequirement(400, 'iso-6469-dc').floorKOhm, 40, 1e-9, 'separate DC floor');
+  near(isolationRequirement(400, 'un-r100-separate-ac').floorKOhm, 200, 1e-9, 'separate AC floor');
+  const connected = isolationRequirement(400, 'un-r100-connected-ac-dc');
+  near(connected.floorKOhm, 200, 1e-9, 'explicit connected AC/DC baseline floor');
+  near(isolationRequirement(800, 'un-r100-separate-dc').floorKOhm, 80, 1e-9, '800 V DC vehicle-bus floor');
+  const dcVehicle = isolationRequirement(400, 'un-r100-separate-dc');
+  ok(DEFAULT_ROAD_ISOLATION_CONTEXT === 'un-r100-separate-dc',
+    'the shared road-vehicle default is the explicit DC bus context');
+  ok(dcVehicle.ontologyRule.id === 'bd:rule/un-r100-isolation' && dcVehicle.ontologyRule.applies
+    && dcVehicle.ontologyRule.complete,
+    'numeric resolver records the canonical ontology rule and road-vehicle applicability');
+  const protectedConnected = isolationRequirement(400, {
+    contextId: 'un-r100-connected-ac-dc-protected',
+    acProtection: 'double-or-more-solid-insulation',
+  });
+  near(protectedConnected.floorKOhm, 40, 1e-9,
+    'connected AC/DC 100 ohm/V exception requires the declared protective topology');
+  ok(!/charg/i.test(protectedConnected.basis) && !/charg/i.test(connected.basis),
+    'the 100/500 choice is not inferred from charging coupling');
+  const marine = isolationRequirement(400, null, { applicationContext: 'marine-it' });
+  ok(marine.status === 'review-required' && marine.floorKOhm === null && !marine.ontologyRule.applies,
+    'UN R100 stays out of a marine IT system and leaves the class-rule floor for review');
+  throws(() => isolationRequirement(400), 'missing bus context throws instead of defaulting silently');
 
   const d = dcdcConverter({ vMin: 300, vMax: 403, lvBusV: 12 });
   ok(d.sizingNote.includes('no default'), 'aux budget honesty when unstated');
@@ -153,12 +192,43 @@ test('orchestrator: every section present, LV boundary respected', () => {
   ok(A.partition && A.bms && A.precharge && A.contactors && A.isolation && A.dcdc && A.resistance,
     'orchestrator returns every section');
   ok(A.isolation.floorKOhm > 0, 'HV pack gets an isolation floor');
+  ok(A.isolation.ohmsPerVolt === 100 && A.isolation.busType === 'dc',
+    'default road-vehicle pack architecture uses the DC 100 ohm/V case');
+  ok(A.isolationMonitoring.required && A.isolationMonitoring.hvilRequired,
+    'road-vehicle architecture, not the sensor module, activates isolation monitoring and HVIL');
+  const connectedArchitecture = buildArchitecture({
+    cell: cyl, s: 96, p: 2, summary,
+    options: { appId: 'ev', isolationContext: 'un-r100-connected-ac-dc' },
+  });
+  ok(connectedArchitecture.isolation.ohmsPerVolt === 500
+    && connectedArchitecture.isolationMonitoring.reviewRequired,
+  '500 ohm/V requires an explicit combined-bus topology and remains visible for review');
   ok(A.system.racks > 1, 'MWh target reports the rack count');
   // LV pack: no isolation section (that is the point of the 60 V boundary).
   const lvSummary = { cellCount: 52, nominalV: 13 * cyl.nominalV, vMax: 13 * cyl.vMax, vMin: 13 * cyl.vMin, energyWh: 900, maxContCurrentA: 39.2 };
   const lv = buildArchitecture({ cell: cyl, s: 13, p: 4, summary: lvSummary, options: {} });
   ok(lv.isolation === null, 'LV pack skips the isolation floor');
+  ok(lv.isolationMonitoring.status === 'not-required-low-voltage' && !lv.isolationMonitoring.required,
+    'LV architecture publishes an explicit not-required monitoring status');
   ok(lv.voltageClass.id === 'lv', 'LV class detected');
+
+  const marine = buildArchitecture({
+    cell: cyl, s: 96, p: 2, summary,
+    options: { appId: 'marine', isolationStandard: 'ece-r100' },
+  });
+  ok(marine.isolation === null && marine.isolationReview?.status === 'review-required',
+    'a road selector cannot manufacture a numerical isolation floor for a vessel');
+  ok(marine.isolationMonitoring.status === 'required-first-fault-monitoring'
+    && marine.isolationMonitoring.required
+    && marine.isolationMonitoring.hvilRequired === null,
+  'declared marine IT architecture requires first-fault monitoring while leaving interlock rules for class review');
+  const lowVoltageMarine = buildArchitecture({
+    cell: cyl, s: 13, p: 4, summary: lvSummary,
+    options: { appId: 'marine' },
+  });
+  ok(lowVoltageMarine.isolationMonitoring.status === 'review-required-marine-it-low-voltage'
+    && lowVoltageMarine.isolationMonitoring.required === null,
+  'the road-vehicle 60 V boundary does not silently decide monitoring for a low-voltage marine IT system');
 });
 
 test('closest-possible framing in maxFill: never a silent dead end', () => {

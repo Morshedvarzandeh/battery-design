@@ -597,7 +597,10 @@ console.log(design.cost.usdPerKWhDelivered);
 `designFromSpec` runs unchanged in a browser and in Node, takes plain data and
 returns plain data. Everything it can be given is listed in `SPEC_FIELDS`.
 
-One deliberate roughness: `isolationStandard` has no safe default and must be
-stated (`ece-r100` or `iso-6469-dc`). The sources genuinely conflict — 500 Ω/V
-against 100 Ω/V — and the module refuses to average them or pick quietly. The
-API defaults to ECE R100 and records the choice in the result.
+`isolationStandard` selects a named UN R100 topology context: separate DC,
+separate AC, connected AC/DC, or the protected connected-bus exception. The
+API's product default is the ordinary separate DC traction-bus context; a
+connected AC/DC topology must be selected explicitly. The result records its
+resolved context. Missing/conflicting topology is refused, and marine IT
+systems return a class/flag-state review boundary rather than a road-vehicle
+numeric floor.

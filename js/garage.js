@@ -34,6 +34,10 @@ import { needed } from './knowledge.js';
 import { TERRAINS, terrainIds } from './terrain.js';
 import { DRIVING_MODES } from './vehicle.js';
 import { COMPONENTS, componentsFor } from './components.js';
+import { OPERATING_POLICIES } from './operating-policy.js';
+import {
+  VESSEL_MODELS, defaultVesselModel, marineInputsForVessel, vesselModelById,
+} from './vessels.js';
 
 // Which way is better. Some of these are obvious and some are not — a heavier
 // pack is worse, but more mass is exactly what a marine keel wants — so the
@@ -48,6 +52,14 @@ export const METRICS = [
   { id: 'whPerKm', label: 'Consumption', unit: 'Wh/km', better: BETTER.down, group: 'what it does', get: (d) => d.vehicle?.drive?.whPerKm ?? null },
   { id: 'energyWh', label: 'Energy', unit: 'Wh', better: BETTER.up, group: 'what it does', get: (d) => d.pack?.energyWh ?? null },
   { id: 'contPowerW', label: 'Continuous power', unit: 'W', better: BETTER.up, group: 'what it does', get: (d) => d.pack?.maxContPowerW ?? null },
+  { id: 'voyageDistanceNm', label: 'Voyage distance', unit: 'nmi', better: BETTER.up, group: 'voyage', get: (d) => d.marine?.distanceNm ?? null },
+  { id: 'voyageEnergyWh', label: 'Voyage energy demand', unit: 'Wh', better: BETTER.down, group: 'voyage', get: (d) => d.marine?.energyWh ?? null },
+  { id: 'energyPerNmWh', label: 'Energy per nautical mile', unit: 'Wh/nmi', better: BETTER.down, group: 'voyage', get: (d) => d.marine?.energyPerNmWh ?? null },
+  { id: 'propulsionW', label: 'Propulsion demand', unit: 'W', better: BETTER.down, group: 'voyage', get: (d) => d.marine?.metrics?.propulsionW ?? null },
+  { id: 'voyagePeakW', label: 'Voyage peak demand', unit: 'W', better: BETTER.down, group: 'voyage', get: (d) => d.marine?.peakW ?? null },
+  { id: 'missionMinSoC', label: 'Mission minimum SoC', unit: '%', better: BETTER.up, group: 'voyage', get: (d) => d.marine && Number.isFinite(d.simulation?.summary?.minSoC) ? d.simulation.summary.minSoC * 100 : null },
+  { id: 'missionUnmetWh', label: 'Unserved voyage energy', unit: 'Wh', better: BETTER.down, group: 'voyage', get: (d) => d.marine ? (d.simulation?.summary?.unmetWh ?? null) : null },
+  { id: 'missionMaxT', label: 'Mission maximum cell temperature', unit: '°C', better: BETTER.down, group: 'voyage', get: (d) => d.marine ? (d.simulation?.summary?.maxT ?? null) : null },
 
   { id: 'massKg', label: 'Pack mass', unit: 'kg', better: BETTER.down, group: 'what it costs', get: (d) => d.pack?.massKg ?? null },
   { id: 'volumeL', label: 'Volume', unit: 'L', better: BETTER.down, group: 'what it costs', get: (d) => d.pack?.volumeL ?? null },
@@ -68,6 +80,75 @@ export const METRICS = [
  */
 export function partsBin(applicationId, { cellLimit = 8 } = {}) {
   const parts = [];
+
+  // Marine is a dedicated Vessel Twin surface over the same comparison
+  // engine.  The two choices are complete, evidence-bounded low-detail NTNU
+  // massing models; changing vessel also changes its published design point and its
+  // appropriate default PMS goal.  Voyage inputs remain nested under
+  // `marine`, so they cannot collide with road range or site-duration inputs.
+  if (applicationId === 'marine') {
+    parts.push({
+      id: 'marine:vesselId', label: 'Vessel', kind: 'choice',
+      what: 'Choose the complete low-detail vessel massing model used for this study. Published facts define each starting point; the visible geometry is not CAD, and battery results remain screening studies until vessel data calibrate and independently validate them.',
+      options: VESSEL_MODELS.map((vessel) => ({
+        value: vessel.id,
+        label: vessel.name,
+        hint: `${vessel.description} ${vessel.dimensionsM.length} m × ${vessel.dimensionsM.beam} m.`,
+      })),
+    });
+
+    const policies = OPERATING_POLICIES.filter((policy) => policy.appId === 'marine');
+    parts.push({
+      id: 'pms:policyId', label: 'PMS operating goal', kind: 'choice',
+      what: 'The power-management system decides which part of vessel demand the battery serves. It changes the battery trace, not the underlying voyage demand.',
+      options: policies.map((policy) => ({
+        value: policy.id, label: policy.name,
+        hint: `${policy.description} Sizing focus: ${policy.sizingFocus}.`,
+      })),
+    });
+
+    parts.push(
+      {
+        id: 'marine:serviceSpeedKn', label: 'Service speed', kind: 'number',
+        what: 'Speed over ground for the voyage. Propulsion is screened from speed through water, so head current is added before the cubic speed relation is applied.',
+        min: 0.5, max: 15, step: 0.1, unit: 'kn',
+      },
+      {
+        id: 'marine:durationH', label: 'Voyage duration', kind: 'number',
+        what: 'How long this operating period lasts. This changes voyage distance and energy demand without changing the vessel’s published design point.',
+        min: 0.25, max: 24, step: 0.25, unit: 'h',
+      },
+      {
+        id: 'marine:payloadKg', label: 'Mission payload', kind: 'number',
+        what: 'Passenger, cargo and mission payload. It affects milliAmpere1 through the declared mass correction; Gunnerus leaves that correction disabled until displacement or lightship mass is supplied.',
+        min: 0, max: 100000, step: 50, unit: 'kg',
+      },
+      {
+        id: 'marine:headCurrentKn', label: 'Head current', kind: 'number',
+        what: 'Positive current opposes the vessel and increases speed through water; negative values represent following current. This is a voyage input, not a propulsion-efficiency claim.',
+        min: -5, max: 5, step: 0.1, unit: 'kn',
+      },
+      {
+        id: 'marine:headwindKn', label: 'Headwind', kind: 'number',
+        what: 'A bounded sensitivity input until above-water geometry or measured power establishes a vessel-specific wind relation.',
+        min: 0, max: 50, step: 1, unit: 'kn',
+      },
+      {
+        id: 'marine:hotelW', label: 'Hotel and auxiliary load', kind: 'number',
+        what: 'Navigation, controls, HVAC, scientific equipment and other non-propulsion loads. Replace the provisional value with an equipment schedule or measured DC-bus trace.',
+        min: 0, max: 1000000, step: 100, unit: 'W',
+      },
+      {
+        id: 'marine:seaState', label: 'Sea state', kind: 'choice',
+        what: 'A visible bounded screening factor for calm, moderate or rough conditions. It is not a seakeeping or CFD model.',
+        options: [
+          { value: 'calm', label: 'Calm', hint: 'Reference resistance factor 1.00.' },
+          { value: 'moderate', label: 'Moderate', hint: 'Screening resistance factor 1.15.' },
+          { value: 'rough', label: 'Rough', hint: 'Screening resistance factor 1.35.' },
+        ],
+      },
+    );
+  }
 
   // The cell is the biggest lever there is, so it leads. Only cells that can
   // answer the whole question — a price AND a cycle life — because a swap
@@ -149,12 +230,51 @@ export function partsBin(applicationId, { cellLimit = 8 } = {}) {
   return parts;
 }
 
+/** Read the value represented by a shelf part from its authoritative spec path. */
+export function partValue(spec = {}, part) {
+  const id = typeof part === 'string' ? part : part?.id;
+  const requestedVesselId = spec.marine?.vesselId ?? spec.vesselId;
+  const vessel = vesselModelById(requestedVesselId) || defaultVesselModel();
+  if (id === 'mass') return spec.vehicle?.curbKg;
+  if (id === 'pms:policyId') return spec.policyId ?? vessel.policyId;
+  if (id?.startsWith('marine:')) {
+    const field = id.slice('marine:'.length);
+    if (field === 'vesselId') return vessel.id;
+    return spec.marine?.[field] ?? vessel.missionDefaults[field];
+  }
+  if (id?.startsWith('component:')) return spec.components?.[id.slice('component:'.length)];
+  return id ? spec[id] : undefined;
+}
+
 /** Turn a swap into a spec the engine understands. */
 export function applySwap(spec, { part, value }) {
   const next = { ...spec };
   if (part === 'mass') next.vehicle = { ...(spec.vehicle || {}), curbKg: value };
   else if (part === 'terrain') next.terrain = value;             // read by the caller's vehicle build
-  else if (part.startsWith('component:')) {
+  else if (part === 'marine:vesselId') {
+    const vessel = vesselModelById(value);
+    if (!vessel) {
+      // Preserve the requested value so the design engine can issue its
+      // established unknown-vessel warning rather than silently claiming the
+      // default vessel was selected.
+      next.marine = { ...(spec.marine || {}), vesselId: value };
+      return next;
+    }
+    const current = vesselModelById(spec.marine?.vesselId ?? spec.vesselId) || defaultVesselModel();
+    const sameVessel = current.id === vessel.id;
+    next.marine = sameVessel
+      ? { ...marineInputsForVessel(vessel.id), ...(spec.marine || {}), vesselId: vessel.id }
+      : marineInputsForVessel(vessel.id);
+    if (Object.prototype.hasOwnProperty.call(spec, 'vesselId')) next.vesselId = vessel.id;
+    // Trial evidence and replay are asset-specific. A different vessel must
+    // never inherit them and appear more mature than it is.
+    if (!sameVessel && Object.prototype.hasOwnProperty.call(next, 'twinShip')) delete next.twinShip;
+    if (!sameVessel || spec.policyId == null) next.policyId = vessel.policyId;
+  } else if (part === 'pms:policyId') {
+    next.policyId = value;
+  } else if (typeof part === 'string' && part.startsWith('marine:')) {
+    next.marine = { ...(spec.marine || {}), [part.slice('marine:'.length)]: value };
+  } else if (typeof part === 'string' && part.startsWith('component:')) {
     // Hardware goes into the components block the engine reads. Written flat
     // as "component:cooling" it became a spec key nothing looks at, so every
     // option on the hardware shelf reported "no measurable change" — eight
@@ -182,7 +302,7 @@ export function compare(before, after, { label = 'this change' } = {}) {
     const b = m.get(before), a = m.get(after);
     if (b == null || a == null) return null;
     const delta = a - b;
-    if (Math.abs(delta) < Math.abs(b) * 1e-6) return null;         // unchanged
+    if (Math.abs(delta) <= Math.max(1e-12, Math.abs(b) * 1e-6)) return null; // unchanged, including 0 → 0
     const improved = m.better === 'neutral' ? null
       : m.better === 'up' ? delta > 0 : delta < 0;
     return { ...m, before: b, after: a, delta, pct: pct(b, a), improved };

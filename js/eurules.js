@@ -11,6 +11,17 @@
 // RECOVERY targets (from waste) and overall RECYCLING EFFICIENCY (by mass)
 // are different numbers with different deadlines.
 
+import { evaluateRuleApplicability, ruleDefinition } from './ontology-rules.js';
+
+const EU_BATTERY_PASSPORT_RULE = ruleDefinition('eu-battery-passport');
+export const EU_BATTERY_PASSPORT_RULE_ID = EU_BATTERY_PASSPORT_RULE.id;
+export const EU_BATTERY_PASSPORT_EFFECTIVE_DATE = EU_BATTERY_PASSPORT_RULE.when
+  .find((condition) => condition.fact === 'evaluation.date'
+    && condition.operator === 'onOrAfter')?.value;
+if (!EU_BATTERY_PASSPORT_EFFECTIVE_DATE) {
+  throw new Error('The canonical eu-battery-passport ontology rule needs an effective date.');
+}
+
 export const EU_DISCLAIMER =
   'Guidance distilled from Regulation (EU) 2023/1542 milestones — not legal advice. '
   + 'Verify dates and applicability against the Official Journal text and your notified body.';
@@ -20,7 +31,7 @@ export const EU_TIMELINE = [
   { date: '2025-12', what: 'Recycling efficiency ≥65% by mass (overall, a separate metric from per-material recovery).' },
   { date: '2026-02', what: 'Carbon footprint declaration extends to rechargeable industrial batteries.' },
   { date: '2026-08', what: 'Carbon-footprint performance-class labelling begins.' },
-  { date: '2027-02', what: 'Battery passport mandatory for industrial batteries >2 kWh and EV batteries: carbon footprint, responsible sourcing, composition, recycled content, state of health, durability. SoH must be LIVE-accessible over UDS (ISO 14229), not only a stored record.' },
+  { date: '2027-02', what: 'Battery passport mandatory from 18 February for LMT batteries, EV batteries and industrial batteries >2 kWh: carbon footprint, responsible sourcing, composition, recycled content, state of health and durability. The Regulation requires accessible, current data; it does not prescribe UDS.' },
   { date: '2027-12', what: 'Material recovery from waste batteries: Li 50%, Ni 90%, Co 90%, Cu 90%.' },
   { date: '2028-02', what: 'Binding maximum carbon-footprint thresholds take effect.' },
   { date: '2030-12', what: 'Recycling efficiency ≥70% by mass.' },
@@ -34,38 +45,74 @@ export const EU_TIMELINE = [
 // nickel-based families.
 const NICKEL_COBALT = new Set(['NMC', 'NCA', 'LCO']);
 
-// Applications the regulation treats as EV vs industrial (stationary /
-// industrial mobility). LMT (light means of transport: e-bikes, scooters)
-// has its own passport track from Feb 2027 as well.
+// These product identities are already explicit in the UI, so mapping them
+// to EV and LMT does not invent a category. Every other application must
+// declare its category: energy alone cannot distinguish portable,
+// industrial, SLI and other batteries.
 const EV_APPS = new Set(['ev', 'ebus']);
 const LMT_APPS = new Set(['ebike', 'escooter']);
 
-export function euChecks({ energyWh, application, chemistry, commsPrimary }) {
-  const out = [];
-  const push = (severity, title, detail) =>
-    out.push({ severity, title, detail, ref: 'Regulation (EU) 2023/1542', category: 'eu' });
-  const kWh = (energyWh ?? 0) / 1000;
-  const isEV = EV_APPS.has(application);
-  const isLMT = LMT_APPS.has(application);
-  const industrialOver2 = !isEV && !isLMT && kWh > 2;
+export function batteryCategoryForApplication(application, declaredCategory) {
+  if (declaredCategory) return declaredCategory;
+  if (EV_APPS.has(application)) return 'ev';
+  if (LMT_APPS.has(application)) return 'lmt';
+  return null;
+}
 
-  if (isEV || industrialOver2 || isLMT) {
-    push('warn', 'Battery passport applies (from Feb 2027)',
-      `${isEV ? 'EV battery' : isLMT ? 'Light-means-of-transport battery' : `Industrial battery over 2 kWh (${kWh.toFixed(1)} kWh)`} — the passport must carry carbon footprint, sourcing, composition, recycled content, state of health and durability.`);
+export function euChecks({
+  energyWh, application, chemistry, commsPrimary,
+  batteryCategory = null, evaluationDate = EU_BATTERY_PASSPORT_EFFECTIVE_DATE,
+}) {
+  const out = [];
+  const push = (severity, title, detail, ontologyRuleId = null) =>
+    out.push({
+      severity, title, detail, ref: 'Regulation (EU) 2023/1542', category: 'eu',
+      ...(ontologyRuleId ? { ontologyRuleId } : {}),
+    });
+  const kWh = (energyWh ?? 0) / 1000;
+  const category = batteryCategoryForApplication(application, batteryCategory);
+  const passportRule = EU_BATTERY_PASSPORT_RULE;
+  const passportEvaluation = evaluateRuleApplicability('eu-battery-passport', {
+    evaluation: { date: evaluationDate },
+    battery: {
+      ...(category ? { category } : {}),
+      energyWh: { value: energyWh ?? 0, unit: 'Wh' },
+    },
+  });
+  const passportApplies = passportEvaluation.applies && passportEvaluation.criteria.length > 0;
+
+  if (passportApplies) {
+    push('warn', 'Battery passport applies (from 18 February 2027)',
+      `${category === 'ev' ? 'EV battery' : category === 'lmt' ? 'Light-means-of-transport battery' : `Declared industrial battery over 2 kWh (${kWh.toFixed(1)} kWh)`} — the passport must carry the applicable identity, carbon-footprint, sourcing, composition, recycled-content, state-of-health and durability information.`,
+      passportRule.id);
     const udsReady = /UDS|ISO 14229/i.test(commsPrimary || '');
-    push(udsReady ? 'pass' : 'warn', 'Live SoH access is a design dependency, not paperwork',
+    push('info', 'Accessible current SoH data is required; UDS is only one implementation option',
       udsReady
-        ? 'The selected communication stack already includes UDS (ISO 14229) — the passport\'s live SoH requirement is covered by design.'
-        : 'SoH must be readable live over UDS (ISO 14229) — plan the diagnostic stack now; it cannot be retrofitted into a sealed BMS later.');
+        ? 'The selected communication stack includes UDS (ISO 14229), which can implement the access path. The Regulation does not mandate UDS, and naming it does not by itself prove Article 14/77 data, access-control, update or interoperability requirements.'
+        : `No UDS stack is declared, and none is legally required. Select and document a suitable interface such as ${passportRule.implementationOptions.filter((option) => option !== 'uds').join(' or ')}; verify the Article 14/77 data and access controls.`,
+      passportRule.id);
+  } else if (passportEvaluation.missingFactOutcome === 'review' || !category) {
+    push('warn', 'Battery passport applicability needs a declared battery category',
+      `The application “${application || 'custom'}” is not unambiguously an EV or LMT battery. Do not infer “industrial” from ${kWh.toFixed(1)} kWh alone; declare the Regulation (EU) 2023/1542 category, then evaluate its criteria.`,
+      passportRule.id);
+  } else if (!passportEvaluation.applies) {
+    push('info', 'Battery passport date gate not yet active for this assessment',
+      `The assessment date ${evaluationDate} is before 18 February 2027. Keep the category and interface decision in the release plan.`,
+      passportRule.id);
   } else {
-    push('info', 'Battery passport below threshold',
-      `At ${kWh.toFixed(1)} kWh and a non-EV application this pack sits under the >2 kWh industrial passport threshold — recheck if the product grows.`);
+    push('info', 'Battery passport does not apply to the declared category and energy at this gate',
+      `Declared category “${category}” at ${kWh.toFixed(1)} kWh does not match the ontology rule's EV, LMT or >2 kWh industrial criterion. Re-evaluate if the category or energy changes.`,
+      passportRule.id);
   }
 
-  push(isEV ? 'warn' : 'info', 'Carbon footprint declaration',
-    isEV
+  push(category === 'ev' || category === 'industrial' || !category ? 'warn' : 'info', 'Carbon footprint declaration',
+    category === 'ev'
       ? 'Mandatory for EV batteries since Feb 2025 (third-party verified); binding maximum thresholds follow Feb 2028.'
-      : 'Rechargeable industrial batteries need the verified declaration from Feb 2026; binding thresholds Feb 2028.');
+      : category === 'industrial'
+        ? 'Rechargeable industrial batteries need the verified declaration from Feb 2026; binding thresholds Feb 2028.'
+        : category
+          ? `The declared “${category}” category does not use the industrial/EV statement shown for other categories; verify its applicable carbon-footprint provisions directly.`
+          : 'Battery category is unresolved, so the software cannot select the EV or industrial declaration track.');
   push('info', 'Material sourcing is a design parameter under the thresholds',
     'Aluminium alone (0.5–0.7 kg per kWh of pack) can swing the declared footprint several-fold between world-average, renewable-powered and high-recycled stock — pick the housing supplier with the Feb 2028 thresholds in view.');
 

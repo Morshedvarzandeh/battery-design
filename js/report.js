@@ -8,6 +8,10 @@
 // energy displaces the selected source one-for-one, with no round-trip
 // losses. Good for comparing options — not an audited LCA.
 
+import {
+  buildDesignSemanticGraph, semanticDigest, semanticGraphSummary, validateSemanticGraph,
+} from './ontology.js';
+
 // Manufacturing footprint, kg CO2e per kWh of cell capacity (class values).
 export const CO2_MFG_PER_KWH = {
   NMC: 85, NCA: 85, LFP: 60, LTO: 90, LCO: 90, NAION: 45,
@@ -70,6 +74,100 @@ const f2 = (v) => v == null ? '—' : (Math.round(v * 100) / 100).toFixed(2);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (ch) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[ch]));
 
+function legacySemanticGraphForReport(R) {
+  return buildDesignSemanticGraph({
+    application: typeof R.application === 'string' ? { id: R.application, name: R.application } : R.application,
+    cell: R.cell, pack: R.summary, findings: R.findings,
+    architecture: R.architecture, thermal: R.thermal, sensors: R.sensors,
+    charging: R.charging, v2x: R.v2x, vehicle: R.vehicle, marine: R.marine,
+    twinShip: R.twinShip, simulation: R.sim, electricalProtection: R.electricalProtection,
+    cost: R.cost, co2: R.co2,
+  });
+}
+
+// Reports normally receive the exact semantic snapshot produced by
+// designFromSpec(). Older integrations may not provide it, so they retain a
+// reconstruction path, but that path is explicitly non-authoritative. A
+// supplied snapshot whose summary does not match its graph is never silently
+// replaced: the integrity failure remains visible to the reader. A public
+// checksum proves content identity, not producer authenticity; without a
+// signed/trusted-origin record even a conforming import is not release-authoritative.
+export function semanticTraceForReport(R) {
+  const supplied = R?.semantics;
+  // Any supplied semantic payload is treated as a claimed engine snapshot.
+  // An incomplete claim must fail integrity visibly; it must not fall through
+  // to the compatibility reconstruction and appear to be merely an old file.
+  if (supplied != null) {
+    const graph = supplied.graph;
+    const suppliedRootPresent = typeof supplied.rootId === 'string' && supplied.rootId.length > 0;
+    const graphRootPresent = typeof graph?.rootId === 'string' && graph.rootId.length > 0;
+    const suppliedChecksumPresent = typeof supplied.ontology?.checksum === 'string'
+      && supplied.ontology.checksum.length > 0;
+    const graphChecksumPresent = typeof graph?.checksum === 'string' && graph.checksum.length > 0;
+    const rootMatches = suppliedRootPresent && graphRootPresent && supplied.rootId === graph.rootId;
+    let recomputedChecksum = null;
+    let validation = null;
+    if (graph && Array.isArray(graph.nodes) && Array.isArray(graph.edges)) {
+      recomputedChecksum = semanticDigest({ nodes: graph.nodes, edges: graph.edges });
+      validation = validateSemanticGraph(graph);
+    }
+    const checksumMatches = suppliedChecksumPresent && graphChecksumPresent
+      && supplied.ontology.checksum === graph.checksum;
+    const contentChecksumMatches = recomputedChecksum != null
+      && graph.checksum === recomputedChecksum
+      && supplied.ontology.checksum === recomputedChecksum;
+    const conforms = validation?.conforms === true;
+    if (rootMatches && checksumMatches && contentChecksumMatches && conforms) {
+      const verifiedGraph = { ...graph, checksum: recomputedChecksum, validation };
+      return {
+        semantics: { ...semanticGraphSummary(verifiedGraph), graph: verifiedGraph },
+        authority: {
+          kind: 'self-consistent-origin-unverified',
+          authoritative: false,
+          label: 'Self-consistent semantic snapshot — origin unverified',
+          detail: 'The root matches, the checksum was recomputed, and the graph conforms. The unsigned digest proves content identity—not who produced or approved it—so a trusted signed record is still required for release.',
+        },
+      };
+    }
+    const mismatch = [
+      !graph ? 'the graph payload is missing' : null,
+      graph && !suppliedRootPresent ? 'the snapshot root id is missing' : null,
+      graph && !graphRootPresent ? 'the graph root id is missing' : null,
+      graph && suppliedRootPresent && graphRootPresent && !rootMatches
+        ? 'the root id does not match the graph' : null,
+      graph && !suppliedChecksumPresent ? 'the snapshot checksum is missing' : null,
+      graph && !graphChecksumPresent ? 'the graph checksum is missing' : null,
+      graph && suppliedChecksumPresent && graphChecksumPresent && !checksumMatches
+        ? 'the checksum does not match the graph' : null,
+      graph && recomputedChecksum != null && !contentChecksumMatches
+        ? 'the graph checksum does not match its node and relation content' : null,
+      graph && validation && !conforms
+        ? `the graph does not conform (${validation.issues.length} issue${validation.issues.length === 1 ? '' : 's'})` : null,
+      graph && !validation ? 'the graph content cannot be validated' : null,
+    ].filter(Boolean).join('; ');
+    return {
+      semantics: supplied,
+      authority: {
+        kind: 'supplied-snapshot-integrity-failure',
+        authoritative: false,
+        label: 'Supplied snapshot — integrity not proven',
+        detail: `${mismatch || 'graph identity is incomplete'}. This trace cannot support release.`,
+      },
+    };
+  }
+
+  const graph = legacySemanticGraphForReport(R);
+  return {
+    semantics: semanticGraphSummary(graph),
+    authority: {
+      kind: 'legacy-reconstructed-fallback',
+      authoritative: false,
+      label: 'Legacy reconstructed fallback',
+      detail: 'Built from partial report fields for compatibility; it is not the authoritative design graph and cannot support release.',
+    },
+  };
+}
+
 export function buildReportHTML(R) {
   const td = 'padding:5px 10px;border-bottom:1px solid #ddd;font-size:12px';
   const th = td + ';text-align:left;color:#666;font-weight:normal;width:46%';
@@ -77,6 +175,8 @@ export function buildReportHTML(R) {
   const row = (k, v) => `<tr><td style="${th}">${esc(k)}</td><td style="${td}"><b>${v}</b></td></tr>`;
   const table = (rows) => `<table style="border-collapse:collapse;width:100%">${rows.join('')}</table>`;
   const S = R.summary, C = R.cost, E = R.co2;
+  const semanticTrace = semanticTraceForReport(R);
+  const { semantics, authority } = semanticTrace;
 
   const findingCounts = ['fail', 'warn', 'pass', 'info']
     .map((sev) => `${R.findings.filter((f) => f.severity === sev).length} ${sev}`).join(' · ');
@@ -117,6 +217,32 @@ export function buildReportHTML(R) {
     row('Mass (with components)', `${f1(R.massWithComponentsKg ?? S.massKg)} kg`),
     row('Energy density', `${f0(S.whPerKg)} Wh/kg · ${f0(S.whPerL)} Wh/L`),
   ])}
+
+  ${R.marine ? (() => {
+    const M = R.marine;
+    const T = R.twinShip || null;
+    const ready = T?.readiness || null;
+    const replay = T?.replay || null;
+    const replayText = replay?.samples
+      ? `${esc(replay.status)} — ${f0(replay.samples)} aligned samples; RMS residuals: ${f2(replay.residuals?.speedKn?.rms)} kn speed, ${f1(replay.residuals?.courseDeg?.rms)}° course and ${f0(replay.residuals?.powerW?.rms)} W power; energy difference ${f1(replay.energy?.differenceWh)} Wh${replay.alarms?.length ? ` · ${replay.alarms.length} sustained-threshold alarm${replay.alarms.length === 1 ? '' : 's'}` : ''}`
+      : `${esc(replay?.status || 'unproven')} — ${esc(replay?.diagnostics?.[0]?.detail || 'No governed, time-aligned measured/predicted replay was supplied.')}`;
+    const evidenceStatus = ready?.missing?.length
+      ? `Unmet evidence categories: ${ready.missing.map(esc).join('; ')}.`
+      : 'Declared evidence categories passed; raw trial and physical-asset identifiers are intentionally omitted from this report.';
+    return `
+  <h2 style="${h2}">Marine vessel, voyage &amp; TwinShip evidence</h2>
+  ${table([
+    row('Selected vessel', `${esc(M.vessel?.name || M.inputs?.vesselId || 'Unspecified vessel')} — <span style="font-weight:normal">${esc(M.vessel?.segment || 'marine')} · id ${esc(M.vessel?.id || M.inputs?.vesselId || '—')}</span>`),
+    row('Voyage screen', `${f1(M.distanceNm)} nmi in ${f1(M.inputs?.durationH)} h at ${f1(M.metrics?.speedGroundKn)} kn over ground · ${f1(M.metrics?.speedWaterKn)} kn through water · ${esc(M.inputs?.seaState || 'unspecified')} sea-state input`),
+    ...(M.policyId ? [row('PMS policy', esc(M.policyId))] : []),
+    row('Electrical duty', `${f1(M.energyWh == null ? null : M.energyWh / 1000)} kWh mission energy · ${f1(M.continuousW == null ? null : M.continuousW / 1000)} kW continuous · ${f1(M.peakW == null ? null : M.peakW / 1000)} kW peak · ${f1(M.energyPerNmWh == null ? null : M.energyPerNmWh / 1000)} kWh/nmi`),
+    row('Voyage-model maturity', `${esc(M.maturity || 'screening')} — <span style="font-weight:normal">${esc(M.vessel?.boundary || M.assumptions?.[M.assumptions.length - 1] || 'Vessel-specific validation has not been supplied.')}</span>`),
+    ...(T?.architecture ? [row('TwinShip architecture', `${T.architecture.components?.length || 0} component contracts · ${T.architecture.connections?.length || 0} typed signal connections<br><span style="font-weight:normal">${esc(T.architecture.reference?.statement || '')}</span>`)] : []),
+    ...(ready ? [row('Twin readiness', `<b>${esc(ready.label)} (${esc(ready.maturity)})</b><br><span style="font-weight:normal">${evidenceStatus} ${esc(ready.statement)}</span>`)] : []),
+    row('Governed voyage replay', `<span style="font-weight:normal">${replayText}</span>`),
+  ])}
+  <div style="font-size:11px;color:#666;margin-top:4px">TwinShip is an architecture and research-demonstrator reference. The voyage calculation above remains a first-order battery-sizing screen; replay residuals are early-warning evidence, not fault isolation, and neither result is class approval. ${esc(replay?.limitation || '')}</div>`;
+  })() : ''}
 
   ${R.architecture ? (() => {
     const A = R.architecture, P = A.partition, B = A.bms, PR = A.precharge, K = A.contactors, RES = A.resistance;
@@ -371,6 +497,21 @@ export function buildReportHTML(R) {
   <h2 style="${h2}">Selected components</h2>
   ${table(Object.entries(R.selection).filter(([, v]) => v).map(([k, v]) =>
     row(k[0].toUpperCase() + k.slice(1), `${esc(v.name)}${v.suppliers?.length ? ` <span style="color:#666">(e.g. ${esc(v.suppliers.join(', '))})</span>` : ''}`)))}
+
+  <h2 style="${h2}">Ontology &amp; traceability</h2>
+  ${table([
+    row('Trace authority', `<span style="color:${authority.authoritative ? '#0b6b58' : '#b3261e'}">${esc(authority.label)}</span><br><span style="font-weight:normal">${esc(authority.detail)}</span>`),
+    row('Semantic contract', `ontology ${esc(semantics.ontology?.version || 'not supplied')} · profile ${esc(semantics.profile || 'not supplied')} · graph ${esc(semantics.ontology?.checksum || 'not supplied')}`),
+    row('Design root', esc(semantics.rootId || 'not supplied')),
+    row('Validated graph', semantics.conforms
+      ? `${f0(semantics.counts?.nodes)} typed entities · ${f0(semantics.counts?.edges)} relations · ${f0(semantics.counts?.modelRuns)} model runs${authority.authoritative ? '' : ' · <span style="color:#b3261e">NOT RELEASE-AUTHORITATIVE</span>'}`
+      : `<span style="color:#b3261e">INVALID — ${f0(semantics.issues?.length)} semantic violations · RELEASE BLOCKED</span>`),
+    row('Independent status axes', `engineering feasibility: ${esc(semantics.feasibility || 'unproven')} · evidence maturity: ${esc(semantics.evidenceMaturity || 'missing')}`),
+    row('Unresolved evidence', semantics.unresolvedEvidence?.length
+      ? semantics.unresolvedEvidence.map((item) => esc(item.label)).join('<br>')
+      : 'none declared by the calculation-ready profile'),
+  ])}
+  <div style="font-size:11px;color:#666;margin-top:4px">The ontology identifies the application, pack, cell, components, requirements, calculations, simulations, findings and evidence lineage. It does not recalculate the engineering result, and graph conformance is not safety or regulatory approval.</div>
 
   <h2 style="${h2}">Engineering & standards audit</h2>
   <div style="font-size:12px;margin-bottom:6px">${findingCounts}</div>

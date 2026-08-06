@@ -25,7 +25,8 @@ import { createServer } from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  designFromSpec, briefFromDesign, listApplications, listCells, API_VERSION,
+  buildArchitectureSemanticGraph, designFromSpec, briefFromDesign, describeOntology, listApplications, listCells, listVessels,
+  resolveMarineSizing, toJsonLd, toNeo4jProjection, API_VERSION,
 } from '../js/api.js';
 import { CELLS } from '../js/cells.js';
 import { vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm } from '../js/vehicle.js';
@@ -69,6 +70,8 @@ function specFrom(args) {
     application: args.app || args.application,
     cell: args.cell,
     market: args.market,
+    batteryCategory: args['battery-category'],
+    evaluationDate: args['evaluation-date'],
     v2xPolicy: args.v2x,
     driveMode: args.mode,
     policyId: args.policy,
@@ -79,7 +82,64 @@ function specFrom(args) {
   if (args.dod != null) spec.dod = num(args.dod) > 1 ? num(args.dod) / 100 : num(args.dod);
   if (args.grade != null) spec.gradePct = num(args.grade);
   if (args.profile != null) spec.profileId = args.profile;
-  if (args.mass != null || args.payload != null) {
+  if (args['profile-trace'] != null) {
+    if (spec.application !== 'marine') {
+      console.error('--profile-trace is currently a governed marine sizing input; select --app marine.');
+      process.exit(2);
+    }
+    const trace = loadParams(args['profile-trace']);
+    if (!trace || typeof trace !== 'object' || Array.isArray(trace)) {
+      console.error(`${args['profile-trace']}: profile trace must be one JSON object.`);
+      process.exit(2);
+    }
+    spec.profileTrace = trace;
+    if (spec.profileId == null && typeof trace.id === 'string') spec.profileId = trace.id;
+  }
+  const marineKeys = ['vessel', 'reference-mass', 'payload', 'design-kn', 'service-kn',
+    'current-kn', 'wind-kn', 'propulsion-w', 'hotel-w', 'duration-h', 'sea',
+    'twin-evidence', 'replay', 'shore-connection'];
+  if (spec.application === 'marine' && marineKeys.some((key) => args[key] != null)) {
+    spec.marine = {};
+    if (args.vessel != null) spec.marine.vesselId = args.vessel;
+    if (args['reference-mass'] != null) spec.marine.referenceMassKg = num(args['reference-mass']);
+    if (args.payload != null) spec.marine.payloadKg = num(args.payload);
+    if (args['design-kn'] != null) spec.marine.designSpeedKn = num(args['design-kn']);
+    if (args['service-kn'] != null) spec.marine.serviceSpeedKn = num(args['service-kn']);
+    if (args['current-kn'] != null) spec.marine.headCurrentKn = num(args['current-kn']);
+    if (args['wind-kn'] != null) spec.marine.headwindKn = num(args['wind-kn']);
+    if (args['propulsion-w'] != null) spec.marine.propulsionAtDesignW = num(args['propulsion-w']);
+    if (args['hotel-w'] != null) spec.marine.hotelW = num(args['hotel-w']);
+    if (args['duration-h'] != null) spec.marine.durationH = num(args['duration-h']);
+    if (args.sea != null) spec.marine.seaState = args.sea;
+    if (args['shore-connection'] != null) {
+      const connection = loadParams(args['shore-connection']);
+      if (!connection || typeof connection !== 'object' || Array.isArray(connection)) {
+        console.error(`${args['shore-connection']}: shore connection must be one JSON object.`);
+        process.exit(2);
+      }
+      spec.marine.shoreConnection = connection;
+    }
+    if (args['twin-evidence'] != null) {
+      const evidence = loadParams(args['twin-evidence']);
+      if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) {
+        console.error(`${args['twin-evidence']}: TwinShip evidence must be one JSON object.`);
+        process.exit(2);
+      }
+      spec.marine.twinEvidence = evidence;
+    }
+    if (args.replay != null) {
+      const replay = loadParams(args.replay);
+      const samples = Array.isArray(replay) ? replay : replay?.samples;
+      if (!Array.isArray(samples)) {
+        console.error(`${args.replay}: voyage replay must be a JSON sample array or an object with a samples array.`);
+        process.exit(2);
+      }
+      spec.marine.replaySamples = samples;
+      if (!Array.isArray(replay) && replay.options && typeof replay.options === 'object') {
+        spec.marine.replayOptions = replay.options;
+      }
+    }
+  } else if (args.mass != null || args.payload != null) {
     spec.vehicle = {};
     if (args.mass != null) spec.vehicle.curbKg = num(args.mass);
     if (args.payload != null) spec.vehicle.payloadKg = num(args.payload);
@@ -115,6 +175,37 @@ const COMMANDS = {
   design(args) {
     const d = designFromSpec(specFrom(args));
     emit(args, d, briefFromDesign(d));
+  },
+
+  ontology(args) {
+    if (args.catalog) {
+      const catalog = describeOntology();
+      return emit(args, catalog,
+        `battery-design ontology ${catalog.ontology.version}: ${catalog.classes.length} classes, ${catalog.relations.length} relations, ${catalog.units.length} units, ${catalog.architectureModules.length} architecture modules and ${catalog.shapes.length} validation shapes.`);
+    }
+    const architectureOnly = args.architecture === true;
+    const design = architectureOnly ? null : designFromSpec(specFrom(args));
+    const graph = architectureOnly ? buildArchitectureSemanticGraph() : design.semantics.graph;
+    const format = args.format || 'summary';
+    const data = format === 'jsonld' ? toJsonLd(graph)
+      : format === 'neo4j' ? toNeo4jProjection(graph)
+        : architectureOnly ? graph : design.semantics;
+    if (architectureOnly) {
+      return emit(args, data, [
+        `battery-design architecture graph — ontology ${graph.ontology.version}`,
+        `${graph.nodes.length} typed entities · ${graph.edges.length} relations`,
+        `Validation: ${graph.validation.conforms ? 'conforms' : 'INVALID'}`,
+        `Graph checksum: ${graph.checksum}`,
+      ].join('\n'));
+    }
+    const missing = design.semantics.unresolvedEvidence.map((item) => `  · ${item.label}`);
+    return emit(args, data, [
+      `${design.application?.name || 'Custom design'} semantic graph — ontology ${design.semantics.ontology.version}`,
+      `${design.semantics.counts.nodes} typed entities · ${design.semantics.counts.edges} relations · ${design.semantics.counts.modelRuns} model runs`,
+      `Validation: ${design.semantics.conforms ? 'conforms' : 'INVALID'} · feasibility ${design.semantics.feasibility} · evidence ${design.semantics.evidenceMaturity}`,
+      ...(missing.length ? ['Unresolved evidence:', ...missing] : ['Unresolved evidence: none declared by the calculation-ready profile']),
+      `Graph checksum: ${design.semantics.ontology.checksum}`,
+    ].join('\n'));
   },
 
   // Everything the browser should not do while you wait: change one thing at
@@ -303,6 +394,9 @@ const COMMANDS = {
       const veh = { ...vehicleDefaultsFor(spec.application), ...(spec.vehicle || {}) };
       const drive = driveCyclePower({ trace: traceForApp(spec.application), vehicle: veh, mode: spec.driveMode || 'normal', packMassKg: d.pack.massKg });
       profile = { dtS: drive.dtS, w: drive.w };
+    } else if (d.marine) {
+      const resolved = resolveMarineSizing(spec);
+      profile = { dtS: resolved.profile.dtS, w: resolved.profile.p.map((x) => x * resolved.scaleW) };
     } else if (d.simulation) {
       const pr = profileById(d.simulation.profile.id);
       const scale = num(args.scale, d.pack.maxContPowerW);
@@ -315,6 +409,15 @@ const COMMANDS = {
       years: num(args.years, spec.targetYears ?? 8), cyclesPerYear: num(args.cycles, spec.cyclesPerYear ?? 250),
     });
     const q = r.summary;
+    const resolvedProfile = {
+      profileId: d.spec.resolved.sizing.profileId,
+      policyId: d.spec.resolved.sizing.policyId,
+      traceIdentity: d.spec.resolved.sizing.traceIdentity,
+      scaleW: d.spec.resolved.sizing.scaleW,
+      dtS: profile.dtS,
+      samples: profile.w.length,
+      durationS: profile.dtS * profile.w.length,
+    };
     const lines = [
       `${d.application?.name || 'Custom'} — ${d.pack.s}S${d.pack.p}P ${cell.name}, ${(d.pack.energyWh / 1000).toFixed(1)} kWh, ${q.nModules} modules`,
       '',
@@ -342,7 +445,12 @@ const COMMANDS = {
       ...r.assumptions.map((a) => `  · ${a}`),
       ...(r.paramNotes.length ? ['', 'Parameters adjusted:', ...r.paramNotes.map((n) => `  · ${n}`)] : []),
     ];
-    emit(args, { apiVersion: API_VERSION, design: { cell: d.cell.id, s: d.pack.s, p: d.pack.p }, ...r }, lines.join('\n'));
+    emit(args, {
+      apiVersion: API_VERSION,
+      design: { cell: d.cell.id, s: d.pack.s, p: d.pack.p },
+      ...r,
+      profile: resolvedProfile,
+    }, lines.join('\n'));
   },
 
   // Correct the model against your own measurements. This is the command
@@ -742,6 +850,12 @@ const COMMANDS = {
       `${pad(a.id, 14)}${pad(a.class, 12)}${pad((a.typicalEnergyWh / 1000).toFixed(1) + ' kWh', 11)}${a.name}`).join('\n'));
   },
 
+  vessels(args) {
+    const list = listVessels();
+    emit(args, list, list.map((vessel) =>
+      `${pad(vessel.id, 24)}${pad(vessel.dimensionsM.length + ' m', 10)}${pad(vessel.dimensionsM.beam + ' m', 10)}${vessel.name}\n  Default PMS: ${vessel.policyId}. ${vessel.boundary}`).join('\n'));
+  },
+
   cells(args) {
     const list = listCells({ chemistry: args.chemistry, form: args.form });
     emit(args, list, list.map((c) =>
@@ -781,9 +895,10 @@ const COMMANDS = {
           cores: coreCount(),
           capabilities: ADDONS.filter((a) => a.tier === 'desktop' && a.status === 'shipped')
             .map((a) => ({ id: a.id, name: a.name, what: a.what })),
-          endpoints: ['/api/design', '/api/sim2', '/api/calibrate', '/api/search', '/api/fmu'],
+          endpoints: ['/api/design', '/api/ontology', '/api/sim2', '/api/calibrate', '/api/search', '/api/fmu'],
         });
       }
+      if (url === '/api/ontology' && req.method === 'GET') return json(200, describeOntology());
       if (url === '/api/design' && req.method === 'POST') return withBody((spec) => designFromSpec(spec));
 
       // The advanced electro-thermal model — the one the browser cannot
@@ -806,6 +921,13 @@ const COMMANDS = {
               });
               return { dtS: drive.dtS, w: drive.w };
             }
+            if (d.marine) {
+              const resolved = resolveMarineSizing(body.spec || {});
+              return {
+                dtS: resolved.profile.dtS,
+                w: resolved.profile.p.map((x) => x * resolved.scaleW),
+              };
+            }
             if (d.simulation?.profile?.id) {
               const pr = profileById(d.simulation.profile.id);
               if (pr) {
@@ -822,7 +944,20 @@ const COMMANDS = {
             years: body.years ?? 8, cyclesPerYear: body.cyclesPerYear ?? 250,
           });
           // The full series would be megabytes over the wire for no gain.
-          return { ...r, series: undefined, seriesLength: r.series.t.length };
+          return {
+            ...r,
+            series: undefined,
+            seriesLength: r.series.t.length,
+            profile: {
+              profileId: d.spec.resolved.sizing.profileId,
+              policyId: d.spec.resolved.sizing.policyId,
+              traceIdentity: d.spec.resolved.sizing.traceIdentity,
+              scaleW: d.spec.resolved.sizing.scaleW,
+              dtS: prof.dtS,
+              samples: prof.w?.length ?? prof.i?.length ?? 0,
+              durationS: prof.dtS * (prof.w?.length ?? prof.i?.length ?? 0),
+            },
+          };
         });
       }
 
@@ -948,6 +1083,9 @@ function readMeasuredCsv(file) {
 const HELP = `battery-design — desktop runner (API v${API_VERSION})
 
   design    one design, fully worked           --app ev --energy 60000 [--cell ID] [--s N --p N]
+  ontology  semantic trace or export            --app marine [--format summary|jsonld|neo4j] [--json]
+            complete architecture graph         --architecture [--format summary|jsonld|neo4j] [--json]
+            vocabulary catalog                  --catalog [--json]
   mission   the design driven through time     --app ebus --passes 6 [--charge base --minutes 120]
   sim2      the full model: RC dynamics,       --app ev [--modules 8] [--ambient 35] [--params p.json]
             entropic heat, per-module
@@ -975,14 +1113,22 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
             whether the bond survives the      [--strap aluminium --strapmm2 25]
             fault it exists for
   apps      the application presets
+  vessels   the two NTNU Vessel Twin models
   cells     the cell library                   [--chemistry LFP] [--form cylindrical]
   serve     the web UI from your own machine   [--port 8080]
 
 Common flags
   --app ID          application preset (see: apps)          --market eu|us|cn|intl
+  --battery-category ev|lmt|industrial|portable|sli        --evaluation-date YYYY-MM-DD
   --cell ID         cell from the library (see: cells)      --v2x off|v2l|v2h|v2g
   --energy WH       energy target                           --mode eco|normal|sport
   --policy ID       EMS/PMS operating goal (grid/marine)
+  --vessel ID       NTNU vessel (see: vessels)             --service-kn KN --duration-h H
+  --current-kn KN   head current sensitivity               --wind-kn KN --sea calm|moderate|rough
+  --propulsion-w W  published/supplied design-point power  --hotel-w W --reference-mass KG
+  --twin-evidence FILE  governed TwinShip evidence JSON    --replay FILE aligned replay JSON
+  --profile-trace FILE  governed normalized marine trace JSON (id, dtS, p[], scaleW)
+  --shore-connection FILE  governed marine shore equipment/evidence JSON
   --s N --p N       explicit series/parallel                --mass KG --payload KG
   --dod 0.8         usable depth of discharge               --grade PCT   route gradient
   --profile ID      profile, or "vehicle" for physics       --soc 0.9     mission start SoC

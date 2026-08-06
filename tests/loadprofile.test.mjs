@@ -46,8 +46,14 @@ test('marine exposes exactly the seven graph-scoped battery operating modes', ()
   ]) ok(ids.includes(id), `${id} is available to marine`);
   ok(marine.every((p) => p.family === 'operating-policy' && p.kind === 'policy-output'),
     'all seven are generated policy outputs, not raw load profiles');
-  ok(marine.every((p) => p.sourceProfileId === 'marine-vessel-duty'),
-    'all seven trace back to the external vessel demand');
+  const transformed = marine.filter((p) => p.traceBasis === 'demand-transform');
+  const referenceEvents = marine.filter((p) => p.traceBasis === 'versioned-reference-event');
+  ok(transformed.every((p) => p.sourceProfileId === 'marine-vessel-duty'),
+    'demand-transform policies trace back to external vessel demand');
+  ok(referenceEvents.length === 2
+    && referenceEvents.every((p) => p.sourceProfileId !== 'marine-vessel-duty'
+      && p.contextProfileId === 'marine-vessel-duty'),
+  'fixed reference events name their own source and retain vessel demand only as context');
 });
 
 test('the knowledge graph is the only application-to-choice map', () => {

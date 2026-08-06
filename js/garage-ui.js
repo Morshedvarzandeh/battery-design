@@ -23,7 +23,11 @@
 // It owns one pane and reads the design engine through one function, so it
 // cannot drift from what the rest of the tool says.
 
-import { partsBin, compare, tryAll, METRICS } from './garage.js';
+import {
+  partsBin, applySwap, partValue, compare, tryAll, METRICS,
+} from './garage.js';
+import { TWINSHIP_REFERENCE, twinReadiness } from './marine-workspace.js';
+import { defaultVesselModel, vesselModelById } from './vessels.js';
 
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -43,6 +47,22 @@ const fmt = (v, unit) => {
 
 const signed = (v, unit) => (v > 0 ? `+${fmt(v, unit)}` : fmt(v, unit));
 
+// Public copy contract so the marine surface cannot accidentally inherit the
+// automotive product name. CSS and internal function names remain stable for
+// compatibility; every customer-visible marine string says Vessel Twin.
+export function workspaceCopy(applicationId) {
+  if (applicationId === 'marine') return {
+    title: 'Vessel Twin',
+    intro: 'Select an NTNU vessel, change the voyage or PMS operating goal, and watch the same governed battery design respond. Published vessel facts and provisional inputs stay separate, and a screening result is never presented as a validated live twin.',
+    empty: 'Choose the marine application and a cell first — Vessel Twin compares against the current governed vessel design.',
+  };
+  return {
+    title: 'The garage',
+    intro: 'Fit a different part and watch what it does. Every option is priced before you choose it — what it buys, what it costs, and whether it breaks anything. A part that wins on one number and fails the audit is marked, not ranked.',
+    empty: 'Choose an application and a cell first — the garage compares against the design you already have.',
+  };
+}
+
 /**
  * Mount the garage into a pane.
  *
@@ -55,6 +75,7 @@ export function mountGarage({ pane, getSpec, build, onFit = null, onDesign = nul
   let currentSpec = null;
   let baseline = null;
   let openPart = null;
+  let shownApplication = null;
 
   const head = el('div', 'garage-head');
   // Where the machine itself is shown. It is a hole in this module rather
@@ -67,11 +88,35 @@ export function mountGarage({ pane, getSpec, build, onFit = null, onDesign = nul
 
   function renderHead() {
     head.replaceChildren();
-    head.append(el('h3', null, 'The garage'));
-    const p = el('p', 'muted');
-    p.textContent = 'Fit a different part and watch what it does. Every option is priced before you choose it — '
-      + 'what it buys, what it costs, and whether it breaks anything. A part that wins on one number and fails the audit is marked, not ranked.';
-    head.append(p);
+    const copy = workspaceCopy(currentSpec?.application);
+    head.append(el('h3', null, copy.title));
+    head.append(el('p', 'muted', copy.intro));
+    if (currentSpec?.application === 'marine') {
+      const vessel = vesselModelById(currentSpec.marine?.vesselId ?? currentSpec.vesselId)
+        || defaultVesselModel();
+      const particulars = el('p', 'muted', `${vessel.name} · ${vessel.dimensionsM.length} m long × ${vessel.dimensionsM.beam} m beam × ${vessel.dimensionsM.height} m overall visual height. ${vessel.boundary}`);
+      head.append(particulars);
+      const vesselSource = el('a', null, `Published particulars — ${vessel.evidence.title}`);
+      vesselSource.href = vessel.evidence.url;
+      vesselSource.target = '_blank';
+      vesselSource.rel = 'noreferrer';
+      head.append(vesselSource, document.createTextNode(' · '));
+      const nestedEvidence = currentSpec.marine?.twinEvidence;
+      const topLevelTwin = currentSpec.twinShip;
+      const evidence = nestedEvidence && typeof nestedEvidence === 'object'
+        ? nestedEvidence
+        : (topLevelTwin?.readiness || topLevelTwin?.evidence || {});
+      const readiness = twinReadiness({
+        ...evidence,
+        vesselId: currentSpec.marine?.vesselId ?? currentSpec.vesselId,
+      });
+      head.append(el('p', 'muted', `${readiness.label} — ${readiness.statement}`));
+      const source = el('a', null, 'NTNU TwinShip architecture and evidence basis');
+      source.href = TWINSHIP_REFERENCE.projectUrl;
+      source.target = '_blank';
+      source.rel = 'noreferrer';
+      head.append(source);
+    }
   }
 
   // The shelf: one row per fittable part, expanded to show its options with
@@ -170,7 +215,7 @@ export function mountGarage({ pane, getSpec, build, onFit = null, onDesign = nul
 
   function renderNumber(part) {
     const box = el('div', 'garage-number');
-    const cur = Number(currentSpec?.[part.id] ?? part.min ?? 0);
+    const cur = Number(partValue(currentSpec, part) ?? part.min ?? 0);
     const input = el('input');
     input.type = 'range';
     input.min = part.min; input.max = part.max; input.step = part.step;
@@ -182,7 +227,7 @@ export function mountGarage({ pane, getSpec, build, onFit = null, onDesign = nul
       read.textContent = `${input.value}${part.unit ? ` ${part.unit}` : ''}`;
       preview.replaceChildren();
       try {
-        const after = build({ ...currentSpec, [part.id]: Number(input.value) });
+        const after = build(applySwap(currentSpec, { part: part.id, value: Number(input.value) }));
         const c = compare(baseline, after, { label: part.label });
         if (!c?.changes.length) { preview.append(el('span', 'muted', 'no measurable change')); return; }
         if (c.findings.brokeIt.length) {
@@ -209,16 +254,17 @@ export function mountGarage({ pane, getSpec, build, onFit = null, onDesign = nul
   // What to rank a shelf by: range where the machine travels, energy where it
   // does not. Ranking a wearable by range would sort every option to null.
   function rankFor() {
+    if (currentSpec?.application === 'marine') return 'missionUnmetWh';
     return baseline?.vehicle?.drive?.whPerKm > 0 ? 'rangeKm' : 'energyWh';
   }
 
   function fit(part, value, evaluated = null) {
-    const next = { ...currentSpec, [part.id]: value };
+    const next = applySwap(currentSpec, { part: part.id, value });
     let after;
     try { after = build(next); } catch { return; }
     if (!after) return;
     const c = evaluated?.comparison || compare(baseline, after, { label: part.label });
-    renderStage(c, part, value);
+    renderStage(c, part, evaluated?.option?.label || value);
     // The machine on the floor is the machine that was just changed. A
     // showroom still showing the pack from before the swap is the same lie as
     // a shelf whose options do nothing.
@@ -281,10 +327,17 @@ export function mountGarage({ pane, getSpec, build, onFit = null, onDesign = nul
 
   function refresh() {
     currentSpec = getSpec();
+    if (currentSpec?.application !== shownApplication) {
+      shownApplication = currentSpec?.application ?? null;
+      // Both requested vessel models are visible on first entry. The person
+      // can collapse the shelf afterwards; subsequent design refreshes keep
+      // that choice instead of forcing it open again.
+      openPart = shownApplication === 'marine' ? 'marine:vesselId' : null;
+    }
     try { baseline = build(currentSpec); } catch { baseline = null; }
     renderHead();
     if (!baseline) {
-      shelf.replaceChildren(el('p', 'muted', 'Choose an application and a cell first — the garage compares against the design you already have.'));
+      shelf.replaceChildren(el('p', 'muted', workspaceCopy(currentSpec?.application).empty));
       return;
     }
     renderShelf();

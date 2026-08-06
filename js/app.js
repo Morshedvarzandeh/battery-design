@@ -4,7 +4,7 @@
 
 import { CELLS, CHEMISTRIES, cellById, provenance } from './cells.js';
 import { mountGarage } from './garage-ui.js';
-import { designFromSpec, suggestSP, layoutForDesign } from './api.js';
+import { designFromSpec, suggestSP, layoutForDesign, resolveMarineSizing } from './api.js';
 import { buildScene } from './scene3d.js';
 import { mount3D, rendererAvailable } from './garage3d-host.js';
 import { CellPicker } from './cell-picker.js';
@@ -26,10 +26,14 @@ import {
   parseProfileCSV,
 } from './loadprofiles.js';
 import { operatingPolicyById } from './operating-policy.js';
+import { MARINE_DEFAULTS } from './marine.js';
+import { marineInputsForVessel } from './vessels.js';
 import { roundTripPlan } from './efficiency.js';
 import { assessSizingCandidate, customerReadiness } from './customer-experience.js';
 import { climateById, climateSpan, seasonalOutlook, INDOOR_APPS } from './seasons.js';
-import { EU_TIMELINE, EU_DISCLAIMER, euChecks } from './eurules.js';
+import {
+  EU_TIMELINE, EU_DISCLAIMER, EU_BATTERY_PASSPORT_EFFECTIVE_DATE, euChecks,
+} from './eurules.js';
 import { buildThermalSystem } from './btms.js';
 import { buildSensorPlan } from './sensors.js';
 import { buildEngineeringDiagnostics } from './diagnostics.js';
@@ -57,7 +61,7 @@ import {
 import { matchPatents, PATENTS_DISCLAIMER } from './patents.js';
 import {
   buildArchitecture, modulePartition, systemPlan, divisors,
-  assessBmsTopology, assessEmsArchitecture,
+  assessBmsTopology, assessEmsArchitecture, DEFAULT_ROAD_ISOLATION_CONTEXT,
 } from './architecture.js';
 import { DISCLAIMER, STANDARDS_INFO, standardsForClass, runChecks } from './standards.js';
 import { COMPONENT_CATEGORIES, COMPONENT_CLASSES, DEFAULTS_BY_FORM, componentsFor, componentById } from './components.js';
@@ -89,14 +93,17 @@ const state = {
   profileId: null,         // active load profile id, 'custom', or null
   profileScaleW: null,     // absolute W the profile's peak (=1.0) maps to
   archTopology: 'auto',    // BMS topology choice ('auto' applies the scale rule)
-  archIso: 'ece-r100',     // governing isolation standard — explicit, never averaged
+  archIso: DEFAULT_ROAD_ISOLATION_CONTEXT, // connected AC/DC must be explicit
   climateId: 'temperate',  // seasonal ambient family for the environment helper
   seasonId: 'all',         // winter|spring|summer|autumn|all — design for ALL seasons
   marketId: 'eu',          // release-checklist target market
+  batteryCategory: null,   // declared EU category when application identity cannot decide it
+  evaluationDate: EU_BATTERY_PASSPORT_EFFECTIVE_DATE, // canonical regulatory design gate
   loopOverride: 'auto',    // thermal loop choice (like BMS topology: an input)
   emsOverride: 'auto',     // EMS architecture (only for EMS-bearing applications)
   driveMode: 'normal',     // Eco | Normal | Sport — the driver, not the machine
   energyPolicyId: null,   // EMS/PMS goal converted internally to battery duty
+  marine: { ...MARINE_DEFAULTS }, // selected vessel and visible voyage assumptions
   busLoad: 'typical',     // empty | typical | full — plain passenger-load presets
   vehicleRoute: null,     // local GPX route; never uploaded by the application
   v2xPolicy: 'off',        // off | v2l | v2h | v2g | v2v — what you actually build
@@ -273,6 +280,8 @@ function renderEu() {
     application: state.presetId || 'custom',
     chemistry: cell().chemistry,
     commsPrimary: lastArch?.comms?.primary,
+    batteryCategory: state.batteryCategory,
+    evaluationDate: state.evaluationDate,
   });
   $('euBody').innerHTML = checks.map(findingHTML).join('');
 }
@@ -379,6 +388,15 @@ function bindTraining() {
     renderMarketChecklist();
     computeCharging(); renderCharging();
   });
+  $('euCategory').onchange = () => {
+    state.batteryCategory = $('euCategory').value || null;
+    renderEu();
+  };
+  $('euDate').value = state.evaluationDate;
+  $('euDate').onchange = () => {
+    state.evaluationDate = $('euDate').value || EU_BATTERY_PASSPORT_EFFECTIVE_DATE;
+    renderEu();
+  };
   // Diagram lightbox: the side panel is narrow, so both architecture
   // drawings open at reading size on a tap (rendered on the white report
   // background at 2× resolution).
@@ -563,6 +581,9 @@ function applyPreset(pr) {
     state.nx = 0; state.nz = 1; state.appliedBay = null;
     state.vehicleRoute = null; state.busLoad = 'typical';
     state.energyPolicyId = null; state.driveMode = 'normal';
+    state.batteryCategory = null;
+    if ($('euCategory')) $('euCategory').value = '';
+    state.marine = marineInputsForVessel(MARINE_DEFAULTS.vesselId);
     state.sel = { ...(DEFAULTS_BY_FORM[nextCell.form] || {}) };
     onCellChange();
   }
@@ -622,13 +643,25 @@ function applyPreset(pr) {
   // mode. The simple Sizing UI shows only the primary decision for this app.
   fillVehicleInputs(pr.id);
   rebuildProfileSelect(pr.id);
-  state.energyPolicyId = defaultSizingOption(pr.id, 'energy-policy');
+  state.energyPolicyId = pr.id === 'marine'
+    ? resolveMarineSizing({ application: 'marine', marine: { ...state.marine }, dod: currentDod() }).policyId
+    : defaultSizingOption(pr.id, 'energy-policy');
   state.driveMode = defaultSizingOption(pr.id, 'driving-mode') || 'normal';
   const prof = profileForApp(pr.id);
+  let activeMarineSizing = null;
   if (prof) {
-    state.profileId = prof.id;
-    state.profileScaleW = pr.peakPowerW;
-    $('selProfile').value = prof.id;
+    if (pr.id === 'marine') {
+      // The active marine profile is the selected PMS result, not the generic
+      // representative profile returned by profileForApp(). Keep the
+      // engineering selector and the trace that actually runs on one id.
+      state.profileId = state.energyPolicyId;
+      activeMarineSizing = marineProfileForState();
+      state.profileScaleW = activeMarineSizing?.scaleW ?? pr.peakPowerW;
+    } else {
+      state.profileId = prof.id;
+      state.profileScaleW = pr.peakPowerW;
+    }
+    $('selProfile').value = state.profileId || '';
     applyProfileToRequirements();
   }
   renderProfile();
@@ -646,7 +679,9 @@ function applyPreset(pr) {
   // rather than by two people writing the same division twice. It is a
   // STARTING point, not an answer — Suggest designs still refines it, and
   // the customer can type over both numbers.
-  const sp = suggestSP(cell(), pr);
+  const sp = suggestSP(cell(), pr, activeMarineSizing?.requiredEnergyWh > 0
+    ? { energyWh: activeMarineSizing.requiredEnergyWh }
+    : {});
   state.s = sp.s;
   state.p = sp.p;
   syncInputs();
@@ -654,15 +689,46 @@ function applyPreset(pr) {
   // Road applications size from machine physics by default. The mode cards
   // update this same generated profile instead of creating another concept.
   if (primarySizingDecision(pr.id) === 'driving-mode') useVehicleProfile();
+  updateWorkspaceLabels();
 }
 
 // ---------------------------------------------------------------------------
 // Sizing duty: raw demand, operating policy or driving mode -> battery profile
 // ---------------------------------------------------------------------------
+function profileTraceForState() {
+  if (state.profileId !== 'custom' || !customProfile) return null;
+  return {
+    id: customProfile.id,
+    name: customProfile.name,
+    revision: 'browser-session-upload',
+    dtS: customProfile.dtS,
+    p: [...customProfile.p],
+    scaleW: customProfile.uploadedPeakW,
+    note: customProfile.note,
+  };
+}
+
+function marineProfileForState() {
+  if (state.presetId !== 'marine') return null;
+  return resolveMarineSizing({
+    application: 'marine', marine: { ...state.marine },
+    policyId: state.energyPolicyId || undefined,
+    profileId: state.profileId || undefined,
+    profileTrace: profileTraceForState() || undefined,
+    dod: currentDod(),
+  });
+}
+
 function currentProfile() {
   if (state.profileId === 'custom') return customProfile;
   // The physics-derived profile: built from the vehicle, not stored anywhere.
   if (state.profileId === 'vehicle') return lastVehicle?.drive?.profile || null;
+  // The vessel duty is generated from the selected NTNU vessel and the
+  // visible voyage inputs. The PMS policy transforms that exact trace; it
+  // never falls back to the hidden representative marine profile.
+  if (state.presetId === 'marine') {
+    return marineProfileForState()?.profile || null;
+  }
   return state.profileId ? profileById(state.profileId) : null;
 }
 
@@ -739,7 +805,9 @@ const BUS_LOADS = [
 function renderSizingInputs(appId = state.presetId) {
   const box = $('sizingInputs');
   if (!box) return;
-  const hasPassengers = needed(appId, 'passenger-load');
+  // Passenger mass is the bus-specific presentation of the shared payload
+  // concept; it is not a second ontology concept alongside payload.
+  const hasPassengers = appId === 'ebus' && needed(appId, 'payload');
   const hasRoute = needed(appId, 'route-road');
   if (!hasPassengers && !hasRoute) { box.innerHTML = ''; return; }
   const route = state.vehicleRoute;
@@ -787,18 +855,35 @@ function rebuildProfileSelect(appId) {
     o.value = v; o.textContent = label;
     (parent || sel).appendChild(o);
   };
-  opt(null, '', 'None — type the power numbers below');
+  if (appId !== 'marine') opt(null, '', 'None — type the power numbers below');
   // A machine that drives can have its demand DERIVED from its own physics.
   if (appId && vehicleDefaultsFor(appId)) {
     opt(null, 'vehicle', 'From your vehicle — derived from mass & driving mode');
   }
-  const rec = appId ? profilesForApp(appId) : [];
+  // Vessel PMS goals are executable profiles too. Keeping them in the
+  // engineering selector prevents it from displaying "None" (or a generic
+  // trace) while the marine workspace is actually running a PMS transform.
+  if (appId === 'marine') {
+    const appName = PRESETS.find((p) => p.id === appId)?.name || appId;
+    const policies = sizingOptionsFor(appId, 'energy-policy')
+      .map(operatingPolicyById).filter(Boolean);
+    if (policies.length) {
+      const g = group(`PMS operating goals for ${appName}`);
+      for (const policy of policies) opt(g, policy.id, policy.name);
+    }
+  }
+  // Marine policies already appear once in the PMS group above. Repeating
+  // them as profiles obscures which thing is the policy and which is its
+  // generated battery trace.
+  const rec = appId && appId !== 'marine' ? profilesForApp(appId) : [];
   if (rec.length) {
     const appName = PRESETS.find((p) => p.id === appId)?.name || appId;
     const g = group(`Recommended for ${appName}`);
     for (const pr of rec) opt(g, pr.id, pr.name);
   }
-  const others = LOAD_PROFILES.filter((pr) => !rec.includes(pr));
+  // Policy outputs belong only to the application that owns the policy and
+  // are selected through its governed policy group, never as generic shapes.
+  const others = LOAD_PROFILES.filter((pr) => !rec.includes(pr) && !operatingPolicyById(pr.id));
   const g2 = group(rec.length ? 'Other shapes' : 'Profiles');
   for (const pr of others) opt(g2, pr.id, pr.name);
   if (customProfile) opt(null, 'custom', customProfile.name);
@@ -809,14 +894,31 @@ function rebuildProfileSelect(appId) {
 
 function selectProfile(value) {
   if (value === 'upload') { $('profileFile').click(); return; }
+  let policy = operatingPolicyById(value);
+  if (policy && policy.appId !== state.presetId) {
+    $('selProfile').value = state.profileId || '';
+    return;
+  }
+  if (state.presetId === 'marine' && !value) {
+    const fallback = resolveMarineSizing({
+      application: 'marine', marine: { ...state.marine }, dod: currentDod(),
+    });
+    value = fallback.profileId;
+    policy = operatingPolicyById(value);
+  }
   state.profileId = value || null;
-  if (operatingPolicyById(value)) state.energyPolicyId = value;
+  if (policy) state.energyPolicyId = value;
+  else if (state.presetId === 'marine') state.energyPolicyId = null;
   $('selProfile').value = value || '';
   if (state.profileId === 'vehicle') {
     useVehicleProfile();
     return;
   }
-  if (state.profileId) {
+  if (state.presetId === 'marine') {
+    state.profileScaleW = marineProfileForState()?.scaleW
+      ?? customScaleOr(parseFloat($('rqPp').value) || 1000);
+    applyProfileToRequirements();
+  } else if (state.profileId) {
     state.profileScaleW = customScaleOr(parseFloat($('rqPp').value) || 1000);
     applyProfileToRequirements();
   } else {
@@ -835,6 +937,7 @@ function initProfiles() {
     try {
       customProfile = parseProfileCSV(await file.text());
       state.profileId = 'custom';
+      if (state.presetId === 'marine') state.energyPolicyId = null;
       state.profileScaleW = customProfile.uploadedPeakW;
       rebuildProfileSelect(state.presetId);
       $('selProfile').value = 'custom';
@@ -870,12 +973,35 @@ function initProfiles() {
 const customScaleOr = (fallback) =>
   state.profileId === 'custom' && customProfile ? customProfile.uploadedPeakW : fallback;
 
+// Minimum usable energy window for one policy trace. Capacity is set by the
+// greatest cumulative excursion, not by gross discharge: a load-smoothing
+// policy can recharge between peaks, while a charge-only support trace still
+// needs SoC headroom even though its discharged energy is zero.
+function profileEnergyWindowWh(profile, scaleW) {
+  let cumulativeWh = 0;
+  let lowWh = 0;
+  let highWh = 0;
+  for (const fraction of profile.p) {
+    cumulativeWh += (fraction * scaleW * profile.dtS) / 3600;
+    lowWh = Math.min(lowWh, cumulativeWh);
+    highWh = Math.max(highWh, cumulativeWh);
+  }
+  return highWh - lowWh;
+}
+
 // The profile drives the scalar requirements: RMS (heating-equivalent) sets
-// the continuous power, the true peak sets the peak power.
+// the continuous power, the true peak sets the peak power. For a vessel, the
+// selected voyage and PMS trace also define the energy job. Dividing the
+// cumulative energy window by usable DoD keeps the declared reserve outside
+// the mission instead of spending it.
 function applyProfileToRequirements() {
   const prof = currentProfile();
   if (!prof || !state.profileScaleW) return;
   const st = profileStats(prof, state.profileScaleW);
+  const missionEnergyWh = profileEnergyWindowWh(prof, state.profileScaleW);
+  if (state.presetId === 'marine' && missionEnergyWh > 0) {
+    $('rqWh').value = Math.ceil(missionEnergyWh / currentDod());
+  }
   $('rqPc').value = Math.round(st.rmsW);
   $('rqPp').value = Math.round(st.peakW);
   recompute();
@@ -1104,7 +1230,14 @@ function bindControls() {
     'shuntGain', 'shuntOffsetMA', 'shuntNoiseMA', 'shuntRth', 'shuntTau', 'shuntAccuracy',
     'shuntPart', 'shuntRevision', 'shuntDate', 'fastThresholdA', 'fastDelayMs',
     'fastShuntRangeA', 'fastVoltageV', 'fastCurrentA', 'fastPart', 'fastRevision', 'fastDate']) {
-    $(id).onchange = recompute;
+    $(id).onchange = () => {
+      // Marine energy carries the selected usable-DoD reserve. Recalculate
+      // it when that reserve changes; other applications retain the existing
+      // independently-entered energy requirement.
+      if (id === 'rqDod' && state.presetId === 'marine' && currentProfile()) {
+        applyProfileToRequirements();
+      } else recompute();
+    };
   }
   // Climate & season: the picker fills the env-temp window; the design case
   // is "All year" (the full span), a season button shows what that season
@@ -1595,6 +1728,10 @@ function aiBriefText() {
   if (lastVehicle?.drive) {
     lines.push(`Vehicle: ${Math.round(lastVehicle.drive.massKg)} kg moving, ${f1(lastVehicle.drive.whPerKm)} Wh/km in ${lastVehicle.drive.mode.name}${lastVehicle.range != null ? `, about ${Math.round(lastVehicle.range)} km range` : ''}`);
   }
+  if (R.marine) {
+    lines.push(`Vessel: ${R.marine.vessel?.name || 'selected vessel'} — ${f1(R.marine.distanceNm)} nmi, ${fWh(R.marine.energyWh)} screening mission, ${f1(R.marine.energyPerNmWh / 1000)} kWh/nmi`);
+    lines.push(`Vessel-model maturity: ${R.twinShip?.readiness?.label || 'Screening model'} — published particulars and visible assumptions are not class approval.`);
+  }
   if (lastCharging?.t2080) {
     lines.push(`Charging: ${lastCharging.obc ? `${lastCharging.obc.acKW} kW on-board charger` : lastCharging.arch.name}, 20→80% in ${fmtH(lastCharging.t2080.hours)}`);
   }
@@ -1637,8 +1774,12 @@ function aiBriefData(R) {
       rangeKm: lastVehicle.range, mode: lastVehicle.drive?.mode?.id,
       breakdown: lastVehicle.drive?.breakdown,
     } : null,
+    marine: R.marine,
+    twinShip: R.twinShip,
+    sizing: R.sizing,
     simulation: lastSim && !lastSim.unavailable ? lastSim.summary : null,
     cost: R.cost, co2: R.co2,
+    semantics: R.semantics,
     findings: (R.findings || []).map((f) => ({ severity: f.severity, title: f.title, detail: f.detail })),
   };
 }
@@ -1667,6 +1808,11 @@ function currentReportData() {
   const engFindings = lastAnalysis
     ? ['mechanical', 'thermal', 'electrical', 'safety'].flatMap((k) => lastAnalysis.perspectives[k] || [])
     : [];
+  // One engine evaluation owns the semantic snapshot for every downstream
+  // customer surface.  Re-running it separately for the report, AI brief and
+  // marine projection could cross a freshness-sensitive evidence boundary.
+  const semanticDesign = designFromSpec(currentSpec());
+  const marineDesign = state.presetId === 'marine' ? semanticDesign : null;
   return {
     date: new Date().toISOString().slice(0, 10),
     application: state.presetId || 'custom',
@@ -1726,6 +1872,10 @@ function currentReportData() {
     charging: lastCharging,
     v2x: lastV2x,
     vehicle: lastVehicle,
+    marine: marineDesign?.marine || null,
+    twinShip: marineDesign?.twinShip || null,
+    sizing: semanticDesign.spec.resolved.sizing,
+    semantics: semanticDesign.semantics,
     shortCircuit: lastShort,
     electricalProtection: lastElectricalProtection,
     simPng: (() => {
@@ -2227,12 +2377,11 @@ function showroomFor(design) {
   if (!showroomWanted || !showroom || !design) return;
   const layout = layoutForDesign(design);
   if (!layout) return;
-  // The machine around the pack is a DESKTOP feature. Not for want of
-  // performance — it is a handful of blocks — but because the silhouette is
-  // indicative where everything else in this tool is measured, and it belongs
-  // where the customer has already opted into the heavier, more exploratory
-  // half of the product rather than on the page a stranger opens first.
-  showroom.show(buildScene({ design, layout, showHost: !!knownRunner() }));
+  // The selected NTNU vessel is the object of the marine workspace, so its
+  // evidence-labelled engineering massing model is available in the browser.
+  // Other indicative host silhouettes remain a desktop-only aid.
+  const showHost = design.application?.id === 'marine' || !!knownRunner();
+  showroom.show(buildScene({ design, layout, showHost }));
 }
 
 async function openShowroom(floor, button) {
@@ -2267,8 +2416,16 @@ async function openShowroom(floor, button) {
 }
 
 function bindShowroomButton(floor, button) {
-  button.textContent = 'Walk around it';
+  button.textContent = state.presetId === 'marine' ? 'View selected vessel in 3D' : 'Walk around it';
   button.onclick = () => openShowroom(floor, button);
+}
+
+function updateWorkspaceLabels() {
+  const tab = document.querySelector('#tabs .tab[data-tab="garage"]');
+  if (tab) tab.textContent = state.presetId === 'marine' ? 'Vessel Twin' : 'Garage';
+  const floor = $('pane-garage')?.querySelector('.garage-floor');
+  const button = floor?.querySelector('.showroom-bar button');
+  if (button && !showroomWanted) bindShowroomButton(floor, button);
 }
 
 function renderGarage() {
@@ -2278,6 +2435,13 @@ function renderGarage() {
     s: state.s, p: state.p,
     market: state.marketId,
     isolationStandard: state.archIso,
+    components: Object.fromEntries(Object.entries(state.sel)),
+    ...(state.presetId === 'marine' ? {
+      marine: { ...state.marine },
+      policyId: state.energyPolicyId || undefined,
+      profileId: state.profileId || undefined,
+      profileTrace: profileTraceForState() || undefined,
+    } : {}),
   });
   if (!garage) {
     garage = mountGarage({
@@ -2292,6 +2456,22 @@ function renderGarage() {
         if (next.cell && next.cell !== state.cellId) { state.cellId = next.cell; onCellChange(); }
         if (Number.isFinite(next.s)) state.s = next.s;
         if (Number.isFinite(next.p)) state.p = next.p;
+        if (next.marine && typeof next.marine === 'object') {
+          const vesselChanged = next.marine.vesselId !== state.marine?.vesselId;
+          // applySwap deliberately removes asset-bound trials and replay when
+          // the vessel changes. Merging with the old state would restore those
+          // deleted keys and bind ferry evidence to Gunnerus (or vice versa).
+          state.marine = vesselChanged
+            ? { ...next.marine }
+            : { ...state.marine, ...next.marine };
+        }
+        if (operatingPolicyById(next.policyId)?.appId === 'marine') {
+          state.energyPolicyId = next.policyId;
+          state.profileId = next.policyId;
+          if ([...$('selProfile').options].some((option) => option.value === next.policyId)) {
+            $('selProfile').value = next.policyId;
+          }
+        }
         // Hardware too, not only cells and counts. Without this the garage
         // announced a cold plate fitted while the panel beside it still read
         // 82 mm and 279 kg — the shelf moved and the tool did not, which is
@@ -2304,7 +2484,15 @@ function renderGarage() {
         }
         $('selCell').value = state.cellId;
         $('inS').value = state.s; $('inP').value = state.p;
-        recompute();
+        if (state.presetId === 'marine') {
+          state.profileScaleW = marineProfileForState()?.scaleW ?? state.profileScaleW;
+          applyProfileToRequirements();
+          renderProfile();
+        } else recompute();
+        // The fitted design is now authoritative. Refresh the shelf baseline
+        // immediately so a second adjustment builds on the first one (most
+        // visibly: voyage controls must follow the newly selected vessel).
+        garage?.refresh();
       },
     });
     // The floor and its one button, built once. The renderer itself is not
@@ -2332,6 +2520,7 @@ function renderSensors() {
     partition: lastArch.partition, bms: lastArch.bms,
     therm: lastTherm, selection: selComponents(),
     conditionMonitoring: diagnostics.conditionMonitoring,
+    isolationMonitoring: lastArch.isolationMonitoring,
   });
   const stat = (k, v) => `<div class="stat"><span>${esc(k)}</span><b>${v}</b></div>`;
   box.innerHTML = lastSensors.groups.map((gr) => `
@@ -2433,7 +2622,13 @@ function renderRunnerBox() {
     const out = $('runnerOut');
     out.innerHTML = '<div class="hint">Running on your machine…</div>';
     try {
-      const r = await runAdvancedModel({ spec: currentSpec(), nModules: 6, ambientC: 25 });
+      const profile = currentProfile();
+      const governedProfile = profile && state.profileScaleW
+        ? { dtS: profile.dtS, w: profile.p.map((fraction) => fraction * state.profileScaleW) }
+        : undefined;
+      const r = await runAdvancedModel({
+        spec: currentSpec(), profile: governedProfile, nModules: 6, ambientC: 25,
+      });
       const q = r.summary;
       out.innerHTML = `<div class="stat"><span>Peak module</span><b>${f1(q.maxTempC)} °C</b></div>`
         + `<div class="stat"><span>Module spread</span><b>${f1(q.tempSpreadK)} K</b></div>`
@@ -2478,11 +2673,21 @@ function saveTextFile(content, filename) {
 
 // The design on screen, as the spec the engine speaks.
 function currentSpec() {
+  const profileTrace = state.presetId === 'marine' ? profileTraceForState() : null;
   return {
     application: state.presetId || undefined,
     cell: cell().id, s: state.s, p: state.p,
     market: state.marketId, dod: currentDod(),
+    batteryCategory: state.batteryCategory || undefined,
+    evaluationDate: state.evaluationDate,
     v2xPolicy: state.v2xPolicy, driveMode: state.driveMode,
+    components: Object.fromEntries(Object.entries(state.sel)),
+    ...(state.presetId === 'marine' ? {
+      marine: { ...state.marine },
+      policyId: state.energyPolicyId || undefined,
+      profileId: state.profileId || undefined,
+      profileTrace: profileTrace || undefined,
+    } : {}),
   };
 }
 
@@ -2947,6 +3152,7 @@ function computeCharging() {
     appId: state.presetId, marketId: state.marketId,
     energyWh: lastSummary.energyWh, vNomV: lastSummary.nominalV,
     cell: cell(), obcOverride: obcSel,
+    shoreConnection: state.presetId === 'marine' ? state.marine?.shoreConnection : null,
   });
   lastV2x = v2xPlan({
     appId: state.presetId, cell: cell(),
@@ -3635,10 +3841,14 @@ function runAnalysis() {
     dims: S.dims, volumeL: S.volumeL,
   };
   const usage = currentUsage();
+  // Architecture is the single resolver for the selected electrical-bus
+  // context. Every downstream perspective consumes this same result.
+  runArchitecture();
+  const isolationResolution = lastArch?.isolation || lastArch?.isolationReview || null;
   const stdCtx = {
     cell: c, s: state.s, p: state.p, pack,
     layout: { spacingMm: state.spacingMm, arrangement: state.arrangement, wallMm: state.wallMm },
-    usage,
+    usage, isolationResolution,
   };
   lastFindings = runChecks(stdCtx);
 
@@ -3653,6 +3863,7 @@ function runAnalysis() {
       },
       usage,
       selection: selComponents(),
+      isolationResolution,
     });
   } catch (e) {
     console.error('analysis failed', e);
@@ -3662,7 +3873,6 @@ function runAnalysis() {
   // The architecture is part of the electrical picture, not a separate
   // world: compute it first, then fold its findings into the Electrical
   // pane, the pass/fail badge and the report.
-  runArchitecture();
   lastArchFindings = archElectricalFindings();
   computeThermal();
   lastThermFindings = thermFindings();
@@ -4375,6 +4585,8 @@ function runFit() {
 // ---------------------------------------------------------------------------
 function exportJSON() {
   const c = cell();
+  const semanticDesign = designFromSpec(currentSpec());
+  const marineDesign = state.presetId === 'marine' ? semanticDesign : null;
   const doc = {
     tool: 'battery-data pack designer',
     generated: new Date().toISOString(),
@@ -4388,6 +4600,10 @@ function exportJSON() {
     summary: lastSummary,
     analysis: lastAnalysis,
     architecture: lastArch,
+    marine: marineDesign?.marine || null,
+    twinShip: marineDesign?.twinShip || null,
+    sizing: semanticDesign.spec.resolved.sizing,
+    semantics: semanticDesign.semantics,
     standardsFindings: lastFindings,
     disclaimer: `${ANALYSIS_DISCLAIMER} ${DISCLAIMER}`,
   };

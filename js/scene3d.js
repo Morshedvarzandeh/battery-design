@@ -175,17 +175,42 @@ export function buildScene({ design, layout, highlight = null, showHost = false 
 // rather than millimetres: a bus is 12 m and a wearable pack is 40 mm, and
 // mixing the two scales in one unit is how a decimal point goes missing.
 function hostBlock(design, L) {
-  const host = hostFor(design.spec?.resolved?.application);
+  const vesselId = design.marine?.vessel?.id
+    || design.marine?.inputs?.vesselId
+    || design.spec?.resolved?.marine?.vesselId
+    || design.spec?.marine?.vesselId
+    || null;
+  const host = hostFor(design.spec?.resolved?.application, vesselId);
   if (!host) return null;
   const packM = { x: L.outer.x / 1000, y: L.outer.y / 1000, z: L.outer.z / 1000 };
   const seat = packSeat(host, packM);
   const fit = fitInHost(host, packM);
   return {
+    id: host.id || null, vesselId: host.vesselId || null,
     kind: host.kind, name: host.name,
-    sizeM: host.sizeM, dimsFrom: host.dimsFrom, note: host.note,
+    sizeM: host.sizeM, dimsFrom: host.dimsFrom,
+    dimsLabel: host.dimsLabel || null, note: host.note,
     mount: { id: host.mount.id, name: host.mount.name, what: host.mount.what },
     seatM: seat,
-    fits: fit?.fits ?? null, over: fit?.over ?? [], fitNote: fit?.note ?? null,
+    seatBasis: host.seatBasis || null,
+    fits: fit?.fits ?? null, over: fit?.over ?? [],
+    fitStatus: fit?.status || null, fitBasis: fit?.basis || null,
+    fitLabel: fit?.label || null, fitNote: fit?.note ?? null,
+    // Complete renderer-ready vessel payload. Sizes and positions are copied
+    // unchanged from vessels.js; Godot only maps axes and draws the boxes.
+    model: host.model ? {
+      version: host.model.version,
+      primitives: host.model.primitives.map((primitive) => ({
+        kind: primitive.kind,
+        role: primitive.role,
+        name: primitive.name,
+        sizeM: { ...primitive.sizeM },
+        atM: { ...primitive.atM },
+        tint: primitive.tint,
+      })),
+    } : null,
+    evidence: host.evidence ? { ...host.evidence } : null,
+    boundary: host.boundary || null,
   };
 }
 

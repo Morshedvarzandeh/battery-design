@@ -1,0 +1,83 @@
+@prefix bd: <https://morshedvarzandeh.github.io/battery-design/ontology/core#> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix qudt: <http://qudt.org/schema/qudt/> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+bd:QuantityValueShape a sh:NodeShape ;
+  sh:targetClass bd:QuantityValue ;
+  sh:property [ sh:path qudt:numericValue ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:double ] ;
+  sh:property [ sh:path qudt:unit ; sh:minCount 1 ; sh:maxCount 1 ; sh:nodeKind sh:IRI ] ;
+  sh:property [ sh:path bd:quantityKind ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:string ] .
+
+bd:ModelRunShape a sh:NodeShape ;
+  sh:targetClass bd:ModelRun ;
+  sh:property [ sh:path bd:inputDigest ; sh:minCount 1 ; sh:maxCount 1 ; sh:pattern "^[a-f0-9]{64}$" ] ;
+  sh:property [ sh:path bd:modelVersion ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path bd:solverVersion ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path bd:usesModel ; sh:minCount 1 ; sh:class bd:EngineeringModel ] ;
+  sh:property [ sh:path bd:usesInput ; sh:minCount 1 ] ;
+  sh:property [ sh:path bd:usesSolver ; sh:minCount 1 ; sh:class bd:Solver ] ;
+  sh:property [ sh:path bd:produces ; sh:minCount 1 ; sh:class bd:EngineeringResult ] .
+
+bd:EngineeringResultShape a sh:NodeShape ;
+  sh:targetClass bd:EngineeringResult ;
+  sh:property [
+    sh:path bd:resultDigest ; sh:minCount 1 ; sh:maxCount 1 ;
+    sh:pattern "^[a-f0-9]{64}$"
+  ] .
+
+bd:ProvenancedClaimShape a sh:NodeShape ;
+  sh:targetClass bd:Claim ;
+  sh:property [
+    sh:path bd:basis ; sh:minCount 1 ; sh:maxCount 1 ;
+    sh:in ( "published" "supplier" "measured" "calculated" "derived" "assumed" )
+  ] .
+
+bd:EvidenceRecordShape a sh:NodeShape ;
+  sh:targetClass bd:TestEvidence, bd:CalibrationTrial, bd:ValidationTrial, bd:ReplayDataset ;
+  sh:property [ sh:path bd:revision ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path bd:issuedAt ; sh:minCount 1 ; sh:maxCount 1 ; sh:datatype xsd:dateTime ] .
+
+bd:ReleaseShape a sh:NodeShape ;
+  sh:targetClass bd:ReleaseDecision ;
+  sh:property [ sh:path bd:designChecksum ; sh:minCount 1 ; sh:maxCount 1 ; sh:pattern "^[a-f0-9]{64}$" ] ;
+  sh:property [ sh:path bd:performedBy ; sh:minCount 1 ; sh:maxCount 1 ; sh:class bd:Agent ] ;
+  sh:property [ sh:path bd:releases ; sh:minCount 1 ; sh:maxCount 1 ; sh:class bd:Design ] ;
+  sh:property [ sh:path [ sh:inversePath bd:authorizes ] ; sh:minCount 1 ; sh:maxCount 1 ; sh:class bd:Approval ] ;
+  sh:sparql [
+    sh:message "Release requires passing TestEvidence bound to the released design." ;
+    sh:select """
+      PREFIX bd: <https://morshedvarzandeh.github.io/battery-design/ontology/core#>
+      SELECT $this WHERE {
+        $this bd:releases ?design .
+        FILTER NOT EXISTS { ?evidence a bd:TestEvidence ; bd:verifies ?design . }
+      }
+    """
+  ] .
+
+bd:TwinReadinessShape a sh:NodeShape ;
+  sh:targetClass bd:DigitalTwin ;
+  sh:property [ sh:path bd:representsAsset ; sh:minCount 1 ; sh:maxCount 1 ; sh:class bd:PhysicalAsset ] ;
+  sh:property [
+    sh:path bd:supportedBy ; sh:qualifiedMinCount 1 ;
+    sh:qualifiedValueShape [ sh:class bd:CalibrationTrial ]
+  ] ;
+  sh:property [
+    sh:path bd:supportedBy ; sh:qualifiedMinCount 1 ;
+    sh:qualifiedValueShape [ sh:class bd:ValidationTrial ]
+  ] ;
+  sh:property [
+    sh:path bd:supportedBy ; sh:qualifiedMinCount 1 ;
+    sh:qualifiedValueShape [ sh:class bd:ReplayDataset ]
+  ] .
+
+bd:HILRunShape a sh:NodeShape ;
+  sh:targetClass bd:HILRun ;
+  sh:property [ sh:path bd:targetIdentity ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path bd:samplePeriodS ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path bd:measuredTiming ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path bd:safeStateEvidence ; sh:minCount 1 ; sh:maxCount 1 ] ;
+  sh:property [ sh:path bd:faultEvidence ; sh:minCount 1 ; sh:maxCount 1 ] .
+
+# The pure-JS validator executes the matching calculation, HIL, twin and
+# release gates without requiring an RDF stack in browser or desktop.

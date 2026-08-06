@@ -102,9 +102,9 @@ project's provenance-first datasheet pipeline.
   daisy chain / wireless, AFE IC and sense-wire counts, temperature-sensor
   ratio exposed), precharge sizing (τ = RC, ½CV², the main− → precharge →
   main+ closing sequence), contactors and fuse rules of thumb, DC-DC
-  auxiliary supply, and the isolation floor with the governing standard as
-  an explicit choice (the sources conflict at 500 vs 100 Ω/V — never
-  averaged). Rendered as a one-line diagram (the BMS graphic follows the
+  auxiliary supply, and a topology-aware UN R100 isolation resolver (separate
+  DC, separate AC, connected AC/DC and the evidence-gated protected case —
+  never averaged or transferred to marine IT systems). Rendered as a one-line diagram (the BMS graphic follows the
   chosen topology) that also embeds in the report. The architecture also
   names the communication bus each application expects (SAE J1939 for heavy
   trucks and lift trucks, CAN/CAN FD + UDS for automotive, CANopen for
@@ -130,11 +130,13 @@ project's provenance-first datasheet pipeline.
   pack's own heat rise) with heater/charge-inhibit and cooling-margin flags.
 - **Rules tab** — the market release checklist: standards per application
   class × target market (EU / US / China / International), always including
-  UN 38.3 transport, with chemistry-market gates such as China's e-bus
-  practice that effectively excludes ternary (NMC/NCA) chemistry from urban
-  buses (flagged as a blocker with "verify the current MIIT catalogue").
+  UN 38.3 transport, with chemistry-market gates such as the declared China
+  urban-e-bus catalogue screen for ternary (NMC/NCA) chemistry. This is
+  labelled as catalogue practice—not a universal statutory chemistry ban—and
+  requires verification against the current MIIT catalogue.
   Plus the Regulation (EU) 2023/1542 staged timeline (carbon declarations,
-  battery passport with LIVE SoH over UDS, recycled-content minimums,
+  battery passport with accessible current SoH data through a documented
+  interface—UDS is one option, not a mandated protocol—recycled-content minimums,
   recovery targets vs recycling efficiency kept strictly apart) and "what
   applies to THIS design" checks. Guidance, not legal advice.
 - **Application integration** — selecting an application shapes everything
@@ -175,7 +177,8 @@ project's provenance-first datasheet pipeline.
   unit — the BMS protects, the BTMS moves heat, the supervisor decides.
 - **Sensors tab** — the sensor plan by level: cell (voltage sense taps —
   carried by the CCS foil when a cell contact system is selected, discrete
-  harness otherwise; NTC budget with the 1:3 observability bound), module
+  harness otherwise; NTC budget with 1:3 shown only as an assumption-labelled
+  observability benchmark), module
   (slave AFEs, per-module minimum), system (pack current, pack voltage on
   BOTH sides of the contactors for weld detection, isolation monitor and
   HVIL above 60 V, thermal-runaway/vent-gas detection where scale and
@@ -511,6 +514,7 @@ is copied into the repository.
 | `js/venting.js` | Conditional emergency pressure-relief free-area range from explicit gas-release evidence and compressible flow |
 | `js/vent-layout.js` | Market-isolated supplier vent quantity, enclosure-fit constraint and provisional multi-face coordinates from the calculated high-case area |
 | `js/loop-testing.js` | Executable SIL calculation plans plus HIL I/O/timing/fault contracts and measured-evidence evaluation |
+| `js/ontology-schema.js`, `js/ontology.js` | Architecture-wide classes, typed relations, declarative rules, semantic graph validation and portable exports; see [`docs/ONTOLOGY.md`](docs/ONTOLOGY.md) |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
 | `js/viewer2d.js` | Default dimensioned 2D layout view (canvas, no WebGL) |
 | `js/viewer3d.js` | Three.js instanced rendering — on-demand final render |

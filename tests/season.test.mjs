@@ -53,17 +53,30 @@ test('EU rules: timeline sound, applicability answers per design', () => {
 
   const ev = euChecks({ energyWh: 60_000, application: 'ev', chemistry: 'NMC', commsPrimary: 'CAN FD + UDS (ISO 14229)' });
   ok(ev.some((f) => /passport/i.test(f.title) && f.severity === 'warn'), 'EV: passport applies');
-  ok(ev.some((f) => /SoH/.test(f.title) && f.severity === 'pass'), 'UDS in the comms stack satisfies live SoH');
+  ok(ev.some((f) => /SoH/.test(f.title) && f.severity === 'info' && /does not mandate UDS/.test(f.detail)),
+    'UDS is identified as an implementation option, never proof of Article 14/77 compliance');
   const noUds = euChecks({ energyWh: 60_000, application: 'ev', chemistry: 'NMC', commsPrimary: 'proprietary UART' });
-  ok(noUds.some((f) => /SoH/.test(f.title) && f.severity === 'warn'), 'no UDS -> live-SoH dependency warned');
+  ok(noUds.some((f) => /SoH/.test(f.title) && f.severity === 'info' && /none is legally required/.test(f.detail)),
+    'absence of UDS does not create a fictitious regulatory failure');
 
   const small = euChecks({ energyWh: 900, application: 'powertool', chemistry: 'NMC', commsPrimary: '' });
-  ok(small.some((f) => /below threshold/i.test(f.title)), 'small non-EV pack: passport below threshold');
-  const ess = euChecks({ energyWh: 10_000, application: 'solar-ess', chemistry: 'LFP', commsPrimary: 'Modbus' });
+  ok(small.some((f) => /declared battery category/i.test(f.title) && f.severity === 'warn'),
+    'non-EV/LMT application is reviewed rather than silently called industrial or portable');
+  const essUnclassified = euChecks({ energyWh: 10_000, application: 'solar-ess', chemistry: 'LFP', commsPrimary: 'Modbus' });
+  ok(essUnclassified.some((f) => /declared battery category/i.test(f.title)),
+    'energy above 2 kWh alone does not infer the industrial category');
+  const ess = euChecks({ energyWh: 10_000, application: 'solar-ess', chemistry: 'LFP', commsPrimary: 'Modbus', batteryCategory: 'industrial' });
   ok(ess.some((f) => /passport/i.test(f.title) && f.severity === 'warn'), 'industrial >2 kWh: passport applies');
+  ok(ess.filter((f) => /passport|SoH/.test(f.title))
+    .every((f) => f.ontologyRuleId === 'bd:rule/eu-battery-passport'),
+  'passport findings carry canonical ontology lineage without mislabelling other EU rules');
   ok(ess.some((f) => /gate fee/i.test(f.detail)), 'LFP end-of-life gate fee stated');
-  const nmc = euChecks({ energyWh: 10_000, application: 'solar-ess', chemistry: 'NMC', commsPrimary: '' });
+  const nmc = euChecks({ energyWh: 10_000, application: 'solar-ess', chemistry: 'NMC', commsPrimary: '', batteryCategory: 'industrial' });
   ok(nmc.some((f) => /Ni and Co/.test(f.title)), 'nickel-cobalt chemistry: full recycled-content scope');
+
+  const preGate = euChecks({ energyWh: 60_000, application: 'ev', chemistry: 'NMC', evaluationDate: '2026-08-06' });
+  ok(preGate.some((f) => /date gate not yet active/i.test(f.title)),
+    'ontology date condition can assess a pre-effective release without changing the rule');
 });
 
 test('customer-set DoD drives the cost model', () => {

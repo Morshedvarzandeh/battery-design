@@ -10,15 +10,85 @@ import { cellById } from '../js/cells.js';
 import {
   OBC_CLASSES, OBC_EFFICIENCY, obcById, acInterfaceFor, chargingArchitectureFor,
   CHARGE_STRATEGIES, strategiesFor, chargeTime, buildChargingPlan,
+  evaluateMarineShoreConnection, MARINE_SHORE_POWER_TOLERANCE,
   CV_KNEE_SOC, CV_TAPER,
 } from '../js/charging.js';
 import { simulateMission } from '../js/sim1d.js';
 import { needed } from '../js/knowledge.js';
 import { PRESETS } from '../js/presets.js';
 
+const acShoreContract = () => ({
+  mode: 'ac',
+  voltageV: 400,
+  phases: 3,
+  frequencyHz: 50,
+  powerFactor: 0.9,
+  ratedPowerKW: 11,
+  ratedCurrentA: 11000 / (Math.sqrt(3) * 400 * 0.9),
+  efficiency: 0.94,
+  outputVoltageMinV: 20,
+  outputVoltageMaxV: 32,
+  connector: { id: 'ntnu-shore-ac-01', name: 'NTNU project shore inlet 01' },
+  earthing: { declared: true, scheme: 'Project drawing E-04 declared earthing scheme' },
+  isolation: { declared: true, method: 'Project drawing E-04 declared galvanic isolation' },
+  interlock: { declared: true, description: 'Project PLC connection-permissive loop' },
+  emergencyDisconnect: { declared: true, description: 'Project emergency disconnect chain' },
+  evidence: {
+    kind: 'project', source: 'NTNU vessel electrical drawing E-04', revision: 'Rev C', date: '2024-02-29',
+  },
+});
+
+const dcShoreContract = () => ({
+  mode: 'dc',
+  voltageV: 500,
+  ratedPowerKW: 50,
+  ratedCurrentA: 100,
+  efficiency: 1,
+  outputVoltageMinV: 24,
+  outputVoltageMaxV: 24,
+  connector: { id: 'supplier-dc-inlet-7', name: 'Supplier vessel DC inlet 7' },
+  earthing: { declared: true, scheme: 'Supplier-declared DC earthing arrangement' },
+  isolation: { declared: true, method: 'Supplier-declared isolated DC converter' },
+  interlock: { declared: true, description: 'Supplier plug-presence and voltage permissive' },
+  emergencyDisconnect: { declared: true, description: 'Supplier emergency isolation input' },
+  evidence: {
+    kind: 'supplier', source: 'Supplier equipment data sheet DS-7', revision: 'Rev 1', date: '2000-02-29',
+  },
+});
+
+function copy(value) {
+  return structuredClone(value);
+}
+
+function removePath(value, path) {
+  const parts = path.split('.');
+  const leaf = parts.pop();
+  let cursor = value;
+  for (const part of parts) cursor = cursor[part];
+  delete cursor[leaf];
+  return value;
+}
+
+function setPath(value, path, replacement) {
+  const parts = path.split('.');
+  const leaf = parts.pop();
+  let cursor = value;
+  for (const part of parts) cursor = cursor[part];
+  cursor[leaf] = replacement;
+  return value;
+}
+
+function onlyFiniteNumbers(value) {
+  if (typeof value === 'number') return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(onlyFiniteNumbers);
+  if (value && typeof value === 'object') return Object.values(value).every(onlyFiniteNumbers);
+  return true;
+}
+
 test('the charging architecture follows the application — no OBC bolted onto everything', () => {
   ok(chargingArchitectureFor('ev').kind === 'obc', 'EV carries a real on-board charger');
   ok(chargingArchitectureFor('rv').kind === 'obc', 'RV: shore-power inverter/charger');
+  ok(chargingArchitectureFor('marine').kind === 'shore', 'a vessel gets a marine shore-connection contract, not an EV OBC');
   ok(chargingArchitectureFor('ebike').kind === 'external', 'e-bike: the charger is an external brick');
   ok(chargingArchitectureFor('wearable').kind === 'host', 'wearable: the host device owns charging');
   ok(chargingArchitectureFor('solar-ess').kind === 'pcs', 'storage: the PCS IS the AC side, no "OBC"');
@@ -27,7 +97,7 @@ test('the charging architecture follows the application — no OBC bolted onto e
   // Every preset resolves to SOME architecture with a real note.
   for (const pr of PRESETS) {
     const a = chargingArchitectureFor(pr.id);
-    ok(['obc', 'external', 'pcs', 'dock', 'host'].includes(a.kind) && a.note.length > 20,
+    ok(['obc', 'shore', 'external', 'pcs', 'dock', 'host'].includes(a.kind) && a.note.length > 20,
       `${pr.id}: charging architecture stated (${a.kind})`);
   }
 });
@@ -92,6 +162,188 @@ test('the orchestrated plan: OBC auto-choice and honest per-class output', () =>
   ok(ess.obc === null && ess.arch.kind === 'pcs', 'storage never gets an OBC — the PCS framing instead');
   const brick = buildChargingPlan({ appId: 'ebike', marketId: 'eu', energyWh: 500, vNomV: 36, cell: c });
   ok(brick.obc === null && brick.arch.kind === 'external', 'e-bike: external brick, nothing to select');
+});
+
+test('marine shore charging never invents an automotive plug, OBC or turnaround time', () => {
+  const c = cellById('catl-302ah-lfp');
+  const plan = buildChargingPlan({
+    appId: 'marine', marketId: 'eu', energyWh: 24000, vNomV: 24, cell: c,
+  });
+  ok(plan.arch.kind === 'shore' && plan.obc === null, 'no automotive OBC is selected');
+  ok(!/Type 2|J1772|CCS Combo/.test(`${plan.iface.connector} ${plan.iface.dcConnector}`),
+    'no road connector is shown under a marine label');
+  ok(/supplier, port and class evidence required/i.test(plan.iface.connector),
+    'the missing interface evidence is named');
+  ok(plan.t2080 === null && plan.t10100 === null,
+    'source-free cell acceptance is not misreported as a shore turnaround time');
+  ok(plan.shoreConnection.status === 'review'
+    && plan.shoreConnection.diagnostics.some((item) => item.code === 'MARINE_SHORE_CONNECTION_REQUIRED'),
+  'missing governed shore equipment is an explicit review result');
+  ok(plan.packChargeKW > 0, 'cell charge acceptance remains available as a pack constraint');
+});
+
+test('a complete project-evidenced AC shore contract unlocks source-and-pack-limited turnaround', () => {
+  const shoreConnection = acShoreContract();
+  const c = cellById('catl-302ah-lfp');
+  const plan = buildChargingPlan({
+    appId: 'marine', marketId: 'eu', energyWh: 24000, vNomV: 24, cell: c, shoreConnection,
+  });
+  ok(plan.shoreConnection.status === 'pass' && plan.shoreConnection.complete,
+    `complete contract passes (${plan.shoreConnection.diagnostics.map((item) => item.code).join(', ')})`);
+  near(plan.shoreConnection.calculated.currentDerivedPowerKW, 11, 1e-12,
+    'three-phase voltage/current/power-factor rating reconciles to declared real power');
+  near(plan.shoreConnection.calculated.ratedPowerErrorPct, 0, 1e-10, 'power/current error is explicit');
+  near(plan.t2080.dcKW, Math.min(11 * 0.94, plan.packChargeKW), 1e-12,
+    'turnaround uses the smaller of source-after-losses and pack acceptance');
+  ok(plan.t2080.hours > 0 && plan.t10100.hours > plan.t2080.hours,
+    'both CC and CC/CV turnaround results are finite and ordered');
+  ok(plan.shoreConnection.normalized.connector.id === shoreConnection.connector.id
+    && plan.shoreConnection.normalized.evidence.revision === 'Rev C',
+  'connector and controlled evidence identity remain visible');
+  ok(!/Type 2|J1772|CCS|NACS/.test(plan.shoreConnection.sourceLabel),
+    'the calculation uses only the declared non-automotive connector identity');
+  ok(onlyFiniteNumbers(plan), 'a valid marine charging plan contains no NaN or Infinity');
+});
+
+test('DC and inclusive equipment-voltage boundaries pass without inventing AC fields', () => {
+  const result = evaluateMarineShoreConnection({
+    shoreConnection: dcShoreContract(), vNomV: 24, packChargeKW: 12,
+  });
+  ok(result.status === 'pass', `complete supplier-evidenced DC contract passes (${result.diagnostics.map((item) => item.code).join(', ')})`);
+  near(result.calculated.currentDerivedPowerKW, 50, 1e-12, 'DC power is V × I');
+  ok(result.normalized.phases === null && result.normalized.frequencyHz === null
+    && result.normalized.powerFactor === null, 'AC-only values stay absent in DC mode');
+  ok(result.normalized.efficiency === 1, 'unit efficiency is an accepted upper boundary');
+  ok(result.calculated.limitedBy === 'pack' && result.calculated.effectiveChargeKW === 12,
+    'pack acceptance remains the active DC limit');
+  ok(result.normalized.evidence.kind === 'supplier' && result.normalized.evidence.date === '2000-02-29',
+    'supplier evidence and a real leap-day boundary remain traceable');
+  ok(onlyFiniteNumbers(result), 'the DC result contains no NaN or Infinity');
+});
+
+test('one-phase AC, exact voltage-range endpoints and exact power-tolerance boundary pass', () => {
+  const contract = acShoreContract();
+  contract.voltageV = 230;
+  contract.phases = 1;
+  contract.frequencyHz = 50;
+  contract.powerFactor = 1;
+  contract.ratedPowerKW = 3.6;
+  contract.ratedCurrentA = (3.6 * (1 + MARINE_SHORE_POWER_TOLERANCE) * 1000) / 230;
+  contract.efficiency = Number.MIN_VALUE;
+  contract.outputVoltageMinV = 24;
+  contract.outputVoltageMaxV = 24;
+  const result = evaluateMarineShoreConnection({ shoreConnection: contract, vNomV: 24, packChargeKW: 1 });
+  ok(result.status === 'fail'
+    && result.diagnostics.some((item) => item.code === 'MARINE_SHORE_CONVERSION_POWER_INVALID'),
+  'a positive but underflowing efficiency is refused instead of emitting an infinite charge time');
+
+  contract.efficiency = 1;
+  const boundary = evaluateMarineShoreConnection({ shoreConnection: contract, vNomV: 24, packChargeKW: 1 });
+  ok(boundary.status === 'pass', `exact 5% consistency and inclusive voltage boundaries pass (${boundary.diagnostics.map((item) => item.code).join(', ')})`);
+  near(boundary.calculated.ratedPowerErrorPct, 5, 1e-10, 'the exact documented tolerance is inclusive');
+  ok(onlyFiniteNumbers(boundary), 'boundary output remains finite');
+});
+
+const requiredShoreFields = [
+  'mode', 'voltageV', 'phases', 'frequencyHz', 'powerFactor', 'ratedPowerKW', 'ratedCurrentA',
+  'efficiency', 'outputVoltageMinV', 'outputVoltageMaxV', 'connector.id', 'connector.name',
+  'earthing.declared', 'earthing.scheme', 'isolation.declared', 'isolation.method',
+  'interlock.declared', 'interlock.description',
+  'emergencyDisconnect.declared', 'emergencyDisconnect.description',
+  'evidence.kind', 'evidence.source', 'evidence.revision', 'evidence.date',
+];
+
+for (const field of requiredShoreFields) {
+  test(`marine shore contract keeps ${field} incomplete and suppresses charge time when missing`, () => {
+    const shoreConnection = removePath(copy(acShoreContract()), field);
+    const plan = buildChargingPlan({
+      appId: 'marine', marketId: 'eu', energyWh: 24000, vNomV: 24,
+      cell: cellById('catl-302ah-lfp'), shoreConnection,
+    });
+    ok(plan.shoreConnection.status === 'review',
+      `${field}: incomplete evidence remains review, not pass/fail by accident (${plan.shoreConnection.diagnostics.map((item) => item.code).join(', ')})`);
+    ok(plan.shoreConnection.diagnostics.some((item) => item.field === field),
+      `${field}: a field-specific diagnostic is exposed`);
+    ok(plan.t2080 === null && plan.t10100 === null, `${field}: no turnaround is emitted`);
+    ok(onlyFiniteNumbers(plan.shoreConnection), `${field}: refusal result contains no NaN or Infinity`);
+  });
+}
+
+const invalidShoreFields = [
+  ['mode', 'automotive'],
+  ['voltageV', Infinity],
+  ['phases', 2],
+  ['frequencyHz', 0],
+  ['powerFactor', 1.01],
+  ['ratedPowerKW', 0],
+  ['ratedCurrentA', NaN],
+  ['efficiency', 1.01],
+  ['outputVoltageMinV', -1],
+  ['outputVoltageMaxV', Infinity],
+  ['connector.id', 'CCS-Combo-2'],
+  ['connector.name', 'Type 2 automotive inlet'],
+  ['earthing.declared', false],
+  ['isolation.declared', false],
+  ['interlock.declared', false],
+  ['emergencyDisconnect.declared', false],
+  ['evidence.kind', 'uncontrolled-web-page'],
+  ['evidence.date', '2023-02-29'],
+];
+
+for (const [field, invalid] of invalidShoreFields) {
+  test(`marine shore contract fails ${field}=${String(invalid)} without non-finite output`, () => {
+    const shoreConnection = setPath(copy(acShoreContract()), field, invalid);
+    const plan = buildChargingPlan({
+      appId: 'marine', marketId: 'eu', energyWh: 24000, vNomV: 24,
+      cell: cellById('catl-302ah-lfp'), shoreConnection,
+    });
+    ok(plan.shoreConnection.status === 'fail',
+      `${field}: invalid data fails (${plan.shoreConnection.diagnostics.map((item) => item.code).join(', ')})`);
+    ok(plan.t2080 === null && plan.t10100 === null, `${field}: invalid data cannot unlock turnaround`);
+    ok(onlyFiniteNumbers(plan.shoreConnection), `${field}: NaN/Infinity is normalized away`);
+  });
+}
+
+test('power mismatch, reversed voltage range, out-of-range pack and DC/AC field mixing are explicit failures', () => {
+  const mismatch = acShoreContract();
+  mismatch.ratedCurrentA *= 1.051;
+  const reversed = acShoreContract();
+  reversed.outputVoltageMinV = 33;
+  const dcWithAcFields = { ...dcShoreContract(), phases: 3, frequencyHz: 50, powerFactor: 1 };
+  const cases = [
+    [mismatch, 24, 'MARINE_SHORE_POWER_CURRENT_MISMATCH'],
+    [reversed, 24, 'MARINE_SHORE_OUTPUT_RANGE_INVALID'],
+    [acShoreContract(), 48, 'MARINE_SHORE_PACK_VOLTAGE_INCOMPATIBLE'],
+    [dcWithAcFields, 24, 'MARINE_SHORE_DC_AC_FIELDS_INCOMPATIBLE'],
+  ];
+  for (const [shoreConnection, vNomV, code] of cases) {
+    const result = evaluateMarineShoreConnection({ shoreConnection, vNomV, packChargeKW: 12 });
+    ok(result.status === 'fail' && result.diagnostics.some((item) => item.code === code), `${code}: explicit fail diagnostic`);
+    ok(result.calculated.shoreToPackKW === null && result.calculated.effectiveChargeKW === null,
+      `${code}: incompatible hardware has no available charge power`);
+    ok(onlyFiniteNumbers(result), `${code}: result remains finite`);
+  }
+});
+
+test('missing pack acceptance keeps an otherwise complete shore contract under review', () => {
+  const result = evaluateMarineShoreConnection({ shoreConnection: acShoreContract(), vNomV: 24, packChargeKW: null });
+  ok(result.status === 'review'
+    && result.diagnostics.some((item) => item.code === 'MARINE_SHORE_PACK_ACCEPTANCE_REQUIRED'),
+  'cell-derived pack acceptance is mandatory');
+  ok(result.calculated.effectiveChargeKW === null, 'no source-only result is promoted as pack turnaround');
+});
+
+test('a shore contract argument cannot change road charging behavior', () => {
+  const args = {
+    appId: 'ev', marketId: 'eu', energyWh: 60000, vNomV: 350,
+    cell: cellById('samsung-inr21700-50e'), obcOverride: 'obc-11k',
+  };
+  const road = buildChargingPlan(args);
+  const roadWithMarineData = buildChargingPlan({ ...args, shoreConnection: acShoreContract() });
+  ok(JSON.stringify(roadWithMarineData) === JSON.stringify(road),
+    'marine-only contract is ignored byte-for-byte on the existing road path');
+  ok(!Object.prototype.hasOwnProperty.call(road, 'shoreConnection'),
+    'road output shape remains unchanged');
 });
 
 test('mission charge segments: top-ups and base charging change the outcome', () => {

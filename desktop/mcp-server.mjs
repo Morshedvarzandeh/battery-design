@@ -15,7 +15,10 @@
 //   { "battery-design": { "command": "node",
 //                         "args": ["/path/to/battery-design/desktop/mcp-server.mjs"] } }
 
-import { designFromSpec, briefFromDesign, listApplications, listCells, API_VERSION } from '../js/api.js';
+import {
+  buildArchitectureSemanticGraph, designFromSpec, briefFromDesign, describeOntology, listApplications, listCells, listVessels,
+  querySemanticGraph, API_VERSION,
+} from '../js/api.js';
 import { CELLS, cellById } from '../js/cells.js';
 import { V2X_MODES, v2xParts } from '../js/v2x.js';
 import { CONCEPTS, appNeeds } from '../js/knowledge.js';
@@ -26,6 +29,158 @@ import { designBrief } from '../js/brief.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 
+const sha256 = { type: 'string', pattern: '^[a-fA-F0-9]{64}$', description: 'Content SHA-256 (64 hexadecimal characters).' };
+const twinAssetEvidence = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    assetId: { type: 'string' }, vesselId: { type: 'string' }, evidenceId: { type: 'string' },
+    revision: { type: 'string' }, issuedAt: { type: 'string', description: 'Full ISO-8601 timestamp with timezone.' },
+    sha256,
+  },
+  required: ['assetId', 'vesselId', 'evidenceId', 'revision', 'issuedAt', 'sha256'],
+};
+const twinModelEvidence = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    artifactId: { type: 'string' }, version: { type: 'string', description: 'Semantic model version.' },
+    vesselId: { type: 'string' }, assetId: { type: 'string' }, sha256,
+  },
+  required: ['artifactId', 'version', 'vesselId', 'assetId', 'sha256'],
+};
+const twinTrialEvidence = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    trialId: { type: 'string' }, vesselId: { type: 'string' }, assetId: { type: 'string' },
+    datasetSha256: sha256, modelArtifactSha256: sha256,
+    completedAt: { type: 'string', description: 'Full ISO-8601 timestamp with timezone.' },
+  },
+  required: ['trialId', 'vesselId', 'assetId', 'datasetSha256', 'modelArtifactSha256', 'completedAt'],
+};
+const twinMetrics = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    speedRmsKn: { type: 'number' }, courseRmsDeg: { type: 'number' },
+    powerRmsFraction: { type: 'number' },
+  },
+  required: ['speedRmsKn', 'courseRmsDeg', 'powerRmsFraction'],
+};
+const twinValidationEvidence = {
+  ...twinTrialEvidence,
+  properties: {
+    ...twinTrialEvidence.properties,
+    result: { type: 'string', enum: ['pass'] }, metrics: twinMetrics, limits: twinMetrics,
+  },
+  required: [...twinTrialEvidence.required, 'result', 'metrics', 'limits'],
+};
+const twinReplayEvidence = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    replayId: { type: 'string' }, vesselId: { type: 'string' }, assetId: { type: 'string' },
+    datasetSha256: sha256, modelArtifactSha256: sha256,
+    recordedAt: { type: 'string', description: 'Full ISO-8601 timestamp with timezone.' },
+    maxAgeDays: { type: 'integer', minimum: 1, maximum: 365 },
+    minSamples: { type: 'integer', minimum: 10 }, minDurationS: { type: 'number', minimum: 60 },
+  },
+  required: ['replayId', 'vesselId', 'assetId', 'datasetSha256', 'modelArtifactSha256',
+    'recordedAt', 'maxAgeDays', 'minSamples', 'minDurationS'],
+};
+const twinEvidence = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    powerBasis: { type: 'string', enum: ['dc-bus-trace', 'shaft-power-curve', 'resistance-curve'] },
+    assetEvidence: twinAssetEvidence, modelEvidence: twinModelEvidence,
+    calibrationEvidence: twinTrialEvidence, validationEvidence: twinValidationEvidence,
+    replayEvidence: twinReplayEvidence,
+  },
+};
+const replaySample = {
+  type: 'object', additionalProperties: false,
+  properties: Object.fromEntries(['tS', 'actualSpeedKn', 'predictedSpeedKn', 'actualCourseDeg',
+    'predictedCourseDeg', 'actualPowerW', 'predictedPowerW'].map((key) => [key, { type: 'number' }])),
+  required: ['tS', 'actualSpeedKn', 'predictedSpeedKn', 'actualCourseDeg',
+    'predictedCourseDeg', 'actualPowerW', 'predictedPowerW'],
+};
+const replayOptions = {
+  type: 'object', additionalProperties: false,
+  properties: {
+    speedKn: { type: 'number', exclusiveMinimum: 0, maximum: 10 },
+    courseDeg: { type: 'number', exclusiveMinimum: 0, maximum: 180 },
+    powerFraction: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+    consecutive: { type: 'integer', minimum: 1 },
+  },
+};
+const profileTrace = {
+  type: 'object',
+  description: 'Governed normalized custom battery/load trace. Raw samples are evaluated locally and only their resolved content identity is returned.',
+  additionalProperties: false,
+  properties: {
+    id: { type: 'string', minLength: 1 },
+    name: { type: 'string' },
+    revision: { type: 'string' },
+    dtS: { type: 'number', exclusiveMinimum: 0 },
+    p: {
+      type: 'array', minItems: 2, maxItems: 500,
+      items: { type: 'number', minimum: -1, maximum: 1 },
+    },
+    scaleW: { type: 'number', exclusiveMinimum: 0 },
+    note: { type: 'string' },
+  },
+  required: ['id', 'dtS', 'p', 'scaleW'],
+};
+const shoreDeclaration = (detailField) => ({
+  type: 'object', additionalProperties: false,
+  properties: {
+    declared: { type: 'boolean', const: true },
+    [detailField]: { type: 'string', minLength: 1 },
+  },
+  required: ['declared', detailField],
+});
+const shoreConnection = {
+  type: 'object',
+  description: 'Project- or supplier-evidenced marine shore equipment. No connector, rating or turnaround time is inferred.',
+  additionalProperties: false,
+  properties: {
+    mode: { type: 'string', enum: ['ac', 'dc'] },
+    voltageV: { type: 'number', exclusiveMinimum: 0 },
+    phases: { type: 'integer', enum: [1, 3] },
+    frequencyHz: { type: 'number', exclusiveMinimum: 0 },
+    powerFactor: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+    ratedPowerKW: { type: 'number', exclusiveMinimum: 0 },
+    ratedCurrentA: { type: 'number', exclusiveMinimum: 0 },
+    efficiency: { type: 'number', exclusiveMinimum: 0, maximum: 1 },
+    outputVoltageMinV: { type: 'number', exclusiveMinimum: 0 },
+    outputVoltageMaxV: { type: 'number', exclusiveMinimum: 0 },
+    connector: {
+      type: 'object', additionalProperties: false,
+      properties: { id: { type: 'string', minLength: 1 }, name: { type: 'string', minLength: 1 } },
+      required: ['id', 'name'],
+    },
+    earthing: shoreDeclaration('scheme'),
+    isolation: shoreDeclaration('method'),
+    interlock: shoreDeclaration('description'),
+    emergencyDisconnect: shoreDeclaration('description'),
+    evidence: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        kind: { type: 'string', enum: ['supplier', 'project'] },
+        source: { type: 'string', minLength: 1 },
+        revision: { type: 'string', minLength: 1 },
+        date: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$' },
+      },
+      required: ['kind', 'source', 'revision', 'date'],
+    },
+  },
+  required: [
+    'mode', 'voltageV', 'ratedPowerKW', 'ratedCurrentA', 'efficiency',
+    'outputVoltageMinV', 'outputVoltageMaxV', 'connector', 'earthing',
+    'isolation', 'interlock', 'emergencyDisconnect', 'evidence',
+  ],
+  allOf: [{
+    if: { properties: { mode: { const: 'ac' } }, required: ['mode'] },
+    then: { required: ['phases', 'frequencyHz', 'powerFactor'] },
+  }],
+};
+
 // The design spec, described once and reused by every tool that takes one.
 const SPEC_PROPERTIES = {
   application: { type: 'string', description: 'Application preset id (use list_applications first).' },
@@ -34,10 +189,39 @@ const SPEC_PROPERTIES = {
   s: { type: 'number', description: 'Cells in series (overrides the voltage-derived default).' },
   p: { type: 'number', description: 'Cells in parallel (overrides the energy-derived default).' },
   market: { type: 'string', enum: ['eu', 'us', 'cn', 'intl'], description: 'Target market for the release checklist.' },
+  batteryCategory: { type: 'string', enum: ['ev', 'lmt', 'industrial', 'portable', 'sli'], description: 'Declared Regulation (EU) 2023/1542 battery category when the application does not determine EV/LMT.' },
+  evaluationDate: { type: 'string', pattern: '^\\d{4}-\\d{2}-\\d{2}$', description: 'Deterministic date used by time-gated regulatory ontology rules.' },
   dod: { type: 'number', description: 'Usable depth of discharge, 0–1.' },
   v2xPolicy: { type: 'string', enum: ['off', 'v2l', 'v2h', 'v2g', 'v2v'], description: 'Feed-back policy to design for.' },
   driveMode: { type: 'string', enum: ['eco', 'normal', 'sport'], description: 'Driving mode for road machines.' },
   policyId: { type: 'string', description: 'EMS/PMS operating goal for grid or marine sizing; list_applications returns allowed ids.' },
+  vesselId: { type: 'string', description: 'Selected NTNU marine vessel id (use list_vessels).' },
+  marine: {
+    type: 'object',
+    description: 'Vessel voyage plus governed TwinShip evidence and aligned replay. Published defaults remain visible; private evidence and raw samples are not echoed in output.',
+    additionalProperties: false,
+    properties: {
+      vesselId: { type: 'string' }, referenceMassKg: { type: ['number', 'null'] },
+      payloadKg: { type: 'number' }, designSpeedKn: { type: 'number' }, serviceSpeedKn: { type: 'number' },
+      headCurrentKn: { type: 'number' }, headwindKn: { type: 'number' },
+      propulsionAtDesignW: { type: 'number' }, hotelW: { type: 'number' }, durationH: { type: 'number' },
+      seaState: { type: 'string', enum: ['calm', 'moderate', 'rough'] },
+      shoreConnection, twinEvidence, replaySamples: { type: 'array', items: replaySample }, replayOptions,
+    },
+  },
+  twinShip: {
+    type: 'object',
+    description: 'Top-level alias for governed, content-addressed TwinShip readiness evidence and time-aligned replay. The API evaluates replay itself.',
+    additionalProperties: false,
+    properties: {
+      readiness: twinEvidence,
+      replay: {
+        type: 'object', additionalProperties: false,
+        properties: { samples: { type: 'array', items: replaySample }, options: replayOptions },
+        required: ['samples'],
+      },
+    },
+  },
   gradePct: { type: 'number', description: 'Route gradient in percent.' },
   route: {
     type: 'object',
@@ -49,6 +233,7 @@ const SPEC_PROPERTIES = {
     additionalProperties: true,
   },
   profileId: { type: 'string', description: 'Battery/load profile id, or "vehicle" to derive demand from vehicle physics. Existing integrations remain supported.' },
+  profileTrace,
 };
 
 const TOOLS = [
@@ -65,6 +250,29 @@ const TOOLS = [
       properties: {
         chemistry: { type: 'string', description: 'Filter: LFP, NMC, NCA, LTO, Na-ion, LiPo…' },
         form: { type: 'string', description: 'Filter: cylindrical, prismatic, pouch.' },
+      },
+    },
+  },
+  {
+    name: 'list_vessels',
+    description: 'List the two evidenced NTNU vessel models available to the Vessel Twin workspace, including published particulars, defaults, source and interpretation boundary.',
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'get_ontology_schema',
+    description: 'Return the compact versioned ontology catalog so an agent can discover classes, relations, units, rules, product surfaces, architecture modules, competency questions and validation shapes without generating a design.',
+    inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+  },
+  {
+    name: 'query_ontology',
+    description: 'Query the architecture-wide ontology or one design semantic graph. This covers applications, pack/cell/component hierarchy, all calculation and simulation modules, requirements, evidence, findings and governance; it is not a charging-only graph.',
+    inputSchema: {
+      type: 'object', additionalProperties: false,
+      properties: {
+        application: { type: 'string', description: 'Optional application id. When supplied, query its complete design graph.' },
+        type: { type: 'string', description: 'Optional semantic type such as bd:ModelRun, bd:Requirement or bd:Diagnostic.' },
+        relation: { type: 'string', description: 'Optional relation such as bd:usesModel or bd:requiresCapability.' },
+        text: { type: 'string', description: 'Optional case-insensitive label/property search.' },
       },
     },
   },
@@ -151,6 +359,60 @@ const HANDLERS = {
     ].join('\n'));
   },
 
+  list_vessels() {
+    const vessels = listVessels();
+    return text([
+      `${vessels.length} NTNU vessel models:`,
+      ...vessels.map((vessel) => `· ${vessel.id} — ${vessel.name}: ${vessel.dimensionsM.length} m × ${vessel.dimensionsM.beam} m. Default PMS: ${vessel.policyId}. ${vessel.boundary}`),
+    ].join('\n'));
+  },
+
+  get_ontology_schema() {
+    return text(JSON.stringify(describeOntology(), null, 2));
+  },
+
+  query_ontology(args) {
+    if (!args?.application) {
+      if (args?.type || args?.relation) {
+        const graph = buildArchitectureSemanticGraph();
+        const result = querySemanticGraph(graph, {
+          type: args.type, relation: args.relation, text: args.text,
+        });
+        return text([
+          `battery-design architecture graph — ontology ${graph.ontology.version}; query matched ${result.nodes.length} entities and ${result.edges.length} relations.`,
+          ...result.nodes.slice(0, 40).map((node) => `· ${node.label} [${node.types.join(', ')}] — ${node.id}`),
+          ...result.edges.slice(0, 40).map((edge) => `· ${edge.from} —${edge.type}→ ${edge.to}`),
+          ...(result.nodes.length + result.edges.length > 80 ? ['… narrow the query to see fewer matches.'] : []),
+        ].join('\n'));
+      }
+      const catalog = describeOntology();
+      const needle = String(args?.text || '').trim().toLowerCase();
+      const rows = [
+        ...catalog.classes, ...catalog.relations, ...catalog.units,
+        ...catalog.productSurfaces, ...catalog.architectureModules, ...catalog.modules,
+        ...catalog.rules, ...catalog.concepts, ...catalog.competencyQuestions, ...catalog.shapes,
+      ]
+        .filter((row) => !args?.type || row.id === args.type || row.target === args.type)
+        .filter((row) => !needle || JSON.stringify(row).toLowerCase().includes(needle));
+      return text([
+        `battery-design ontology ${catalog.ontology.version}: ${catalog.classes.length} classes, ${catalog.relations.length} relations, ${catalog.architectureModules.length} registered architecture modules.`,
+        ...rows.slice(0, 50).map((row) => `· ${row.id} — ${row.label || row.description || row.module || row.profile || 'semantic definition'}`),
+        ...(rows.length > 50 ? [`… ${rows.length - 50} more matches; narrow the text or type filter.`] : []),
+      ].join('\n'));
+    }
+    const design = designFromSpec({ application: args.application });
+    const result = querySemanticGraph(design.semantics.graph, {
+      type: args.type, relation: args.relation, text: args.text,
+    });
+    return text([
+      `${design.application?.name || args.application} — ontology ${design.semantics.ontology.version}, graph ${design.semantics.ontology.checksum}`,
+      `${design.semantics.counts.nodes} entities / ${design.semantics.counts.edges} relations total; query matched ${result.nodes.length} entities and ${result.edges.length} relations.`,
+      ...result.nodes.slice(0, 40).map((node) => `· ${node.label} [${node.types.join(', ')}] — ${node.id}`),
+      ...result.edges.slice(0, 40).map((edge) => `· ${edge.from} —${edge.type}→ ${edge.to}`),
+      ...(result.nodes.length + result.edges.length > 80 ? ['… narrow the query to see fewer matches.'] : []),
+    ].join('\n'));
+  },
+
   design_pack(args) {
     const d = designFromSpec(specOf(args));
     const lines = [briefFromDesign(d), ''];
@@ -162,6 +424,7 @@ const HANDLERS = {
     if (sensorCount) lines.push(`Sensor plan: ${sensorCount} entries across cell, module, system and cooling levels`);
     if (d.diagnostics?.batteryModel?.next) lines.push(`Model diagnostics: next measurement — ${d.diagnostics.batteryModel.next.title}`);
     if (d.diagnostics?.conditionMonitoring?.applicable) lines.push(`Condition monitoring: ${d.diagnostics.conditionMonitoring.recommendation}`);
+    lines.push(`Ontology: v${d.semantics.ontology.version}, ${d.semantics.counts.nodes} entities / ${d.semantics.counts.edges} relations / ${d.semantics.counts.modelRuns} model runs, ${d.semantics.conforms ? 'conforms' : 'INVALID'}; ${d.semantics.unresolvedEvidence.length} unresolved evidence requirement(s).`);
     lines.push(`Release (${d.spec.resolved.market}): ${d.checklist.items.length} items, ${d.checklist.items.filter((i) => i.scope === 'mandatory').length} mandatory`);
     if (d.co2?.paybackCycles) lines.push(`CO2: ${d.co2.mfgKgPerPack.toFixed(0)} kg to manufacture, payback in ${Math.round(d.co2.paybackCycles)} cycles`);
     lines.push('', 'Full result available as JSON from the same call in the desktop runner: node desktop/bd.mjs design --json');
@@ -182,6 +445,7 @@ const HANDLERS = {
     const s = d.simulation.summary;
     return text([
       `${d.application?.name} — ${d.pack.s}S${d.pack.p}P ${d.cell.name}, ${(d.pack.energyWh / 1000).toFixed(1)} kWh`,
+      ...(d.marine ? [`Vessel: ${d.marine.vessel.name}; PMS ${d.spec.resolved.sizing.policyId}; ${d.marine.distanceNm.toFixed(1)} nmi voyage, ${Math.round(d.simulation.stats.peakW / 1000)} kW battery-profile peak.`] : []),
       `Profile: ${d.simulation.profile.name}, ${spec.mission.passes} pass(es)`,
       `SoC ${Math.round(s.startSoC * 100)}% → ${Math.round(s.endSoC * 100)}% (minimum ${Math.round(s.minSoC * 100)}%)`,
       `Energy ${s.energyOutWh.toFixed(0)} Wh out, ${s.lossWh.toFixed(0)} Wh lost, ${s.efficiencyPct.toFixed(1)}% efficient`,
@@ -203,9 +467,13 @@ const HANDLERS = {
       ? args.cellIds
       : CELLS.filter((c) => !args.chemistry || c.chemistry === args.chemistry).map((c) => c.id);
     const rows = [];
+    let marineDutyLine = null;
     for (const id of pool) {
       try {
         const d = designFromSpec({ ...base, cell: id });
+        if (!marineDutyLine && d.marine) {
+          marineDutyLine = `Vessel duty: ${d.marine.vessel.name}; PMS ${d.spec.resolved.sizing.policyId}; ${Math.round(d.simulation.stats.peakW / 1000)} kW battery-profile peak.`;
+        }
         rows.push({
           id, kWh: d.pack.energyWh / 1000, massKg: d.pack.massKg,
           usd: d.cost?.upfrontUSD ?? null, perKWh: d.cost?.usdPerKWhDelivered ?? null,
@@ -217,6 +485,7 @@ const HANDLERS = {
     rows.sort((a, b) => (a.perKWh ?? 1e9) - (b.perKWh ?? 1e9));
     return text([
       `${rows.length} cells on the same duty, best value first (cost per kWh DELIVERED over cycle life, not sticker price):`,
+      ...(marineDutyLine ? [marineDutyLine] : []),
       ...rows.map((r) => r.error ? `· ${r.id}: ${r.error}`
         : `· ${r.id}: ${r.kWh.toFixed(1)} kWh, ${r.massKg.toFixed(1)} kg, ${r.usd != null ? `$${Math.round(r.usd)} upfront` : 'price unknown'}, ${r.perKWh != null ? `$${r.perKWh.toFixed(3)}/kWh delivered` : 'lifetime cost unknown'}${r.whPerKm != null ? `, ${r.whPerKm.toFixed(0)} Wh/km` : ''}${r.rangeKm != null ? `, ${Math.round(r.rangeKm)} km range` : ''}${r.fails ? `, ${r.fails} FAIL finding(s)` : ''}`),
       '',
@@ -315,7 +584,7 @@ export function handleMessage(msg) {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
         serverInfo: { name: 'battery-design', version: API_VERSION },
-        instructions: 'A battery pack designer. Call list_applications and list_cells to learn the real ids, then design_pack. Numbers come from the design modules, not from a language model — where a figure is an estimate rather than a datasheet value, the answer says so.',
+        instructions: 'A battery pack designer. Call list_applications and list_cells to learn the real ids; for marine work also call list_vessels, then design_pack. Numbers come from the design modules, not from a language model — where a figure is an estimate rather than a datasheet value, the answer says so.',
       };
     case 'tools/list':
       return { tools: TOOLS };

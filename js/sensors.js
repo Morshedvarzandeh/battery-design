@@ -34,11 +34,41 @@ function runawaySensorWarranted({ energyWh, chemistry, vMaxV }) {
 // Returns { groups: [{ level, sensors: [{name, count, note}] }], notes }.
 // Groups a design does not need are absent, not empty.
 // ---------------------------------------------------------------------------
-export function buildSensorPlan({ cell, s, p, summary, partition, bms, therm, selection, conditionMonitoring = null }) {
+export function buildSensorPlan({
+  cell, s, p, summary, partition, bms, therm, selection,
+  isolationMonitoring = null, conditionMonitoring = null,
+}) {
   const groups = [];
   const notes = [];
-  const hv = (summary?.vMax ?? 0) > 60;
+  // Architecture is the sole owner of monitoring applicability. A missing
+  // status remains an explicit review state; this module never reconstructs
+  // a normative decision from pack voltage or charging configuration.
+  const monitoring = isolationMonitoring || {
+    status: 'review-required', required: null, highVoltage: null,
+    hvilRequired: null, reviewRequired: true,
+    basis: 'Architecture isolation-monitoring status was not supplied.',
+  };
+  const hv = monitoring.highVoltage === true;
+  const lv = monitoring.highVoltage === false;
   const ccs = /cell-contact-system/.test(selection?.busbar?.kind || '');
+  const physicalModuleFloor = partition && !partition.virtual
+    ? Math.max(1, partition.nModules)
+    : 1;
+  const ratioTemperatureCount = bms?.tempSensors
+    ?? Math.max(1, Math.ceil((s * p) / 6));
+  const temperatureSensorCount = Math.max(ratioTemperatureCount, physicalModuleFloor);
+  const optionalTemperatureTarget = bms?.tempSensorsOptionalTarget;
+  const temperatureCoverageNote = bms
+    ? [
+        `Configured at 1 per ${bms.cellsPerTempSensor} cells across all ${bms.monitoredCellCount ?? s * p} monitored cells.`,
+        bms.tempSensorsFromConfiguredRatio < bms.tempSensorsModuleFloor
+          ? `The physical-module floor raises the allocation from ${bms.tempSensorsFromConfiguredRatio} to ${bms.tempSensorsModuleFloor}, keeping at least one NTC in every module.`
+          : `The configured allocation already covers the ${bms.tempSensorsModuleFloor} required physical-module position(s).`,
+        optionalTemperatureTarget
+          ? `A 1:${optionalTemperatureTarget.cellsPerSensor} count (${optionalTemperatureTarget.count}) is shown for comparison. ${optionalTemperatureTarget.note}`
+          : null,
+      ].filter(Boolean).join(' ')
+    : `Allocated across all ${s * p} monitored cells, with at least one NTC in every physical module.`;
 
   // --- cell level -----------------------------------------------------------
   const cellSensors = [
@@ -51,10 +81,8 @@ export function buildSensorPlan({ cell, s, p, summary, partition, bms, therm, se
     },
     {
       name: 'Cell temperature sensors (NTC)',
-      count: bms?.tempSensors ?? Math.max(1, Math.ceil((s * p) / 6)),
-      note: bms
-        ? `1 per ${bms.cellsPerTempSensor} cells (input on the Analysis tab); observability-optimal is 1 per 3 (${bms.tempSensorsObservability}) — production spans 1:3 to 1:73.`
-        : 'On the hottest cells: center of the pack and next to the terminals.',
+      count: temperatureSensorCount,
+      note: temperatureCoverageNote,
     },
   ];
   groups.push({ level: 'Cell level', sensors: cellSensors });
@@ -70,9 +98,9 @@ export function buildSensorPlan({ cell, s, p, summary, partition, bms, therm, se
           note: `${bms?.afePerModule ?? 1} AFE IC(s) per module; ${partition.senseWiresPerModule} sense wires each — the module connector must carry them.`,
         },
         {
-          name: 'Module temperature (min. one per module)',
+          name: 'Physical-module temperature coverage',
           count: partition.nModules,
-          note: 'The per-cell NTC budget above must place at least one sensor in every module — an uninstrumented module is invisible.',
+          note: 'Allocation within the cell-level NTC total above, not an additional sensor count: place at least one of those NTCs in every physical module.',
         },
       ],
     });
@@ -86,23 +114,29 @@ export function buildSensorPlan({ cell, s, p, summary, partition, bms, therm, se
       note: 'Shunt (precise, dissipates) or Hall (isolated, drifts) — SoC counting quality starts here; better than 1% class.',
     },
     {
-      name: hv ? 'Pack voltage — both sides of the contactors' : 'Pack voltage',
-      count: hv ? 2 : 1,
+      name: hv
+        ? 'Pack voltage — both sides of the contactors'
+        : lv ? 'Pack voltage' : 'Pack voltage — measurement topology review',
+      count: hv ? 2 : lv ? 1 : null,
       note: hv
         ? 'Measuring link AND pack side proves the contactors actually opened/closed (weld detection) and drives the precharge close-within-10 V decision.'
-        : 'One measurement point suffices below the 60 V boundary.',
+        : lv
+          ? 'One measurement point suffices for this architecture below the project 60 V DC boundary.'
+          : 'Architecture isolation-monitoring status was not supplied, so this module cannot choose one point versus contactor-side weld-detection points.',
     },
   ];
-  if (hv) {
+  if (monitoring.required === true) {
     sys.push({
       name: 'Isolation monitor',
       count: 1,
-      note: 'Continuous Ω/V supervision against the floor on the Analysis tab; mandatory territory above 60 V DC.',
+      note: `${monitoring.basis} Continuous supervision and alarm logic must be verified against the selected governing rule.`,
     });
+  }
+  if (monitoring.hvilRequired === true) {
     sys.push({
       name: 'HVIL (high-voltage interlock loop)',
       count: 1,
-      note: 'A low-voltage loop through every HV connector and cover — opens, and the contactors drop.',
+      note: 'Required by the declared road-vehicle architecture: a low-voltage loop through every HV connector and cover; opening it drops the contactors.',
     });
   }
   const runaway = runawaySensorWarranted({
@@ -134,5 +168,8 @@ export function buildSensorPlan({ cell, s, p, summary, partition, bms, therm, se
 
   notes.push('Only the sensors THIS design needs are listed — absent groups mean the system genuinely has nothing to instrument there, not an omission.');
   notes.push('Counts feed the connector pin-out and harness budget; sensor class names only — pick suppliers at sourcing, not here.');
+  if (monitoring.reviewRequired) {
+    notes.push(`Isolation-monitoring architecture: ${monitoring.status}. ${monitoring.basis}`);
+  }
   return { groups, notes, conditionMonitoring };
 }

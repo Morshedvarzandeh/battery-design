@@ -29,6 +29,7 @@
 // Pure data, no DOM.
 
 import { vehicleDefaultsFor } from './vehicle.js';
+import { vesselModelById } from './vessels.js';
 
 // Where the pack lives in the machine. This is the interesting half: it is a
 // real integration decision with real consequences, and the same 60 kWh of
@@ -93,7 +94,55 @@ const FRONTAL_FILL = 0.85;
  * Returns null for an application with no host — which is a real answer, not a
  * gap: a custom design is not any particular machine.
  */
-export function hostFor(appId) {
+export function hostFor(appId, vesselId = null) {
+  // A selected NTNU vessel is not the generic class-typical boat below. Its
+  // published overall dimensions and complete massing payload come from
+  // vessels.js. The battery seat is still only a study position, because
+  // neither source publishes a battery-compartment envelope.
+  if (appId === 'marine' && vesselId) {
+    const vessel = vesselModelById(vesselId);
+    if (vessel) {
+      const datum = vessel.model.datum;
+      const sizeM = {
+        x: vessel.dimensionsM.beam,
+        y: vessel.dimensionsM.length,
+        z: datum.verticalExtentM,
+        // Kept with the envelope so the renderer receives the source datum
+        // through the existing host payload without inventing an origin.
+        zMin: datum.zMinM,
+        zMax: datum.zMaxM,
+        waterlineZ: datum.waterlineZM,
+        baselineZ: datum.baselineZM,
+      };
+      const envelopeCentreZ = (datum.zMinM + datum.zMaxM) / 2;
+      return {
+        id: vessel.id,
+        vesselId: vessel.id,
+        kind: vessel.kind,
+        name: vessel.name,
+        sizeM,
+        mount: { ...vessel.mounting },
+        dimsFrom: 'published-particulars',
+        dimsLabel: 'published principal particulars; waterline-datum engineering massing envelope; not CAD',
+        note: `Waterline is z=0 m, the display baseline is z=${datum.baselineZM.toFixed(2)} m, and the sourced ${datum.topReference} is z=+${datum.zMaxM.toFixed(2)} m. ${datum.basis} ${vessel.mounting.what}`,
+        model: vessel.model,
+        evidence: vessel.evidence,
+        boundary: `${vessel.model.boundary} Battery-study boundary: ${vessel.boundary}`,
+        datum: { ...datum },
+        // Source positions use the published-waterline datum. packSeat() and
+        // the established renderer contract use the envelope centre, so make
+        // that one coordinate conversion here in the data layer.
+        packSeatM: {
+          x: vessel.packSeatM.x,
+          y: vessel.packSeatM.y,
+          z: vessel.packSeatM.z - envelopeCentreZ,
+        },
+        seatBasis: 'indicative-study-position',
+        fitBasis: 'unpublished-battery-compartment',
+      };
+    }
+  }
+
   const key = HOST_BY_APP[appId];
   const base = key ? HOSTS[key] : null;
   if (!base) return null;
@@ -135,6 +184,7 @@ export function hostFor(appId) {
  */
 export function packSeat(host, packSizeM) {
   if (!host) return null;
+  if (host.packSeatM) return { ...host.packSeatM };
   const s = host.sizeM;
   const p = packSizeM || { x: 0, y: 0, z: 0 };
   switch (host.mount.id) {
@@ -155,6 +205,16 @@ export function packSeat(host, packSizeM) {
 /** Does the pack actually fit in the machine it is meant to go in? */
 export function fitInHost(host, packSizeM) {
   if (!host || !packSizeM) return null;
+  if (host.fitBasis === 'unpublished-battery-compartment') {
+    return {
+      fits: null,
+      over: [],
+      status: 'unproven',
+      basis: host.fitBasis,
+      label: 'Unproven — battery-compartment dimensions unpublished',
+      note: 'The pack is shown at an indicative study position. Published vessel overall dimensions cannot establish whether it fits the actual battery compartment; import or enter that compartment before making a fit claim.',
+    };
+  }
   const s = host.sizeM;
   // The roof and the belly are outside the body, so only two axes constrain.
   const outside = ['roof', 'belly'].includes(host.mount.id);
