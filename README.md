@@ -651,9 +651,16 @@ can only pass when measured target evidence is supplied. The deployment-plan
 layer maps that reviewed contract to a future runtime ABI, but executes no
 cycle and leaves the physical runtime planned. See
 [`docs/LOOP_TESTING.md`](docs/LOOP_TESTING.md) and
-[`docs/HIL_RUNTIME.md`](docs/HIL_RUNTIME.md). High-order
-SUNDIALS/IDA adapters, sparse DAE backends and an FMI importing master remain
-separate until their own conformance gates exist.
+[`docs/HIL_RUNTIME.md`](docs/HIL_RUNTIME.md). The exact official SUNDIALS 7.8.0
+IDA-only source asset and Linux lifecycle build are pinned, and a dense serial
+IDA reference backend is now implemented and tested in the source-only
+`rust-dae-native/` crate. IDA-only names the upstream solver-family asset, not
+a dense-only binary; the reference explicitly selects the serial vector, dense
+matrix and dense linear solver. It is not surfaced by the browser, service,
+desktop, package or release. Sparse SuiteSparse/KLU, index reduction,
+general-DAE qualification, browser WebAssembly integration and an FMI
+importing master remain separate until their own conformance and product gates
+exist.
 
 ## Tests
 

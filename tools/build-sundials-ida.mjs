@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
+import { createHash } from 'node:crypto';
 import { constants as fsConstants, copyFileSync, readFileSync } from 'node:fs';
 import {
-  chmod, lstat, mkdir, mkdtemp, realpath, rm,
+  chmod, cp, lstat, mkdir, mkdtemp, realpath, readdir, rm, writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
@@ -11,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 
 import {
   SUNDIALS_SOURCE_LOCK,
+  SUNDIALS_SOURCE_LOCK_PATH,
   verifySundialsArchive,
   verifySundialsLicenseFiles,
 } from './verify-sundials-source.mjs';
@@ -18,6 +20,25 @@ import {
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const SUNDIALS_IDA_PROBE_DIRECTORY = resolve(ROOT, 'tools/sundials-ida-probe');
 export const SUNDIALS_IDA_PROBE_TARGET = 'sundials_ida_lifecycle_probe';
+export const SUNDIALS_PUBLISHED_SOURCE_LOCK = 'battery-design-sundials-source-lock.json';
+export const SUNDIALS_BUILD_RECEIPT = 'battery-design-sundials-build.json';
+
+const PUBLISHED_ARCHIVES = Object.freeze([
+  'libsundials_core.a',
+  'libsundials_ida.a',
+]);
+const PUBLISHED_HEADERS = Object.freeze([
+  'include/sundials/sundials_config.h',
+  'include/ida/ida.h',
+  'include/ida/ida_ls.h',
+  'include/nvector/nvector_serial.h',
+  'include/sunmatrix/sunmatrix_dense.h',
+  'include/sunlinsol/sunlinsol_dense.h',
+]);
+const PUBLISHED_LICENSES = Object.freeze([
+  'share/licenses/sundials/LICENSE',
+  'share/licenses/sundials/NOTICE',
+]);
 
 export const ARCHIVE_LIMITS = Object.freeze({
   entries: 20_000,
@@ -113,6 +134,223 @@ export class SundialsNativeBuildError extends Error {
 
 function fail(code, message, details) {
   throw new SundialsNativeBuildError(code, message, details);
+}
+
+function sha256Bytes(bytes) {
+  return createHash('sha256').update(bytes).digest('hex');
+}
+
+function sha256File(path) {
+  return sha256Bytes(readFileSync(path));
+}
+
+function canonicalSourceLockBytes() {
+  const raw = readFileSync(SUNDIALS_SOURCE_LOCK_PATH, 'utf8');
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch (error) {
+    fail('sundials.source_lock.noncanonical', `SUNDIALS source lock is not valid JSON: ${error.message}`);
+  }
+  if (raw !== `${JSON.stringify(value, null, 2)}\n`) {
+    fail(
+      'sundials.source_lock.noncanonical',
+      'SUNDIALS source lock must be exact canonical JSON without duplicate keys or trailing data',
+    );
+  }
+  return Buffer.from(raw, 'utf8');
+}
+
+function exactKeys(value, expected, location) {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    fail('sundials.output.receipt_shape', `${location} must be a plain object`);
+  }
+  const actual = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(wanted)) {
+    fail(
+      'sundials.output.receipt_shape',
+      `${location} keys must be exactly ${wanted.join(', ')}; received ${actual.join(', ')}`,
+    );
+  }
+}
+
+function safeToolchainIdentity(value) {
+  return typeof value === 'string' && value.length > 0 && !/["\\\0-\x1f]/u.test(value);
+}
+
+function expectedBuildReceipt({ idaArchive, coreArchive, cmake, cCompiler }) {
+  return {
+    format: 'battery-design/sundials-build-receipt@1',
+    sourceLockFormat: SUNDIALS_SOURCE_LOCK.format,
+    sourceLockSha256: sha256File(SUNDIALS_SOURCE_LOCK_PATH),
+    solver: SUNDIALS_SOURCE_LOCK.project,
+    version: SUNDIALS_SOURCE_LOCK.version,
+    backend: 'IDA',
+    releaseTag: SUNDIALS_SOURCE_LOCK.releaseTag,
+    tagObjectSha: SUNDIALS_SOURCE_LOCK.tagObjectSha,
+    commitSha: SUNDIALS_SOURCE_LOCK.commitSha,
+    sourceSizeBytes: SUNDIALS_SOURCE_LOCK.sourceArchive.sizeBytes,
+    sourceSha256: SUNDIALS_SOURCE_LOCK.sourceArchive.sha256,
+    build: {
+      linkage: 'static',
+      precision: 'double',
+      indexBits: 64,
+      mpi: false,
+      klu: false,
+      errorChecks: true,
+    },
+    artifacts: {
+      idaArchiveSha256: sha256File(idaArchive),
+      coreArchiveSha256: sha256File(coreArchive),
+    },
+    toolchain: { cmake, cCompiler },
+  };
+}
+
+async function requireRegularFile(path, label) {
+  let metadata;
+  try {
+    metadata = await lstat(path);
+  } catch (error) {
+    fail('sundials.output.file_missing', `${label} is missing: ${error.message}`, { path });
+  }
+  if (!metadata.isFile() || metadata.isSymbolicLink()) {
+    fail('sundials.output.file_unsafe', `${label} must be a regular file`, { path });
+  }
+  return metadata;
+}
+
+function requireConfigContract(config, path) {
+  const required = [
+    '#define SUNDIALS_VERSION "7.8.0"',
+    '#define SUNDIALS_VERSION_MAJOR 7',
+    '#define SUNDIALS_VERSION_MINOR 8',
+    '#define SUNDIALS_VERSION_PATCH 0',
+    '#define SUNDIALS_DOUBLE_PRECISION 1',
+    '#define SUNDIALS_INT64_T 1',
+    '#define SUNDIALS_MPI_ENABLED 0',
+    '#define SUNDIALS_ENABLE_ERROR_CHECKS',
+  ];
+  for (const line of required) {
+    if (!config.split(/\r?\n/u).some((candidate) => candidate.trim() === line)) {
+      fail('sundials.output.config_drift', `${path} is missing required build contract ${line}`);
+    }
+  }
+  if (config.split(/\r?\n/u).some((line) => line.trim() === '#define SUNDIALS_KLU_ENABLED')) {
+    fail('sundials.output.config_drift', `${path} unexpectedly enables KLU`);
+  }
+}
+
+export async function verifyPublishedSundialsInstall(output) {
+  const root = resolve(output);
+  let rootMetadata;
+  try {
+    rootMetadata = await lstat(root);
+  } catch (error) {
+    fail('sundials.output.missing', `published install does not exist: ${error.message}`, { root });
+  }
+  if (!rootMetadata.isDirectory() || rootMetadata.isSymbolicLink()) {
+    fail('sundials.output.root_unsafe', 'published install must be a real directory', { root });
+  }
+
+  const sourceLockPath = join(root, SUNDIALS_PUBLISHED_SOURCE_LOCK);
+  await requireRegularFile(sourceLockPath, 'published SUNDIALS source lock');
+  const repositoryLockBytes = canonicalSourceLockBytes();
+  const installedLockBytes = readFileSync(sourceLockPath);
+  if (!installedLockBytes.equals(repositoryLockBytes)) {
+    fail(
+      'sundials.output.source_lock_mismatch',
+      'published SUNDIALS source lock does not exactly match the repository lock',
+    );
+  }
+
+  for (const relative of [...PUBLISHED_HEADERS, ...PUBLISHED_LICENSES]) {
+    await requireRegularFile(join(root, relative), `published file ${relative}`);
+  }
+  const licenseMetadata = await lstat(join(root, PUBLISHED_LICENSES[0]));
+  const noticeMetadata = await lstat(join(root, PUBLISHED_LICENSES[1]));
+  if (
+    licenseMetadata.size !== SUNDIALS_SOURCE_LOCK.license.licenseFile.sizeBytes
+    || sha256File(join(root, PUBLISHED_LICENSES[0]))
+      !== SUNDIALS_SOURCE_LOCK.license.licenseFile.sha256
+    || noticeMetadata.size !== SUNDIALS_SOURCE_LOCK.license.noticeFile.sizeBytes
+    || sha256File(join(root, PUBLISHED_LICENSES[1]))
+      !== SUNDIALS_SOURCE_LOCK.license.noticeFile.sha256
+  ) {
+    fail('sundials.output.license_mismatch', 'published SUNDIALS license or NOTICE identity drifted');
+  }
+
+  const libraryDirectory = join(root, 'lib');
+  let archiveNames;
+  try {
+    const archiveEntries = (await readdir(libraryDirectory, { withFileTypes: true }))
+      .filter((entry) => entry.name.endsWith('.a'));
+    if (archiveEntries.some((entry) => !entry.isFile() || entry.isSymbolicLink())) {
+      fail('sundials.output.archive_unsafe', 'published static archives must be regular files');
+    }
+    archiveNames = archiveEntries
+      .map((entry) => entry.name)
+      .sort();
+  } catch (error) {
+    fail('sundials.output.library_unreadable', `cannot inspect published libraries: ${error.message}`);
+  }
+  if (JSON.stringify(archiveNames) !== JSON.stringify(PUBLISHED_ARCHIVES)) {
+    fail(
+      'sundials.output.archive_surface',
+      `published lib must contain exactly ${PUBLISHED_ARCHIVES.join(' and ')}; received ${archiveNames.join(', ')}`,
+    );
+  }
+  const coreArchive = join(libraryDirectory, 'libsundials_core.a');
+  const idaArchive = join(libraryDirectory, 'libsundials_ida.a');
+  await requireRegularFile(coreArchive, 'published SUNDIALS core archive');
+  await requireRegularFile(idaArchive, 'published SUNDIALS IDA archive');
+
+  const configPath = join(root, 'include/sundials/sundials_config.h');
+  requireConfigContract(readFileSync(configPath, 'utf8'), configPath);
+
+  const receiptPath = join(root, SUNDIALS_BUILD_RECEIPT);
+  await requireRegularFile(receiptPath, 'published SUNDIALS build receipt');
+  const receiptRaw = readFileSync(receiptPath, 'utf8');
+  let receipt;
+  try {
+    receipt = JSON.parse(receiptRaw);
+  } catch (error) {
+    fail('sundials.output.receipt_invalid', `published build receipt is invalid JSON: ${error.message}`);
+  }
+  exactKeys(receipt, [
+    'format', 'sourceLockFormat', 'sourceLockSha256', 'solver', 'version', 'backend',
+    'releaseTag', 'tagObjectSha', 'commitSha', 'sourceSizeBytes', 'sourceSha256',
+    'build', 'artifacts', 'toolchain',
+  ], '$');
+  exactKeys(receipt.build, [
+    'linkage', 'precision', 'indexBits', 'mpi', 'klu', 'errorChecks',
+  ], '$.build');
+  exactKeys(receipt.artifacts, ['idaArchiveSha256', 'coreArchiveSha256'], '$.artifacts');
+  exactKeys(receipt.toolchain, ['cmake', 'cCompiler'], '$.toolchain');
+  if (!safeToolchainIdentity(receipt.toolchain.cmake)
+      || !safeToolchainIdentity(receipt.toolchain.cCompiler)) {
+    fail('sundials.output.receipt_toolchain', 'build receipt toolchain identities are unsafe');
+  }
+  const expected = expectedBuildReceipt({
+    idaArchive,
+    coreArchive,
+    cmake: receipt.toolchain.cmake,
+    cCompiler: receipt.toolchain.cCompiler,
+  });
+  const canonical = `${JSON.stringify(receipt, null, 2)}\n`;
+  if (receiptRaw !== canonical || JSON.stringify(receipt) !== JSON.stringify(expected)) {
+    fail(
+      'sundials.output.receipt_mismatch',
+      'published build receipt is not the exact closed canonical receipt for this install',
+    );
+  }
+  return Object.freeze({
+    root,
+    sourceLockSha256: expected.sourceLockSha256,
+    idaArchiveSha256: expected.artifacts.idaArchiveSha256,
+    coreArchiveSha256: expected.artifacts.coreArchiveSha256,
+  });
 }
 
 function normalizedArchivePath(rawPath, archiveRoot) {
@@ -351,27 +589,193 @@ function definitionsToArguments(definitions) {
   return Object.entries(definitions).map(([name, value]) => `-D${name}=${value}`);
 }
 
-function parseCli(arguments_) {
-  let archive = null;
-  for (let index = 0; index < arguments_.length; index += 1) {
-    const argument = arguments_[index];
-    if (argument !== '--archive') fail('sundials.cli.unknown_option', `unknown option: ${argument}`);
-    if (archive !== null) fail('sundials.cli.duplicate_archive', '--archive may be supplied only once');
-    const value = arguments_[index + 1];
-    if (!value || value.startsWith('--')) fail('sundials.cli.archive_required', '--archive requires a path');
-    archive = resolve(value);
-    index += 1;
+async function pathMetadata(path) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    fail('sundials.output.unreadable', `cannot inspect output path ${path}: ${error.message}`);
   }
-  if (archive === null) fail('sundials.cli.archive_required', '--archive is required; download the locked source archive separately');
-  return Object.freeze({ archive });
 }
 
-export async function buildAndProbeSundialsIda({ archive }) {
+function firstOutputLine(result, label) {
+  const line = `${result.stdout}\n${result.stderr}`
+    .split(/\r?\n/u)
+    .map((value) => value.trim())
+    .find(Boolean);
+  if (!safeToolchainIdentity(line)) {
+    fail('sundials.toolchain.identity_invalid', `${label} returned an unsafe identity`);
+  }
+  return line;
+}
+
+function installedLibraryDirectory(installDirectory) {
+  for (const relative of ['lib', 'lib64']) {
+    const candidate = join(installDirectory, relative);
+    try {
+      readFileSync(join(candidate, 'libsundials_ida.a'), { flag: 'r' });
+      readFileSync(join(candidate, 'libsundials_core.a'), { flag: 'r' });
+      return candidate;
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        fail('sundials.output.archive_unreadable', `cannot inspect ${candidate}: ${error.message}`);
+      }
+    }
+  }
+  fail(
+    'sundials.output.archive_missing',
+    'audited CMake install is missing libsundials_ida.a or libsundials_core.a',
+  );
+}
+
+async function publishCuratedInstall({
+  output,
+  sourceDirectory,
+  installDirectory,
+  cmakeIdentity,
+  compilerIdentity,
+}) {
+  const outputParent = dirname(output);
+  const outputName = basename(output);
+  await mkdir(outputParent, { recursive: true });
+  const publishWorkspace = await mkdtemp(join(outputParent, `.${outputName}.publish-`));
+  await chmod(publishWorkspace, 0o700);
+  const stagedInstall = join(publishWorkspace, 'root');
+  try {
+    await mkdir(join(stagedInstall, 'lib'), { recursive: true });
+    await mkdir(join(stagedInstall, 'share/licenses/sundials'), { recursive: true });
+    await cp(join(installDirectory, 'include'), join(stagedInstall, 'include'), {
+      recursive: true,
+      dereference: true,
+      errorOnExist: true,
+      force: false,
+      preserveTimestamps: false,
+    });
+
+    const sourceLibraryDirectory = installedLibraryDirectory(installDirectory);
+    const idaArchive = join(stagedInstall, 'lib/libsundials_ida.a');
+    const coreArchive = join(stagedInstall, 'lib/libsundials_core.a');
+    copyFileSync(
+      join(sourceLibraryDirectory, 'libsundials_ida.a'),
+      idaArchive,
+      fsConstants.COPYFILE_EXCL,
+    );
+    copyFileSync(
+      join(sourceLibraryDirectory, 'libsundials_core.a'),
+      coreArchive,
+      fsConstants.COPYFILE_EXCL,
+    );
+    copyFileSync(
+      join(sourceDirectory, 'LICENSE'),
+      join(stagedInstall, PUBLISHED_LICENSES[0]),
+      fsConstants.COPYFILE_EXCL,
+    );
+    copyFileSync(
+      join(sourceDirectory, 'NOTICE'),
+      join(stagedInstall, PUBLISHED_LICENSES[1]),
+      fsConstants.COPYFILE_EXCL,
+    );
+    copyFileSync(
+      SUNDIALS_SOURCE_LOCK_PATH,
+      join(stagedInstall, SUNDIALS_PUBLISHED_SOURCE_LOCK),
+      fsConstants.COPYFILE_EXCL,
+    );
+
+    const receipt = expectedBuildReceipt({
+      idaArchive,
+      coreArchive,
+      cmake: cmakeIdentity,
+      cCompiler: compilerIdentity,
+    });
+    await writeFile(
+      join(stagedInstall, SUNDIALS_BUILD_RECEIPT),
+      `${JSON.stringify(receipt, null, 2)}\n`,
+      { encoding: 'utf8', flag: 'wx', mode: 0o644 },
+    );
+    await verifyPublishedSundialsInstall(stagedInstall);
+
+    runCommand('mv', [
+      '--no-target-directory', '--no-clobber', stagedInstall, output,
+    ], { echo: false });
+    if (await pathMetadata(stagedInstall)) {
+      fail(
+        'sundials.output.publish_collision',
+        `output appeared during atomic publication; refusing to overwrite ${output}`,
+      );
+    }
+    await verifyPublishedSundialsInstall(output);
+    return output;
+  } finally {
+    await rm(publishWorkspace, { recursive: true, force: true });
+  }
+}
+
+function parseCli(arguments_) {
+  const options = { archive: null, output: null };
+  for (let index = 0; index < arguments_.length; index += 1) {
+    const argument = arguments_[index];
+    if (argument !== '--archive' && argument !== '--output') {
+      fail('sundials.cli.unknown_option', `unknown option: ${argument}`);
+    }
+    const key = argument === '--archive' ? 'archive' : 'output';
+    if (options[key] !== null) {
+      fail(`sundials.cli.duplicate_${key}`, `${argument} may be supplied only once`);
+    }
+    const value = arguments_[index + 1];
+    if (!value || value.startsWith('--')) {
+      fail(`sundials.cli.${key}_required`, `${argument} requires a path`);
+    }
+    options[key] = resolve(value);
+    index += 1;
+  }
+  if (options.archive === null) {
+    fail('sundials.cli.archive_required', '--archive is required; download the locked source archive separately');
+  }
+  if (options.output === null) {
+    fail('sundials.cli.output_required', '--output is required for the curated native adapter install');
+  }
+  if (options.output === resolve(sep)) {
+    fail('sundials.cli.output_unsafe', '--output must not name the filesystem root');
+  }
+  return Object.freeze(options);
+}
+
+export async function buildAndProbeSundialsIda({ archive, output }) {
   const lock = SUNDIALS_SOURCE_LOCK;
   if (lock.version !== '7.8.0') {
     fail('sundials.lock.version_unsupported', `this build contract requires SUNDIALS 7.8.0, not ${lock.version}`);
   }
+  if (typeof archive !== 'string' || typeof output !== 'string') {
+    fail('sundials.cli.paths_required', 'archive and output must be explicit paths');
+  }
+  archive = resolve(archive);
+  output = resolve(output);
+  if (output === resolve(sep)) {
+    fail('sundials.cli.output_unsafe', 'output must not name the filesystem root');
+  }
+  canonicalSourceLockBytes();
   await verifySundialsArchive(archive, lock);
+  const existingOutput = await pathMetadata(output);
+  if (existingOutput) {
+    try {
+      await verifyPublishedSundialsInstall(output);
+    } catch (error) {
+      fail(
+        'sundials.output.exists_unverified',
+        `refusing to overwrite an existing unverified output ${output}: ${error.message}`,
+      );
+    }
+    const inventory = inspectArchive(archive, lock);
+    return Object.freeze({
+      version: lock.version,
+      archiveSha256: lock.sourceArchive.sha256,
+      entries: inventory.entries,
+      expandedBytes: inventory.expandedBytes,
+      probe: SUNDIALS_IDA_PROBE_TARGET,
+      output,
+      reused: true,
+    });
+  }
 
   const workspace = await mkdtemp(join(tmpdir(), 'battery-design-sundials-ida-'));
   await chmod(workspace, 0o700);
@@ -408,7 +812,11 @@ export async function buildAndProbeSundialsIda({ archive }) {
     ]);
     const configureOutput = `${configured.stdout}\n${configured.stderr}`;
     const cachePath = join(buildDirectory, 'CMakeCache.txt');
-    auditSundialsCmakeCache(readFileSync(cachePath, 'utf8'), configureOutput, installDirectory);
+    const sundialsCache = auditSundialsCmakeCache(
+      readFileSync(cachePath, 'utf8'),
+      configureOutput,
+      installDirectory,
+    );
 
     runCommand('cmake', [
       '--build', buildDirectory,
@@ -451,12 +859,34 @@ export async function buildAndProbeSundialsIda({ archive }) {
     const linkedLibraries = runCommand('ldd', [probeExecutable]);
     auditProbeDynamicDependencies(`${linkedLibraries.stdout}\n${linkedLibraries.stderr}`);
 
+    const compiler = sundialsCache.get('CMAKE_C_COMPILER');
+    if (!compiler || !compiler.value) {
+      fail('sundials.toolchain.compiler_missing', 'CMake cache did not identify its C compiler');
+    }
+    const cmakeIdentity = firstOutputLine(
+      runCommand('cmake', ['--version'], { echo: false }),
+      'cmake --version',
+    );
+    const compilerIdentity = firstOutputLine(
+      runCommand(compiler.value, ['--version'], { echo: false }),
+      'C compiler --version',
+    );
+    await publishCuratedInstall({
+      output,
+      sourceDirectory,
+      installDirectory,
+      cmakeIdentity,
+      compilerIdentity,
+    });
+
     return Object.freeze({
       version: lock.version,
       archiveSha256: lock.sourceArchive.sha256,
       entries: inventory.entries,
       expandedBytes: inventory.expandedBytes,
       probe: SUNDIALS_IDA_PROBE_TARGET,
+      output,
+      reused: false,
     });
   } finally {
     await rm(workspace, { recursive: true, force: true });
@@ -474,7 +904,11 @@ async function main() {
     return;
   }
   const result = await buildAndProbeSundialsIda(options);
-  console.log(`SUNDIALS ${result.version} static IDA build and lifecycle probe passed (${result.entries} verified archive entries)`);
+  if (result.reused) {
+    console.log(`reusing verified SUNDIALS/IDA install: ${result.output}`);
+  } else {
+    console.log(`SUNDIALS ${result.version} static IDA build and lifecycle probe passed (${result.entries} verified archive entries); curated install: ${result.output}`);
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

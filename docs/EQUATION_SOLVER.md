@@ -40,12 +40,81 @@ its equations predict.
   construction may allocate, and the contract does not select or contain a
   DAE solver.
 
+### Iteration 2 native reference boundary
+
+`rust-dae-native/` now implements a bounded native Linux reference backend in
+source under `battery-design/native-ida-dense@1`. It is not part of the
+browser, desktop, service, npm package or any released product artifact. The
+crate's default feature set contains no native adapter:
+`IdaDenseBackend::new()` returns `ida.backend.unavailable` and never falls back
+to a built-in integrator while claiming IDA evidence.
+
+With the explicit `sundials-ida` feature, an accepted native install and a
+native Linux target using `panic=unwind`, the reference backend is exactly
+SUNDIALS/IDA 7.8.0 using BDF orders 1 through 5, `NVECTOR_SERIAL`,
+`SUNMATRIX_DENSE` and `SUNLINSOL_DENSE`, with static non-MPI linkage, double
+precision and 64-bit indices. It consumes `battery-design/dae-residual@1` and
+has backend-owned ceilings:
+
+- at most 256 DAE variables for the dense system;
+- at most 100,000 requested output points;
+- at most 10,000,000 cumulative internal steps for one consumed session; and
+- at most 25,600,000 returned scalar values.
+
+A caller may reduce those ceilings but cannot raise them. Requests select
+scalar or component-wise absolute tolerances and either use the residual
+contract's consistent initial values (`ContractConsistent`) or ask IDA to
+correct algebraic `y` and differential `yp` from exact-length finite guesses
+(`CorrectAlgebraicAndDerivative`). Scheduled events are explicitly rejected
+as `ida.events.unsupported` before request-specific native allocation;
+Iteration 2 does not pretend that an event-free run proves restart behavior.
+
+The solve loop uses `IDA_ONE_STEP` and cumulative native counters so repeated
+output requests cannot reset the global step budget. Requested rows are
+materialized with `IDAGetDky` only inside the newly completed step. Result
+objects bind their residual, backend and result contract identities and expose
+owned read-only row views plus solve-statistic deltas. Residual and Jacobian
+callbacks preflight native shapes and aliasing, contain Rust panics, preserve
+the first exact `DaeError`, and use preallocated work. The measured
+zero-allocation statement applies only to repeated successful callbacks after
+session construction; it does not cover lowering, initialization, solve
+orchestration or error handling.
+
+The authoritative source identity is the closed
+`battery-design/sundials-source-lock@1` document at
+`native-backends/sundials/source-lock.json`. It pins the official
+`ida-7.8.0.tar.gz` release asset, its tag object and commit, exact byte length
+and SHA-256, plus the checked-in BSD-3-Clause license and NOTICE identities.
+`tools/verify-sundials-source.mjs` verifies that source boundary, while
+`tools/build-sundials-ida.mjs` performs the bounded archive inventory, static
+Linux build, installed CMake-package audit and lifecycle probe established by
+Tasks 2A and 2B.
+
+The official asset is IDA-only at the solver-family level. Its installed IDA
+package still contains mandatory native vector, matrix and iterative-solver
+modules because upstream exposes no dense-only binary switch; neither the
+source lock nor the build gate claims otherwise. The Rust reference selects
+`NVECTOR_SERIAL`, `SUNMATRIX_DENSE` and `SUNLINSOL_DENSE`. Its derived adapter
+link root must additionally match the accepted source identity, configuration,
+closed receipt, recomputed archive hashes and exact archives consumed by
+Cargo before link directives are emitted. Runtime construction then probes
+SUNDIALS 7.8.0 and the complete selected native object stack.
+
+Those checks prove fail-closed content and configuration self-consistency for
+the accepted local build. Adjacent hashes and a self-recomputed receipt do not
+authenticate the publisher, prove reproducible-build equivalence, establish
+compiler trust, preserve artifact custody or provide a signed chain of
+possession. `tests/sundials-source-lock.test.mjs`,
+`tests/sundials-native-build.test.mjs` and
+`tools/test-native-dae-build.mjs` preserve the source, build, derived-install
+and real-link regression boundaries.
+
 `cosim.html`, `js/cosim-graph.js` and `js/cosim-studio.js` provide the first
-guided visual composition surface over that exact backend. The graph document
-is canonical and checksummed, typed wires are checked before transport, and
-Guided, Manual and Automatic draft modes all end at the same human approval
-boundary. Assistant/debugger changes are proposals; they cannot apply
-themselves.
+guided visual composition surface over the shipped `rust-core/` backend, not
+the source-only native reference. The graph document is canonical and
+checksummed, typed wires are checked before transport, and Guided, Manual and
+Automatic draft modes all end at the same human approval boundary.
+Assistant/debugger changes are proposals; they cannot apply themselves.
 
 Thermal-runaway propagation is attached as a separate specialist analysis
 module because its spatial two-node-per-cell model is not one scalar equation
@@ -102,9 +171,10 @@ This is a real solver, but it is not yet a general industrial DAE platform.
 The following remain explicitly unshipped:
 
 - physical conserving ports and automatic index reduction;
-- large sparse Jacobians and sparse linear algebra;
-- high-order BDF/IDA-class stiff integration and general implicit DAEs;
-- SUNDIALS or PETSc adapters;
+- large sparse Jacobians, SuiteSparse/KLU and other sparse linear algebra;
+- general-DAE qualification or product-facing high-order BDF/IDA integration;
+- any SUNDIALS or PETSc adapter in browser WebAssembly, a service, the desktop
+  application or a product package;
 - an FMI 3.0 importing master and scheduled execution;
 - certification for safety-critical decisions.
 
@@ -128,24 +198,36 @@ The campaign is split into independently reviewable gates:
    library dependency.
 2. **Native dense IDA reference path:** this is split again so that every
    change remains short and independently reversible:
-   - **2A — source pin:** lock the exact official release asset, tag object,
-     commit, byte length, SHA-256, BSD-3-Clause license and NOTICE identities;
-   - **2B — minimal Linux build:** compile the official IDA-only distribution
-     with every third-party solver disabled, then prove the reference probe
-     selects the serial vector, dense matrix and dense linear solver; upstream
-     does not expose a native-module switch for a dense-only binary;
-   - **2C — FFI compile contract:** bind and version-check only the C symbols
-     required by the adapter, without running a solve;
-   - **2D — safe lifecycle:** construct and destroy native objects through
-     owned Rust wrappers, without residual callbacks;
-   - **2E — residual bridge:** connect the allocation-free residual contract
-     to IDA with panic and error containment;
-   - **2F — dense Jacobian bridge:** map the deterministic Jacobian into the
-     dense reference matrix and verify its orientation;
-   - **2G — initialization and solve:** apply IDs and tolerances, calculate
-     consistent conditions when required and solve independent small cases;
-   - **2H — diagnostics and evidence:** publish stable failure mapping,
-     tolerance-convergence and cross-solver conformance evidence.
+   - **2A — source pin (complete):** lock the exact official release asset,
+     tag object, commit, byte length, SHA-256, BSD-3-Clause license and NOTICE
+     identities;
+   - **2B — minimal Linux build (complete):** compile the official IDA-only
+     distribution with every optional third-party solver disabled, then prove
+     the reference probe selects the serial vector, dense matrix and dense
+     linear solver. Upstream does not expose a native-module switch for a
+     dense-only binary;
+   - **2C — FFI compile contract (complete):** bind and version-check only the
+     C symbols required by the adapter;
+   - **2D — safe lifecycle (complete):** construct and destroy the context,
+     vectors, matrix, linear solver and IDA memory through owned Rust wrappers;
+   - **2E — residual bridge (complete):** connect the allocation-free residual
+     contract to IDA with pinned user data, panic containment and exact
+     first-error preservation;
+   - **2F — dense Jacobian bridge (complete):** map deterministic CSC values
+     into the native dense column-major matrix with checked view orientation;
+   - **2G — initialization and solve (complete):** apply IDs, scalar or vector
+     tolerances and both supported initial-condition policies, then execute a
+     cumulatively bounded `IDA_ONE_STEP` requested-grid solve;
+   - **2H — diagnostics and evidence (complete):** expose stable failure and
+     result identities, solve-statistic deltas, a three-level analytical
+     tolerance-convergence study, an in-repository Dormand–Prince comparison,
+     an independently generated SciPy 1.17.0 Radau Robertson reference, and
+     adversarial native-boundary evidence.
+
+   Tasks 2C–2H are implemented and tested in the source-only optional
+   `rust-dae-native/` crate under the `sundials-ida` feature. Completion of
+   these subtasks creates a bounded native Linux reference backend, not a
+   browser, desktop, service, package, release or general-DAE capability.
 3. **Sparse native path:** add an explicitly qualified sparse Jacobian and KLU
    configuration, with sparsity, scaling and large-model convergence evidence.
 4. **Native execution integration:** add governed event restart plus a bounded
@@ -155,15 +237,17 @@ The campaign is split into independently reviewable gates:
    that passed native conformance, package the accepted binaries, prove their
    exact artifact lineage in CI and preserve the built-in fallback.
 
-Iterations 2–5 are not shipped. In particular, the Iteration 1 lowering does
-not compile or link SUNDIALS, IDA, SuiteSparse or KLU; does not provide index
-reduction or solve a general implicit DAE; does not qualify a native backend;
-and does not change or extend the current WebAssembly ABI. A planned backend
-must not appear in product capability metadata until its own executable and
-conformance evidence exist. A SUNDIALS WebAssembly build is an optional later
-qualification track, not an implied outcome of native acceptance: Emscripten
-uses a distinct platform ABI, while the current standalone WebAssembly solver
-remains intact.
+Iteration 2 is implemented and tested only as the native Linux dense reference
+described above; it is not product-packaged or released. Iterations 3–5 remain
+unimplemented and unshipped. `rust-core/` itself remains dependency-free and
+does not compile or link SUNDIALS, IDA, SuiteSparse or KLU. Neither completed
+iteration provides index reduction, qualifies general implicit DAEs, adds a
+KLU/sparse path, exposes a native service or desktop integration, or changes
+the current WebAssembly ABI. The native reference must not appear in product
+capability metadata until the later integration, package and release gates
+exist. A SUNDIALS WebAssembly build is an optional later qualification track,
+not an implied outcome of native acceptance: Emscripten uses a distinct
+platform ABI, while the current standalone WebAssembly solver remains intact.
 
 Task 2A adds `native-backends/sundials/source-lock.json`, checked-in license
 notices and an offline byte verifier. The lock identifies the official
@@ -181,12 +265,23 @@ memory object together with a serial vector, native dense matrix and native
 dense linear solver. It does not register residual callbacks, call `IDAInit`
 or run a numerical solve.
 
-This gate proves a repeatable reference build and the selected C object
+Task 2B alone proves a repeatable reference build and the selected C object
 lifecycle on Ubuntu only. It does not add Rust FFI, link SUNDIALS into
 `rust-core`, alter the WebAssembly build, package a native library, qualify a
 DAE result or expose a product capability. The upstream IDA-only distribution
-also contains other mandatory native matrix and iterative-solver modules;
-Task 2B therefore makes no claim that the compiled archive is dense-only.
+also contains other mandatory native vector, matrix and iterative-solver
+modules; Task 2B therefore makes no claim that the installed package or
+compiled archives are dense-only.
+
+Tasks 2C–2H build on, rather than rewrite, that source and build history. The
+optional sibling crate owns the narrow Rust FFI, lifetime-safe native object
+stack, contained residual and dense-Jacobian callbacks, initialization,
+requested-grid solve, result/statistic contract and reference campaign.
+`rust-core/` remains dependency-free, and the source-only adapter is not copied
+into or selected by any product surface. The accepted evidence therefore says
+that this exact dense serial native reference configuration works on Linux; it
+does not say that every module in the upstream IDA distribution is dense, that
+an arbitrary DAE will converge or that a user can select IDA in the product.
 
 ## Numerical contract
 
@@ -235,13 +330,39 @@ Native Rust tests currently prove:
   caller-buffer callbacks after lowering; they do not claim allocation-free
   lowering or initialization construction.
 
-Before adding a SUNDIALS, high-order BDF, DAE or sparse backend, its adapter
-must keep these tests and add solver-specific benchmark suites,
-tolerance-convergence studies and cross-validation against a trusted external
-implementation. The built-in backward-Euler path is an auditable reliability
-fallback for small stiff ODE graphs; it is not presented as IDA, CVODE or a
-general industrial DAE solver. The UI may describe the capability that
-passed—not the capability that is merely planned.
+The focused Iteration 1 DAE campaign contains 28 unique tests. The focused
+Iteration 2 native campaign contains 81 unique native cases: 80 feature-on
+cases plus one feature-off case proving explicit unavailability without
+fallback. This is more than twice the Iteration 1 focused count; it is a
+scope-for-scope campaign comparison, not a claim that the repository's global
+test suite doubled.
+
+The 80 feature-on cases cover exact runtime identity and context recreation;
+native resource construction and drop order; complete registration order;
+both initial-condition policies; scalar/vector tolerances; BDF order 1 and 5;
+callback shape, alias, error, panic and allocation behavior; global
+`IDA_ONE_STEP` accounting and bounded interpolation; target-span floating-point
+edges; result shape, identities and statistics; analytical exponential and
+affine index-one systems; three-decade analytical tolerance convergence; and
+the same ODE graph solved independently by rust-core Dormand–Prince. The stiff
+Robertson index-one case is also compared with fixed values independently
+generated by SciPy 1.17.0 `solve_ivp(method='Radau')` at `rtol=1e-12` and
+`atol=1e-14`; the reproduction parameters and official SciPy solver-document
+URL are preserved beside the regression. The separate build-provenance harness
+attacks canonical lock and receipt bytes, install contents and archive
+identities. These tests establish this bounded reference configuration only;
+they do not qualify arbitrary DAEs, sparse KLU, event restarts, another
+operating system or a product package.
+
+Before exposing the native reference through a product, the later campaign
+gates must keep these tests and add the platform, integration, packaging and
+release evidence for that exact surface. A sparse or materially broader DAE
+backend additionally needs its own benchmark, convergence and independent
+cross-validation campaign. The built-in backward-Euler path remains the
+shipped auditable fallback for small stiff ODE graphs; it is not presented as
+IDA, CVODE or a general industrial DAE solver. The UI may describe the
+capability that passed—not the capability that is merely present in source or
+planned.
 
 ## Human-facing product boundary
 
