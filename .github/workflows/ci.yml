@@ -28,6 +28,50 @@ jobs:
       - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs
 
+  fmu:
+    name: FMI 2.0 compiled artifact
+    needs: validate
+    permissions:
+      actions: read
+      contents: read
+    uses: ./.github/workflows/fmu.yml
+    with:
+      ref: ${{ github.sha }}
+
+  browser-e2e:
+    needs: [validate, godot-web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.77.2
+          targets: wasm32-unknown-unknown
+      - run: npm ci
+      - name: Build the browser calculation core
+        run: npm run wasm:build
+      - name: Restore the Godot export accepted by its gate
+        uses: actions/download-artifact@v4
+        with:
+          name: garage3d-web
+          path: garage3d/build
+      - name: Install the pinned real browser
+        run: npx playwright install --with-deps chromium
+      - name: Exercise the browser UI and accessibility tree
+        run: npm run test:e2e
+      - name: Keep browser evidence when the gate fails
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-evidence
+          path: tests/e2e/.artifacts
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   # Vessel Twin changes renderer-owned code as well as JavaScript payloads.
   # The Pages workflow already builds Godot after merge; doing the same on a
   # pull request prevents a GDScript/import/export defect reaching main first.
@@ -71,3 +115,72 @@ jobs:
           test -s build/index.html
           test -s build/index.wasm
           test -s build/index.pck
+      - name: Preserve the verified renderer for package testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: garage3d-web
+          path: garage3d/build
+          if-no-files-found: error
+          retention-days: 1
+
+  # Build what users install, then prove both Linux package formats launch the
+  # authenticated runner from their installed resource tree. Pages waits for
+  # the whole CI workflow, so a desktop packaging regression also blocks web
+  # publication instead of being discovered at release-tag time.
+  tauri-launch:
+    needs: [validate, godot-web]
+    runs-on: ubuntu-22.04
+    env:
+      TARGET: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu,wasm32-unknown-unknown
+      - name: Linux build and headless-launch dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev \
+            librsvg2-dev patchelf libssl-dev build-essential curl wget file xdg-utils xvfb
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: desktop-app/src-tauri -> target
+          key: ${{ env.TARGET }}
+      - name: Stage the Node runtime as the bundled runner
+        run: |
+          mkdir -p desktop-app/src-tauri/binaries
+          cp "$(command -v node)" "desktop-app/src-tauri/binaries/bd-runner-${TARGET}"
+          chmod +x "desktop-app/src-tauri/binaries/bd-runner-${TARGET}"
+      - name: Build the shared Rust/Wasm calculation core
+        run: npm run wasm:build
+      - name: Restore the Godot export accepted by its gate
+        uses: actions/download-artifact@v4
+        with:
+          name: garage3d-web
+          path: garage3d/build
+      - name: Stage and verify the complete application tree
+        run: |
+          node desktop-app/prepare.mjs
+          npm run test:packaged
+      - name: Check the desktop icons
+        run: |
+          cd desktop-app/src-tauri/icons
+          for file in icon.ico icon.icns 32x32.png 128x128.png 128x128@2x.png; do
+            test -f "$file" || { echo "missing icon: $file"; exit 1; }
+          done
+      - name: Build the Linux installers
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: desktop-app/src-tauri
+          args: --target ${{ env.TARGET }}
+      - name: Install and launch-smoke the deb and AppImage
+        run: |
+          set -euo pipefail
+          deb=$(find desktop-app/src-tauri/target/${TARGET}/release/bundle/deb -name '*.deb' -type f -print -quit)
+          appimage=$(find desktop-app/src-tauri/target/${TARGET}/release/bundle/appimage -name '*.AppImage' -type f -print -quit)
+          tools/smoke-installed-linux.sh "$deb" "$appimage"

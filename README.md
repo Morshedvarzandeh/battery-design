@@ -1,7 +1,11 @@
 # battery-design
 
 
-## Download
+## Downloads
+
+No installer release has been published yet. When the first tag passes the
+full hosted browser, Godot and installed-package gates, its draft release can
+be published with these validated Linux artifacts:
 
 | You are on | File |
 |---|---|
@@ -15,22 +19,46 @@ today, or from a clone with `node desktop/bd.mjs serve`.
 
 **[→ Releases](https://github.com/Morshedvarzandeh/battery-design/releases)**
 
-Nothing to install beyond the app itself — the runtime is bundled, so there is
-no "install Node first" step. No account, no network, nothing uploaded.
+The runtime is bundled in those packages, so there is no "install Node first"
+step. No account, no network, nothing uploaded.
 
 Prefer not to install anything? The same designer runs in a browser at
 **[morshedvarzandeh.github.io/battery-design](https://morshedvarzandeh.github.io/battery-design/)**,
-with the heavier studies reserved for the desktop build.
+with the advanced local model and export tools reserved for the desktop build.
 
-Already have a simulation toolchain? Take `battery-design-ev.fmu.zip` from the
-same release instead. It is an FMI 2.0 co-simulation component that drops into
-ANSYS Twin Builder, Simulink, GT-SUITE or Dymola — your vehicle or plant model
-drives it, and the pack answers each coupling step.
+Already have a simulation toolchain? The gated release workflow produces
+`battery-design-ev.fmu`, a compiled FMI 2.0 Co-Simulation FMU containing
+verified `linux64` (glibc 2.17+ baseline) and `win64` x64 binaries. Import the
+`.fmu` directly; it is already a ZIP-format FMU archive. CI validates its FMI
+2.0.5 XML contract,
+native ABI and lifecycle, then imports and steps it with fmusim and FMPy on the
+matching operating systems. These open-source checks do not certify acceptance
+in ANSYS Twin Builder, Simulink or GT-SUITE; record a product/version-specific
+result using the [commercial acceptance checklist](docs/FMI_COMMERCIAL_ACCEPTANCE.md)
+before making a host-support claim.
 
-Installers are unsigned, so Windows SmartScreen and macOS Gatekeeper will both
-warn about them. They are right to: signing certificates cost money and this
-project has not bought one. On macOS, right-click the app and choose Open the
-first time.
+The desktop GUI, CLI and local API continue to export an editable source-FMU
+build kit. That local source kit is not loadable until it is compiled and
+packaged.
+
+The Linux desktop packages are unsigned, so a software centre may warn about
+them. Windows and macOS desktop packages are not currently built or advertised.
+
+### Where each capability is exposed
+
+| Surface | Available now |
+|---|---|
+| Browser GUI | Pack/application design, reports, Level-1 mission simulation, Rust/Wasm equation studio, SIL, comparative runaway/vent studies and HIL contract preparation |
+| Desktop GUI extras | Advanced electro-thermal run, source-FMU kit export and the host-machine silhouette |
+| Desktop CLI | Calibration, bounded multicore search and sweeps, BOM/wiring, grounding, LCA, swap/runaway studies and source-FMU export |
+| Local API | Pack design and ontology, advanced simulation and calibration, bounded search, and source-FMU export |
+| MCP | Pack design, mission/cell comparisons, ontology queries and engineering review for an MCP client |
+| Planned—not shipped | Crush, vibration, spatial thermal/corrosion solvers and a deterministic HIL target runtime |
+
+The local HTTP API binds only to `127.0.0.1`, requires a cryptographically
+generated per-launch token and applies request/work limits. The command
+`node desktop/bd.mjs serve` prints the private tokenised URL to open; the installed app handles this
+automatically.
 
 **Design a battery pack from an application and an available space — geometry,
 electrical architecture, thermal system, mission simulation and the customer
@@ -302,7 +330,7 @@ project's provenance-first datasheet pipeline.
   absence embarrasses I²R-only models against real data), a per-module thermal
   network with an ε-NTU coolant stream (a stopped pump removes no heat; a fast
   one is limited by the cold plate), and calendar + cycle aging as a
-  year-by-year capacity and resistance schedule. `calibrate` fits it to your
+  year-by-year capacity and resistance schedule. The CLI/API `calibrate` command fits it to your
   measured `time,current,voltage[,temperature]` and reports how far each
   parameter moved and whether it hit a bound. The test suite proves the fitter
   by generating data from *known* parameters and requiring it to recover them
@@ -509,7 +537,7 @@ is copied into the repository.
 | `js/charging.js` | The AC side: per-application charging architecture, OBC classes, charge-time math, market connectors, strategies |
 | `js/sim2.js` | The level-2 model: RC dynamics, entropic heat, per-module thermal network with ε-NTU coolant, aging — every coefficient exposed and calibratable against your own measurements |
 | `js/api.js` | The whole designer as one call — `designFromSpec(spec)` → JSON. Runs in a browser and in Node |
-| `desktop/bd.mjs` | Command-line runner: design, mission, sweep, range study, and the UI served offline |
+| `desktop/bd.mjs` | Authenticated loopback runner plus CLI: design, mission, bounded search/sweep/range studies, engineering utilities, source-FMU kit export and the UI served offline |
 | `desktop/mcp-server.mjs` | MCP server so Claude or any agent can drive the designer as tools |
 | `js/vehicle.js` | The machine around the pack: road load, vehicle class defaults, driving modes, speed traces, Wh/km and range |
 | `js/v2x.js` | Feeding power back: V2L/V2H/V2G/V2V modes, per-design verdicts, and the cycle-life wear floor behind the V2G economics |

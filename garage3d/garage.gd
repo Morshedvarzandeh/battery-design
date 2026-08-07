@@ -468,8 +468,11 @@ func _on_js_scene(args: Array) -> void:
 func _post(msg: Dictionary) -> void:
 	if not OS.has_feature("web"):
 		return
-	var payload := JSON.stringify(msg).replace("\\", "\\\\").replace("'", "\\'")
-	JavaScriptBridge.eval("window.parent && window.parent.postMessage(JSON.parse('%s'), '*')" % payload, true)
+	var window := JavaScriptBridge.get_interface("window")
+	if window == null:
+		push_error("no window interface for renderer message")
+		return
+	window.bdPostMessage(JSON.stringify(msg))
 
 
 func _fail(why: String) -> void:

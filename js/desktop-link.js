@@ -16,8 +16,41 @@
 // as it always has.
 
 const PROBE_TIMEOUT_MS = 1500;
+const TOKEN_STORAGE_KEY = 'battery-design.runner-token';
+const TOKEN_HEADER = 'X-Battery-Design-Token';
+const RUNNER_ID = 'battery-design-desktop-v1';
+
+// Tauri and `bd.mjs serve` open one tokenised bootstrap URL. Keep the secret
+// only for this tab session, then remove it from the address bar immediately
+// so reload still works without leaking it through history or referrers.
+function bootstrapToken() {
+  let token = null;
+  let url = null;
+  try {
+    const href = globalThis.location?.href;
+    if (href) {
+      url = new URL(href);
+      token = url.searchParams.get('token');
+      if (token) {
+        try { globalThis.sessionStorage?.setItem(TOKEN_STORAGE_KEY, token); } catch { /* session-only memory still works */ }
+      }
+    }
+  } catch {
+    // A malformed host URL cannot happen in the packaged app; fail soft if an
+    // embedder supplies one.
+  }
+  if (token && url) {
+    try {
+      url.searchParams.delete('token');
+      globalThis.history?.replaceState(globalThis.history.state, '', `${url.pathname}${url.search}${url.hash}`);
+    } catch { /* the token remains memory-only even if history is unavailable */ }
+  }
+  try { token ||= globalThis.sessionStorage?.getItem(TOKEN_STORAGE_KEY) || null; } catch { /* storage can be disabled */ }
+  return token;
+}
 
 let cached = null;   // null = not asked yet, false = no runner, object = runner
+let runnerToken = bootstrapToken();
 
 /**
  * Is a local runner answering? Asked once; the answer is remembered.
@@ -26,19 +59,27 @@ let cached = null;   // null = not asked yet, false = no runner, object = runner
 export async function detectRunner() {
   if (cached !== null) return cached;
   cached = false;
+  if (!runnerToken) return cached;
+  let timer;
   try {
     const ctl = new AbortController();
-    const timer = setTimeout(() => ctl.abort(), PROBE_TIMEOUT_MS);
-    const res = await fetch('/api/capabilities', { signal: ctl.signal });
-    clearTimeout(timer);
+    timer = setTimeout(() => ctl.abort(), PROBE_TIMEOUT_MS);
+    const res = await fetch('/api/capabilities', {
+      signal: ctl.signal,
+      headers: { [TOKEN_HEADER]: runnerToken },
+      credentials: 'same-origin',
+    });
     if (res.ok) {
       const info = await res.json();
       // Only trust an answer that looks like ours.
-      if (info?.runner && Array.isArray(info.capabilities)) cached = info;
+      if (info?.runnerId === RUNNER_ID && info?.runner === 'battery-design desktop'
+        && Array.isArray(info.capabilities)) cached = info;
     }
   } catch {
     // No runner, a timeout, or a plain static host. All the same thing: the
     // page carries on as the browser version.
+  } finally {
+    clearTimeout(timer);
   }
   return cached;
 }
@@ -48,9 +89,11 @@ export function knownRunner() { return cached; }
 export function resetRunner() { cached = null; }
 
 async function post(path, body) {
+  if (!runnerToken) throw new Error('The authenticated desktop runner is not available in this session.');
   const res = await fetch(path, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', [TOKEN_HEADER]: runnerToken },
+    credentials: 'same-origin',
     body: JSON.stringify(body ?? {}),
   });
   const data = await res.json().catch(() => ({ error: `The runner returned ${res.status}.` }));
@@ -67,7 +110,7 @@ export const runCalibration = (body) => post('/api/calibrate', body);
 /** Search the design space across every core. */
 export const runSearch = (body) => post('/api/search', body);
 
-/** Build the FMI co-simulation FMU. Returns the files as strings. */
+/** Build an FMI source-FMU kit. Returns its path-preserving files as strings. */
 export const buildFmuOnRunner = (body) => post('/api/fmu', body);
 
 /**
@@ -79,14 +122,14 @@ export function runnerStatusLine(info) {
     return {
       here: 'browser',
       text: 'Running in your browser — instant, private, nothing installed. '
-        + 'The heavier studies (the calibratable model, design-space search, co-simulation export) '
-        + 'need the desktop runner, which is the same interface with the ceiling removed.',
+        + 'The desktop GUI adds the advanced model and source-FMU export. '
+        + 'Design-space search, calibration and automation are available separately through its CLI/API/MCP interfaces.',
     };
   }
   return {
     here: 'desktop',
     text: `Running on your machine across ${info.cores} core${info.cores === 1 ? '' : 's'} — `
-      + `${info.capabilities.length} extra capabilit${info.capabilities.length === 1 ? 'y is' : 'ies are'} available here: `
+      + `${info.capabilities.length} desktop-GUI extra${info.capabilities.length === 1 ? ' is' : 's are'} visible here: `
       + `${info.capabilities.map((c) => c.name).join(', ')}. Nothing leaves this computer.`,
   };
 }

@@ -15,14 +15,14 @@
 //      sleep — a slow machine is exactly where a fixed delay breaks.
 //   4. Point the window at it.
 //
-// If the runner cannot start, the window still opens and the page falls back
-// to browser-tier on its own: `desktop-link.js` already probes
-// /api/capabilities and degrades when there is no answer. So a failure here
-// costs the heavy compute, not the application.
+// If the authenticated runner cannot start, the window still opens the
+// bundled page at browser tier. So a failure here costs the heavy compute, not
+// the application, and an unrelated process can never be accepted as runner.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use std::net::TcpListener;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, Instant};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 use tauri_plugin_shell::process::CommandEvent;
@@ -39,17 +39,54 @@ fn free_port() -> u16 {
         .unwrap_or(8420)
 }
 
-/// Wait for the server to actually answer. A fixed sleep is the usual shortcut
-/// and it breaks on exactly the machines this application is meant to support
-/// — an old laptop takes longer to start Node than a fast one, and a window
-/// pointed at a port that is not listening yet shows an error page the
-/// customer has no way to interpret.
-fn wait_for_server(port: u16, timeout: Duration) -> bool {
+/// Generate the bearer secret shared only by this window and its sidecar.
+/// `getrandom` reads the operating system CSPRNG on every supported target;
+/// failure is fatal rather than falling back to a guessable token.
+fn launch_token() -> std::io::Result<String> {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|e| std::io::Error::other(format!("could not generate runner token: {e}")))?;
+    let mut token = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        token.push(HEX[(byte >> 4) as usize] as char);
+        token.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    Ok(token)
+}
+
+/// Verify the authenticated capabilities response, not merely that a process
+/// happens to own the port. This closes the free-port race: an unrelated or
+/// malicious listener cannot become the application window.
+fn authenticated_probe(port: u16, token: &str) -> bool {
+    let address = SocketAddr::from(([127, 0, 0, 1], port));
+    let Ok(mut stream) = TcpStream::connect_timeout(&address, Duration::from_millis(250)) else {
+        return false;
+    };
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+    let _ = stream.set_write_timeout(Some(Duration::from_millis(500)));
+    let request = format!(
+        "GET /api/capabilities HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n\
+         X-Battery-Design-Token: {token}\r\nConnection: close\r\n\r\n"
+    );
+    if stream.write_all(request.as_bytes()).is_err() {
+        return false;
+    }
+    let mut response = String::new();
+    if stream.read_to_string(&mut response).is_err() {
+        return false;
+    }
+    let lower = response.to_ascii_lowercase();
+    lower.starts_with("http/1.1 200")
+        && lower.contains("x-battery-design-runner: battery-design-desktop-v1")
+        && response.contains("\"runnerId\":\"battery-design-desktop-v1\"")
+        && response.contains("\"runner\":\"battery-design desktop\"")
+}
+
+fn wait_for_server(port: u16, token: &str, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
-        if TcpListener::bind(("127.0.0.1", port)).is_err() {
-            // Binding FAILED, which means something else holds the port —
-            // that something is our Node server.
+        if authenticated_probe(port, token) {
             return true;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -62,6 +99,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             let port = free_port();
+            let token = launch_token()?;
             let handle = app.handle().clone();
 
             // The runner is bundled as a sidecar: the customer installs
@@ -83,7 +121,14 @@ fn main() {
                 Ok(script) => app
                     .shell()
                     .sidecar("bd-runner")
-                    .map(|cmd| cmd.args([&script, "serve", "--port", &port.to_string()]))
+                    .map(|cmd| cmd.args([
+                        &script,
+                        "serve",
+                        "--port",
+                        &port.to_string(),
+                        "--token",
+                        &token,
+                    ]))
                     .and_then(|cmd| cmd.spawn()),
                 Err(e) => Err(tauri_plugin_shell::Error::Io(std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -115,8 +160,8 @@ fn main() {
                 }
             }
 
-            let url = if wait_for_server(port, Duration::from_secs(20)) {
-                format!("http://127.0.0.1:{port}/index.html")
+            let url = if wait_for_server(port, &token, Duration::from_secs(20)) {
+                format!("http://127.0.0.1:{port}/index.html?token={token}")
             } else {
                 eprintln!("Runner did not answer in time — opening the bundled page directly.");
                 "index.html".to_string()

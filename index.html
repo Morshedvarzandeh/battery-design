@@ -31,7 +31,7 @@
   --accent:#0B6E5F; --accent-ink:#FFFFFF; --accent-soft:#E3F0ED;
   --missing:#B4441F; --missing-soft:#FBEAE3;
   --ok:#2F6B3A; --ok-soft:#E4F0E6;
-  --warn:#8A6A0A; --warn-soft:#F7EFD6;
+  --warn:#806000; --warn-soft:#F7EFD6;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
   --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   --r:6px;
@@ -49,7 +49,7 @@
 :root[data-theme="light"]{--ground:#F4F6F5;--surface:#FCFCFB;--surface-2:#EEF1F0;--line:#DBE2E0;
   --ink:#101615;--ink-2:#3A4644;--muted:#5F6D69;--accent:#0B6E5F;--accent-ink:#FFFFFF;
   --accent-soft:#E3F0ED;--missing:#B4441F;--missing-soft:#FBEAE3;
-  --ok:#2F6B3A;--ok-soft:#E4F0E6;--warn:#8A6A0A;--warn-soft:#F7EFD6;}
+  --ok:#2F6B3A;--ok-soft:#E4F0E6;--warn:#806000;--warn-soft:#F7EFD6;}
 
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -57,7 +57,7 @@ body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
   font-size:14px;line-height:1.45;display:flex;flex-direction:column}
 a{color:var(--accent)}
 button{font:inherit;color:inherit}
-button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible{
   outline:3px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:2px}
 
 header{display:flex;align-items:center;gap:14px;padding:10px 16px;
@@ -276,8 +276,8 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
 .prov-good{color:#0b6e5f;border-color:#7fc9bc;background:#e6f4f1}
 .prov-warn{color:#8a5a00;border-color:#e0c169;background:#fdf4e0}
 .prov-estimate{color:#7a3b12;border-color:#e5b79c;background:#fbeee6}
-.provuid{font-family:ui-monospace,monospace;font-size:10px;opacity:.7}
-.provdetail{margin-top:4px;font-size:11px;line-height:1.45;opacity:.75}
+.provuid{font-family:ui-monospace,monospace;font-size:10px;color:var(--muted)}
+.provdetail{margin-top:4px;font-size:11px;line-height:1.45;color:var(--muted)}
 @media (prefers-color-scheme:dark){
   .prov-good{color:#7fc9bc;border-color:#1e8f7c;background:#0c2b26}
   .prov-warn{color:#e5c07b;border-color:#8a6d24;background:#2b2312}
@@ -625,7 +625,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
     <div class="tabpane active" id="pane-design">
       <div class="sec">
         <h3>Cell</h3>
-        <select id="selCell"></select>
+        <select id="selCell" aria-label="Battery cell"></select>
         <div class="hint" id="cellHint"></div>
         <button class="btn" id="btnBrowse" style="width:100%;margin-top:8px">Browse and compare cells</button>
         <div id="cellPicker" class="pickpanel" hidden></div>
@@ -727,7 +727,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       </div>
       <div class="sec">
         <h3>Environment — climate &amp; season</h3>
-        <select id="selClimate">
+        <select id="selClimate" aria-label="Climate profile">
           <option value="temperate">Temperate (central EU / US midlatitude)</option>
           <option value="cold">Cold / continental (Nordic, Canada, alpine)</option>
           <option value="hot">Hot (arid / tropical)</option>
@@ -771,8 +771,8 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           <label class="f">Max mass (kg)</label><input type="number" id="rqKg" value="">
           <label class="f">Max dimensions L×W×H (mm, blank = open)</label>
           <div class="row3">
-            <input type="number" id="rqDx" placeholder="L"><input type="number" id="rqDy" placeholder="W">
-            <input type="number" id="rqDz" placeholder="H">
+            <input type="number" id="rqDx" placeholder="L" aria-label="Maximum length in millimetres"><input type="number" id="rqDy" placeholder="W" aria-label="Maximum width in millimetres">
+            <input type="number" id="rqDz" placeholder="H" aria-label="Maximum height in millimetres">
           </div>
           <div class="row2">
             <div><label class="f">Temp min (°C)</label><input type="number" id="rqTlo" value="0"></div>
@@ -795,7 +795,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
         <div class="disclaimer" id="profileChoiceHint">Pick an application on the Usage tab first. Sizing will show only the relevant choices.</div>
         <div id="sizingInputs"></div>
         <div class="profile-grid" id="profileChoices"></div>
-        <input type="file" id="routeFile" accept=".gpx,application/gpx+xml" style="display:none">
+        <input type="file" id="routeFile" aria-label="Upload route GPX" accept=".gpx,application/gpx+xml" style="display:none">
       </div>
       <div class="sec">
         <h3>Sizing basis</h3>
@@ -816,7 +816,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           <div class="hint" style="margin:6px 0">Use this only when you have measured data or need to compare a non-default duty.</div>
           <label class="f">Profile library</label>
           <select id="selProfile"></select>
-          <input type="file" id="profileFile" accept=".csv,.txt" style="display:none">
+          <input type="file" id="profileFile" aria-label="Upload measured battery power" accept=".csv,.txt" style="display:none">
           <button class="btn" id="btnProfileUpload" style="width:100%;margin-top:8px">📁 Upload measured battery power (CSV)</button>
           <div class="hint">Two columns: seconds, watts — positive = battery discharge, negative = battery charging.
             Any logger or Excel export works. <a id="btnProfileSample" style="cursor:pointer">Download a sample CSV</a>.</div>
@@ -842,7 +842,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
           </div>
         </div>
         <div id="bayFields"></div>
-        <input type="file" id="bayFile" accept=".dxf,.svg,.csv,.txt,.json" style="display:none">
+        <input type="file" id="bayFile" aria-label="Upload battery bay outline" accept=".dxf,.svg,.csv,.txt,.json" style="display:none">
         <button class="btn" id="btnBayUpload" style="width:100%;margin-top:8px">📁 Upload outline from CAD — DXF · SVG · CSV · JSON</button>
         <div class="hint" id="bayFileInfo"></div>
         <canvas id="sketch" height="230" style="display:none;border:1px solid var(--line);border-radius:var(--r);margin-top:8px;width:100%;touch-action:none;background:var(--ground)"></canvas>
@@ -1208,8 +1208,8 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       </div>
       <div class="sec">
         <h3>CO₂ — what the delivered energy displaces</h3>
-        <select id="selGrid"></select>
-        <input type="number" id="inGridG" placeholder="g CO₂e per kWh" style="display:none;margin-top:6px">
+        <select id="selGrid" aria-label="Displaced electricity source"></select>
+        <input type="number" id="inGridG" aria-label="Custom grid carbon intensity in grams of carbon dioxide equivalent per kilowatt-hour" placeholder="g CO₂e per kWh" style="display:none;margin-top:6px">
         <div class="hint">Manufacturing footprints are chemistry-class estimates; displacement assumes
           delivered energy replaces this source one-for-one. Duty (cycles/year, target years) comes
           from the Usage tab.</div>
@@ -1261,7 +1261,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
       </div>
       <div class="glass" id="glassExplode" style="flex:1;min-width:140px;max-width:240px;display:none">
         <span class="lbl">Explode</span>
-        <input type="range" id="inExplode" min="0" max="1" step="0.01" value="0">
+        <input type="range" id="inExplode" aria-label="Exploded view spacing" min="0" max="1" step="0.01" value="0">
       </div>
       <div class="glass">
         <span class="lbl">Show</span>
@@ -1271,7 +1271,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
     </div>
   </section>
 
-  <aside class="panel" id="statsPanel">
+  <aside class="panel" id="statsPanel" tabindex="0" aria-label="Live design summary">
     <div class="tabpane active" id="statsBody" style="display:block"></div>
   </aside>
 </main>

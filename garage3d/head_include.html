@@ -9,6 +9,15 @@
 (function () {
   'use strict';
   var pending = null;
+  // Godot calls this through JavaScriptBridge.get_interface("window"). A
+  // normal function keeps the renderer compatible with a strict CSP; using
+  // JavaScriptBridge.eval here would require opening the whole page to eval.
+  window.bdPostMessage = function (payload) {
+    try {
+      var message = typeof payload === 'string' ? JSON.parse(payload) : payload;
+      if (window.parent) window.parent.postMessage(message, '*');
+    } catch (_) { /* only versioned JSON messages cross this bridge */ }
+  };
   function deliver() {
     if (pending == null || typeof window.bdReceiveScene !== 'function') return;
     var payload = pending;

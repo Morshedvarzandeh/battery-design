@@ -58,34 +58,59 @@ import {
   buildArchitectureSemanticGraph, buildDesignSemanticGraph, describeOntology, querySemanticGraph,
   semanticDigest, semanticGraphSummary, toJsonLd, toNeo4jProjection, traceSemanticPath,
 } from './ontology.js';
+import {
+  DESIGN_SPEC_FORMAT, DESIGN_SPEC_SCHEMA, DESIGN_SPEC_SCHEMA_VERSION,
+  canonicalizeDesignSpec, deepFreeze, immutableSnapshot, normalizeDesignSpec, validateDesignSpec,
+} from './design-spec.js';
 
 export const API_VERSION = '1.3';
 
 // What a specification may contain. Everything except `application` has a
 // defensible default, so the smallest useful call is one field.
 export const SPEC_FIELDS = {
+  schemaVersion: `DesignSpec contract version (current: ${DESIGN_SPEC_SCHEMA_VERSION})`,
   application: 'preset id — see listApplications()',
   cell: 'cell id (default: the preset\'s first preferred chemistry match)',
   s: 'cells in series (default: derived from the preset\'s typical voltage)',
   p: 'cells in parallel (default: derived from the energy target)',
   energyWh: 'energy target used to derive p when s/p are not given',
+  deliveredWh: 'delivered-energy job used by the round-trip efficiency model',
+  nominalV: 'nominal voltage target when deriving the series count',
+  requirements: '{ vRange, energyWh, deliveredWh, contPowerW, peakPowerW, chargeRateC, maxMassKg, maxDimsMm, ambientC/envTempC, cyclesPerYear, targetYears, profileScaleW, busLoad } grouped UI/request contract; legacy flat fields remain valid',
   market: 'eu | us | cn | intl (default eu)',
+  gridGPerKWh: 'grid carbon intensity used by the lifecycle CO₂ model',
   batteryCategory: 'Regulation (EU) 2023/1542 category: ev | lmt | industrial | portable | sli; required when application identity does not determine EV/LMT',
   evaluationDate: `YYYY-MM-DD date for time-gated regulatory rules (deterministic default: ${EU_BATTERY_PASSPORT_EFFECTIVE_DATE})`,
+  regulatory: '{ batteryCategory, evaluationDate } grouped regulatory context; flat aliases remain valid',
   dod: 'usable depth of discharge, 0–1 (default 0.8)',
   cyclesPerYear: 'duty for the cost model (default: the preset\'s)',
   targetYears: 'service life for the cost model (default: the preset\'s)',
   ambientC: '[low, high] design ambient (default: the preset\'s)',
+  climate: '{ id, season, ambientC } selected climate context; ambientC projects to the physical design window',
   v2xPolicy: 'off | v2l | v2h | v2g | v2v (default off)',
   isolationStandard: 'named UN R100 topology context: un-r100-separate-dc (default) | un-r100-separate-ac | un-r100-connected-ac-dc | un-r100-connected-ac-dc-protected (legacy aliases remain reproducible)',
+  architecture: '{ topology/bmsTopology, isolationStandard/isolationContext, emsOverride/ems, sModOverride, channelsPerIc, linkCapUF, prechargeTimeS, prechargesPerHour, cellsPerTempSensor, targetEnergyWh, racksOverride, lvBusV, auxPowerW, interconnectMOhm }',
+  thermal: '{ loopOverride | override } canonical thermal-system choice; thermalOverride remains a flat alias',
+  thermalOverride: 'flat thermal-loop override retained for existing clients',
+  charging: '{ obcOverride } grouped charge-architecture choice; obcOverride remains a flat alias',
+  obcOverride: 'flat on-board-charger override retained for existing clients',
   components: '{ busbar, spacer, vent, cooling, tim, housing } — component ids from listComponents(); anything omitted takes the default for the cell format',
   layout: '{ arrangement, orientation, spacingMm, layerGapMm, wallMm, headroomMm, underMm, rowExtraMm, nx, nz, bay? } — exact pack-layout inputs; defaults preserve the standard engine layout',
   vehicle: 'overrides for the vehicle model: { curbKg, payloadKg, cd, frontalAreaM2, crr, driveEff, regenFrac, auxW }',
   driveMode: 'eco | normal | sport (default normal)',
+  profileScaleW: 'declared peak scale for a normalized battery/load profile',
   policyId: 'EMS/PMS operating policy id for applications that expose one; converted to a battery sizing profile',
   diagnostics: '{ rest, pulse, relaxation, thermal, aging } booleans describing available battery-model measurements',
   electricalProtection: '{ precharge, shunt, fast } supplier ratings, evidence and duty overrides for the HV startup/current-measurement protection studies',
   conditionMonitoring: '{ baselineWindows, operatingModes, samplingHz } for engineering vibration anomaly monitoring',
+  busbarMOhm: 'fault-loop busbar resistance in mΩ',
+  contactorMOhm: 'fault-loop contactor resistance in mΩ',
+  fuseRatingA: 'main-fuse continuous rating in A',
+  fuseI2t: 'main-fuse let-through rating in A²s',
+  contactorBreakingA: 'contactor interrupt rating in A',
+  busbarAreaMm2: 'busbar cross-section used by the short-circuit thermal screen',
+  busbarKind: 'busbar installation/material class used by the fault screen',
+  linkFuseA: 'optional per-cell fusible-link rating in A',
   vesselId: 'marine vessel model id — see listVessels(); top-level alias for marine.vesselId and ignored outside the marine application',
   marine: 'vessel mission and TwinShip inputs: voyage fields; governed shoreConnection equipment/evidence; twinEvidence { powerBasis, assetEvidence, modelEvidence, calibrationEvidence, validationEvidence, replayEvidence }; aligned replaySamples and replayOptions',
   twinShip: 'optional top-level alias: { readiness: { powerBasis, assetEvidence, modelEvidence, calibrationEvidence, validationEvidence, replayEvidence }, replay: { samples, options } }; evidence must be vessel/asset/model-bound and content-addressed, and raw evidence is never copied into output',
@@ -624,10 +649,15 @@ export function suggestSP(cell, preset, spec = {}) {
  * The whole designer in one call. Returns plain data — no classes, no DOM
  * nodes, nothing that cannot be JSON.stringify'd.
  */
-export function designFromSpec(spec = {}) {
-  // A null spec is a caller's mistake, not a reason to throw at them.
-  if (spec == null || typeof spec !== 'object') spec = {};
+export function designFromSpec(spec = {}, options = {}) {
+  // Normalize once at the boundary. Every calculation below consumes the same
+  // immutable specification; invalid physical multipliers are repaired before
+  // they can inflate range, cost, V2X or mission sizing.
+  const canonical = canonicalizeDesignSpec(spec);
+  spec = canonical.spec;
   const warnings = [];
+  warnings.push(...canonical.issues.map((entry) =>
+    `${entry.path}: ${entry.message}${entry.repair ? ` ${entry.repair}` : ''}`));
   if (Object.prototype.hasOwnProperty.call(spec, 'ontology')
       || Object.prototype.hasOwnProperty.call(spec, 'semantics')) {
     warnings.push('Caller-supplied ontology or semantics were ignored; semantic claims are generated and validated by the architecture ontology.');
@@ -702,17 +732,40 @@ export function designFromSpec(spec = {}) {
   // consumer runs. Standards, engineering, sensors and the architecture
   // report all receive this same governed result, so their findings cannot
   // drift because each inferred a different bus topology.
-  const isolationStandard = spec.isolationStandard || DEFAULT_ROAD_ISOLATION_CONTEXT;
+  const architectureInput = spec.architecture && typeof spec.architecture === 'object'
+    ? spec.architecture : {};
+  const isolationStandard = architectureInput.isolationStandard
+    || architectureInput.isolationContext
+    || spec.isolationStandard
+    || DEFAULT_ROAD_ISOLATION_CONTEXT;
   const architecture = buildArchitecture({
-    cell, s, p, summary, options: { appId, isolationStandard },
+    cell, s, p, summary, options: {
+      appId,
+      isolationStandard,
+      topology: architectureInput.topology ?? architectureInput.bmsTopology ?? 'auto',
+      emsOverride: architectureInput.emsOverride ?? architectureInput.ems ?? 'auto',
+      sModOverride: architectureInput.sModOverride ?? null,
+      channelsPerIc: architectureInput.channelsPerIc,
+      linkCapUF: architectureInput.linkCapUF,
+      prechargeTimeS: architectureInput.prechargeTimeS,
+      prechargesPerHour: architectureInput.prechargesPerHour,
+      cellsPerTempSensor: architectureInput.cellsPerTempSensor,
+      targetEnergyWh: architectureInput.targetEnergyWh ?? spec.energyWh ?? null,
+      racksOverride: architectureInput.racksOverride ?? null,
+      lvBusV: architectureInput.lvBusV,
+      auxPowerW: architectureInput.auxPowerW,
+      interconnectMOhm: architectureInput.interconnectMOhm,
+    },
   });
   const isolationResolution = architecture.isolation || architecture.isolationReview || null;
 
   // 2 · The four engineering perspectives and the standards audit.
   const usage = {
     application: appId,
-    contPowerW: preset?.contPowerW ?? null, peakPowerW: preset?.peakPowerW ?? null,
-    chargeRateC: preset?.chargeRateC ?? null, envTempC: ambientC,
+    contPowerW: spec.contPowerW ?? preset?.contPowerW ?? null,
+    peakPowerW: spec.peakPowerW ?? preset?.peakPowerW ?? null,
+    chargeRateC: spec.chargeRateC ?? preset?.chargeRateC ?? null,
+    envTempC: ambientC,
   };
   let analysis = null;
   try {
@@ -723,7 +776,7 @@ export function designFromSpec(spec = {}) {
         spacingMm: layout.spacingMm, wallMm: layout.wallMm,
         inner: layout.inner, outer: layout.outer, nx: layout.nx, ny: layout.ny, nz: layout.nz,
       },
-      usage: usageCtx, selection, isolationResolution,
+      usage: { ...usage, ...usageCtx }, selection, isolationResolution,
     });
   } catch (e) {
     warnings.push(`Engineering analysis unavailable: ${e.message}`);
@@ -759,7 +812,8 @@ export function designFromSpec(spec = {}) {
   // a review boundary, not this vehicle calculation.
   const thermal = buildThermalSystem({
     heatContW: analysis?.totals?.heatContW ?? null,
-    ambientC, cooling: selection.cooling || null, cell, override: 'auto', appId,
+    ambientC, cooling: selection.cooling || null, cell,
+    override: spec.thermalOverride ?? 'auto', appId,
   });
   const diagnostics = buildEngineeringDiagnostics({
     appId, chemistry: cell.chemistry,
@@ -775,7 +829,7 @@ export function designFromSpec(spec = {}) {
   // 4 · The AC side, and what feeding power back would cost.
   const charging = buildChargingPlan({
     appId, marketId: market, energyWh: summary.energyWh,
-    vNomV: summary.nominalV, cell, obcOverride: 'auto',
+    vNomV: summary.nominalV, cell, obcOverride: spec.obcOverride ?? 'auto',
     shoreConnection: appId === 'marine' ? spec.marine?.shoreConnection : null,
   });
   const v2x = v2xPlan({
@@ -808,7 +862,8 @@ export function designFromSpec(spec = {}) {
   const protectionApplies = summary.vMax > 60;
   const protectionContinuousA = epShunt.continuousA ?? summary.maxContCurrentA;
   const protectionPeakA = epShunt.peakA
-    ?? Math.max(protectionContinuousA, (preset?.peakPowerW || summary.maxContPowerW) / Math.max(summary.vMin, 1));
+    ?? Math.max(protectionContinuousA,
+      (spec.peakPowerW ?? preset?.peakPowerW ?? summary.maxContPowerW) / Math.max(summary.vMin, 1));
   const protectionPeakS = epShunt.peakDurationS ?? 5;
   const protectionPrecharge = architecture.precharge ? prechargeStudy({
     supplyV: summary.vMax,
@@ -990,6 +1045,10 @@ export function designFromSpec(spec = {}) {
   const flight = appId === 'drone' ? flightDuty(spec.flight || {}) : null;
 
   // 6 · The mission over time.
+  // A governed uploaded trace is a first-class sizing input for every
+  // application, not only marine. Its normalized samples remain private while
+  // its content identity and scale reach the resolved result.
+  const customProfile = !marineSizing ? governedProfileTrace(spec.profileTrace) : null;
   let policyProfileId = null;
   if (!marine && spec.policyId) {
     const allowed = sizingOptionsFor(appId, 'energy-policy');
@@ -997,10 +1056,11 @@ export function designFromSpec(spec = {}) {
     else warnings.push(`Policy "${spec.policyId}" is not available for ${appId}; using the selected design default instead.`);
   }
   const defaultPolicyId = defaultSizingOption(appId, 'energy-policy');
-  const selectedProfileId = marineSizing?.profileId || policyProfileId || spec.profileId;
+  const selectedProfileId = marineSizing?.profileId || customProfile?.profile?.id
+    || policyProfileId || spec.profileId;
   const generatedPolicyId = marineSizing?.policyId
     ?? (policyProfileId || (!spec.profileId ? defaultPolicyId : null));
-  const profile = marineSizing?.profile || (selectedProfileId === 'vehicle' && vehicle
+  const profile = marineSizing?.profile || customProfile?.profile || (selectedProfileId === 'vehicle' && vehicle
     ? driveCyclePower({
       trace: vehicleTrace || traceForApp(appId), vehicle: { ...vehBase, ...(spec.vehicle || {}) },
       mode: spec.driveMode || 'normal', packMassKg: summary.massKg, gradePct: spec.gradePct ?? 0,
@@ -1013,13 +1073,22 @@ export function designFromSpec(spec = {}) {
   let simulation = null;
   let missionScaleW = null;
   if (profile) {
-    const scaleW = marineSizing?.scaleW ?? (selectedProfileId === 'vehicle' && vehicle
+    const declaredProfileScaleW = spec.profileScaleW ?? spec.requirements?.profileScaleW;
+    const scaleW = marineSizing?.scaleW ?? customProfile?.scaleW ?? (selectedProfileId === 'vehicle' && vehicle
       ? vehicle.drive.peakW
       : (!spec.profileId && flight)
         ? flight.scaleW
-        : (preset?.peakPowerW ?? summary.maxContPowerW));
+        : (declaredProfileScaleW ?? spec.peakPowerW ?? preset?.peakPowerW ?? summary.maxContPowerW));
     missionScaleW = scaleW;
     const m = spec.mission || {};
+    const requestedCharge = m.charge && typeof m.charge === 'object' ? m.charge : null;
+    const charge = requestedCharge ? { ...requestedCharge } : undefined;
+    if (charge && charge.mode !== 'none' && !(charge.powerW > 0)) {
+      const derivedKW = charge.mode === 'topup'
+        ? charging.packChargeKW
+        : (charging.t2080?.dcKW ?? charging.packChargeKW);
+      charge.powerW = (derivedKW ?? 0) * 1000;
+    }
     const sim = simulateMission({
       cell, s, p, profile, scaleW,
       passes: m.passes ?? 1, startSoC: m.startSoC ?? 1.0,
@@ -1027,14 +1096,20 @@ export function designFromSpec(spec = {}) {
       resistanceMOhm: architecture.resistance?.totalMOhm ?? undefined,
       uaWK: analysis?.totals?.heatContW > 0 && analysis?.totals?.tempRiseContC > 0
         ? analysis.totals.heatContW / analysis.totals.tempRiseContC : undefined,
-      charge: m.charge || undefined,
+      hasHeater: !!thermal?.heaterNeeded,
+      charge,
     });
     simulation = {
+      passes: sim.passes,
+      durationS: sim.durationS,
+      ambientC: sim.ambientC,
+      ...(options?.includeTraces ? { trace: sim.trace } : {}),
       summary: sim.summary, findings: sim.findings, assumptions: sim.assumptions,
       profile: {
         id: profile.id, name: profile.name, dtS: profile.dtS, note: profile.note,
         kind: profile.kind || 'duty', policyId: profile.policyId || null,
         sourceProfileId: profile.sourceProfileId || null,
+        ...(options?.includeTraces ? { p: profile.p } : {}),
         scaleW,
         traceIdentity: marineSizing?.traceIdentity || traceIdentity(profile, scaleW),
       },
@@ -1053,7 +1128,7 @@ export function designFromSpec(spec = {}) {
   const co2 = co2Model({
     cell, energyWh: summary.energyWh,
     cyclesPerYear: usageCtx.cyclesPerYear, targetYears: usageCtx.targetYears,
-    gridGPerKWh: 440,
+    gridGPerKWh: spec.gridGPerKWh ?? 440,
   });
   const checklist = releaseChecklist({
     market, application: appId, chemistry: cell.chemistry, v2x: spec.v2xPolicy || 'off',
@@ -1086,6 +1161,9 @@ export function designFromSpec(spec = {}) {
       scaleW: missionScaleW ?? summary.maxContPowerW,
       targetEnergyWh: summary.energyWh,
     };
+    for (const row of comparison.rows || []) {
+      row.cost = costModel(row.cell, row.s * row.p, row.energyWh, usageCtx);
+    }
   }
 
   // This rule is part of the semantic input, so it must exist before the
@@ -1100,7 +1178,7 @@ export function designFromSpec(spec = {}) {
 
   const result = {
     apiVersion: API_VERSION,
-    spec: {
+    spec: deepFreeze({
       ...portableSpec(spec),
       resolved: {
         application: appId, cell: cell.id, s, p, market, dod,
@@ -1137,7 +1215,7 @@ export function designFromSpec(spec = {}) {
         components: Object.fromEntries(
           Object.entries(selection).map(([k, c]) => [k, c?.id ?? null])),
       },
-    },
+    }),
     application: preset ? { id: preset.id, name: preset.name, class: appClassOf(appId) } : null,
     cell: listCells().find((c) => c.id === cell.id) || { id: cell.id, name: cell.name },
     pack: summary,
@@ -1155,13 +1233,23 @@ export function designFromSpec(spec = {}) {
       ...protectionFindings,
       ...euFindings,
     ],
-    analysis: analysis ? { totals: analysis.totals, disclaimer: analysis.disclaimer } : null,
+    analysis,
     architecture, thermal, sensors, diagnostics, charging, v2x, vehicle, marine, twinShip, flight,
-    energyPerformance, simulation, shortCircuit, electricalProtection,
+    energyPerformance, simulation, shortCircuit,
+    electricalProtection: { ...electricalProtection, findings: protectionFindings },
     cost, co2, checklist, comparison,
     eu: { batteryCategory, evaluationDate, findings: euFindings },
     concepts: appNeeds(appId),
     warnings,
+    audit: {
+      standards: findings,
+      engineering: ['mechanical', 'thermal', 'electrical', 'safety']
+        .flatMap((key) => analysis?.perspectives?.[key] || []),
+      simulation: simulation?.findings || [],
+      shortCircuit: shortCircuit?.findings || [],
+      electricalProtection: protectionFindings,
+      eu: euFindings,
+    },
   };
   const evaluatedGraph = buildDesignSemanticGraph(result);
   const evaluatedSemantics = semanticGraphSummary(evaluatedGraph);
@@ -1185,7 +1273,20 @@ export function designFromSpec(spec = {}) {
     ...semanticGraphSummary(semanticGraph),
     graph: semanticGraph,
   };
-  return result;
+  // A compact cross-surface binding lets reports and saved JSON prove that
+  // their inputs, calculated pack and semantic graph came from this one run.
+  result.binding = deepFreeze({
+    format: 'battery-design/result-binding/v1',
+    specSchemaVersion: result.spec.schemaVersion,
+    specChecksum: semanticDigest(result.spec),
+    semanticChecksum: result.semantics.graph.checksum,
+    designChecksum: semanticDigest({
+      spec: result.spec,
+      pack: result.pack,
+      semanticChecksum: result.semantics.graph.checksum,
+    }),
+  });
+  return immutableSnapshot(result);
 }
 
 // A one-screen answer for a human or an agent: the numbers that decide, in
@@ -1225,7 +1326,7 @@ export function briefFromDesign(d) {
   if (d.simulation?.summary) {
     const s = d.simulation.summary;
     lines.push(`Mission: ${Math.round(s.startSoC * 100)}% → ${Math.round(s.endSoC * 100)}% SoC, minimum ${Math.round(s.minSoC * 100)}%` +
-      (s.tempMaxC != null ? `, peak cell ${s.tempMaxC.toFixed(1)} °C` : '') +
+      (s.maxT != null ? `, peak cell ${s.maxT.toFixed(1)} °C` : '') +
       (s.unmetWh > 0 ? `, ${s.unmetWh.toFixed(1)} Wh of the mission unmet` : ''));
   }
   if (d.cost?.usdPerKWhDelivered != null) {
@@ -1257,6 +1358,16 @@ export {
   scopeForApplication,
   transitionDesign,
 } from './governance.js';
+
+// Re-export the versioned input contract from the API entry point so browser,
+// Node and third-party clients never need a second import path.
+export {
+  DESIGN_SPEC_FORMAT,
+  DESIGN_SPEC_SCHEMA,
+  DESIGN_SPEC_SCHEMA_VERSION,
+  normalizeDesignSpec,
+  validateDesignSpec,
+};
 
 // Semantic-control API. Neo4j remains an offline validated projection; no
 // network connection or credentials are used here.

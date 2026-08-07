@@ -329,7 +329,12 @@ export function compareCells({ cells, targetVNom, targetEnergyWh, profile, scale
   for (const cell of cells || []) {
     const s = Math.max(1, Math.round((targetVNom || cell.nominalV) / cell.nominalV));
     const cellWh = cell.nominalV * cell.capacityAh;
-    const p = Math.max(1, Math.round((targetEnergyWh || s * cellWh) / (s * cellWh)));
+    // The comparison promises an equivalent pack for the same minimum-energy
+    // job.  Rounding to nearest can quietly compare an undersized candidate
+    // against packs that meet the target, making it look lighter and cheaper
+    // only because it carries less energy.  Match the main sizing engine and
+    // round whole parallel strings upward.
+    const p = Math.max(1, Math.ceil((targetEnergyWh || s * cellWh) / (s * cellWh)));
     const energyWh = s * p * cellWh;
     const massKg = (s * p * (cell.massG ?? 0)) / 1000;
     const resistanceMOhm = cell.dcirMOhm != null ? (s * cell.dcirMOhm) / p + interconnectMOhm : null;

@@ -25,6 +25,12 @@ import { layoutPack, summarize } from './pack-engine.js';
 const $ = (id) => document.getElementById(id);
 const f1 = (v) => (v == null ? '—' : (Math.round(v * 10) / 10).toString());
 const f0 = (v) => (v == null ? '—' : Math.round(v).toString());
+// Customer cells are intentionally stored on-device, but they are still
+// untrusted text.  A manufacturer or model such as `<img onerror=…>` must be
+// rendered as a name, never interpreted as markup in the picker/report table.
+export const escapeCellText = (value) => String(value ?? '').replace(/[&<>'"]/g, (ch) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;',
+}[ch]));
 
 // Columns of the comparison. Each says which way is better, so the winner can
 // be marked without a reader having to remember whether low or high wins.
@@ -78,9 +84,9 @@ export class CellPicker {
       <div class="pickfilters">
         <input type="search" id="cpQ" placeholder="maker or part number">
         <select id="cpForm"><option value="">every format</option>${
-          forms.map((f) => `<option value="${f}">${f}</option>`).join('')}</select>
+          forms.map((f) => `<option value="${escapeCellText(f)}">${escapeCellText(f)}</option>`).join('')}</select>
         <select id="cpChem"><option value="">every chemistry</option>${
-          chems.map((c) => `<option value="${c}">${c}</option>`).join('')}</select>
+          chems.map((c) => `<option value="${escapeCellText(c)}">${escapeCellText(c)}</option>`).join('')}</select>
       </div>
       <div class="pickcount" id="cpCount"></div>
       <div class="picklist" id="cpList"></div>
@@ -105,15 +111,15 @@ export class CellPicker {
       const el = document.createElement('div');
       el.className = 'pickrow' + (c.id === currentId ? ' on' : '');
       el.innerHTML = `
-        <label class="pickbox"><input type="checkbox" data-id="${c.id}"
+        <label class="pickbox"><input type="checkbox" data-id="${escapeCellText(c.id)}"
           ${this.selected.has(c.id) ? 'checked' : ''}></label>
-        <button class="pickname" data-id="${c.id}">
-          <span class="pn">${c.name}</span>
-          <span class="pm">${c.formFactor || c.form} · <b style="color:${
-            CHEMISTRIES[c.chemistry]?.color}">${c.chemistry}</b> ·
+        <button class="pickname" data-id="${escapeCellText(c.id)}">
+          <span class="pn">${escapeCellText(c.name)}</span>
+          <span class="pm">${escapeCellText(c.formFactor || c.form)} · <b style="color:${
+            escapeCellText(CHEMISTRIES[c.chemistry]?.color)}">${escapeCellText(c.chemistry)}</b> ·
             ${f1(c.capacityAh)} Ah · ${f0(c.massG)} g</span>
         </button>
-        <span class="prov prov-${pv.tone}" title="${pv.detail}">${pv.label}</span>`;
+        <span class="prov prov-${escapeCellText(pv.tone)}" title="${escapeCellText(pv.detail)}">${escapeCellText(pv.label)}</span>`;
       list.appendChild(el);
     }
     list.querySelectorAll('.pickname').forEach((b) => {
@@ -184,8 +190,8 @@ export class CellPicker {
           <tbody>${rows.map((r) => {
             const pv = provenance(r.cell);
             return `<tr>
-              <td><span class="cmpname">${r.cell.name}</span>
-                  <span class="prov prov-${pv.tone}">${pv.label}</span></td>
+              <td><span class="cmpname">${escapeCellText(r.cell.name)}</span>
+                  <span class="prov prov-${escapeCellText(pv.tone)}">${escapeCellText(pv.label)}</span></td>
               ${COLS.map(([key, , , dec]) => {
                 const v = r[key];
                 const win = v != null && best[key] != null

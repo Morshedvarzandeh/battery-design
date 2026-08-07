@@ -1,9 +1,12 @@
 name: Deploy to GitHub Pages
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  # Publish only after every job in CI has accepted this exact main commit.
+  # A direct push trigger lets Pages race ahead of tests and can publish a SHA
+  # that subsequently fails validation.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 permissions:
   contents: read
@@ -19,12 +22,24 @@ env:
 
 jobs:
   deploy:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Verify the gated commit is the deployed commit
+        env:
+          EXPECTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
 
       - uses: actions/setup-node@v4
         with:

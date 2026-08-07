@@ -30,7 +30,7 @@ node desktop/bd.mjs help
 | `sim2` | The full model: RC dynamics, entropic heat, per-module temperatures, coolant, aging |
 | `calibrate` | Correct the model against **your** measured data |
 | `params` | Every coefficient, with units, bounds and where its default came from |
-| `fmu` | Export the pack as an FMI 2.0 co-simulation FMU for Twin Builder, Simulink or GT-SUITE |
+| `fmu` | Export the editable FMI 2.0 source-FMU build kit. This command never emits a compiled `.fmu`; use the release artifact for a prebuilt Linux/Windows component |
 | `bom` | Every conductor sized, every joint checked for corrosion, and the bill of materials |
 | `ground` | Isolation, bonding paths, touch voltage, and whether the bond survives the fault |
 | `brief` | Every check in one ordered list, plus the questions the tool needs you to answer |
