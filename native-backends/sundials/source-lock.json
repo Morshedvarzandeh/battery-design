@@ -1,0 +1,30 @@
+{
+  "format": "battery-design/sundials-source-lock@1",
+  "project": "SUNDIALS",
+  "repository": "https://github.com/LLNL/sundials",
+  "version": "7.8.0",
+  "releaseTag": "v7.8.0",
+  "releasePublishedAt": "2026-06-25T19:33:06Z",
+  "tagObjectSha": "ac6903fe8d21cad8ba51b61c81c31d230c353ddf",
+  "commitSha": "aedc088437064dd55b35c000145f7f5db6ee49e3",
+  "sourceArchive": {
+    "fileName": "ida-7.8.0.tar.gz",
+    "archiveRoot": "ida-7.8.0",
+    "url": "https://github.com/LLNL/sundials/releases/download/v7.8.0/ida-7.8.0.tar.gz",
+    "sizeBytes": 5022403,
+    "sha256": "fceb9704259952d371877e8f9c2e2758c4a51751907ad5ab13e38c2bcf140c9d"
+  },
+  "license": {
+    "spdx": "BSD-3-Clause",
+    "licenseFile": {
+      "path": "LICENSE",
+      "sizeBytes": 1774,
+      "sha256": "d83f244e1bef3d00a88d043d37d9cd2493c7aa19c9fbf35a837b310e867897a6"
+    },
+    "noticeFile": {
+      "path": "NOTICE",
+      "sizeBytes": 1166,
+      "sha256": "5cb9c6b0ca7c09b26fe2d1f9ef45231086c9ea2cdb32eb5f9dce7012e2364bc2"
+    }
+  }
+}
