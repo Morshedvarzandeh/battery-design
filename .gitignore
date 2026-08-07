@@ -239,3 +239,6 @@ previews/
 #   something this repository should carry.
 garage3d/.godot/
 garage3d/android/
+
+# Claude Code workflow worktrees (transient)
+.claude/worktrees/
