@@ -747,40 +747,117 @@ function schemaIssue(path, message) {
 // governed input must report the misspelled key the caller actually sent,
 // before grouped aliases/defaults are projected into the canonical shape.
 // Ordinary schema validation remains extension-tolerant.
-function closedKeyIssues(value, schema = DESIGN_SPEC_SCHEMA, path = '$') {
-  if (!schema || typeof schema !== 'object') return [];
+//
+// An object composed with allOf owns the UNION of the properties evaluated by
+// its branches. Checking each branch in isolation would make a valid composed
+// value impossible: every branch would reject the other branch's fields.
+function applicableClosedSchemas(value, schema, path, seen = new Set()) {
+  if (!schema || typeof schema !== 'object' || seen.has(schema)) return [];
+  seen.add(schema);
+  const applicable = [schema];
   if (schema.$ref) {
     const target = schemaTarget(schema.$ref);
-    return target ? closedKeyIssues(value, target, path)
-      : [schemaIssue(path, `Unresolved schema reference ${schema.$ref}.`)];
+    if (target) applicable.push(...applicableClosedSchemas(value, target, path, seen));
+  }
+  for (const branch of schema.allOf || []) {
+    applicable.push(...applicableClosedSchemas(value, branch, path, seen));
   }
   if (schema.anyOf) {
-    const compatible = schema.anyOf.filter((branch) => schemaIssues(value, branch, path).length === 0);
-    return compatible.length ? closedKeyIssues(value, compatible[0], path) : [];
+    const compatible = schema.anyOf
+      .filter((branch) => schemaIssues(value, branch, path).length === 0);
+    for (const branch of compatible) {
+      applicable.push(...applicableClosedSchemas(value, branch, path, seen));
+    }
+  }
+  return applicable;
+}
+
+function closedKeyIssues(value, schema = DESIGN_SPEC_SCHEMA, path = '$') {
+  if (!schema || typeof schema !== 'object') return [];
+  if (schema.$ref && !schemaTarget(schema.$ref)) {
+    return [schemaIssue(path, `Unresolved schema reference ${schema.$ref}.`)];
+  }
+  const applicable = applicableClosedSchemas(value, schema, path);
+  const errors = [];
+
+  if (Array.isArray(value)) {
+    const itemSchemas = applicable.map((branch) => branch.items).filter(Boolean);
+    for (const itemSchema of itemSchemas) {
+      value.forEach((entry, index) => {
+        errors.push(...closedKeyIssues(entry, itemSchema, `${path}[${index}]`));
+      });
+    }
   }
 
-  const errors = [];
-  for (const branch of schema.allOf || []) errors.push(...closedKeyIssues(value, branch, path));
-  if (Array.isArray(value) && schema.items) {
-    value.forEach((entry, index) => {
-      errors.push(...closedKeyIssues(entry, schema.items, `${path}[${index}]`));
-    });
-  }
-  if (isRecord(value) && schema.properties) {
-    for (const key of Object.keys(value)) {
-      if (!own(schema.properties, key)) {
-        errors.push(issue(
-          'SCHEMA_UNKNOWN_FIELD', `${path}.${key}`,
-          'Field is not declared by the governed DesignSpec schema.', null,
-        ));
+  if (isRecord(value)) {
+    const propertySchemas = new Map();
+    for (const branch of applicable) {
+      if (!branch.properties) continue;
+      for (const [key, childSchema] of Object.entries(branch.properties)) {
+        if (!propertySchemas.has(key)) propertySchemas.set(key, []);
+        propertySchemas.get(key).push(childSchema);
       }
     }
-    for (const [key, childSchema] of Object.entries(schema.properties)) {
-      if (own(value, key)) errors.push(...closedKeyIssues(value[key], childSchema, `${path}.${key}`));
+    // An intentionally open object bag has no declared properties. Governed
+    // closure leaves it open until its schema is made explicit.
+    if (propertySchemas.size) {
+      for (const key of Object.keys(value)) {
+        if (!propertySchemas.has(key)) {
+          errors.push(issue(
+            'SCHEMA_UNKNOWN_FIELD', `${path}.${key}`,
+            'Field is not declared by the governed DesignSpec schema.', null,
+          ));
+        }
+      }
+      for (const [key, childSchemas] of propertySchemas) {
+        if (!own(value, key)) continue;
+        for (const childSchema of childSchemas) {
+          errors.push(...closedKeyIssues(value[key], childSchema, `${path}.${key}`));
+        }
+      }
     }
   }
   return errors;
 }
+
+function mergeObjectAllOf(schema) {
+  if (!Array.isArray(schema?.allOf) || !schema.allOf.length) return null;
+  const branches = schema.allOf.map((branch) => branch.$ref ? schemaTarget(branch.$ref) : branch);
+  const mergeable = branches.every((branch) => branch && branch.type === 'object'
+    && branch.properties
+    && Object.keys(branch).every((key) => ['type', 'properties', 'required', 'additionalProperties'].includes(key)));
+  if (!mergeable) return null;
+  const properties = {};
+  const required = [];
+  for (const branch of branches) {
+    Object.assign(properties, branch.properties);
+    for (const key of branch.required || []) if (!required.includes(key)) required.push(key);
+  }
+  return { type: 'object', properties, ...(required.length ? { required } : {}) };
+}
+
+function governedSchemaCopy(schema) {
+  if (Array.isArray(schema)) return schema.map(governedSchemaCopy);
+  if (!schema || typeof schema !== 'object') return schema;
+  const merged = mergeObjectAllOf(schema);
+  if (merged) return governedSchemaCopy(merged);
+  const copy = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === 'additionalProperties') continue;
+    copy[key] = governedSchemaCopy(value);
+  }
+  if (schema.properties) copy.additionalProperties = false;
+  else if (own(schema, 'additionalProperties')) copy.additionalProperties = schema.additionalProperties;
+  return copy;
+}
+
+// MCP/forms can advertise the exact same closure policy used by
+// normalizeDesignSpec(..., { closed:true }). Open supplier/current-segment
+// bags stay open; composed validation evidence is merged into one closed
+// object so its allOf branches cannot reject one another.
+const governedDesignSpecSchema = governedSchemaCopy(DESIGN_SPEC_SCHEMA);
+governedDesignSpecSchema.$id = `${DESIGN_SPEC_FORMAT}/${DESIGN_SPEC_SCHEMA_VERSION}/governed`;
+export const GOVERNED_DESIGN_SPEC_SCHEMA = deepFreeze(governedDesignSpecSchema);
 
 // Small Draft 2020-12 evaluator for the vocabulary used by the exported
 // contract. Keeping it beside the schema means validation is available in a

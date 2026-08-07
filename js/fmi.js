@@ -307,6 +307,11 @@ const cNumber = (value) => {
 };
 
 const validModelIdentifier = (value) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(value);
+const validGenerationTimestamp = (value) => (
+  typeof value === 'string'
+  && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+  && Number.isFinite(Date.parse(value))
+);
 
 /**
  * The C source implementing FMI 2.0 co-simulation.
@@ -737,6 +742,9 @@ export function buildFmu({
   if (!validModelIdentifier(modelName)) {
     throw new TypeError('FMU modelName must start with a letter or underscore and contain only letters, numbers and underscores (64 characters maximum).');
   }
+  if (!validGenerationTimestamp(generatedOn)) {
+    throw new TypeError('FMU generatedOn must be an ISO 8601 timestamp with a timezone.');
+  }
   const hasDesign = design != null;
   const hasAnyLegacy = cell != null || s != null || p != null;
   if (hasDesign && hasAnyLegacy) {
@@ -779,7 +787,7 @@ export function buildFmu({
     'README.md': fmuReadme({ modelName, cell: selectedCell, s: selectedS, p: selectedP }),
   });
   return Object.freeze({
-    guid, modelName, standardVersion: FMI_STANDARD_VERSION,
+    guid, modelName, generatedOn, standardVersion: FMI_STANDARD_VERSION,
     modelRevision: FMU_MODEL_REVISION, ioContractChecksum: FMI_IO_CONTRACT_CHECKSUM,
     designSnapshotChecksum: exportSnapshot.snapshotChecksum,
     designComplete: designResource.snapshot.source.complete,

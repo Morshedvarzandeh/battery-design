@@ -34,7 +34,8 @@ verified `linux64` (glibc 2.17+ baseline) and `win64` x64 binaries. Import the
 native ABI and lifecycle, then imports and steps it with fmusim and FMPy on the
 matching operating systems. These open-source checks do not certify acceptance
 in ANSYS Twin Builder, Simulink or GT-SUITE; record a product/version-specific
-result using the [commercial acceptance checklist](docs/FMI_COMMERCIAL_ACCEPTANCE.md)
+result using the generated [enterprise signal/port map](docs/FMI_SIGNAL_MAP.md)
+and [commercial acceptance checklist](docs/FMI_COMMERCIAL_ACCEPTANCE.md)
 before making a host-support claim.
 
 The desktop GUI, CLI and local API continue to export an editable source-FMU

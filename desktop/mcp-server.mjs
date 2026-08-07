@@ -17,8 +17,10 @@
 
 import {
   buildArchitectureSemanticGraph, designFromSpec, briefFromDesign, describeOntology, listApplications, listCells, listVessels,
-  querySemanticGraph, API_VERSION,
+  querySemanticGraph, API_VERSION, DESIGN_SPEC_SCHEMA_VERSION, GOVERNED_DESIGN_SPEC_SCHEMA, normalizeDesignSpec,
 } from '../js/api.js';
+import { buildFmu } from '../js/fmi.js';
+import { inspectFmiBuild } from '../js/desktop-link.js';
 import { CELLS, cellById } from '../js/cells.js';
 import { V2X_MODES, v2xParts } from '../js/v2x.js';
 import { CONCEPTS, appNeeds } from '../js/knowledge.js';
@@ -264,6 +266,14 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'inspect_fmi_mapping',
+    description: 'Build and inspect the exact FMI 2.0 enterprise mapping for one closed, schema-versioned DesignSpec. Returns the canonical design-bound parameters, host inputs, outputs, sign/update semantics, checksums, and sanitized static pack/layout/module facts without source files, raw traces, or private evidence.',
+    inputSchema: GOVERNED_DESIGN_SPEC_SCHEMA,
+    annotations: {
+      readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false,
+    },
+  },
+  {
     name: 'query_ontology',
     description: 'Query the architecture-wide ontology or one design semantic graph. This covers applications, pack/cell/component hierarchy, all calculation and simulation modules, requirements, evidence, findings and governance; it is not a charging-only graph.',
     inputSchema: {
@@ -335,6 +345,12 @@ const TOOLS = [
 
 // --- tool implementations ---------------------------------------------------
 const text = (s) => ({ content: [{ type: 'text', text: s }] });
+const structured = (value) => ({
+  // Keep a compact JSON fallback for protocol clients that predate
+  // structuredContent; newer clients receive the object directly.
+  content: [{ type: 'text', text: JSON.stringify(value) }],
+  structuredContent: value,
+});
 
 function specOf(args) {
   const { passes, startSoC, ambientC, chargeMode, chargeMinutes, cellIds, chemistry, concept, ...spec } = args || {};
@@ -369,6 +385,21 @@ const HANDLERS = {
 
   get_ontology_schema() {
     return text(JSON.stringify(describeOntology(), null, 2));
+  },
+
+  inspect_fmi_mapping(args) {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+      throw new TypeError('FMI mapping requires one governed DesignSpec object.');
+    }
+    if (!Object.prototype.hasOwnProperty.call(args, 'schemaVersion')) {
+      throw new TypeError(`FMI mapping DesignSpec must declare schemaVersion ${DESIGN_SPEC_SCHEMA_VERSION}.`);
+    }
+    const spec = normalizeDesignSpec(args, { strict: true, closed: true });
+    const design = designFromSpec(spec);
+    if (design.warnings.length) {
+      throw new TypeError(`FMI mapping DesignSpec did not resolve exactly: ${design.warnings.join(' ')}`);
+    }
+    return structured(inspectFmiBuild(buildFmu({ design })));
   },
 
   query_ontology(args) {

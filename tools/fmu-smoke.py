@@ -14,6 +14,11 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
+from fmu_host_evidence import (
+    SIGNAL_ROLES, build_evidence, invariant, read_artifact_contract, read_io_contract,
+    require_role, write_evidence,
+)
+
 
 FMI2_OK = 0
 FMI2_ERROR = 3
@@ -291,8 +296,310 @@ def close_enough(actual: float, expected: float, tolerance: float = 1e-10) -> bo
     return math.isclose(actual, expected, rel_tol=tolerance, abs_tol=tolerance)
 
 
+def signal_names(contract: dict[str, object]) -> dict[str, str]:
+    expected_causality = {
+        "ambient_temperature": "input",
+        "cell_temperature": "output",
+        "cell_voltage": "output",
+        "coolant_flow": "input",
+        "heat_source": "output",
+        "pack_current": "input",
+        "pack_power": "output",
+        "pack_voltage": "output",
+        "series_count": "parameter",
+        "state_of_charge": "output",
+    }
+    return {
+        key: str(require_role(contract, role, causality=expected_causality[key])["name"])
+        for key, role in SIGNAL_ROLES.items()
+    }
+
+
+def role_inputs(contract: dict[str, object], values: dict[str, float]) -> dict[str, dict[str, object]]:
+    return {
+        SIGNAL_ROLES[key]: {
+            "unit": require_role(contract, SIGNAL_ROLES[key])["unit"],
+            "value": value,
+        }
+        for key, value in values.items()
+    }
+
+
+def role_sample(
+    fmu: NativeFmu, component, names: dict[str, str], keys: tuple[str, ...]
+) -> dict[str, float]:
+    by_name = fmu.get(component, [names[key] for key in keys])
+    return {SIGNAL_ROLES[key]: float(by_name[names[key]]) for key in keys}
+
+
+def checked_invariant(
+    condition: bool, identifier: str, description: str, observed: dict[str, object]
+) -> dict[str, object]:
+    if not condition:
+        raise RuntimeError(f"Host trajectory invariant failed: {identifier}: {observed}")
+    return invariant(identifier, description, observed)
+
+
+def step_component(fmu: NativeFmu, component, start: float, duration: float, step: float = 1.0) -> None:
+    time = start
+    end = start + duration
+    while time < end - 1e-12:
+        interval = min(step, end - time)
+        status = fmu.library.fmi2DoStep(component, time, interval, 1)
+        if status != FMI2_OK:
+            raise RuntimeError(f"Host trajectory step failed with status {status} at t={time}")
+        time += interval
+
+
+def run_host_contract_scenarios(
+    fmu: NativeFmu, contract: dict[str, object]
+) -> list[dict[str, object]]:
+    """Prove signed electrical behavior and the reduced thermal boundary by stable role."""
+    names = signal_names(contract)
+    sample_keys = (
+        "pack_voltage", "state_of_charge", "cell_temperature", "heat_source",
+        "cell_voltage", "pack_power",
+    )
+    series = float(fmu.variables[names["series_count"]]["start"])
+
+    def electrical_checks(
+        final: dict[str, float], current: float, prefix: str
+    ) -> list[dict[str, object]]:
+        voltage = final[SIGNAL_ROLES["pack_voltage"]]
+        power = final[SIGNAL_ROLES["pack_power"]]
+        cell_voltage = final[SIGNAL_ROLES["cell_voltage"]]
+        return [
+            checked_invariant(
+                all(math.isfinite(value) for value in final.values()),
+                f"{prefix}.finite_outputs", "All mapped outputs remain finite.", final,
+            ),
+            checked_invariant(
+                close_enough(power, voltage * current, 1e-8),
+                f"{prefix}.terminal_power_identity",
+                "Terminal power follows the declared P = V * I polarity.",
+                {"currentA": current, "powerW": power, "voltageV": voltage},
+            ),
+            checked_invariant(
+                close_enough(cell_voltage, voltage / series, 1e-8),
+                f"{prefix}.uniform_cell_voltage_identity",
+                "The uniform-cell voltage estimate equals pack voltage divided by series count.",
+                {"cellVoltageV": cell_voltage, "seriesCount": series, "voltageV": voltage},
+            ),
+        ]
+
+    scenarios: list[dict[str, object]] = []
+
+    idle = fmu.instantiate("contract-idle")
+    if not idle:
+        raise RuntimeError("Could not instantiate idle host-contract scenario")
+    try:
+        idle_values = {
+            names["pack_current"]: 0.0,
+            names["ambient_temperature"]: 25.0,
+            names["coolant_flow"]: 0.05,
+        }
+        fmu.set(idle, idle_values)
+        fmu.initialize(idle, stop_time=10.0)
+        idle_start = role_sample(fmu, idle, names, sample_keys)
+        step_component(fmu, idle, 0.0, 10.0)
+        idle_final = role_sample(fmu, idle, names, sample_keys)
+        idle_invariants = electrical_checks(idle_final, 0.0, "idle")
+        idle_invariants.extend([
+            checked_invariant(
+                close_enough(idle_final[SIGNAL_ROLES["state_of_charge"]],
+                             idle_start[SIGNAL_ROLES["state_of_charge"]], 1e-12),
+                "idle.zero_current_preserves_soc", "Zero current preserves state of charge.",
+                {
+                    "final": idle_final[SIGNAL_ROLES["state_of_charge"]],
+                    "initial": idle_start[SIGNAL_ROLES["state_of_charge"]],
+                },
+            ),
+            checked_invariant(
+                close_enough(idle_final[SIGNAL_ROLES["cell_temperature"]], 25.0, 1e-10),
+                "idle.thermal_equilibrium",
+                "The idle lumped node remains at its ambient boundary temperature.",
+                {"ambientC": 25.0, "cellTemperatureC": idle_final[SIGNAL_ROLES["cell_temperature"]]},
+            ),
+        ])
+        scenarios.append({
+            "durationS": 10.0,
+            "id": "idle",
+            "inputs": role_inputs(contract, {
+                "pack_current": 0.0, "ambient_temperature": 25.0, "coolant_flow": 0.05,
+            }),
+            "invariants": idle_invariants,
+            "samples": {"final": idle_final, "initial": idle_start},
+            "verdict": "pass",
+        })
+    finally:
+        fmu.library.fmi2FreeInstance(idle)
+
+    discharge = fmu.instantiate("contract-discharge")
+    if not discharge:
+        raise RuntimeError("Could not instantiate discharge host-contract scenario")
+    try:
+        discharge_values = {
+            names["pack_current"]: 100.0,
+            names["ambient_temperature"]: 25.0,
+            names["coolant_flow"]: 0.05,
+        }
+        fmu.set(discharge, discharge_values)
+        fmu.initialize(discharge, stop_time=60.0)
+        discharge_start = role_sample(fmu, discharge, names, sample_keys)
+        step_component(fmu, discharge, 0.0, 60.0)
+        discharge_final = role_sample(fmu, discharge, names, sample_keys)
+        discharge_invariants = electrical_checks(discharge_final, 100.0, "discharge")
+        discharge_invariants.extend([
+            checked_invariant(
+                discharge_final[SIGNAL_ROLES["state_of_charge"]]
+                < discharge_start[SIGNAL_ROLES["state_of_charge"]],
+                "discharge.positive_current_reduces_soc",
+                "Positive terminal current is the discharge direction and reduces state of charge.",
+                {
+                    "currentA": 100.0,
+                    "final": discharge_final[SIGNAL_ROLES["state_of_charge"]],
+                    "initial": discharge_start[SIGNAL_ROLES["state_of_charge"]],
+                },
+            ),
+            checked_invariant(
+                discharge_final[SIGNAL_ROLES["pack_power"]] > 0.0,
+                "discharge.positive_power_is_delivered",
+                "Positive discharge current produces positive power delivered by the pack.",
+                {"powerW": discharge_final[SIGNAL_ROLES["pack_power"]]},
+            ),
+        ])
+        scenarios.append({
+            "durationS": 60.0,
+            "id": "discharge",
+            "inputs": role_inputs(contract, {
+                "pack_current": 100.0, "ambient_temperature": 25.0, "coolant_flow": 0.05,
+            }),
+            "invariants": discharge_invariants,
+            "samples": {"final": discharge_final, "initial": discharge_start},
+            "verdict": "pass",
+        })
+    finally:
+        fmu.library.fmi2FreeInstance(discharge)
+
+    charge = fmu.instantiate("contract-charge")
+    if not charge:
+        raise RuntimeError("Could not instantiate charge host-contract scenario")
+    try:
+        fmu.set(charge, {
+            names["pack_current"]: 200.0,
+            names["ambient_temperature"]: 25.0,
+            names["coolant_flow"]: 0.05,
+        })
+        fmu.initialize(charge, stop_time=120.0)
+        step_component(fmu, charge, 0.0, 60.0)
+        preconditioned = role_sample(fmu, charge, names, sample_keys)
+        fmu.set(charge, {names["pack_current"]: -100.0})
+        charge_start = role_sample(fmu, charge, names, sample_keys)
+        step_component(fmu, charge, 60.0, 60.0)
+        charge_final = role_sample(fmu, charge, names, sample_keys)
+        charge_invariants = electrical_checks(charge_final, -100.0, "charge")
+        charge_invariants.extend([
+            checked_invariant(
+                charge_final[SIGNAL_ROLES["state_of_charge"]]
+                > charge_start[SIGNAL_ROLES["state_of_charge"]],
+                "charge.negative_current_increases_soc",
+                "After discharge preconditioning, negative terminal current increases state of charge.",
+                {
+                    "currentA": -100.0,
+                    "final": charge_final[SIGNAL_ROLES["state_of_charge"]],
+                    "initial": charge_start[SIGNAL_ROLES["state_of_charge"]],
+                    "preconditionCurrentA": 200.0,
+                },
+            ),
+            checked_invariant(
+                charge_final[SIGNAL_ROLES["pack_power"]] < 0.0,
+                "charge.negative_power_is_absorbed",
+                "Negative charge current produces negative terminal power absorbed by the pack.",
+                {"powerW": charge_final[SIGNAL_ROLES["pack_power"]]},
+            ),
+        ])
+        scenarios.append({
+            "durationS": 120.0,
+            "id": "charge-after-discharge-preconditioning",
+            "inputs": {
+                "active": role_inputs(contract, {
+                    "pack_current": -100.0, "ambient_temperature": 25.0, "coolant_flow": 0.05,
+                }),
+                "precondition": role_inputs(contract, {"pack_current": 200.0}),
+            },
+            "invariants": charge_invariants,
+            "samples": {
+                "activeFinal": charge_final,
+                "activeInitial": charge_start,
+                "preconditioned": preconditioned,
+            },
+            "verdict": "pass",
+        })
+    finally:
+        fmu.library.fmi2FreeInstance(charge)
+
+    thermal_results: dict[str, dict[str, float]] = {}
+    for label, flow in (("noFlow", 0.0), ("activeFlow", 0.2)):
+        component = fmu.instantiate(f"contract-thermal-{label}")
+        if not component:
+            raise RuntimeError(f"Could not instantiate {label} thermal scenario")
+        try:
+            fmu.set(component, {
+                names["pack_current"]: 400.0,
+                names["ambient_temperature"]: 25.0,
+                names["coolant_flow"]: flow,
+            })
+            fmu.initialize(component, stop_time=300.0)
+            step_component(fmu, component, 0.0, 300.0)
+            thermal_results[label] = role_sample(fmu, component, names, sample_keys)
+        finally:
+            fmu.library.fmi2FreeInstance(component)
+    no_flow_temperature = thermal_results["noFlow"][SIGNAL_ROLES["cell_temperature"]]
+    active_flow_temperature = thermal_results["activeFlow"][SIGNAL_ROLES["cell_temperature"]]
+    thermal_invariants = [
+        checked_invariant(
+            active_flow_temperature < no_flow_temperature,
+            "thermal.positive_flow_reduces_temperature",
+            "At equal current and ambient, positive coolant flow lowers the final lumped-node temperature.",
+            {
+                "activeFlowCellTemperatureC": active_flow_temperature,
+                "activeFlowKgPerS": 0.2,
+                "noFlowCellTemperatureC": no_flow_temperature,
+                "noFlowKgPerS": 0.0,
+            },
+        ),
+    ]
+    scenarios.append({
+        "durationS": 300.0,
+        "id": "thermal-coolant-boundary",
+        "inputs": {
+            "common": role_inputs(contract, {"pack_current": 400.0, "ambient_temperature": 25.0}),
+            "variants": {
+                "activeFlow": role_inputs(contract, {"coolant_flow": 0.2}),
+                "noFlow": role_inputs(contract, {"coolant_flow": 0.0}),
+            },
+        },
+        "invariants": thermal_invariants,
+        "samples": thermal_results,
+        "verdict": "pass",
+    })
+    return scenarios
+
+
 def exercise(tree: Path, fmi_platform: str) -> dict[str, object]:
     fmu = NativeFmu(tree, fmi_platform)
+    io_contract = read_io_contract(tree)
+    mapped_names = signal_names(io_contract)
+    for key, name in mapped_names.items():
+        if name not in fmu.variables:
+            raise RuntimeError(f"Mapped FMI role {SIGNAL_ROLES[key]} is absent from modelDescription.xml")
+        mapped = require_role(io_contract, SIGNAL_ROLES[key])
+        observed = fmu.variables[name]
+        if (observed["vr"] != mapped.get("valueReference")
+                or observed["causality"] != mapped.get("causality")):
+            raise RuntimeError(
+                f"Mapped FMI role {SIGNAL_ROLES[key]} disagrees with modelDescription.xml"
+            )
     if fmu.library.fmi2GetVersion() != b"2.0" or fmu.library.fmi2GetTypesPlatform() != b"default":
         raise RuntimeError("FMI version/platform inquiry returned the wrong ABI contract")
     rejected = fmu.instantiate("wrong-guid", guid="{00000000-0000-0000-0000-000000000000}")
@@ -354,13 +661,23 @@ def exercise(tree: Path, fmi_platform: str) -> dict[str, object]:
 
         fmu.initialize(first)
         fmu.initialize(second)
-        output_names = ["V_pack", "SoC", "T_cell", "Q_loss", "V_cell_min", "P_terminal"]
+        output_names = [
+            mapped_names[key] for key in (
+                "pack_voltage", "state_of_charge", "cell_temperature", "heat_source",
+                "cell_voltage", "pack_power",
+            )
+        ]
         initial = fmu.get(first, output_names)
-        expected_ocv = binary_starts["cells_series"] * binary_starts["ocv_max"]
-        if not close_enough(initial["V_pack"], expected_ocv) or not close_enough(initial["SoC"], 1.0):
+        expected_ocv = binary_starts[mapped_names["series_count"]] * binary_starts["ocv_max"]
+        if (not close_enough(initial[mapped_names["pack_voltage"]], expected_ocv)
+                or not close_enough(initial[mapped_names["state_of_charge"]], 1.0)):
             raise RuntimeError(f"Unexpected initialized outputs: {initial}")
 
-        fmu.set(first, {"I_pack": 100.0, "T_ambient": 25.0, "coolant_flow": 0.05})
+        fmu.set(first, {
+            mapped_names["pack_current"]: 100.0,
+            mapped_names["ambient_temperature"]: 25.0,
+            mapped_names["coolant_flow"]: 0.05,
+        })
         time = 0.0
         for _ in range(10):
             status = fmu.library.fmi2DoStep(first, time, 0.1, 1)
@@ -377,15 +694,24 @@ def exercise(tree: Path, fmi_platform: str) -> dict[str, object]:
         untouched = fmu.get(second, output_names)
         if not all(math.isfinite(value) for value in discharged.values()):
             raise RuntimeError(f"FMU produced non-finite outputs: {discharged}")
-        if not (0.0 < discharged["SoC"] < initial["SoC"] and discharged["V_pack"] < initial["V_pack"]):
+        if not (
+            0.0 < discharged[mapped_names["state_of_charge"]]
+            < initial[mapped_names["state_of_charge"]]
+            and discharged[mapped_names["pack_voltage"]] < initial[mapped_names["pack_voltage"]]
+        ):
             raise RuntimeError(f"Positive discharge did not reduce SoC and voltage: {discharged}")
-        if not close_enough(discharged["P_terminal"], discharged["V_pack"] * 100.0, 1e-8):
+        if not close_enough(
+            discharged[mapped_names["pack_power"]],
+            discharged[mapped_names["pack_voltage"]] * 100.0, 1e-8,
+        ):
             raise RuntimeError("P_terminal != V_pack * I_pack")
         if not close_enough(
-            discharged["V_cell_min"], discharged["V_pack"] / binary_starts["cells_series"], 1e-8
+            discharged[mapped_names["cell_voltage"]],
+            discharged[mapped_names["pack_voltage"]] / binary_starts[mapped_names["series_count"]],
+            1e-8,
         ):
             raise RuntimeError("V_cell_min != V_pack / cells_series")
-        if not close_enough(untouched["SoC"], 1.0):
+        if not close_enough(untouched[mapped_names["state_of_charge"]], 1.0):
             raise RuntimeError("Two FMU instances share mutable state")
 
         if fmu.library.fmi2Reset(first) != FMI2_OK:
@@ -474,10 +800,12 @@ def exercise(tree: Path, fmi_platform: str) -> dict[str, object]:
     if not nonfinite_component:
         raise RuntimeError("Could not instantiate nonfinite-input component")
     try:
-        if fmu.set_status(nonfinite_component, {"I_pack": math.nan}) != FMI2_ERROR:
+        if fmu.set_status(nonfinite_component, {mapped_names["pack_current"]: math.nan}) != FMI2_ERROR:
             raise RuntimeError("FMU accepted a non-finite input")
     finally:
         fmu.library.fmi2FreeInstance(nonfinite_component)
+
+    scenarios = run_host_contract_scenarios(fmu, io_contract)
 
     if fmu._allocations or fmu.callback_allocations == 0 or fmu.callback_allocations != fmu.callback_frees:
         raise RuntimeError("FMU did not balance host callback allocations and frees")
@@ -486,10 +814,12 @@ def exercise(tree: Path, fmi_platform: str) -> dict[str, object]:
         "modelIdentifier": fmu.model_identifier,
         "guid": fmu.guid,
         "platform": fmi_platform,
+        "ioContractChecksum": io_contract["ioMap"]["contractChecksum"],
         "contractStartsChecked": len(start_names),
         "steps": 10,
         "initial": initial,
         "discharged": discharged,
+        "scenarios": scenarios,
     }
 
 
@@ -497,15 +827,34 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("artifact", help="unpacked FMU tree or .fmu archive")
     parser.add_argument("--platform", dest="fmi_platform", default=None)
+    parser.add_argument("--evidence-json", type=Path, default=None)
+    parser.add_argument("--evidence-csv", type=Path, default=None)
     args = parser.parse_args()
+    if (args.evidence_json is None) != (args.evidence_csv is None):
+        parser.error("--evidence-json and --evidence-csv must be provided together")
     artifact = Path(args.artifact).resolve()
     fmi_platform = args.fmi_platform or default_platform()
     if artifact.is_dir():
+        if args.evidence_json is not None:
+            parser.error("structured host evidence requires a packaged .fmu archive")
         result = exercise(artifact, fmi_platform)
     else:
         with tempfile.TemporaryDirectory(prefix="battery-design-fmu-smoke-") as directory:
             safe_extract(artifact, Path(directory))
-            result = exercise(Path(directory), fmi_platform)
+            tree = Path(directory)
+            result = exercise(tree, fmi_platform)
+            if args.evidence_json is not None:
+                contract = read_artifact_contract(tree, artifact)
+                evidence = build_evidence(
+                    contract=contract,
+                    host_name="battery-design native ctypes lifecycle host",
+                    host_version="1",
+                    host_platform=fmi_platform,
+                    scenarios=result["scenarios"],
+                    roles=list(SIGNAL_ROLES.values()),
+                )
+                write_evidence(evidence, args.evidence_json.resolve(), args.evidence_csv.resolve())
+                result["evidenceChecksum"] = evidence["evidenceChecksum"]
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

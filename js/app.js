@@ -50,7 +50,9 @@ import {
   prechargeStudy, shuntStudy, fastProtectionStudy, shuntReferenceById,
 } from './electrical-protection.js';
 import { renderGuard } from './limits.js';
-import { detectRunner, knownRunner, runnerStatusLine, runAdvancedModel, buildFmuOnRunner } from './desktop-link.js';
+import {
+  detectRunner, knownRunner, runnerStatusLine, runAdvancedModel, buildFmuOnRunner, inspectFmiBuild,
+} from './desktop-link.js';
 import {
   vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm, massShare,
   modeComparison, DRIVING_MODES,
@@ -2879,11 +2881,37 @@ function renderRunnerBox() {
     out.innerHTML = '<div class="hint">Building the source-FMU kit…</div>';
     try {
       const fmu = await buildFmuOnRunner({ spec: currentSpec() });
+      const inspection = inspectFmiBuild(fmu);
       const names = Object.keys(fmu.files);
+      const portRows = (variables) => variables.map((variable) => {
+        const start = Object.prototype.hasOwnProperty.call(variable, 'start')
+          ? ` · start ${esc(variable.start)}` : '';
+        return `<div class="hint" style="margin-top:3px"><b style="font-family:ui-monospace,monospace">${esc(variable.name)}</b>`
+          + ` [${esc(variable.unit)}] · vr ${esc(variable.valueReference)}${start}<br>`
+          + `<span style="font-family:ui-monospace,monospace">${esc(variable.role)}</span> ← ${esc(variable.sourceBinding)}</div>`;
+      }).join('');
+      const pack = inspection.staticDesign.pack;
+      const layout = inspection.staticDesign.layout;
+      const modules = inspection.staticDesign.architecture?.modulePartition;
+      const staticSummary = pack && layout
+        ? `${esc(pack.seriesCells)}S${esc(pack.parallelCells)}P · ${esc(pack.cellCount)} cells · `
+          + `${esc((pack.energyWh / 1000).toFixed(2))} kWh · ${esc(pack.totalMassKg.toFixed(1))} kg · `
+          + `${esc(Math.round(layout.outerDimensionsMm.x))}×${esc(Math.round(layout.outerDimensionsMm.y))}×${esc(Math.round(layout.outerDimensionsMm.z))} mm`
+          + (modules ? ` · ${esc(modules.moduleCount)} × ${esc(modules.seriesCellsPerModule)}S${esc(modules.parallelCellsPerModule)}P modules` : '')
+        : 'Legacy cell/S/P export; complete layout facts are not available.';
       out.innerHTML = `<div class="hint">Built the <b>${esc(fmu.modelName)}</b> source-FMU kit (${names.length} files, guid `
         + `<span style="font-family:ui-monospace,monospace">${esc(fmu.guid)}</span>). `
         + `This is source, not a drop-in binary FMU: compile it with the FMI headers, preserve the paths, `
-        + `then package the modelDescription.xml and binaries as described in README.md.</div>`;
+        + `then package the modelDescription.xml and binaries as described in README.md.</div>`
+        + `<details style="margin-top:8px"><summary class="hint" style="cursor:pointer">Inspect enterprise mapping · `
+        + `${inspection.ports.inputs.length} inputs · ${inspection.ports.outputs.length} outputs · `
+        + `${inspection.ports.parameters.length} design parameters</summary>`
+        + `<div class="hint" style="margin-top:7px"><b>Static design</b><br>${staticSummary}<br>`
+        + `binding <span style="font-family:ui-monospace,monospace;overflow-wrap:anywhere">${esc(inspection.identity.designSnapshotChecksum)}</span></div>`
+        + `<div class="hint" style="margin-top:7px"><b>Inputs</b></div>${portRows(inspection.ports.inputs)}`
+        + `<div class="hint" style="margin-top:7px"><b>Outputs</b></div>${portRows(inspection.ports.outputs)}`
+        + `<div class="hint" style="margin-top:7px"><b>Design-bound parameters</b></div>${portRows(inspection.ports.parameters)}`
+        + `</details>`;
       // A browser cannot create download directories. One portable manifest
       // preserves every exact FMU-relative path (including sources/) instead
       // of flattening files into ambiguous names that can no longer be built.
