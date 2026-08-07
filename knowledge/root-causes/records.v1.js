@@ -2277,6 +2277,64 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-rust-msrv-float-pattern-lint-gap',
+      title: 'Float-pattern test passes locally but fails the pinned Rust toolchain',
+      symptom: 'A native solver campaign is green on the developer toolchain but its hosted Rust 1.77.2 gate fails before running the tests because warning denial rejects floating-point literals in a matches! pattern.',
+      evidence: [
+        'PR 75 CI run 31223697624 failed in the pinned SUNDIALS job while compiling rust-dae-native/src/native.rs, before the debug native campaign could execute.',
+        'The interpolation regression matched interval_start_s: 0.5 and interval_end_s: 0.75 directly inside matches!, triggering illegal-floating-point-literal-pattern under Rust 1.77.2 with RUSTFLAGS=-Dwarnings.',
+        'The same source compiled without that diagnostic on the available Rust 1.87.0 development toolchain, so a latest-toolchain-only local run did not reproduce the minimum-supported-toolchain gate.',
+      ],
+      detection: [
+        {
+          method: 'pinned minimum-supported Rust test gate',
+          signal: 'Compile and execute the complete feature-on native test campaign with the exact CI Rust version and RUSTFLAGS=-Dwarnings.',
+          failureCondition: 'Source accepted by the development compiler emits any denied compatibility lint or fails to compile on Rust 1.77.2 before the native tests run.',
+        },
+      ],
+      causalChain: [
+        'An error enum is checked with matches! and floating-point constants are written as structural pattern fields.',
+        'Compiler lint behavior differs between the available development toolchain and the project’s pinned minimum-supported Rust toolchain.',
+        'Only the newer compiler is exercised before publication, so the compatibility diagnostic remains invisible locally.',
+        'The exact-SHA hosted gate stops at compilation and skips the release and provenance portions of the native campaign.',
+      ],
+      rootCause: 'The regression encoded numerical values as floating-point patterns and prepublication verification did not compile that test with the exact warning-denied minimum-supported Rust toolchain used by CI.',
+      resolution: [
+        'Replace the matches! float pattern with full IdaError structural equality, carrying requested_time_s from the loop value and comparing the interval fields as ordinary values.',
+        'Keep the native CI job pinned to Rust 1.77.2 with RUSTFLAGS=-Dwarnings and require that exact gate before merge.',
+      ],
+      prevention: [
+        'Do not encode floating-point expectations as Rust patterns; compare complete values or use explicit tolerance checks when the numerical contract is approximate.',
+        'Treat the exact minimum-supported compiler and warning policy as a distinct compatibility test, not as interchangeable with a newer local compiler.',
+        'When hosted compilation fails before test execution, preserve the compiler version, lint name, source construct and skipped downstream gates in the incident record.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The MSRV incident remains searchable, the native interpolation regression uses value equality instead of a float-literal pattern, and CI preserves Rust 1.77.2 with warning denial.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['compatibility', 'lint', 'msrv', 'rust', 'test-harness'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded interpolation-bound regression using complete IdaError equality rather than float literals in a pattern.',
+        },
+        {
+          kind: 'implementation',
+          locator: '.github/workflows/ci.yml',
+          note: 'Exact Rust 1.77.2 warning-denied native SUNDIALS campaign.',
+        },
+        {
+          kind: 'incident',
+          locator: 'GitHub Actions run 31223697624 job 93013531192',
+          note: 'Exact-head PR 75 failure at illegal-floating-point-literal-pattern before native test execution.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-schema-envelope-permissive',
       title: 'Strict payload validation leaves the request envelope permissive',
       symptom: 'A strict DesignSpec is validated correctly, but a misspelled sibling field in the surrounding API request is ignored or replaced by a default.',

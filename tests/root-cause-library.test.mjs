@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 42);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 43);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -92,6 +92,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-rc-euler-step-instability',
     'rc-regression-path-containment-gap',
     'rc-resource-self-checksum-trust',
+    'rc-rust-msrv-float-pattern-lint-gap',
     'rc-schema-envelope-permissive',
     'rc-shared-test-mutex-poison-cascade',
     'rc-signed-bound-evidence-miss',
@@ -199,17 +200,18 @@ test('regression-path memory preserves cross-platform repository containment', (
   );
 });
 
-test('native IDA memories keep six causes separate, resolved and exactly searchable', () => {
+test('native IDA memories keep seven causes separate, resolved and exactly searchable', () => {
   const ids = [
     'rc-ida-global-step-accounting-gap',
     'rc-ida-initial-target-span-gap',
     'rc-native-dae-callback-boundary-gap',
     'rc-native-solver-build-provenance-gap',
+    'rc-rust-msrv-float-pattern-lint-gap',
     'rc-shared-test-mutex-poison-cascade',
     'rc-solver-evidence-acceptance-drift',
   ];
   assert.deepEqual(ids.map((id) => getRootCauseRecord(id)?.status), [
-    'resolved', 'resolved', 'resolved', 'resolved', 'resolved', 'resolved',
+    'resolved', 'resolved', 'resolved', 'resolved', 'resolved', 'resolved', 'resolved',
   ]);
 
   const globalSteps = getRootCauseRecord('rc-ida-global-step-accounting-gap');
@@ -238,6 +240,16 @@ test('native IDA memories keep six causes separate, resolved and exactly searcha
   assert.match(mutex.evidence.join(' '), /12\.0[\s\S]*12\.000000000000002[\s\S]*10 passes[\s\S]*52 failures[\s\S]*one source assertion[\s\S]*51 follow-on[\s\S]*poison failures/i);
   assert.match(mutex.resolution.join(' '), /absolute and relative tolerances[\s\S]*poison-recovering test_lock[\s\S]*reset each test.s instrumentation state/i);
 
+  const msrv = getRootCauseRecord('rc-rust-msrv-float-pattern-lint-gap');
+  assert.match(msrv.evidence.join(' '), /PR 75[\s\S]*illegal-floating-point-literal-pattern[\s\S]*Rust 1\.77\.2[\s\S]*Rust 1\.87\.0/i);
+  assert.match(msrv.rootCause, /floating-point patterns[\s\S]*exact warning-denied minimum-supported Rust toolchain/i);
+  assert.match(msrv.resolution.join(' '), /full IdaError structural equality[\s\S]*Rust 1\.77\.2[\s\S]*RUSTFLAGS=-Dwarnings/i);
+  const nativeSource = readFileSync(resolve(ROOT, 'rust-dae-native/src/native.rs'), 'utf8');
+  assert.match(nativeSource, /interpolation_guard_rejects_replaying_the_previous_step_endpoint[\s\S]*assert_eq![\s\S]*IdaError::InterpolationIntervalMiss/);
+  assert.doesNotMatch(nativeSource, /matches!\([\s\S]{0,240}interval_start_s:\s*0\.5[\s\S]{0,120}interval_end_s:\s*0\.75/);
+  const ci = readFileSync(resolve(ROOT, '.github/workflows/ci.yml'), 'utf8');
+  assert.match(ci, /sundials-native-build:[\s\S]*RUSTFLAGS:\s*-Dwarnings[\s\S]*toolchain:\s*1\.77\.2/);
+
   const evidence = getRootCauseRecord('rc-solver-evidence-acceptance-drift');
   assert.match(evidence.rootCause, /rewritten evidence summary[\s\S]*each original acceptance item[\s\S]*concrete test[\s\S]*provenance/i);
   assert.match(evidence.resolution.join(' '), /loose, medium and tight[\s\S]*Dormand–Prince[\s\S]*SciPy 1\.17\.0[\s\S]*solve_ivp[\s\S]*Radau[\s\S]*relative tolerance[\s\S]*absolute tolerance[\s\S]*81-case/i);
@@ -247,6 +259,7 @@ test('native IDA memories keep six causes separate, resolved and exactly searcha
     ['IDA initial target span underflow roundoff representable progress tout tout1', 'rc-ida-initial-target-span-gap'],
     ['native DAE FFI callback alias panic first error zero allocation', 'rc-native-dae-callback-boundary-gap'],
     ['official IDA-only source lock bounded archive build receipt exact linked bytes', 'rc-native-solver-build-provenance-gap'],
+    ['Rust MSRV float literal pattern lint warning denied CI compatibility', 'rc-rust-msrv-float-pattern-lint-gap'],
     ['exact float assertion poisoned shared test mutex 51 cascading failures', 'rc-shared-test-mutex-poison-cascade'],
     ['solver acceptance tolerance convergence cross validation external SciPy provenance', 'rc-solver-evidence-acceptance-drift'],
   ]) {

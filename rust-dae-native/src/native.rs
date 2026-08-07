@@ -3205,14 +3205,14 @@ mod tests {
     #[test]
     fn interpolation_guard_rejects_replaying_the_previous_step_endpoint() {
         for requested_time_s in [0.5, 0.49] {
-            assert!(matches!(
-                require_interpolation_bounds(requested_time_s, 0.5, 0.75),
-                Err(IdaError::InterpolationIntervalMiss {
+            assert_eq!(
+                require_interpolation_bounds(requested_time_s, 0.5, 0.75).unwrap_err(),
+                IdaError::InterpolationIntervalMiss {
+                    requested_time_s,
                     interval_start_s: 0.5,
                     interval_end_s: 0.75,
-                    ..
-                })
-            ));
+                }
+            );
         }
     }
 
