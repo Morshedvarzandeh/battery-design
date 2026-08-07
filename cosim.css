@@ -1,8 +1,8 @@
 :root {
   --ground:#f2f4f3; --surface:#fcfcfb; --surface-2:#eef1f0; --line:#d9e0de;
-  --ink:#101615; --ink-2:#394542; --muted:#687570; --accent:#0b6e5f;
+  --ink:#101615; --ink-2:#394542; --muted:#5d6965; --accent:#0b6e5f;
   --accent-ink:#fff; --accent-soft:#e2f0ed; --ok:#2f6b3a; --ok-soft:#e5f1e7;
-  --warn:#8a6908; --warn-soft:#f8efd4; --fail:#b4441f; --fail-soft:#fbe9e2;
+  --warn:#806000; --warn-soft:#f8efd4; --fail:#b4441f; --fail-soft:#fbe9e2;
   --shadow:0 10px 32px rgba(24,45,40,.08); --radius:10px;
   --sans:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
   --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;

@@ -82,6 +82,9 @@ test('one immutable defaults object binds XML, C, reset and content identity', (
   assert.match(source, /#define DEFAULT_R0_MOHM\s+42\.5/);
   assert.match(source, /restore_start_values\(m\)/);
   assert.match(source, /#define FMI2_FUNCTION_PREFIX BatteryPack_/);
+  assert.doesNotMatch(source, /\bstrncpy\s*\(/, 'generated source avoids deprecated host CRT functions');
+  assert.match(source, /instanceNameLength \+ 1 < sizeof\(m->instanceName\)/);
+  assert.match(source, /m->instanceName\[instanceNameLength\] = '\\0';/);
   for (const symbol of FMI2_REQUIRED_CO_SIMULATION_SYMBOLS) {
     assert.match(source, new RegExp(`\\b${symbol}\\b`), `${symbol} is implemented`);
   }

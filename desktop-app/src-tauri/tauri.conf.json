@@ -5,7 +5,7 @@
   "identifier": "io.github.morshedvarzandeh.batterydesign",
   "build": {
     "frontendDist": "../runner",
-    "beforeBuildCommand": "node ../prepare.mjs"
+    "beforeBuildCommand": "node prepare.mjs"
   },
   "app": {
     "withGlobalTauri": false,

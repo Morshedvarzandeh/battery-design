@@ -73,7 +73,20 @@ test('the authenticated runner launches the real UI and its Rust/Wasm core under
     await prepareDesktopPage(page);
     await page.goto(`${runner.base}/index.html?token=${TOKEN}`);
 
-    await expect(page).toHaveURL(`${runner.base}/index.html`);
+    await expect.poll(() => {
+      const url = new URL(page.url());
+      return `${url.origin}${url.pathname}${url.search}`;
+    }).toBe(`${runner.base}/index.html`);
+    const url = new URL(page.url());
+    expect(url.search).toBe('');
+    expect(page.url()).not.toContain(TOKEN);
+    const sharedDesign = JSON.parse(decodeURIComponent(url.hash.slice(1)));
+    expect(sharedDesign).toEqual(expect.objectContaining({
+      c: expect.any(String),
+      s: expect.any(Number),
+      p: expect.any(Number),
+      sel: expect.any(Object),
+    }));
     await expect(page.locator('#runnerBox')).toContainText('your machine');
     await expect.poll(() => page.evaluate(async () => {
       const core = await import('/js/wasm-core.js');

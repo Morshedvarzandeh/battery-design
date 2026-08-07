@@ -2356,7 +2356,7 @@ function initComponents() {
     const showHint = () => {
       const o = componentById(key, sel.value);
       hint.innerHTML = o
-        ? `${esc(o.notes)}<br><span style="opacity:.75">e.g. ${esc((o.suppliers || []).join(', '))}</span>`
+        ? `${esc(o.notes)}<br><span style="color:var(--muted)">e.g. ${esc((o.suppliers || []).join(', '))}</span>`
         : '';
     };
     showHint();
@@ -2487,7 +2487,7 @@ function syncInputs() {
   const ch = CHEMISTRIES[c.chemistry];
   const pv = provenance(c);
   $('cellHint').innerHTML =
-    `${c.form} ${c.formFactor} · <b style="color:${ch?.color}">${c.chemistry}</b> · ` +
+    `${c.form} ${c.formFactor} · <b style="color:color-mix(in srgb,${ch?.color} 60%,var(--ink))">${c.chemistry}</b> · ` +
     `${f1(c.nominalV)} V · ${f1(c.capacityAh)} Ah · ${f0(c.massG)} g · ` +
     `<span class="prov prov-${pv.tone}">${pv.label}</span>` +
     (pv.contribUid ? ` <span class="provuid">${pv.contribUid}</span>` : '') +

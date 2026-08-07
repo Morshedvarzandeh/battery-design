@@ -226,7 +226,7 @@ test('Tauri generates a cryptographic token, authenticates readiness and has a C
   ok(/X-Battery-Design-Token/.test(rust) && /runnerId/.test(rust) && /authenticated_probe/.test(rust), 'readiness verifies the authenticated runner identity');
   ok(!/TcpListener::bind\(\("127\.0\.0\.1", port\)\)\.is_err/.test(rust), 'occupied-port detection is no longer treated as readiness');
   ok(/default-src 'self'/.test(config.app.security.csp) && /object-src 'none'/.test(config.app.security.csp), 'direct-page fallback has an explicit CSP');
-  ok(config.build.beforeBuildCommand === 'node ../prepare.mjs', 'Tauri stages from the src-tauri project working directory');
+  ok(config.build.beforeBuildCommand === 'node prepare.mjs', 'Tauri stages from the desktop-app project working directory');
   ok(/script-src 'self' 'wasm-unsafe-eval' 'sha256-/.test(config.app.security.csp)
     && /frame-ancestors 'self'/.test(config.app.security.csp)
     && !/script-src[^;]*unsafe-inline/.test(config.app.security.csp), 'Tauri fallback permits Wasm and same-origin showroom framing without unsafe inline scripts');

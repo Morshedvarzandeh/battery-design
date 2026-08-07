@@ -420,7 +420,15 @@ fmi2Component fmi2Instantiate(fmi2String instanceName, fmi2Type fmuType,
       m->allocate = functions->allocateMemory; m->release = functions->freeMemory;
     }
   }
-  if (instanceName) { strncpy(m->instanceName, instanceName, sizeof(m->instanceName) - 1); }
+  size_t instanceNameLength = 0;
+  if (instanceName) {
+    while (instanceNameLength + 1 < sizeof(m->instanceName) &&
+        instanceName[instanceNameLength] != '\\0') {
+      m->instanceName[instanceNameLength] = instanceName[instanceNameLength];
+      instanceNameLength++;
+    }
+  }
+  m->instanceName[instanceNameLength] = '\\0';
   restore_start_values(m);
   return m;
 }

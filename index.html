@@ -31,7 +31,7 @@
   --accent:#0B6E5F; --accent-ink:#FFFFFF; --accent-soft:#E3F0ED;
   --missing:#B4441F; --missing-soft:#FBEAE3;
   --ok:#2F6B3A; --ok-soft:#E4F0E6;
-  --warn:#8A6A0A; --warn-soft:#F7EFD6;
+  --warn:#806000; --warn-soft:#F7EFD6;
   --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
   --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   --r:6px;
@@ -49,7 +49,7 @@
 :root[data-theme="light"]{--ground:#F4F6F5;--surface:#FCFCFB;--surface-2:#EEF1F0;--line:#DBE2E0;
   --ink:#101615;--ink-2:#3A4644;--muted:#5F6D69;--accent:#0B6E5F;--accent-ink:#FFFFFF;
   --accent-soft:#E3F0ED;--missing:#B4441F;--missing-soft:#FBEAE3;
-  --ok:#2F6B3A;--ok-soft:#E4F0E6;--warn:#8A6A0A;--warn-soft:#F7EFD6;}
+  --ok:#2F6B3A;--ok-soft:#E4F0E6;--warn:#806000;--warn-soft:#F7EFD6;}
 
 *{box-sizing:border-box}
 html,body{height:100%}
@@ -57,7 +57,7 @@ body{margin:0;background:var(--ground);color:var(--ink);font-family:var(--sans);
   font-size:14px;line-height:1.45;display:flex;flex-direction:column}
 a{color:var(--accent)}
 button{font:inherit;color:inherit}
-button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible{
+button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible,[tabindex]:focus-visible{
   outline:3px solid color-mix(in srgb,var(--accent) 55%,transparent);outline-offset:2px}
 
 header{display:flex;align-items:center;gap:14px;padding:10px 16px;
@@ -276,8 +276,8 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
 .prov-good{color:#0b6e5f;border-color:#7fc9bc;background:#e6f4f1}
 .prov-warn{color:#8a5a00;border-color:#e0c169;background:#fdf4e0}
 .prov-estimate{color:#7a3b12;border-color:#e5b79c;background:#fbeee6}
-.provuid{font-family:ui-monospace,monospace;font-size:10px;opacity:.7}
-.provdetail{margin-top:4px;font-size:11px;line-height:1.45;opacity:.75}
+.provuid{font-family:ui-monospace,monospace;font-size:10px;color:var(--muted)}
+.provdetail{margin-top:4px;font-size:11px;line-height:1.45;color:var(--muted)}
 @media (prefers-color-scheme:dark){
   .prov-good{color:#7fc9bc;border-color:#1e8f7c;background:#0c2b26}
   .prov-warn{color:#e5c07b;border-color:#8a6d24;background:#2b2312}
@@ -1271,7 +1271,7 @@ footer{padding:8px 16px;border-top:1px solid var(--line);font-size:11.5px;color:
     </div>
   </section>
 
-  <aside class="panel" id="statsPanel">
+  <aside class="panel" id="statsPanel" tabindex="0" aria-label="Live design summary">
     <div class="tabpane active" id="statsBody" style="display:block"></div>
   </aside>
 </main>
