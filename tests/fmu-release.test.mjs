@@ -268,7 +268,8 @@ test('product copy separates the editable source kit from compiled release evide
   const acceptance = read('docs/FMI_COMMERCIAL_ACCEPTANCE.md');
   assert.match(readme, /battery-design-ev\.fmu/);
   assert.match(readme, /glibc 2\.17\+ baseline/);
-  assert.match(readme, /desktop GUI, CLI and local API continue to export an editable source-FMU/);
+  assert.match(readme, /desktop GUI and local API, plus the source\/staged Node runner CLI, continue\s+to export an editable source-FMU/);
+  assert.match(readme, /do not install a stable\s+customer-facing calibration shell command/);
   assert.match(acceptance, /Open-source validation is not vendor certification/);
   for (const host of ['ANSYS Twin Builder', 'MATLAB/Simulink', 'GT-SUITE']) {
     assert.match(acceptance, new RegExp(host.replace('/', '\\/')));

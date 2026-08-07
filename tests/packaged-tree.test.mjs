@@ -13,12 +13,75 @@ import {
   REQUIRED_RUNTIME_ENTRIES,
   stageApplication,
 } from '../desktop-app/prepare.mjs';
+import { materializeCalibrationDataset } from '../js/calibration-dataset.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MUST_SHIP = Object.freeze([
   'index.html', 'cosim.html', 'cosim.css', 'js', 'knowledge', 'wasm', 'vendor',
   'assets', 'assets3d', 'profiles', 'desktop',
 ]);
+
+function packagedCalibrationDataset() {
+  return materializeCalibrationDataset({
+    id: 'packaged-runner-smoke',
+    kind: 'synthetic',
+    purpose: 'calibration',
+    source: {
+      tool: 'battery-design packaged smoke',
+      toolVersion: null,
+      model: null,
+      runId: null,
+      generatedAt: null,
+      mediaType: 'application/json',
+      rawSha256: 'a'.repeat(64),
+    },
+    binding: {
+      cellId: 'samsung-inr21700-50e',
+      seriesCells: 1,
+      parallelCells: 1,
+      startSoC: 0.8,
+      ambientC: 25,
+      moduleCount: 1,
+      initialState: 'rested-equilibrium-at-ambient',
+    },
+    normalization: {
+      format: 'battery-design/calibration-normalization@1',
+      adapter: 'canonical-json',
+      adapterVersion: '1.0.0',
+      mappingChecksum: 'b'.repeat(64),
+      sourceUnits: { time: 's', current: 'A', voltage: 'V', temperature: null },
+      sourceCurrentPositive: 'discharge',
+      sourceCurrentScope: 'pack',
+      sourceVoltageLocation: 'pack-terminal',
+      sourceTemperatureLocation: null,
+      sourceSampleAlignment: 'end-of-step',
+      sourceFirstSampleTimeS: 0,
+      sourceResetTimeS: -1,
+      timeHandling: 'validated-uniform',
+      originalSampleCount: 3,
+    },
+    samplePeriodS: 1,
+    signals: {
+      currentA: [0, 1, 0],
+      voltageV: [3.75, 3.74, 3.75],
+      temperatureC: null,
+    },
+    segments: [
+      { id: 'all', startIndex: 0, endIndexExclusive: 3, mode: 'dynamic', include: true },
+    ],
+    conventions: {
+      timeBasis: 'uniform-sample-period',
+      timeOrigin: 'trial-reset',
+      firstSampleOffsetS: 1,
+      sampleAlignment: 'end-of-step',
+      currentHold: 'zero-order-hold',
+      currentPositive: 'discharge',
+      currentScope: 'pack',
+      voltageLocation: 'pack-terminal',
+      temperatureLocation: null,
+    },
+  });
+}
 
 function reserveFreePort() {
   return new Promise((resolve, reject) => {
@@ -120,6 +183,13 @@ test('staged desktop tree imports and starts from an isolated output', { timeout
 
     const manifest = JSON.parse(readFileSync(path.join(staged, 'PACKAGED.json'), 'utf8'));
     assert.deepEqual(manifest.requiredEntries, [...REQUIRED_RUNTIME_ENTRIES]);
+    for (const relative of [
+      'js/calibration-dataset.js',
+      'js/calibration-import.js',
+      'js/sim2.js',
+    ]) {
+      assert.ok(existsSync(path.join(staged, relative)), `calibration runtime dependency was not staged: ${relative}`);
+    }
 
     // bd.mjs resolves every static import before dispatching the command. This
     // catches missing JS/data libraries even if a direct UI path is not used
@@ -147,6 +217,43 @@ test('staged desktop tree imports and starts from an isolated output', { timeout
       output: () => `${stdout}\n${stderr}`,
     });
     assert.equal(capabilities.runner, 'battery-design desktop');
+    assert.ok(
+      capabilities.localApiCapabilities.some(({ id }) => id === 'calibration'),
+      'the staged runner advertises its governed local-API calibration surface',
+    );
+    assert.ok(
+      !capabilities.capabilities.some(({ id }) => id === 'calibration'),
+      'the staged runner does not claim a calibration GUI that is not implemented',
+    );
+
+    const dataset = packagedCalibrationDataset();
+    const calibrationResponse = await fetch(`${baseUrl}/api/calibrate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Battery-Design-Token': token,
+      },
+      body: JSON.stringify({
+        format: 'battery-design/calibration-request@1',
+        datasets: dataset,
+        params: null,
+        fit: ['r0Ref'],
+        maxIter: 1,
+        weightTemp: 0,
+        maxEvaluations: 2,
+        maxModuleWeightedIntegrationSteps: 36,
+        maxSamplesPerDataset: 8,
+      }),
+    });
+    const calibration = await calibrationResponse.json();
+    assert.equal(calibrationResponse.status, 200, calibration.error);
+    assert.equal(calibration.format, 'battery-design/calibration-result@1');
+    assert.deepEqual(calibration.datasetChecksums, [dataset.checksum]);
+    assert.equal(calibration.evaluationCount, 2);
+    assert.equal(calibration.moduleWeightedIntegrationStepCount, 36,
+      'the isolated package executes the exact adaptive work plan budgeted by the request');
+    assert.doesNotMatch(JSON.stringify(calibration), /"signals"\s*:/,
+      'the packaged API returns governed evidence, not the source trace');
 
     for (const pathname of [
       '/index.html',

@@ -319,7 +319,8 @@ export function runnerStatusLine(info) {
       here: 'browser',
       text: 'Running in your browser — instant, private, nothing installed. '
         + 'The desktop GUI adds the advanced model and source-FMU export. '
-        + 'Design-space search, calibration and automation are available separately through its CLI/API/MCP interfaces.',
+        + 'Design-space search and governed calibration are available through the source/staged runner CLI and local API. '
+        + 'MCP provides design and review automation; it does not run calibration.',
     };
   }
   return {

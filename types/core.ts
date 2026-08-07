@@ -236,6 +236,104 @@ export interface RcBranch {
   tauS: number;
 }
 
+export type CalibrationDatasetKind = 'synthetic' | 'measured';
+export type CalibrationDatasetPurpose = 'calibration' | 'validation';
+export type CalibrationTemperatureLocation =
+  | 'cell-average'
+  | 'cell-core'
+  | 'cell-surface'
+  | 'coolant-outlet'
+  | 'module-maximum';
+export type CalibrationSegmentMode =
+  | 'charge'
+  | 'discharge'
+  | 'dynamic'
+  | 'pulse'
+  | 'rest'
+  | 'thermal-soak'
+  | 'other';
+
+export interface CalibrationDatasetPayload {
+  id: string;
+  kind: CalibrationDatasetKind;
+  purpose: CalibrationDatasetPurpose;
+  source: {
+    tool: string;
+    toolVersion: string | null;
+    model: string | null;
+    runId: string | null;
+    generatedAt: string | null;
+    mediaType: string;
+    rawSha256: string;
+  };
+  binding: {
+    cellId: string | null;
+    seriesCells: number;
+    parallelCells: number;
+    startSoC: number;
+    ambientC: number;
+    moduleCount: number;
+    initialState: 'rested-equilibrium-at-ambient';
+  };
+  normalization: {
+    format: 'battery-design/calibration-normalization@1';
+    adapter: 'canonical-json' | 'delimited-columns';
+    adapterVersion: string;
+    mappingChecksum: string;
+    sourceUnits: {
+      time: string;
+      current: string;
+      voltage: string;
+      temperature: string | null;
+    };
+    sourceCurrentPositive: 'charge' | 'discharge';
+    sourceCurrentScope: 'cell' | 'pack';
+    sourceVoltageLocation: 'cell-terminal' | 'pack-terminal';
+    sourceTemperatureLocation: CalibrationTemperatureLocation | null;
+    sourceSampleAlignment: 'end-of-step';
+    sourceFirstSampleTimeS: number;
+    sourceResetTimeS: number;
+    timeHandling: 'validated-uniform';
+    originalSampleCount: number;
+  };
+  samplePeriodS: number;
+  signals: {
+    currentA: readonly number[];
+    voltageV: readonly number[];
+    temperatureC: readonly number[] | null;
+  };
+  segments: readonly {
+    id: string;
+    startIndex: number;
+    endIndexExclusive: number;
+    mode: CalibrationSegmentMode;
+    include: boolean;
+  }[];
+  conventions: {
+    timeBasis: 'uniform-sample-period';
+    timeOrigin: 'trial-reset';
+    firstSampleOffsetS: number;
+    sampleAlignment: 'end-of-step';
+    currentHold: 'zero-order-hold';
+    currentPositive: 'discharge';
+    currentScope: 'pack';
+    voltageLocation: 'pack-terminal';
+    temperatureLocation: CalibrationTemperatureLocation | null;
+  };
+}
+
+export interface CalibrationDataset extends CalibrationDatasetPayload {
+  format: 'battery-design/calibration-dataset@1';
+  schemaVersion: '1.0.0';
+  checksum: string;
+}
+
+export interface CalibrationDatasetValidationIssue {
+  path: string;
+  code: string;
+  message: string;
+}
+
 export interface AdvancedModelParams {
   r0Ref: number;
   r0EaJ: number;

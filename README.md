@@ -38,9 +38,9 @@ result using the generated [enterprise signal/port map](docs/FMI_SIGNAL_MAP.md)
 and [commercial acceptance checklist](docs/FMI_COMMERCIAL_ACCEPTANCE.md)
 before making a host-support claim.
 
-The desktop GUI, CLI and local API continue to export an editable source-FMU
-build kit. That local source kit is not loadable until it is compiled and
-packaged.
+The desktop GUI and local API, plus the source/staged Node runner CLI, continue
+to export an editable source-FMU build kit. That local source kit is not
+loadable until it is compiled and packaged.
 
 The Linux desktop packages are unsigned, so a software centre may warn about
 them. Windows and macOS desktop packages are not currently built or advertised.
@@ -50,11 +50,17 @@ them. Windows and macOS desktop packages are not currently built or advertised.
 | Surface | Available now |
 |---|---|
 | Browser GUI | Pack/application design, reports, Level-1 mission simulation, Rust/Wasm equation studio, SIL, comparative runaway/vent studies and HIL contract preparation |
-| Desktop GUI extras | Advanced electro-thermal run, source-FMU kit export and the host-machine silhouette |
-| Desktop CLI | Calibration, bounded multicore search and sweeps, BOM/wiring, grounding, LCA, swap/runaway studies and source-FMU export |
-| Local API | Pack design and ontology, advanced simulation and calibration, bounded search, and source-FMU export |
-| MCP | Pack design, mission/cell comparisons, ontology queries and engineering review for an MCP client |
+| Desktop GUI extras | Advanced electro-thermal run, source-FMU kit export and the host-machine silhouette; no calibration button is shipped |
+| Source/staged runner CLI | Governed trace import and calibration, bounded multicore search and sweeps, BOM/wiring, grounding, LCA, swap/runaway studies and source-FMU export |
+| Local API | Pack design and ontology, advanced simulation, canonical-dataset calibration, bounded search, and source-FMU export |
+| MCP | Pack design, mission/cell comparisons, ontology queries, known-issue diagnosis and engineering review; no calibration tool is shipped |
 | Planned—not shipped | Crush, vibration, spatial thermal/corrosion solvers and a deterministic HIL target runtime |
+
+The `.deb` and AppImage currently expose the desktop GUI and its authenticated
+local API. They bundle Node as an internal sidecar but do not install a stable
+customer-facing calibration shell command. Run the CLI from a clone with
+`node desktop/bd.mjs …`, or from an explicitly staged runner tree; do not treat
+the internal `bd-runner` sidecar as an installed CLI contract.
 
 Resolved engineering failures are kept in a versioned
 [root-cause quality memory](docs/ROOT_CAUSE_LIBRARY.md). The same immutable
@@ -328,22 +334,28 @@ project's provenance-first datasheet pipeline.
   every pass or one charge at base, powered by the cell's own datasheet
   charge rating — so an e-bus route with pantograph top-ups is a scenario
   you can actually run, winter charge-inhibit included.
-- **A model you can correct against your own cell** — the browser simulation
+- **A parameterised model with a governed calibration path** — the browser simulation
   answers "does this pack survive the duty?" with one resistance and one
   thermal mass, which is honest for a first look and useless for a decision.
   The desktop model (`js/sim2.js`) is built the other way round: **every
-  coefficient is a named, bounded, documented parameter you can change, and
-  given your measurements the model corrects itself to match them.** It adds
+  coefficient is a named, bounded, documented parameter you can change.** It adds
   RC dynamics with Arrhenius temperature dependence, the reversible entropic
   heat term (which cools on charge and warms on discharge — the term whose
   absence embarrasses I²R-only models against real data), a per-module thermal
   network with an ε-NTU coolant stream (a stopped pump removes no heat; a fast
   one is limited by the cold plate), and calendar + cycle aging as a
-  year-by-year capacity and resistance schedule. The CLI/API `calibrate` command fits it to your
-  measured `time,current,voltage[,temperature]` and reports how far each
-  parameter moved and whether it hit a bound. The test suite proves the fitter
-  by generating data from *known* parameters and requiring it to recover them
-  — it does, to within 0.1%. What it is **not** is stated on every run: not
+  year-by-year capacity and resistance schedule. The source-runner CLI/local-API `calibrate`
+  workflow consumes a closed, checksummed
+  [`battery-design/calibration-dataset@1`](docs/SYNTHETIC_CALIBRATION.md)
+  snapshot and reports how far each allowlisted parameter moved, whether it hit
+  a bound, the exact optimizer work and the preprocessing applied. Delimited or
+  columnar-JSON exports first pass through an exact mapping of columns, units,
+  current sign and physical signal locations; malformed rows are rejected, not
+  dropped. The synthetic recovery test generates observations with the same
+  battery-design equations and checks optimizer behavior. It is not independent
+  validation or evidence that a GT-AutoLion or Simcenter Amesim export has been
+  accepted; both proprietary export paths remain **Not run**. What the model is
+  **not** is stated on every run: not
   electrochemical (no P2D, no diffusion), not 3-D (a hot module, not a hot
   corner), and its defaults are class-typical until you calibrate them.
 

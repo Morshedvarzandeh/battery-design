@@ -106,6 +106,9 @@ test('runner is authenticated, loopback-only in its advertised URL, and reports 
   ok(gui.includes('sim2') && gui.includes('cosim') && gui.includes('showroom-machine'), 'actual GUI extras are advertised');
   ok(!gui.includes('search') && !gui.includes('wiring'), 'CLI-only features are not advertised as GUI buttons');
   ok(info.cliCapabilities.some((capability) => capability.id === 'search'), 'CLI features remain discoverable separately');
+  ok(info.simulationLimits?.maxThermalNodeUpdates === 5_000_000
+    && /adaptive temporal integration steps multiplied by modeled modules/.test(info.simulationLimits.accounting),
+  'the advertised simulation ceiling names the exact adaptive node-work accounting basis');
   ok(runner.stdout().includes(`http://127.0.0.1:`) && runner.stdout().includes(`?token=${TOKEN}`), 'manual serve prints the tokenised loopback URL');
 });
 
@@ -144,7 +147,25 @@ test('runner rejects malformed paths and unbounded work without terminating', as
       profile: { dtS: 1, w: Array.from({ length: 6000 }, () => 1000) },
     },
   });
-  ok(costlyProfile.status === 400 && /integration-module steps/.test((await costlyProfile.json()).error), 'simulation integration work is bounded independently of input bytes');
+  ok(costlyProfile.status === 400 && /thermal node updates.*exact adaptive integration planning/.test((await costlyProfile.json()).error), 'simulation integration work is bounded independently of input bytes');
+
+  const thermallyStiffProfile = await api(runner.base, '/api/sim2', {
+    method: 'POST',
+    body: {
+      spec: { application: 'ev', cell: 'samsung-inr21700-50e', s: 64, p: 1 },
+      nModules: 64,
+      params: {
+        cpCellJkgK: 300, kCondWK: 200, hCoolWK: 500, uaAmbWK: 200,
+        mdotKgS: 5, cpCoolJkgK: 4200, maxDtS: 60,
+      },
+      profile: { dtS: 60, w: [1000] },
+    },
+  });
+  const thermalRejection = await thermallyStiffProfile.json();
+  ok(thermallyStiffProfile.status === 400
+    && /8,322,048 thermal node updates/.test(thermalRejection.error)
+    && /130,032 temporal steps × 64 modules/.test(thermalRejection.error),
+  'preflight counts adaptive thermal microsteps before executing a valid but thermally stiff model');
 
   const profile = Array.from({ length: 100_001 }, () => 1000);
   const oversizedProfile = await api(runner.base, '/api/sim2', {

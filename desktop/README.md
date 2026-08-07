@@ -28,7 +28,7 @@ node desktop/bd.mjs help
 | `search` | The whole design space — every cell × every energy target — ranked |
 | `range` | A drive-cycle study — consumption and range across mass × driving mode |
 | `sim2` | The full model: RC dynamics, entropic heat, per-module temperatures, coolant, aging |
-| `calibrate` | Correct the model against **your** measured data |
+| `calibrate` | From the source/staged Node runner, import one governed trace mapping or consume a canonical dataset, then fit allowlisted existing model parameters |
 | `params` | Every coefficient, with units, bounds and where its default came from |
 | `fmu` | Export the editable FMI 2.0 source-FMU build kit. This command never emits a compiled `.fmu`; use the release artifact for a prebuilt Linux/Windows component |
 | `bom` | Every conductor sized, every joint checked for corrosion, and the bill of materials |
@@ -401,7 +401,7 @@ honest about the difference between what it found and what it assumed.
 
 ---
 
-## The level-2 model, and correcting it against your own cell
+## The level-2 model and its governed calibration path
 
 `js/sim2.js` is the simulation the desktop tier exists for. The browser model
 (level 1) answers *"does this pack survive the duty?"* with one resistance and
@@ -409,16 +409,27 @@ one thermal mass. Every number in it is fixed by the tool, which is fine for a
 first look and useless for an engineering decision.
 
 This one is built the other way round: **every coefficient is a named, bounded,
-documented parameter you can change — and given your measurements, the model
-corrects itself to match them.**
+documented parameter you can change.** Calibration is a separate governed
+source/staged-runner CLI and local-API workflow; it is not a desktop-GUI button or MCP tool, and the packages do not install a stable shell wrapper.
+
+Here, CLI means `node desktop/bd.mjs …` from a clone or an explicitly staged
+runner tree. The current `.deb` and AppImage use the bundled Node binary as an
+internal GUI sidecar and do not install a stable customer-facing CLI wrapper.
 
 ```bash
 node desktop/bd.mjs params --cell eve-lf280k        # every knob, with bounds and sources
 node desktop/bd.mjs sim2 --app ev --modules 8 --ambient 35 --years 8
-node desktop/bd.mjs calibrate --data pulse-test.csv --cell eve-lf280k --s 16 \
-      --fit r0Ref,rc1R,rc1TauS --out my-cell.json
-node desktop/bd.mjs sim2 --app ev --params my-cell.json   # now it is YOUR cell
+node desktop/bd.mjs calibrate --data solver-run.csv --mapping solver-run.mapping.json \
+      --fit r0Ref,rc1R,rc1TauS --out calibration-result.json \
+      --params-out my-cell.json
+node desktop/bd.mjs sim2 --app ev --params my-cell.json   # now it uses the governed fitted parameters
 ```
+
+The mapping owns the source tool metadata, exact column names, units, current
+polarity, cell/pack voltage location and the cell/S/P/operating-context binding.
+For a previously normalized snapshot, use the command's canonical-dataset input
+instead. See [Governed synthetic calibration data](../docs/SYNTHETIC_CALIBRATION.md)
+for the complete contract and trust boundary.
 
 ### What it models
 
@@ -450,17 +461,24 @@ node desktop/bd.mjs sim2 --app ev --params my-cell.json   # now it is YOUR cell
 - **The defaults are class-typical, not your cell.** That is the whole reason
   `calibrate` exists.
 
-### Calibration, and how it is proved
+### Calibration, and what its tests establish
 
-Give it what you measured — `time_s,current_A,voltage_V[,temp_C]` — and the
-parameters you think are wrong, and a Nelder-Mead simplex searches for the
-values that reproduce your data. It reports the RMSE before and after, how far
-each parameter moved, and flags any that hit their bound (which usually means
-the model is missing an effect, not that your cell is extreme).
+The importer requires an exact, closed mapping and normalizes the complete
+source into `battery-design/calibration-dataset@1`. It validates every timestamp
+interval, equal signal lengths, units, sign, terminal location, optional
+temperature location, segment coverage and checksum identity before the
+optimizer runs. The result reports RMSE before and after, fitted bounds,
+deterministic preprocessing, exact evaluation/integration counters and the
+canonical dataset checksums. `--out` is the complete evidence result;
+`--params-out` is the parameter-only file accepted by `sim2 --params`.
 
-The test suite proves this works the only way that means anything: it generates
-measurements from **known** parameters, starts the fitter from the wrong
-defaults, and requires it to recover the truth. It does, to within 0.1%.
+The test suite generates observations from **known battery-design parameters**,
+starts the fitter from different defaults and checks recovery, alignment and
+work accounting. Because the generator and fitter use the same equations, this
+is an optimizer regression rather than independent physics validation. Actual
+GT-AutoLion and Simcenter Amesim exports have **Not run**: no representative
+licensed fixtures or product-specific acceptance results are present. Generic
+column mapping must not be described as proprietary-tool compatibility.
 
 ---
 
