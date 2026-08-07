@@ -862,6 +862,95 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-dae-lowering-contract-gap',
+      title: 'DAE adapters reconstruct residual structure ad hoc',
+      symptom: 'Two implicit backends can assign different variables, residual rows, sparse entries or event values to the same validated equation graph while both appear to accept it.',
+      evidence: [
+        'The original compiled-graph API exposed direct simulation but no backend-neutral residual-system contract for an external implicit solver.',
+        'Differential states and algebraic block outputs have different ownership and ordering, so an adapter that rediscovers them can silently permute y, yp, residual and output vectors.',
+        'A sparse Jacobian entry may receive more than one graph contribution; emitting one entry per source instead of one accumulated matrix position changes the Newton system.',
+        'Step sources require sorted, deduplicated, right-continuous event handling, while a Limit exactly on a bound has no unique classical derivative and cannot be assigned an arbitrary Jacobian branch.',
+        'The original event list merged times within an absolute 1e-12 tolerance, so distinct discontinuities at 1.0 and 1.0+5e-13 seconds collapsed into one event and omitted a required future backend restart.',
+        'Permitting callbacks to resize buffers, partially write on an error or allocate work internally would make failure behavior and real-time cost depend on the selected backend.',
+      ],
+      detection: [
+        {
+          method: 'backend-neutral DAE contract regression',
+          signal: 'Lower mixed differential/algebraic graphs and compare variable/output order, initialization, residuals, CSC pattern and values, event behavior, exact buffer requirements and stable failure codes with analytical expectations.',
+          failureCondition: 'The lowering is nondeterministic, a callback partially writes after rejecting an input, duplicate Jacobian contributions are not accumulated, distinct finite event times merge, event values use the wrong side, or a nonsmooth derivative is guessed.',
+        },
+      ],
+      causalChain: [
+        'The built-in integrators evaluate derivatives and algebraic feedback through private compiled-graph traversal.',
+        'A future IDA or sparse adapter needs residual rows, initialization, events and Jacobian storage rather than a complete built-in simulation.',
+        'Without one lowering boundary, each adapter reconstructs graph ordering and callback rules independently.',
+        'Backend-specific reconstruction creates incompatible equations, hidden allocations and platform-dependent results before numerical convergence can even be compared.',
+      ],
+      rootCause: 'The compiled graph had no versioned backend-neutral lowering contract that fixed variable and equation order, residual meaning, sparse storage, event semantics, initialization and caller-owned buffer behavior independently of a solver library.',
+      resolution: [
+        'Add dependency-free `DaeResidualSystem::lower` under `DAE_RESIDUAL_CONTRACT_VERSION` (`battery-design/dae-residual@1`) so future native adapters consume one checked projection of `CompiledGraph` instead of traversing it themselves.',
+        'Order differential variables in compiled state order, then algebraic outputs in BlockId order; keep reported outputs in BlockId order, expose the corresponding numeric 1/0 differential/algebraic ID vector, and define residual rows as `yp - f(t, y)` followed by `y - rhs(t, y)`.',
+        'Publish deterministic CSC columns with ascending rows, accumulate duplicate-source contributions, and expose exact buffer requirements plus exact-length no-partial-write initialization, event, residual, Jacobian and output callbacks.',
+        'After lowering and initialization construction, keep successful caller-buffer callbacks heap-allocation-free; do not describe lowering itself as allocation-free.',
+        'Sort step events and deduplicate only exact numeric equals, including the two signed-zero encodings; preserve every distinct finite event time, evaluate right-continuously at the exact event, reject non-finite values, and fail closed when a Limit Jacobian is requested exactly at a nonsmooth bound.',
+        'Keep SUNDIALS, IDA, SuiteSparse, KLU, native backend qualification and any advanced WebAssembly ABI explicitly unshipped; lowering availability alone is not a solver capability.',
+      ],
+      prevention: [
+        'Require every implicit backend to consume the versioned lowering contract and prohibit a second graph-to-residual traversal in adapter code.',
+        'Cross-check residual and Jacobian values with analytical and independent finite-difference oracles, including duplicate contributions, sub-picosecond-separated events, signed zero, non-finite inputs and undersized or oversized buffers.',
+        'Instrument post-lowering callback allocation counts, and keep construction-time allocation outside that narrower runtime guarantee.',
+        'Separate residual-lowering conformance from solver, platform, package and release acceptance so product metadata exposes only executable backends that passed their own gates.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-core/tests/dae_contract.rs',
+          assertion: 'Mixed-graph integration tests prove deterministic lowering, analytical residual/Jacobian values, duplicate accumulation, exact distinct-event preservation, right continuity and fail-closed buffers, inputs and nonsmooth points.',
+        },
+        {
+          path: 'rust-core/tests/dae_allocation.rs',
+          assertion: 'Allocator instrumentation proves zero heap allocations for successful caller-buffer callbacks after lowering without extending that guarantee to lowering or initialization construction.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The DAE lowering record remains searchable and preserves deterministic ordering, residual, CSC, event, buffer and unshipped-capability boundaries.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['dae', 'jacobian', 'lowering', 'residual', 'sparse'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/dae.rs',
+          note: 'Dependency-free backend-neutral residual lowering and caller-owned callback contract.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_contract.rs',
+          note: 'Independent contract, ordering, numerical, sparse, event and failure regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_allocation.rs',
+          note: 'Post-lowering successful callback allocation instrumentation.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/equations.rs',
+          note: 'Compiled event-list construction preserving distinct finite times while merging signed zero.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/EQUATION_SOLVER.md',
+          note: 'Exact Iteration 1 boundary and five-gate native DAE backend campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'DAE record retrieval, semantic-boundary and unshipped-capability assertions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-e2e-hidden-state-precondition',
       title: 'Browser test acts on a control in an inactive UI state',
       symptom: 'A browser test times out waiting for a visible control even though a hidden DOM locator already found content rendered beside that control.',
@@ -1772,6 +1861,62 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/sim2.test.mjs',
           note: 'Analytic step response and bound-extreme numerical regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-regression-path-containment-gap',
+      title: 'Regression evidence path escapes its governed test root',
+      symptom: 'A root-cause record can identify a path as local Rust regression evidence even though the same string traverses outside rust-core/tests on Windows.',
+      evidence: [
+        'The original record schema admitted regression paths only below tests or tools, so a substantive Rust integration test could not be represented as governed evidence.',
+        'The first Rust-path extension used a rust-core/tests prefix, a non-whitespace middle and a .rs suffix; that middle admitted Windows backslashes.',
+        'A value such as rust-core/tests/..\\src\\dae.rs is an ordinary filename string on Linux but contains a parent traversal when a Windows consumer interprets the backslashes as separators.',
+        'Prefix and suffix checks alone also do not state a portable policy for drive-letter, UNC, wrong-root, wrong-extension or explicit dot-segment inputs.',
+      ],
+      detection: [
+        {
+          method: 'cross-platform regression-path grammar test',
+          signal: 'Validate one repository-relative Rust test path plus forward-slash traversal, backslash traversal, drive-letter, UNC, wrong-root and wrong-extension adversarial paths.',
+          failureCondition: 'The governed Rust test is rejected or any absolute, traversing, backslash-separated, non-test-root or non-.rs Rust path is accepted.',
+        },
+      ],
+      causalChain: [
+        'Quality memory needs to cite the Rust integration test that proves a numerical resolution.',
+        'The regression-path schema is expanded with a familiar prefix-and-suffix regular expression.',
+        'Its permissive middle treats every non-whitespace character as path-safe and assumes the current platform separator rules.',
+        'A catalog validated on Linux can therefore carry a string that escapes the governed test root when consumed on Windows.',
+      ],
+      rootCause: 'Repository containment was expressed as a Linux-oriented prefix plus a permissive character class instead of one platform-independent relative-path grammar.',
+      resolution: [
+        'Admit Rust regression evidence only below the exact rust-core/tests prefix with a lowercase .rs suffix.',
+        'Limit every accepted path to safe ASCII segments separated only by forward slashes, and reject single-dot or double-dot segments at any depth.',
+        'Reject backslashes, drive-letter paths, UNC paths, absolute roots, wrong roots and wrong extensions while retaining the existing tests and tools path forms.',
+        'Continue resolving every governed regression and local reference below the repository root and require the referenced file to exist.',
+      ],
+      prevention: [
+        'Never use a generic non-whitespace class as a filesystem-containment policy.',
+        'Pair every newly allowed evidence root with POSIX and Windows separators, absolute roots, dot segments, wrong roots and wrong extensions.',
+        'Keep syntax validation and local existence checks separate: both must pass before a record becomes built-in evidence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'A real rust-core/tests .rs path validates while POSIX traversal, Windows traversal, drive-letter, UNC, wrong-root and wrong-extension paths fail closed.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'ci', 'documentation'],
+      tags: ['containment', 'cross-platform', 'evidence', 'path', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'knowledge/root-causes/schema.v1.js',
+          note: 'Forward-slash safe-segment grammar for governed regression paths.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Positive Rust path and cross-platform containment adversarial regressions.',
         },
       ],
     }),

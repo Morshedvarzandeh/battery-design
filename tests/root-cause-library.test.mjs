@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 34);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 36);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -71,6 +71,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-calibration-work-undercount',
     'rc-capability-contract-mismatch',
     'rc-cli-typo-default-fallback',
+    'rc-dae-lowering-contract-gap',
     'rc-e2e-hidden-state-precondition',
     'rc-final-artifact-identity-gap',
     'rc-fmi-calibration-key-ignored',
@@ -85,6 +86,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-packaged-dependency-omission',
     'rc-product-surface-claim-drift',
     'rc-rc-euler-step-instability',
+    'rc-regression-path-containment-gap',
     'rc-resource-self-checksum-trust',
     'rc-schema-envelope-permissive',
     'rc-signed-bound-evidence-miss',
@@ -106,6 +108,72 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     assert.ok(record.resolution.length && record.prevention.length);
     assert.ok(record.detection.every((item) => item.method && item.signal && item.failureCondition));
   }
+});
+
+test('regression paths admit governed Rust tests without admitting escapes or non-Rust files', () => {
+  const candidate = structuredClone(ROOT_CAUSE_RECORDS[0]);
+  candidate.regressionTests = [{
+    path: 'rust-core/tests/dae_contract.rs',
+    assertion: 'A repository-local Rust integration test may carry substantive numerical evidence.',
+  }];
+  assert.deepEqual(validateRootCauseRecord(candidate), []);
+
+  for (const path of [
+    '/rust-core/tests/dae_contract.rs',
+    'C:/rust-core/tests/dae_contract.rs',
+    'C:\\rust-core\\tests\\dae_contract.rs',
+    '\\\\server\\share\\rust-core\\tests\\dae_contract.rs',
+    'rust-core/src/dae.rs',
+    'rust-core/tests/dae_contract.mjs',
+    'rust-core/tests/../src/dae.rs',
+    'rust-core/tests/nested/../../src/dae.rs',
+    'rust-core/tests/..\\src\\dae.rs',
+    'rust-core/tests/nested\\..\\src\\dae.rs',
+    'tests/../package.json',
+    'tests\\..\\package.json',
+  ]) {
+    candidate.regressionTests[0].path = path;
+    assert.ok(
+      validateRootCauseRecord(candidate).some(({ path: issuePath, code }) => (
+        issuePath === '$/regressionTests/0/path' && code === 'pattern'
+      )),
+      path,
+    );
+  }
+});
+
+test('DAE lowering memory separates a residual contract from solver qualification', () => {
+  const record = getRootCauseRecord('rc-dae-lowering-contract-gap');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /differential states[\s\S]*algebraic block outputs[\s\S]*permute y, yp, residual and output/i);
+  assert.match(record.evidence.join(' '), /1\.0[\s\S]*1\.0\+5e-13[\s\S]*collapsed[\s\S]*backend restart/i);
+  assert.match(record.rootCause, /versioned backend-neutral lowering contract[\s\S]*sparse storage[\s\S]*caller-owned buffer/i);
+  assert.match(record.resolution.join(' '), /DaeResidualSystem::lower[\s\S]*DAE_RESIDUAL_CONTRACT_VERSION[\s\S]*battery-design\/dae-residual@1[\s\S]*compiled state order[\s\S]*BlockId order[\s\S]*1\/0 differential\/algebraic ID vector[\s\S]*yp - f\(t, y\)[\s\S]*y - rhs\(t, y\)[\s\S]*deterministic CSC[\s\S]*no-partial-write[\s\S]*right-continuously[\s\S]*nonsmooth bound/i);
+  assert.match(record.resolution.join(' '), /caller-buffer callbacks heap-allocation-free[\s\S]*lowering itself/i);
+  assert.match(record.resolution.join(' '), /deduplicate only exact numeric equals[\s\S]*signed-zero[\s\S]*preserve every distinct finite event time/i);
+  assert.match(record.resolution.join(' '), /SUNDIALS[\s\S]*IDA[\s\S]*SuiteSparse[\s\S]*KLU[\s\S]*unshipped[\s\S]*not a solver capability/i);
+  assert.deepEqual(record.regressionTests.map(({ path }) => path), [
+    'rust-core/tests/dae_contract.rs',
+    'rust-core/tests/dae_allocation.rs',
+    'tests/root-cause-library.test.mjs',
+  ]);
+  assert.equal(
+    searchRootCauses('DAE residual CSC duplicate Jacobian event buffer lowering', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('regression-path memory preserves cross-platform repository containment', () => {
+  const record = getRootCauseRecord('rc-regression-path-containment-gap');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /non-whitespace middle[\s\S]*Windows backslashes[\s\S]*rust-core\/tests\/\.\.\\src\\dae\.rs/i);
+  assert.match(record.rootCause, /Linux-oriented prefix[\s\S]*platform-independent relative-path grammar/i);
+  assert.match(record.resolution.join(' '), /exact rust-core\/tests prefix[\s\S]*\.rs suffix[\s\S]*safe ASCII segments[\s\S]*forward slashes[\s\S]*dot segments[\s\S]*backslashes[\s\S]*drive-letter[\s\S]*UNC/i);
+  assert.match(record.prevention.join(' '), /Never use[\s\S]*non-whitespace class[\s\S]*POSIX and Windows separators/i);
+  assert.equal(
+    searchRootCauses('Rust regression evidence Windows backslash traversal UNC containment', { limit: 1 })[0]?.id,
+    record.id,
+  );
 });
 
 test('loop-contract memory preserves the mutation, identity and trust-boundary fix', () => {
@@ -260,6 +328,8 @@ test('listing and exact lookup stay immutable and fail closed on option typos', 
 test('lexical search deterministically retrieves causes, fixes and containment patterns', () => {
   const cases = [
     ['unknown option defaults typo', 'rc-cli-typo-default-fallback'],
+    ['DAE residual CSC duplicate Jacobian lowering', 'rc-dae-lowering-contract-gap'],
+    ['Rust regression evidence Windows backslash traversal UNC', 'rc-regression-path-containment-gap'],
     ['XML I/O map C binary mismatch', 'rc-fmi-representation-drift'],
     ['HIL physical endpoint model port fault injector deployment plan', 'rc-hil-contract-deployment-gap'],
     ['HIL verdict mutable result schema missing model identity', 'rc-hil-result-identity-gap'],
