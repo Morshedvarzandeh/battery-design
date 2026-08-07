@@ -17,7 +17,9 @@ import {
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
-  FMI2_REQUIRED_CO_SIMULATION_SYMBOLS, FMI_STANDARD_VERSION, FMU_MODEL_REVISION,
+  FMI2_REQUIRED_CO_SIMULATION_SYMBOLS, FMI_IO_CONTRACT, FMI_IO_CONTRACT_CHECKSUM,
+  FMI_IO_CONTRACT_FORMAT, FMI_IO_CONTRACT_VERSION, FMI_STANDARD_VERSION,
+  FMI_UNIT_DEFINITIONS, FMU_MODEL_REVISION, materializeFmiIoMap,
 } from '../js/fmi.js';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -89,6 +91,136 @@ export function readFmuContract(tree) {
     return path;
   });
   return Object.freeze({ root, xmlPath, xml, modelIdentifier, guid, sourceFiles, sourcePaths });
+}
+
+const xmlAttributes = (text) => Object.fromEntries(
+  [...text.matchAll(/([A-Za-z_][A-Za-z0-9_.:-]*)="([^"]*)"/g)]
+    .map((match) => [match[1], xmlUnescape(match[2])]),
+);
+
+const sameAttributes = (actual, expected) => {
+  const sorted = (value) => Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b, 'en')));
+  return JSON.stringify(sorted(actual)) === JSON.stringify(sorted(expected));
+};
+
+function readPackagedIoMap(contract) {
+  const path = join(contract.root, 'resources', 'battery-design-io-map.json');
+  requireRegularFile(path, 'FMI I/O map');
+  let ioMap;
+  try {
+    ioMap = JSON.parse(readFileSync(path, 'utf8'));
+  } catch (error) {
+    throw new Error(`Invalid FMI I/O map JSON: ${error.message}`);
+  }
+  if (ioMap.format !== FMI_IO_CONTRACT_FORMAT
+      || ioMap.version !== FMI_IO_CONTRACT_VERSION
+      || ioMap.fmiVersion !== '2.0'
+      || ioMap.fmiStandardPatch !== FMI_STANDARD_VERSION
+      || ioMap.contractChecksum !== FMI_IO_CONTRACT_CHECKSUM
+      || ioMap.modelName !== contract.modelIdentifier
+      || ioMap.modelIdentifier !== contract.modelIdentifier
+      || ioMap.modelRevision !== FMU_MODEL_REVISION
+      || ioMap.guid !== contract.guid
+      || JSON.stringify(ioMap.unitDefinitions) !== JSON.stringify(FMI_UNIT_DEFINITIONS)
+      || !Array.isArray(ioMap.variables)
+      || ioMap.variables.length !== FMI_IO_CONTRACT.length) {
+    throw new Error('FMI I/O map identity does not match the modelDescription contract.');
+  }
+
+  const parameterValues = Object.fromEntries(FMI_IO_CONTRACT
+    .filter(({ causality }) => causality === 'parameter')
+    .map(({ name }) => [name, ioMap.variables.find((variable) => variable?.name === name)?.start]));
+  let expectedMap;
+  try {
+    expectedMap = materializeFmiIoMap({
+      parameterValues,
+      modelName: contract.modelIdentifier,
+      modelRevision: FMU_MODEL_REVISION,
+      guid: contract.guid,
+      fmiStandardVersion: FMI_STANDARD_VERSION,
+    });
+  } catch (error) {
+    throw new Error(`FMI I/O map cannot be materialized from its parameter starts: ${error.message}`);
+  }
+  if (JSON.stringify(ioMap) !== JSON.stringify(expectedMap)) {
+    throw new Error('FMI I/O map is not the exact canonical materialization for this component.');
+  }
+
+  const unitSection = /<UnitDefinitions>([\s\S]*?)<\/UnitDefinitions>/.exec(contract.xml)?.[1] ?? '';
+  const unitPattern = /<Unit\b([^>]*)>([\s\S]*?)<\/Unit>/g;
+  const unitBlocks = [...unitSection.matchAll(unitPattern)];
+  if (unitBlocks.length !== FMI_UNIT_DEFINITIONS.length
+      || unitSection.replace(unitPattern, '').trim()) {
+    throw new Error('modelDescription.xml UnitDefinitions do not match the FMI I/O map.');
+  }
+  for (let index = 0; index < FMI_UNIT_DEFINITIONS.length; index++) {
+    const expectedUnit = FMI_UNIT_DEFINITIONS[index];
+    const [, unitAttributes, unitBody] = unitBlocks[index];
+    const base = /<BaseUnit\b([^>]*)\/>/.exec(unitBody);
+    const displayPattern = /<DisplayUnit\b([^>]*)\/>/g;
+    const displays = [...unitBody.matchAll(displayPattern)].map((match) => xmlAttributes(match[1]));
+    const expectedDisplays = expectedUnit.displayUnits.map((display) => Object.fromEntries(
+      Object.entries(display).map(([key, value]) => [key, String(value)]),
+    ));
+    const bodyRemainder = unitBody
+      .replace(/<BaseUnit\b[^>]*\/>/, '')
+      .replace(displayPattern, '').trim();
+    const expectedBase = Object.fromEntries(Object.entries(expectedUnit.baseUnit)
+      .map(([key, value]) => [key, String(value)]));
+    if (!base || bodyRemainder
+        || !sameAttributes(xmlAttributes(unitAttributes), { name: expectedUnit.name })
+        || !sameAttributes(xmlAttributes(base[1]), expectedBase)
+        || JSON.stringify(displays) !== JSON.stringify(expectedDisplays)) {
+      throw new Error(`modelDescription.xml unit ${expectedUnit.name} does not match the FMI I/O map.`);
+    }
+  }
+
+  const scalarBlocks = [...contract.xml.matchAll(/<ScalarVariable\b([^>]*)>([\s\S]*?)<\/ScalarVariable>/g)];
+  if (scalarBlocks.length !== FMI_IO_CONTRACT.length) {
+    throw new Error('modelDescription.xml scalar count does not match the FMI I/O map.');
+  }
+  for (let index = 0; index < FMI_IO_CONTRACT.length; index++) {
+    const canonical = FMI_IO_CONTRACT[index];
+    const mapped = ioMap.variables[index];
+    const [, scalarAttributes, body] = scalarBlocks[index];
+    const real = /^\s*<Real\b([^>]*)\/>\s*$/.exec(body);
+    const expectedScalarAttributes = {
+      name: canonical.name,
+      valueReference: String(canonical.valueReference),
+      causality: canonical.causality,
+      variability: canonical.variability,
+      ...(canonical.initial == null ? {} : { initial: canonical.initial }),
+      description: canonical.description,
+    };
+    const expectedRealAttributes = {
+      ...(canonical.causality === 'output' ? {} : { start: String(mapped.start) }),
+      unit: canonical.unit,
+      ...(canonical.displayUnit == null ? {} : { displayUnit: canonical.displayUnit }),
+      quantity: canonical.quantity,
+      ...(canonical.min == null ? {} : { min: String(canonical.min) }),
+      ...(canonical.max == null ? {} : { max: String(canonical.max) }),
+      ...(canonical.nominal == null ? {} : { nominal: String(canonical.nominal) }),
+    };
+    if (!real
+        || !sameAttributes(xmlAttributes(scalarAttributes), expectedScalarAttributes)
+        || !sameAttributes(xmlAttributes(real[1]), expectedRealAttributes)) {
+      throw new Error(`modelDescription.xml variable ${index + 1} does not match the FMI I/O map.`);
+    }
+  }
+
+  const expectedOutputIndices = FMI_IO_CONTRACT
+    .map((variable, index) => ({ variable, index: index + 1 }))
+    .filter(({ variable }) => variable.causality === 'output')
+    .map(({ index }) => String(index));
+  for (const section of ['Outputs', 'InitialUnknowns']) {
+    const block = new RegExp(`<${section}>([\\s\\S]*?)<\\/${section}>`).exec(contract.xml)?.[1] ?? '';
+    const indices = [...block.matchAll(/<Unknown\s+index="(\d+)"\s*\/>/g)].map((match) => match[1]);
+    if (JSON.stringify(indices) !== JSON.stringify(expectedOutputIndices)
+        || block.replace(/<Unknown\s+index="\d+"\s*\/>/g, '').trim()) {
+      throw new Error(`modelDescription.xml ${section} do not match the FMI I/O map.`);
+    }
+  }
+  return Object.freeze({ path, sha256: sha256(readFileSync(path)), map: ioMap });
 }
 
 function runChecked(command, args, options = {}) {
@@ -395,6 +527,7 @@ function ensurePackageMetadata(contract, binaries) {
   copyFileSync(join(STANDARD_ROOT, 'LICENSE-BSD-2-Clause.txt'),
     join(licenseDir, 'FMI-2.0.5-BSD-2-Clause.txt'));
 
+  const ioContract = readPackagedIoMap(contract);
   const sources = contract.sourceFiles.map((name, index) => ({
     path: `sources/${name}`,
     sha256: sha256(readFileSync(contract.sourcePaths[index])),
@@ -418,7 +551,8 @@ Open-source ABI and lifecycle validation does not certify behavior inside a
 specific proprietary product/version. Record an actual import-and-step check
 before claiming acceptance in Twin Builder, Simulink or GT-SUITE. Source build
 instructions are retained in \`documentation/source-build.md\`; license terms
-are under \`documentation/licenses/\`.
+are under \`documentation/licenses/\`. The versioned, machine-readable port
+contract is \`resources/battery-design-io-map.json\`.
 `);
   const manifest = {
     format: 'battery-design/fmi-build-manifest@1',
@@ -429,6 +563,12 @@ are under \`documentation/licenses/\`.
     sourceRevision,
     modelIdentifier: contract.modelIdentifier,
     guid: contract.guid,
+    ioContract: {
+      path: 'resources/battery-design-io-map.json',
+      version: ioContract.map.version,
+      checksum: ioContract.map.contractChecksum,
+      sha256: ioContract.sha256,
+    },
     modelDescriptionSha256: sha256(readFileSync(contract.xmlPath)),
     sources,
     binaries,
@@ -441,6 +581,7 @@ are under \`documentation/licenses/\`.
 
 export function auditFmuTree(tree, { requireBinaries = true } = {}) {
   const contract = readFmuContract(tree);
+  const ioContract = readPackagedIoMap(contract);
   const files = walkFiles(contract.root);
   if (files.length > MAX_FILES) throw new Error(`FMU has ${files.length} files; limit is ${MAX_FILES}.`);
   const total = files.reduce((sum, file) => sum + file.stat.size, 0);
@@ -467,13 +608,32 @@ export function auditFmuTree(tree, { requireBinaries = true } = {}) {
     'documentation/licenses/battery-design-NOTICE.txt',
     'documentation/licenses/FMI-2.0.5-BSD-2-Clause.txt',
     'resources/battery-design-build.json',
+    'resources/battery-design-io-map.json',
   ]) {
     if (!paths.has(required)) throw new Error(`FMU package metadata is missing ${required}.`);
+  }
+  let buildManifest;
+  try {
+    buildManifest = JSON.parse(readFileSync(join(contract.root, 'resources', 'battery-design-build.json'), 'utf8'));
+  } catch (error) {
+    throw new Error(`Invalid FMU build manifest: ${error.message}`);
+  }
+  if (buildManifest.format !== 'battery-design/fmi-build-manifest@1'
+      || buildManifest.modelIdentifier !== contract.modelIdentifier
+      || buildManifest.guid !== contract.guid
+      || buildManifest.modelRevision !== FMU_MODEL_REVISION
+      || buildManifest.modelDescriptionSha256 !== sha256(readFileSync(contract.xmlPath))
+      || buildManifest.ioContract?.path !== 'resources/battery-design-io-map.json'
+      || buildManifest.ioContract?.version !== FMI_IO_CONTRACT_VERSION
+      || buildManifest.ioContract?.checksum !== ioContract.map.contractChecksum
+      || buildManifest.ioContract?.sha256 !== ioContract.sha256) {
+    throw new Error('FMU build manifest does not bind the model and I/O contract exactly.');
   }
   return Object.freeze({
     ...contract,
     files: Object.freeze(files.map((file) => file.rel)),
     binaries: Object.freeze(binaries.sort()),
+    ioContract: Object.freeze({ checksum: ioContract.map.contractChecksum, sha256: ioContract.sha256 }),
     totalBytes: total,
   });
 }

@@ -72,6 +72,12 @@ test('native linux64 FMU builds reproducibly and passes a real consumer lifecycl
   assert.ok(first.files.includes('modelDescription.xml'));
   assert.ok(first.files.includes('binaries/linux64/BatteryPack.so'));
   assert.ok(first.files.includes('resources/battery-design-build.json'));
+  assert.ok(first.files.includes('resources/battery-design-io-map.json'));
+  const buildManifest = JSON.parse(readFileSync(join(tree, 'resources', 'battery-design-build.json'), 'utf8'));
+  const ioMap = JSON.parse(readFileSync(join(tree, 'resources', 'battery-design-io-map.json'), 'utf8'));
+  assert.equal(buildManifest.ioContract.path, 'resources/battery-design-io-map.json');
+  assert.equal(buildManifest.ioContract.checksum, ioMap.contractChecksum);
+  assert.equal(auditFmuTree(tree).ioContract.checksum, ioMap.contractChecksum);
   assert.ok(first.files.includes('documentation/source-build.md'));
   assert.match(readFileSync(join(tree, 'README.md'), 'utf8'), /This is a loadable battery-design FMU/);
   assert.match(readFileSync(join(tree, 'documentation', 'source-build.md'), 'utf8'), /source-FMU build kit/);
@@ -88,6 +94,40 @@ test('native linux64 FMU builds reproducibly and passes a real consumer lifecycl
   });
   assert.equal(archiveSmoke.status, 0, `${archiveSmoke.stdout}\n${archiveSmoke.stderr}`);
   assert.equal(JSON.parse(archiveSmoke.stdout).guid, built.guid);
+
+  const modelDescriptionPath = join(tree, 'modelDescription.xml');
+  const originalModelDescription = readFileSync(modelDescriptionPath, 'utf8');
+  writeFileSync(modelDescriptionPath,
+    originalModelDescription.replace('quantity="electricCurrent"', 'quantity="ambiguous"'));
+  assert.throws(() => auditFmuTree(tree), /variable 15 does not match/,
+    'packaging rejects XML quantity drift from the machine map');
+  writeFileSync(modelDescriptionPath,
+    originalModelDescription.replace('DisplayUnit name="%" factor="100"', 'DisplayUnit name="%" factor="99"'));
+  assert.throws(() => auditFmuTree(tree), /unit 1 does not match/,
+    'packaging rejects XML unit-conversion drift from the machine map');
+  writeFileSync(modelDescriptionPath,
+    originalModelDescription.replace('<Unknown index="18"/>', '<Unknown index="17"/>'));
+  assert.throws(() => auditFmuTree(tree), /Outputs do not match/,
+    'packaging rejects ModelStructure drift from the mapped outputs');
+  writeFileSync(modelDescriptionPath, originalModelDescription);
+
+  const ioMapPath = join(tree, 'resources', 'battery-design-io-map.json');
+  const originalIoMap = readFileSync(ioMapPath);
+  const tamperedIoMap = JSON.parse(originalIoMap.toString('utf8'));
+  tamperedIoMap.variables.find(({ name }) => name === 'I_pack').signConvention = 'ambiguous';
+  writeFileSync(ioMapPath, `${JSON.stringify(tamperedIoMap, null, 2)}\n`);
+  assert.throws(() => auditFmuTree(tree), /not the exact canonical materialization/,
+    'packaging rejects semantic I/O-map drift even when its identity fields are unchanged');
+  writeFileSync(ioMapPath, originalIoMap);
+
+  const buildManifestPath = join(tree, 'resources', 'battery-design-build.json');
+  const originalBuildManifest = readFileSync(buildManifestPath);
+  const tamperedBuildManifest = JSON.parse(originalBuildManifest.toString('utf8'));
+  tamperedBuildManifest.ioContract.checksum = '0'.repeat(64);
+  writeFileSync(buildManifestPath, `${JSON.stringify(tamperedBuildManifest, null, 2)}\n`);
+  assert.throws(() => auditFmuTree(tree), /does not bind the model and I\/O contract exactly/,
+    'packaging rejects an evidence manifest detached from the accepted I/O map');
+  writeFileSync(buildManifestPath, originalBuildManifest);
 
   const binaryPath = join(tree, 'binaries', 'linux64', 'BatteryPack.so');
   const originalBinary = readFileSync(binaryPath);
