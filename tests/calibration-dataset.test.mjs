@@ -7,6 +7,7 @@ import {
   CALIBRATION_DATASET_SCHEMA_VERSION,
   CalibrationDatasetValidationError,
   MAX_CALIBRATION_DATASET_SAMPLES,
+  calibrationDatasetIdentities,
   materializeCalibrationDataset,
   readCalibrationDataset,
   validateCalibrationDataset,
@@ -173,8 +174,86 @@ test('sample phase and ordered segments are explicit and negative zero is canoni
 
 test('calibration and validation datasets remain explicitly distinct', () => {
   const calibration = materializeCalibrationDataset(payload());
-  const validation = materializeCalibrationDataset(payload({ purpose: 'validation' }));
+  const validation = materializeCalibrationDataset(payload({
+    id: 'relabeled-validation-copy',
+    purpose: 'validation',
+    source: {
+      ...payload().source,
+      tool: 'Relabeled export',
+      runId: 'renamed-run',
+      rawSha256: 'e'.repeat(64),
+    },
+  }));
+  const calibrationIdentities = calibrationDatasetIdentities(calibration);
+  const validationIdentities = calibrationDatasetIdentities(validation);
   assert.equal(calibration.purpose, 'calibration');
   assert.equal(validation.purpose, 'validation');
   assert.notEqual(calibration.checksum, validation.checksum);
+  assert.deepEqual(validationIdentities, calibrationIdentities,
+    'relabeling the same trace cannot create independent observation or trial content');
+  assertDeepFrozen(calibrationIdentities);
+});
+
+test('observation and trial-content identities separate numeric evidence from binding', () => {
+  const first = materializeCalibrationDataset(payload());
+  const rebound = materializeCalibrationDataset(payload({
+    id: 'same-observations-different-binding',
+    purpose: 'validation',
+    source: { ...payload().source, rawSha256: 'c'.repeat(64), runId: 'run-0043' },
+    binding: {
+      ...payload().binding,
+      seriesCells: 48,
+      parallelCells: 8,
+      startSoC: 0.7,
+      ambientC: 10,
+      moduleCount: 4,
+    },
+  }));
+  const firstIdentities = calibrationDatasetIdentities(first);
+  const reboundIdentities = calibrationDatasetIdentities(rebound);
+
+  assert.equal(reboundIdentities.observationChecksum, firstIdentities.observationChecksum,
+    'identical sample timing, signals and conventions retain one observation identity');
+  assert.notEqual(reboundIdentities.trialContentChecksum, firstIdentities.trialContentChecksum,
+    'binding and initial-condition context remain part of trial content');
+  assertDeepFrozen(reboundIdentities);
+});
+
+test('segment selection changes trial content without changing the observation identity', () => {
+  const first = materializeCalibrationDataset(payload());
+  const reselection = materializeCalibrationDataset(payload({
+    id: 'same-observations-new-segment-selection',
+    purpose: 'validation',
+    source: { ...payload().source, rawSha256: 'f'.repeat(64), runId: 'run-0045' },
+    segments: [
+      { id: 'warm-up', startIndex: 0, endIndexExclusive: 1, mode: 'rest', include: false },
+      { id: 'held-out-pulse', startIndex: 1, endIndexExclusive: 4, mode: 'pulse', include: true },
+    ],
+  }));
+  const firstIdentities = calibrationDatasetIdentities(first);
+  const reselectionIdentities = calibrationDatasetIdentities(reselection);
+
+  assert.equal(reselectionIdentities.observationChecksum, firstIdentities.observationChecksum);
+  assert.notEqual(reselectionIdentities.trialContentChecksum, firstIdentities.trialContentChecksum,
+    'segment ids, modes and include decisions are governed trial content');
+});
+
+test('a valid signal change alters both purpose-neutral identities deterministically', () => {
+  const first = materializeCalibrationDataset(payload());
+  const changed = materializeCalibrationDataset(payload({
+    id: 'changed-observation',
+    purpose: 'validation',
+    source: { ...payload().source, rawSha256: 'd'.repeat(64), runId: 'run-0044' },
+    signals: { ...payload().signals, voltageV: [403, 392, 389.9, 400] },
+  }));
+  const firstIdentities = calibrationDatasetIdentities(first);
+  const changedIdentities = calibrationDatasetIdentities(changed);
+
+  assert.notEqual(changedIdentities.observationChecksum, firstIdentities.observationChecksum);
+  assert.notEqual(changedIdentities.trialContentChecksum, firstIdentities.trialContentChecksum);
+  assert.deepEqual(calibrationDatasetIdentities(structuredClone(first)), firstIdentities,
+    'serialized canonical content reproduces the exact same identities');
+  assert.match(firstIdentities.observationChecksum, /^[0-9a-f]{64}$/);
+  assert.match(firstIdentities.trialContentChecksum, /^[0-9a-f]{64}$/);
+  assertDeepFrozen(firstIdentities);
 });

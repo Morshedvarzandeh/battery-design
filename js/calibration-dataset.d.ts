@@ -31,6 +31,15 @@ export function materializeCalibrationDataset(
 
 export function readCalibrationDataset(value: unknown): Readonly<CalibrationDataset>;
 
+export interface CalibrationDatasetIdentities {
+  readonly observationChecksum: string;
+  readonly trialContentChecksum: string;
+}
+
+export function calibrationDatasetIdentities(
+  value: unknown,
+): Readonly<CalibrationDatasetIdentities>;
+
 export function verifyCalibrationDataset(
   value: unknown,
   options: { expectedChecksum: string },

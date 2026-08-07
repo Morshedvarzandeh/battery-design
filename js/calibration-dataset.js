@@ -321,6 +321,29 @@ function checksumPayload(dataset) {
   return Object.fromEntries(ROOT_KEYS.filter((key) => key !== 'checksum').map((key) => [key, dataset[key]]));
 }
 
+// Holdout independence cannot rely on dataset.checksum alone because purpose,
+// source metadata and portable ids are intentionally part of that complete
+// artifact identity. Keep these two narrower identities domain-separated and
+// derived only from canonical engineering content so relabelling one trace
+// cannot make it look like an independent observation or trial.
+function observationIdentityPayload(dataset) {
+  return {
+    format: 'battery-design/calibration-observation-identity@1',
+    samplePeriodS: dataset.samplePeriodS,
+    signals: dataset.signals,
+    conventions: dataset.conventions,
+  };
+}
+
+function trialContentIdentityPayload(dataset, observationChecksum) {
+  return {
+    format: 'battery-design/calibration-trial-content-identity@1',
+    observationChecksum,
+    binding: dataset.binding,
+    segments: dataset.segments,
+  };
+}
+
 /** Validate a materialized dataset without modifying caller-owned data. */
 export function validateCalibrationDataset(value) {
   const errors = [];
@@ -508,6 +531,23 @@ export function readCalibrationDataset(value) {
   const errors = validateCalibrationDataset(value);
   if (errors.length) throw new CalibrationDatasetValidationError(errors);
   return deepFreeze(cloneJson(value));
+}
+
+/**
+ * Return purpose-neutral identities used to detect reused calibration and
+ * validation evidence. The observation identity ignores mutable provenance,
+ * trial labels and binding claims; the trial-content identity adds the exact
+ * binding (including initial state) and scored/state-history segments.
+ */
+export function calibrationDatasetIdentities(value) {
+  const dataset = readCalibrationDataset(value);
+  const observationChecksum = semanticDigest(observationIdentityPayload(dataset));
+  return deepFreeze({
+    observationChecksum,
+    trialContentChecksum: semanticDigest(
+      trialContentIdentityPayload(dataset, observationChecksum),
+    ),
+  });
 }
 
 /** Verify serialized content against an independently trusted expected digest. */
