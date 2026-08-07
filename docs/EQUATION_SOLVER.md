@@ -171,6 +171,23 @@ SUNDIALS 7.8.0 IDA-only source distribution; it does not download, extract,
 compile, link or execute upstream code. Those actions remain gated behind
 Task 2B.
 
+Task 2B adds a Linux-only, CI reference build of that locked archive. The
+build accepts a caller-supplied archive, verifies its length and SHA-256 before
+extracting it, configures a static Release build with double precision,
+64-bit indices and every optional third-party library disabled, and consumes
+the installed CMake package from a separate probe project. The probe checks
+the exact runtime version and type widths, then creates and destroys an IDA
+memory object together with a serial vector, native dense matrix and native
+dense linear solver. It does not register residual callbacks, call `IDAInit`
+or run a numerical solve.
+
+This gate proves a repeatable reference build and the selected C object
+lifecycle on Ubuntu only. It does not add Rust FFI, link SUNDIALS into
+`rust-core`, alter the WebAssembly build, package a native library, qualify a
+DAE result or expose a product capability. The upstream IDA-only distribution
+also contains other mandatory native matrix and iterative-solver modules;
+Task 2B therefore makes no claim that the compiled archive is dense-only.
+
 ## Numerical contract
 
 Every run follows the same sequence:
