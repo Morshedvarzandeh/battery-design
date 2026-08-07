@@ -427,7 +427,10 @@ impl EquationGraph {
             })
             .collect::<Vec<_>>();
         event_times_s.sort_by(|a, b| a.total_cmp(b));
-        event_times_s.dedup_by(|a, b| (*a - *b).abs() <= 1e-12);
+        // Distinct source times are distinct residual discontinuities. A
+        // tolerance here can hide a second required backend restart. Numeric
+        // equality still intentionally merges exact duplicates and +/- zero.
+        event_times_s.dedup_by(|a, b| *a == *b);
 
         Ok(CompiledGraph {
             blocks: self.blocks,
@@ -711,6 +714,29 @@ impl CompiledGraph {
             .iter()
             .filter_map(|id| self.blocks[*id].kind.initial_state())
             .collect()
+    }
+
+    // These crate-private views keep DAE lowering separate from the existing
+    // graph transport and solver APIs. They deliberately do not widen the
+    // public graph or WebAssembly ABI.
+    pub(crate) fn dae_blocks(&self) -> &[Block] {
+        &self.blocks
+    }
+
+    pub(crate) fn dae_inputs(&self) -> &[Vec<Option<BlockId>>] {
+        &self.inputs
+    }
+
+    pub(crate) fn dae_state_blocks(&self) -> &[BlockId] {
+        &self.state_blocks
+    }
+
+    pub(crate) fn dae_algebraic_blocks(&self) -> &[BlockId] {
+        &self.algebraic_blocks
+    }
+
+    pub(crate) fn dae_event_times_s(&self) -> &[f64] {
+        &self.event_times_s
     }
 
     pub fn evaluate(

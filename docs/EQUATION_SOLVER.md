@@ -7,7 +7,7 @@ its equations predict.
 
 ## Shipped boundary
 
-`rust-core/src/equations.rs` currently provides:
+`rust-core/src/equations.rs` and `rust-core/src/dae.rs` currently provide:
 
 - stable block and connection identifiers;
 - exact port-quantity matching with no implicit conversions;
@@ -30,7 +30,15 @@ its equations predict.
 - a coupled electrical/thermal cell reference graph;
 - a versioned numeric transport for browser-authored approved graphs;
 - an opaque WebAssembly run handle that returns solver metadata and stable
-  `[time, block values...]` trace rows without introducing a second solver.
+  `[time, block values...]` trace rows without introducing a second solver;
+- the dependency-free `battery-design/dae-residual@1` lowering contract:
+  `DaeResidualSystem::lower` publishes deterministic differential/algebraic
+  variable and output mappings, the numeric ID vector, consistent initial
+  values, exact event times, a deterministic CSC Jacobian pattern and exact
+  caller-owned buffer requirements. After lowering, its successful
+  caller-buffer callbacks allocate no heap memory; lowering and initialization
+  construction may allocate, and the contract does not select or contain a
+  DAE solver.
 
 `cosim.html`, `js/cosim-graph.js` and `js/cosim-studio.js` provide the first
 guided visual composition surface over that exact backend. The graph document
@@ -103,6 +111,43 @@ The following remain explicitly unshipped:
 The existing `js/fmi.js` source-FMU exporter is a separate compatibility
 feature. Its presence does not imply any of the unshipped capabilities above.
 
+## High-order DAE backend campaign
+
+The first campaign iteration is deliberately a dependency-free lowering
+foundation inside `rust-core/`. It describes the existing compiled graph in a
+backend-neutral residual form, but it does not add a new numerical method or
+make a DAE result available to the product. The built-in Dormand-Prince and
+backward-Euler implementations remain the only shipped integrators.
+
+The campaign is split into independently reviewable gates:
+
+1. **Residual lowering foundation:** `DaeResidualSystem` defines and tests one
+   deterministic mapping from a validated compiled graph to backend-neutral
+   variables, residual rows, numeric differential/algebraic IDs, initialization,
+   events, CSC structure and work-buffer sizes. This iteration adds no external
+   library dependency.
+2. **Native IDA adapter:** bind a pinned SUNDIALS/IDA build behind an optional
+   native feature, then prove lifecycle, initialization, tolerance and failure
+   behavior against independent benchmarks.
+3. **Sparse native path:** add an explicitly qualified sparse Jacobian and KLU
+   configuration, with sparsity, scaling and large-model convergence evidence.
+4. **Native execution integration:** add governed event restart plus a bounded
+   native service protocol and desktop integration without routing untrusted
+   requests directly into the solver process.
+5. **Package and release acceptance:** expose only backend/method combinations
+   that passed native conformance, package the accepted binaries, prove their
+   exact artifact lineage in CI and preserve the built-in fallback.
+
+Iterations 2–5 are not shipped. In particular, the Iteration 1 lowering does
+not compile or link SUNDIALS, IDA, SuiteSparse or KLU; does not provide index
+reduction or solve a general implicit DAE; does not qualify a native backend;
+and does not change or extend the current WebAssembly ABI. A planned backend
+must not appear in product capability metadata until its own executable and
+conformance evidence exist. A SUNDIALS WebAssembly build is an optional later
+qualification track, not an implied outcome of native acceptance: Emscripten
+uses a distinct platform ABI, while the current standalone WebAssembly solver
+remains intact.
+
 ## Numerical contract
 
 Every run follows the same sequence:
@@ -138,7 +183,17 @@ Native Rust tests currently prove:
 - a deliberately oversized implicit step remains bounded for a fast state;
 - an integrator conserves accumulated energy for a constant-power case;
 - the electrothermal reference graph lands on its current-step event and
-  matches analytical terminal-voltage, heat and temperature results.
+  matches analytical terminal-voltage, heat and temperature results;
+- the DAE residual lowering preserves deterministic differential-first and
+  BlockId mappings, numeric differential/algebraic IDs, consistent initial
+  conditions, stable output order and exact caller-owned buffer lengths;
+- closed-form and independent finite-difference checks cover residual and CSC
+  Jacobian values, accumulated duplicate-source terms, exact distinct-event
+  preservation, right continuity and fail-closed buffer, finite-input and
+  nonsmooth-Jacobian behavior;
+- instrumented allocator checks prove zero heap allocations across successful
+  caller-buffer callbacks after lowering; they do not claim allocation-free
+  lowering or initialization construction.
 
 Before adding a SUNDIALS, high-order BDF, DAE or sparse backend, its adapter
 must keep these tests and add solver-specific benchmark suites,

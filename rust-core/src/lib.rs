@@ -4,6 +4,7 @@
 //! ordinary, safe functions that native code can call directly. The small C
 //! ABI at the bottom is the same implementation exposed to WebAssembly.
 
+pub mod dae;
 pub mod equations;
 pub mod graph_transport;
 
