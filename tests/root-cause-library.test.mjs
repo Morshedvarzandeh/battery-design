@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 13);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 15);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -60,6 +60,8 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
 test('seed knowledge covers the requested recurring engineering failure classes', () => {
   assert.deepEqual(ROOT_CAUSE_RECORDS.map(({ id }) => id), [
     'rc-allof-closure-collision',
+    'rc-calibration-trace-alignment-loss',
+    'rc-calibration-work-undercount',
     'rc-capability-contract-mismatch',
     'rc-cli-typo-default-fallback',
     'rc-e2e-hidden-state-precondition',
@@ -133,6 +135,8 @@ test('lexical search deterministically retrieves causes, fixes and containment p
     ['hidden tab button timeout', 'rc-e2e-hidden-state-precondition'],
     ['grouped null invalid flat alias', 'rc-nullable-alias-projection'],
     ['packaged runtime missing imported dependency', 'rc-packaged-dependency-omission'],
+    ['prefix RMSE mismatched arrays CSV row first timestamp delta sample phase', 'rc-calibration-trace-alignment-loss'],
+    ['optimizer iterations undercount simulations maxDtS work budget', 'rc-calibration-work-undercount'],
   ];
   for (const [query, expected] of cases) {
     const first = searchRootCauses(query, { limit: 3 });

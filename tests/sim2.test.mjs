@@ -7,17 +7,56 @@
 // it to find them again. A fitter that cannot recover parameters it was shown
 // is a fitter that is guessing.
 import { test } from 'node:test';
+import assert from 'node:assert/strict';
 import { ok, near } from './helpers.mjs';
 import { readFileSync } from 'fs';
 import {
   PARAM_SPEC, PARAM_BY_ID, defaultParams, validateParams,
-  simulate, calibrate, agingEstimate, rmse, R_GAS,
+  simulate, calibrate, calibrateDatasets, agingEstimate, rmse, R_GAS,
+  CALIBRATION_FIT_ELIGIBLE, MAX_CALIBRATION_DATASETS,
 } from '../js/sim2.js';
+import { materializeCalibrationDataset } from '../js/calibration-dataset.js';
 import { cellById } from '../js/cells.js';
 import { ocvCell } from '../js/sim1d.js';
 
 const CELL = cellById('samsung-inr21700-50e');
 const flat = (n, amps, dtS = 1) => ({ dtS, i: Array(n).fill(amps) });
+
+function calibrationDataset({
+  id = 'sim2-synthetic-1', n = 12, purpose = 'calibration', cellId = CELL.id,
+  s = 1, p = 1, startSoC = 0.8, ambientC = 25, moduleCount = 1,
+  temperatureLocation = 'module-maximum', temperature = true, segments = null,
+  voltageOffset = 0,
+} = {}) {
+  const currentA = Array.from({ length: n }, (_, index) => index % 4 < 2 ? 10 : 0);
+  const voltageV = Array.from({ length: n }, (_, index) => 3.75 - currentA[index] * 0.002 + index * 0.001 + voltageOffset);
+  const temperatureC = temperature ? Array.from({ length: n }, (_, index) => 25 + index * 0.01) : null;
+  return materializeCalibrationDataset({
+    id, kind: 'synthetic', purpose,
+    source: {
+      tool: 'P2D synthetic reference', toolVersion: '1.0', model: 'reference-cell',
+      runId: id, generatedAt: '2026-08-07T10:30:00Z', mediaType: 'application/json',
+      rawSha256: 'a'.repeat(64),
+    },
+    binding: { cellId, seriesCells: s, parallelCells: p, startSoC, ambientC, moduleCount },
+    normalization: {
+      format: 'battery-design/calibration-normalization@1', adapter: 'canonical-json',
+      adapterVersion: '1.0.0', mappingChecksum: 'b'.repeat(64),
+      sourceUnits: { time: 's', current: 'A', voltage: 'V', temperature: temperature ? 'degC' : null },
+      sourceCurrentPositive: 'discharge', sourceVoltageLocation: 'pack-terminal',
+      sourceTemperatureLocation: temperature ? temperatureLocation : null,
+      timeHandling: 'validated-uniform', originalSampleCount: n,
+    },
+    samplePeriodS: 1,
+    signals: { currentA, voltageV, temperatureC },
+    segments: segments || [{ id: 'all', startIndex: 0, endIndexExclusive: n, mode: 'dynamic', include: true }],
+    conventions: {
+      timeBasis: 'uniform-sample-period', sampleAlignment: 'end-of-step',
+      currentHold: 'zero-order-hold', currentPositive: 'discharge',
+      voltageLocation: 'pack-terminal', temperatureLocation: temperature ? temperatureLocation : null,
+    },
+  });
+}
 
 test('every parameter is documented well enough to be argued with', () => {
   ok(PARAM_SPEC.length >= 25, `the model exposes its coefficients (${PARAM_SPEC.length})`);
@@ -174,6 +213,196 @@ test('calibration refuses what it cannot do, instead of pretending', () => {
   try { calibrate({ cell: CELL, s: 1, p: 1, measured: { dtS: 1, i: [] }, fit: ['r0Ref'] }); } catch (e) { threw2 = /current and voltage/.test(e.message); }
   ok(threw2, 'and so is missing data');
   ok(rmse([1, 2, 3], [1, 2, 3]) === 0 && rmse([], []) === Infinity, 'the error metric behaves');
+});
+
+test('calibration boundary rejects malformed traces before optimization', () => {
+  const valid = { dtS: 1, i: [1, 2, 3], v: [3.7, 3.6, 3.5] };
+  const input = (measured) => ({ cell: CELL, s: 1, p: 1, measured, fit: ['r0Ref'], maxEvaluations: 2 });
+
+  for (const dtS of [0, -1, 3_600.0001, 1e308, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(() => calibrate(input({ ...valid, dtS })), /measured\.dtS/);
+  }
+  assert.throws(() => calibrate(input({ ...valid, i: [1, 2] })), /at least 3/);
+  assert.throws(() => calibrate(input({ ...valid, v: [3.7, 3.6, 3.5, 3.4] })), /exactly 3/);
+  assert.throws(() => calibrate(input({ ...valid, t: [25, 26] })), /measured\.t.*exactly 3/);
+  assert.throws(() => calibrate(input({ ...valid, i: [1, Number.NaN, 3] })), /measured\.i\[1\].*finite/);
+  assert.throws(() => calibrate(input({ ...valid, v: [3.7, Number.POSITIVE_INFINITY, 3.5] })), /measured\.v\[1\].*finite/);
+  assert.throws(() => calibrate(input({ ...valid, t: [25, Number.NaN, 25] })), /measured\.t\[1\].*finite/);
+
+  assert.equal(rmse([1, 2, 3], [1, 2, 3]), 0);
+  assert.throws(() => rmse([1, 2, 3], [1, 2]), /equal lengths/);
+  assert.throws(() => rmse([1, Number.NaN], [1, 2]), /index 1.*finite/);
+  assert.throws(() => rmse([1, 2], [1, Number.POSITIVE_INFINITY]), /index 1.*finite/);
+});
+
+test('only unique, known electrical and thermal parameters are fit-eligible', () => {
+  const measured = { dtS: 1, i: [1, 2, 3], v: [3.7, 3.6, 3.5] };
+  const run = (fit) => calibrate({ cell: CELL, s: 1, p: 1, measured, fit, maxEvaluations: Math.max(2, fit.length + 1) });
+  assert.throws(() => run([]), /1 to 8/);
+  assert.throws(() => run(CALIBRATION_FIT_ELIGIBLE.slice(0, 9)), /1 to 8/);
+  assert.throws(() => run(['r0Ref', 'r0Ref']), /duplicate.*r0Ref/);
+  assert.throws(() => run(['r0Ref', 42]), /fit\[1\].*string/);
+  assert.throws(() => run(['madeUp']), /not parameters/i);
+  assert.throws(() => run(['calA']), /aging.*including maxDtS/);
+  assert.throws(() => run(['tRefC']), /solver.*including maxDtS/);
+  assert.throws(() => run(['maxDtS']), /solver.*including maxDtS/);
+  assert.ok(CALIBRATION_FIT_ELIGIBLE.every((name) => ['electrical', 'thermal'].includes(PARAM_BY_ID[name].group)));
+});
+
+test('partial parameter overrides merge over complete cell defaults and never repair caller errors', () => {
+  const measured = { dtS: 1, i: [1, 2, 3], v: [3.7, 3.6, 3.5] };
+  const common = { cell: CELL, s: 1, p: 1, measured, fit: ['r0Ref'], maxEvaluations: 2 };
+  const output = calibrate({ ...common, params: { rc1TauS: 20 }, maxIntegrationSteps: 20 });
+  assert.equal(output.params.rc1TauS, 20);
+  assert.equal(output.fitted.r0Ref.from, defaultParams(CELL).r0Ref);
+  assert.equal(output.params.rc1R, defaultParams(CELL).rc1R);
+  assert.equal(Object.keys(output.params).length, PARAM_SPEC.length);
+  assert.ok(Object.values(output.params).every(Number.isFinite), 'dependent defaults are resolved before partial overrides');
+
+  assert.throws(() => calibrate({ ...common, params: { typoResistance: 2 } }), /Unknown calibration parameter override.*typoResistance/);
+  assert.throws(() => calibrate({ ...common, params: { r0Ref: -1 } }), /does not clamp overrides/);
+  assert.throws(() => calibrate({ ...common, params: { r0Ref: undefined } }), /does not repair missing values/);
+});
+
+test('evaluation and immutable-maxDt integration budgets count every executed objective exactly', () => {
+  const measured = { dtS: 1, i: [1, 2, 3], v: [3.7, 3.6, 3.5] };
+  const common = {
+    cell: CELL, s: 1, p: 1, measured, fit: ['r0Ref'], params: { maxDtS: 0.5 },
+    maxIter: 100,
+  };
+  const evaluationBound = calibrate({ ...common, maxEvaluations: 2, maxIntegrationSteps: 100 });
+  assert.equal(evaluationBound.terminationReason, 'max-evaluations');
+  assert.equal(evaluationBound.evaluationCount, 2);
+  assert.equal(evaluationBound.workPerEvaluation, 6);
+  assert.equal(evaluationBound.integrationStepCount, 12);
+  assert.equal(evaluationBound.integrationStepCount,
+    evaluationBound.evaluationCount * evaluationBound.workPerEvaluation);
+
+  const workBound = calibrate({ ...common, maxEvaluations: 3, maxIntegrationSteps: 12 });
+  assert.equal(workBound.terminationReason, 'max-integration-steps');
+  assert.equal(workBound.evaluationCount, 2);
+  assert.equal(workBound.integrationStepCount, 12);
+  assert.ok(workBound.rmseBefore >= 0 && workBound.rmseAfter >= 0,
+    'baseline and selected final result came from accounted cached evaluations, not uncounted reruns');
+});
+
+test('governed dataset calibration enforces purpose and exact model binding', () => {
+  const valid = calibrationDataset();
+  const options = { cell: CELL, datasets: valid, fit: ['r0Ref'], maxEvaluations: 2 };
+  assert.doesNotThrow(() => calibrateDatasets(options));
+  assert.throws(() => calibrateDatasets({ ...options, datasets: calibrationDataset({ purpose: 'validation' }) }),
+    /purpose "validation".*calibration purpose/);
+  assert.throws(() => calibrateDatasets({ ...options, datasets: calibrationDataset({ cellId: null }) }),
+    /bound to cell "null"/);
+  assert.throws(() => calibrateDatasets({ ...options, datasets: calibrationDataset({ cellId: 'another-cell' }) }),
+    /another-cell.*rather than/);
+  const contexts = calibrateDatasets({
+    ...options,
+    datasets: [valid, calibrationDataset({
+      id: 'different-context', startSoC: 0.7, ambientC: 5, voltageOffset: 0.01,
+    })],
+  });
+  assert.equal(contexts.preprocessing[0].binding.startSoC, 0.8);
+  assert.equal(contexts.preprocessing[0].binding.ambientC, 25);
+  assert.equal(contexts.preprocessing[1].binding.startSoC, 0.7);
+  assert.equal(contexts.preprocessing[1].binding.ambientC, 5);
+  assert.throws(() => calibrateDatasets({
+    ...options,
+    datasets: [valid, calibrationDataset({ id: 'different-pack', s: 2, voltageOffset: 0.01 })],
+  }), /incompatible binding\.seriesCells/);
+  assert.throws(() => calibrateDatasets({ ...options, datasets: Array(MAX_CALIBRATION_DATASETS + 1).fill(valid) }),
+    /1 to 8/);
+
+  const tampered = structuredClone(valid);
+  tampered.signals.voltageV[0] += 0.01;
+  assert.throws(() => calibrateDatasets({ ...options, datasets: tampered }), /checksum.*canonical dataset content/);
+});
+
+test('dataset temperature is compared only at module maximum, otherwise explicitly excluded', () => {
+  const cellCore = calibrationDataset({ temperatureLocation: 'cell-core' });
+  const ignored = calibrateDatasets({ cell: CELL, datasets: cellCore, fit: ['r0Ref'], maxEvaluations: 2 });
+  assert.equal(ignored.temperatureSampleCount, 0);
+  assert.match(ignored.notes.join(' '), /ignored cell-core temperature.*module-maximum/);
+  assert.throws(() => calibrateDatasets({
+    cell: CELL, datasets: cellCore, fit: ['r0Ref'], maxEvaluations: 2, weightTemp: 0.1,
+  }), /cell-core.*weightTemp requires module-maximum/);
+
+  const moduleMaximum = calibrationDataset();
+  const used = calibrateDatasets({
+    cell: CELL, datasets: moduleMaximum, fit: ['r0Ref'], maxEvaluations: 2, weightTemp: 0.1,
+  });
+  assert.equal(used.temperatureSampleCount, moduleMaximum.signals.temperatureC.length);
+});
+
+test('included segments and deterministic block means remain bounded, aligned and traceable', () => {
+  const dataset = calibrationDataset({
+    id: 'large-segmented-trace', n: 120,
+    segments: [
+      { id: 'include-a', startIndex: 0, endIndexExclusive: 31, mode: 'pulse', include: true },
+      { id: 'exclude', startIndex: 31, endIndexExclusive: 59, mode: 'rest', include: false },
+      { id: 'include-b', startIndex: 59, endIndexExclusive: 120, mode: 'dynamic', include: true },
+    ],
+  });
+  const result = calibrateDatasets({
+    cell: CELL, datasets: dataset, fit: ['r0Ref'], weightTemp: 0.1,
+    maxSamplesPerDataset: 20, maxEvaluations: 3, maxIntegrationSteps: 240,
+  });
+  const prep = result.preprocessing[0];
+  assert.equal(prep.method, 'block-mean-current-end-sample');
+  assert.equal(prep.factor, 6);
+  assert.equal(prep.originalSamples, 120);
+  assert.equal(prep.usedSamples, 20);
+  assert.deepEqual(prep.channelLengths, { current: 20, voltage: 20, temperature: 20 });
+  assert.equal(prep.originalSamplePeriodS, 1);
+  assert.equal(prep.usedSamplePeriodS, 6);
+  assert.equal(prep.originalIncludedSamples, 92);
+  assert.equal(prep.representedIncludedSamples, 90);
+  assert.equal(prep.unrepresentedIncludedSamples, 2);
+  assert.equal(prep.mixedBoundaryBlocks, 2, 'blocks crossing include/exclude boundaries are fail-closed and unscored');
+  assert.equal(prep.usedIncludedSamples, 15);
+  assert.equal(result.voltageSampleCount, 15, 'include=false samples do not enter the objective');
+  assert.equal(result.temperatureSampleCount, 15);
+  assert.deepEqual(result.datasetChecksums, [dataset.checksum]);
+  assert.equal(prep.checksum, dataset.checksum);
+  assert.equal(prep.rawSha256, dataset.source.rawSha256);
+  assert.equal(prep.sourceTool, dataset.source.tool);
+  assert.match(result.checksumSemantics, /identify exact canonical content.*do not authenticate/);
+  assert.equal(result.evaluationCount, 2);
+  assert.equal(result.workPerEvaluation, 120, 'work uses 20 blocks × ceil(6 s / immutable 1 s maxDtS)');
+  assert.equal(result.integrationStepCount, 240);
+  assert.equal(result.terminationReason, 'max-integration-steps');
+});
+
+test('preprocessing preserves end-of-step voltage and temperature phase', () => {
+  const dataset = calibrationDataset({ id: 'end-sample-ramp', n: 12 });
+  const result = calibrateDatasets({
+    cell: CELL, datasets: dataset, fit: ['kCondWK'], weightTemp: 0.1,
+    maxSamplesPerDataset: 8, maxEvaluations: 2, maxIntegrationSteps: 24,
+  });
+  const factor = 2;
+  const blockCurrent = Array.from({ length: 6 }, (_, block) => (
+    dataset.signals.currentA[block * factor] + dataset.signals.currentA[block * factor + 1]
+  ) / factor);
+  const prediction = simulate({
+    cell: CELL, s: 1, p: 1, profile: { dtS: 2, i: blockCurrent },
+    startSoC: 0.8, ambientC: 25, nModules: 1,
+  });
+  const endVoltage = Array.from({ length: 6 }, (_, block) => dataset.signals.voltageV[block * factor + 1]);
+  const meanVoltage = Array.from({ length: 6 }, (_, block) => (
+    dataset.signals.voltageV[block * factor] + dataset.signals.voltageV[block * factor + 1]
+  ) / factor);
+  const endTemperature = Array.from({ length: 6 }, (_, block) => dataset.signals.temperatureC[block * factor + 1]);
+  const meanTemperature = Array.from({ length: 6 }, (_, block) => (
+    dataset.signals.temperatureC[block * factor] + dataset.signals.temperatureC[block * factor + 1]
+  ) / factor);
+
+  near(result.voltageRmseBefore, rmse(prediction.series.v, endVoltage), 1e-12,
+    'voltage observations remain at the block end');
+  near(result.temperatureRmseBefore, rmse(prediction.series.tMax, endTemperature), 1e-12,
+    'temperature observations remain at the block end');
+  assert.notEqual(result.voltageRmseBefore, rmse(prediction.series.v, meanVoltage));
+  assert.notEqual(result.temperatureRmseBefore, rmse(prediction.series.tMax, meanTemperature));
+  assert.equal(result.preprocessing[0].method, 'block-mean-current-end-sample');
 });
 
 test('the model states what it does NOT do', () => {

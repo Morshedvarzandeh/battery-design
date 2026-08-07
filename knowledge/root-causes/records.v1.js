@@ -77,6 +77,117 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-calibration-trace-alignment-loss',
+      title: 'Calibration silently compares misaligned trace samples',
+      symptom: 'A calibration can report a plausible or improved RMSE even though current, voltage and temperature no longer describe the same samples.',
+      evidence: [
+        'A prefix-only RMSE based on the shorter array discards every unmatched tail value instead of rejecting unequal signal lengths.',
+        'Dropping one malformed CSV row independently from a signal column shifts the remaining observations while leaving numeric arrays that still look usable.',
+        'Inferring the sample period from only the first timestamp delta misses later gaps, and an unstated start-versus-end sample phase introduces a one-step offset.',
+      ],
+      detection: [
+        {
+          method: 'adversarial trace-alignment regression',
+          signal: 'Change one signal length, corrupt one CSV row, perturb a non-first timestamp delta, and shift the declared sample phase.',
+          failureCondition: 'Import or calibration proceeds, compares a shared prefix, or silently realigns any sample instead of rejecting the complete dataset.',
+        },
+      ],
+      causalChain: [
+        'Delimited columns and measured arrays enter the optimizer without one enforced row identity and time convention.',
+        'Invalid values can be removed independently, or irregular timing can be summarized from the first interval alone.',
+        'The objective compares only the common prefix and therefore hides both missing tails and one-step phase shifts behind a finite RMSE.',
+      ],
+      rootCause: 'The calibration boundary lacked a single fail-closed trace contract that binds equal signal cardinality, every timestamp interval and explicit sample phase before objective evaluation.',
+      resolution: [
+        'Normalize complete source rows into one immutable dataset with equal-length current, voltage and optional temperature signals plus explicit end-of-step alignment.',
+        'Validate every timestamp delta, reject an invalid row rather than dropping fields independently, and require RMSE operands to have exactly equal nonzero lengths.',
+      ],
+      prevention: [
+        'Never truncate calibration operands to their shortest shared prefix or infer a timebase from one interval.',
+        'Keep malformed-row, unequal-array, nonuniform-time and one-sample phase-shift cases in the governed import and optimizer regressions.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/calibration-import.test.mjs',
+          assertion: 'CSV import rejects malformed rows and every nonuniform timestamp interval while preserving the declared end-of-step sample alignment.',
+        },
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'Calibration and RMSE reject unequal signal lengths instead of scoring only their shared prefix.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['calibration', 'csv', 'rmse', 'sample-alignment', 'timebase'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/calibration-dataset.js',
+          note: 'Canonical immutable signal lengths, timing and sample-alignment contract.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Calibration objective and strict full-trace RMSE behavior.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sim2.test.mjs',
+          note: 'Optimizer input-alignment and RMSE regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-calibration-work-undercount',
+      title: 'Calibration reports less optimizer work than it performs',
+      symptom: 'A calibration appears to remain inside its work limit even though simplex initialization, trial probes and final scoring run the simulator many more times than reported.',
+      evidence: [
+        'The returned iterations value counts outer Nelder-Mead loops but omits initialization, reflection, expansion, contraction, shrink and final before/after simulations.',
+        'Allowing maxDtS in the fitted vector changes the number of integration substeps performed by each objective evaluation, so the optimizer mutates its own work cost.',
+      ],
+      detection: [
+        {
+          method: 'instrumented optimizer work regression',
+          signal: 'Count every simulator invocation and integration substep across initialization, each Nelder-Mead branch and final result materialization.',
+          failureCondition: 'The observed work exceeds the declared cap, differs from reported counters, or changes because a solver-control parameter was fitted.',
+        },
+      ],
+      causalChain: [
+        'The optimizer exposes a maximum outer-iteration count as though it were the complete computational budget.',
+        'Each iteration performs a variable number of objective simulations and shrink can evaluate most simplex vertices again.',
+        'Fitting maxDtS also changes simulation substeps, making both numerical fidelity and cost depend on the candidate vector.',
+        'The reported counter and configured limit therefore understate and fail to bound actual work.',
+      ],
+      rootCause: 'Calibration governed loop iterations rather than every expensive simulation evaluation, while a numerical solver-control parameter was allowed to alter work from inside the physical fit vector.',
+      resolution: [
+        'Count and cap every objective simulation before it starts, including initialization, shrink and final materialization, and report both iterations and simulation evaluations.',
+        'Freeze maxDtS as a run setting and reject it as a fitted physical parameter so candidates cannot change the integration-work contract.',
+      ],
+      prevention: [
+        'Express calibration limits in directly measurable expensive operations and test every optimizer branch at the exact boundary.',
+        'Keep solver controls outside the calibratable parameter allowlist unless a separately governed numerical-convergence study explicitly owns them.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'Calibration enforces and reports the exact simulation-evaluation budget across all simplex branches and refuses maxDtS as a fit target.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['budget', 'calibration', 'optimizer', 'solver-control', 'work-accounting'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Nelder-Mead evaluation accounting, work limit and fit-parameter policy.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sim2.test.mjs',
+          note: 'Exact simulation-count, work-cap and solver-control rejection regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-capability-contract-mismatch',
       title: 'Declared FMI capability disagrees with implementation',
       symptom: 'An importer selects an optional FMI operation because modelDescription.xml advertises support, but the exported function returns an error.',
