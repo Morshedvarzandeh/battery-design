@@ -49,6 +49,9 @@ import { swapPlan, POLICIES as SWAP_POLICIES } from '../js/swap.js';
 import { layoutPack } from '../js/pack-engine.js';
 import { materialById } from '../js/materials.js';
 import { ADDONS, addonsFor, addonsForSurface, capabilityReport } from '../js/addons.js';
+import {
+  getRootCauseRecord, listRootCauseRecords, ROOT_CAUSE_SCHEMA_VERSION, searchRootCauses,
+} from '../js/root-cause-library.js';
 import { mkdirSync } from 'node:fs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -303,6 +306,9 @@ const FMU_SPEC_CONFLICT_FLAGS = Object.freeze([
 ]);
 const FMU_EXPORT_FLAGS = Object.freeze(['spec', 'out', 'name', 'params']);
 const FMU_ALLOWED_FLAGS = new Set([...FMU_EXPORT_FLAGS, ...FMU_SPEC_CONFLICT_FLAGS]);
+const ROOT_CAUSE_ALLOWED_FLAGS = new Set([
+  'id', 'query', 'surface', 'tag', 'status', 'limit', 'json', 'out',
+]);
 
 function fmuSpecFrom(args) {
   const unknown = args[PARSED_FLAGS].filter((key) => !FMU_ALLOWED_FLAGS.has(key));
@@ -324,6 +330,101 @@ function fmuSpecFrom(args) {
     throw new TypeError(`--spec cannot be combined with design-shaping flags: ${conflicts.map((key) => `--${key}`).join(', ')}.`);
   }
   return loadDesignSpec(args.spec);
+}
+
+function rootCauseRequestFrom(args) {
+  const unknown = args[PARSED_FLAGS].filter((key) => !ROOT_CAUSE_ALLOWED_FLAGS.has(key));
+  if (unknown.length) {
+    throw new TypeError(`root-cause does not accept option(s): ${[...new Set(unknown)]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  const positionals = args._.slice(1);
+  if (positionals.length) {
+    throw new TypeError(`root-cause does not accept positional arguments: ${positionals.join(', ')}.`);
+  }
+  if (args[DUPLICATE_FLAGS].length) {
+    throw new TypeError(`root-cause option(s) may be supplied only once: ${[...new Set(args[DUPLICATE_FLAGS])]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  if (args.json != null && args.json !== true) {
+    throw new TypeError('--json is a boolean flag and does not accept a value.');
+  }
+  if (args.out != null && (typeof args.out !== 'string' || !args.out.trim())) {
+    throw new TypeError('--out requires a file path.');
+  }
+  const hasId = args.id != null;
+  const hasQuery = args.query != null;
+  if (hasId === hasQuery) {
+    throw new TypeError('root-cause requires exactly one of --id ID or --query TEXT.');
+  }
+  const scalar = (name, required = false) => {
+    const value = args[name];
+    if (value == null && !required) return null;
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new TypeError(`--${name} requires a non-empty value.`);
+    }
+    return value.trim();
+  };
+  let limit = 10;
+  if (args.limit != null) {
+    if (typeof args.limit !== 'string' || !/^[1-9]\d*$/.test(args.limit)) {
+      throw new TypeError('--limit requires an integer from 1 to 100.');
+    }
+    limit = Number(args.limit);
+    if (!Number.isSafeInteger(limit) || limit > 100) {
+      throw new RangeError('--limit must be an integer from 1 to 100.');
+    }
+  }
+  return Object.freeze({
+    mode: hasId ? 'id' : 'query',
+    id: hasId ? scalar('id', true) : null,
+    query: hasQuery ? scalar('query', true) : null,
+    surface: scalar('surface'),
+    tag: scalar('tag'),
+    status: scalar('status'),
+    limit,
+  });
+}
+
+function rootCauseMatchView(record, match = {}) {
+  return {
+    id: record.id,
+    title: record.title,
+    status: record.status,
+    score: match.score ?? null,
+    matchedFields: match.matchedFields || [],
+    matchedTokens: match.matchedTokens || [],
+    affectedSurfaces: record.affectedSurfaces,
+    tags: record.tags,
+    symptom: record.symptom,
+    evidence: record.evidence,
+    rootCause: record.rootCause,
+    resolution: record.resolution,
+    prevention: record.prevention,
+    regressionTests: record.regressionTests,
+  };
+}
+
+function formatRootCauseResult(result) {
+  const lines = [
+    `Known root-cause catalog — ${result.matches.length} match${result.matches.length === 1 ? '' : 'es'}`,
+    result.knowledge.notice,
+  ];
+  if (!result.matches.length) {
+    lines.push('', 'No catalog record matched these exact filters. This does not prove the issue is new.');
+    return lines.join('\n');
+  }
+  for (const [index, match] of result.matches.entries()) {
+    lines.push('', `${index + 1}. ${match.id} — ${match.title} [${match.status}]`);
+    lines.push('Symptom:', `  ${match.symptom}`);
+    lines.push('Evidence:', ...match.evidence.map((item) => `  · ${item}`));
+    lines.push('Root cause:', `  ${match.rootCause}`);
+    lines.push('Resolution:', ...match.resolution.map((item) => `  · ${item}`));
+    lines.push('Prevention:', ...match.prevention.map((item) => `  · ${item}`));
+    lines.push('Regression tests:', ...match.regressionTests
+      .map((item) => `  · ${item.path} — ${item.assertion}`));
+  }
+  return lines.join('\n');
 }
 
 function emit(args, data, humanLines) {
@@ -372,6 +473,48 @@ const COMMANDS = {
       ...(missing.length ? ['Unresolved evidence:', ...missing] : ['Unresolved evidence: none declared by the calculation-ready profile']),
       `Graph checksum: ${design.semantics.ontology.checksum}`,
     ].join('\n'));
+  },
+
+  'root-cause'(args) {
+    const request = rootCauseRequestFrom(args);
+    const filters = {
+      ...(request.surface ? { affectedSurfaces: [request.surface] } : {}),
+      ...(request.tag ? { tags: [request.tag] } : {}),
+      ...(request.status ? { status: request.status } : {}),
+    };
+    const eligibleIds = new Set(listRootCauseRecords(filters).map(({ id }) => id));
+    let matches;
+    if (request.mode === 'id') {
+      const record = getRootCauseRecord(request.id);
+      if (!record) throw new TypeError(`Unknown root-cause id "${request.id}".`);
+      matches = eligibleIds.has(record.id) ? [rootCauseMatchView(record, { matchedFields: ['id'] })] : [];
+    } else {
+      matches = searchRootCauses(request.query, {
+        limit: 100,
+        ...(request.status ? { status: request.status } : {}),
+      })
+        .filter(({ id }) => eligibleIds.has(id))
+        .slice(0, request.limit)
+        .map((match) => rootCauseMatchView(match.record, match));
+    }
+    const result = {
+      format: 'battery-design/root-cause-query@1',
+      knowledge: {
+        kind: 'versioned-curated-catalog',
+        schemaVersion: ROOT_CAUSE_SCHEMA_VERSION,
+        notice: 'These are deterministic matches to recorded project evidence, not AI certainty or proof of causation.',
+      },
+      mode: request.mode,
+      input: request.mode === 'id' ? request.id : request.query,
+      filters: {
+        surface: request.surface,
+        tag: request.tag,
+        status: request.status,
+        limit: request.limit,
+      },
+      matches,
+    };
+    return emit(args, result, formatRootCauseResult(result));
   },
 
   // Everything the browser should not do while you wait: change one thing at
@@ -1508,6 +1651,8 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   range     drive-cycle study, mass × mode     --app ev --energy 60000 [--from --to --step]
   fmu       export an FMI 2.0 source-FMU kit   --spec design-spec.json [--out ./fmu]
                                                   (legacy --app/--energy flags remain supported)
+  root-cause search recorded engineering fixes  --id ID | --query TEXT [--surface NAME]
+                                                  [--tag NAME --status STATUS --limit N --json]
   addons    what this tool can do, and cannot   [--app ev]
   bom       every conductor sized, every       --app ev [--install bundled] [--env harsh]
             joint checked, and the bill of     [--modrun 300 --packrun 400 --pitch 25]
