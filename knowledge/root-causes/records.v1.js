@@ -1076,6 +1076,69 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-hil-timing-coverage-gap',
+      title: 'Partial HIL timing trace is treated as complete-run evidence',
+      symptom: 'One fast cycle can satisfy the HIL timing check for a much longer declared run, while a large complete trace can overflow the evaluator before producing a verdict.',
+      evidence: [
+        'The evaluator required only a non-empty cycleTimesUs array and checked that each supplied value was below the sample period.',
+        'A 30-second contract at a one-millisecond period therefore accepted one measured cycle as timing evidence for all 30,000 required cycles.',
+        'Maximum cycle time was calculated with Math.max spread syntax, which can throw when a legitimate timing trace exceeds the JavaScript argument limit.',
+        'Direct floating-point ceil made 0.000123 seconds at a one-microsecond period appear as 123.00000000000001 cycles and incorrectly require cycle 124.',
+        'Gating the iterative scan on complete coverage suppressed the maximum measured time for a valid but partial trace, weakening failure diagnostics.',
+      ],
+      detection: [
+        {
+          method: 'duration-coverage and large-trace regression',
+          signal: 'Evaluate exact and just-over integer duration boundaries, a partial trace, the complete derived cycle count and a complete trace above typical function-argument limits.',
+          failureCondition: 'Partial coverage passes, required/observed counts are absent, or a bounded complete trace throws instead of returning a timing verdict.',
+        },
+      ],
+      causalChain: [
+        'The contract declares both a sample period and a total test duration.',
+        'Evidence validation checks only values present in the submitted timing array and never derives the number of cycles the duration requires.',
+        'A short prefix is indistinguishable from a complete run and can satisfy every timing predicate.',
+        'When complete evidence is eventually supplied, argument-spread reduction makes array size an unrelated runtime failure mode.',
+      ],
+      rootCause: 'Timing values were validated independently of declared run coverage, and their maximum was reduced through a call-stack-limited API instead of a bounded iterative scan.',
+      resolution: [
+        'Derive required cycles as ceil(durationS*1,000,000/samplePeriodUs) and reject contracts outside the governed one-million-sample evidence ceiling.',
+        'Require observed evidence to cover at least the derived cycle count while retaining the exact sample-period deadline for every value.',
+        'Convert the canonical decimal duration representation into an exact BigInt rational before ceiling, so decimal integer boundaries stay exact and every represented positive remainder requires the next cycle.',
+        'Compute maximum cycle time with an iterative dense-array scan independent of the coverage verdict and expose required and observed counts in every HIL evidence result.',
+      ],
+      prevention: [
+        'Tie every sampled-evidence acceptance rule to both value validity and declared coverage.',
+        'Use safe-integer time/count domains and exact decimal-rational duration arithmetic; pair every boundary test with just-over and near-cap counterexamples.',
+        'Cap external arrays before execution and avoid spread-based reductions on governed evidence.',
+        'Keep partial, exact-complete and large-complete trace cases together in the HIL regression matrix.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/loop-testing.test.mjs',
+          assertion: 'A partial HIL trace fails but retains its measured maximum; exact and just-over decimal boundaries derive 123 and 124 cycles; a represented near-cap remainder is not rounded down; a 200,000-cycle trace passes without spread overflow; and unsafe or over-cap contracts fail before evidence evaluation.',
+        },
+      ],
+      affectedSurfaces: ['browser'],
+      tags: ['array-bounds', 'coverage', 'hil', 'timing', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/loop-testing.js',
+          note: 'Derived timing coverage, evidence ceiling and iterative maximum scan.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/loop-testing.test.mjs',
+          note: 'Partial, complete, large and over-cap timing regressions.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/LOOP_TESTING.md',
+          note: 'Public timing-coverage and evidence-limit contract.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-loop-contract-identity-gap',
       title: 'Loop-test execution trusts a mutable schema-labelled contract',
       symptom: 'A SIL plan or HIL contract changes after review, or a schema-only object reaches execution without the required governed fields.',

@@ -14,6 +14,7 @@ export const LEGACY_SIL_SCHEMA = 'battery-design/sil-test-plan@1';
 export const LEGACY_HIL_SCHEMA = 'battery-design/hil-test-contract@1';
 export const SIL_SCHEMA = 'battery-design/sil-test-plan@2';
 export const HIL_SCHEMA = 'battery-design/hil-test-contract@2';
+export const MAX_HIL_TIMING_SAMPLES = 1_000_000;
 
 const REQUIRED_CALCULATION_TESTS = Object.freeze([
   'independent expected-value or accepted-range oracle',
@@ -96,6 +97,23 @@ function expectedChecksum(options, name) {
 
 function checkedSnapshot(body) {
   return deepFreeze({ ...body, checksum: semanticDigest(body) });
+}
+
+function requiredHilCycleCount(samplePeriodUs, durationS) {
+  const match = /^(\d+)(?:\.(\d+))?(?:e([+-]?\d+))?$/i.exec(String(durationS));
+  if (!match) throw new RangeError('HIL duration cannot be represented as a decimal timing contract.');
+  const [, whole, fraction = '', exponentText = '0'] = match;
+  const significant = BigInt(`${whole}${fraction}`);
+  const microsecondExponent = Number(exponentText) - fraction.length + 6;
+  let numerator = significant;
+  let denominator = BigInt(samplePeriodUs);
+  if (microsecondExponent >= 0) numerator *= 10n ** BigInt(microsecondExponent);
+  else denominator *= 10n ** BigInt(-microsecondExponent);
+  const count = (numerator + denominator - 1n) / denominator;
+  if (count < 1n || count > BigInt(MAX_HIL_TIMING_SAMPLES)) {
+    throw new RangeError(`HIL timing evidence requires between 1 and ${MAX_HIL_TIMING_SAMPLES} cycles.`);
+  }
+  return Number(count);
 }
 
 function assertText(name, value) {
@@ -302,8 +320,9 @@ export function createHilTestContract(options = {}) {
   const modelId = assertText('Model id', options.modelId);
   const modelVersion = assertText('Model version', options.modelVersion);
   const graphChecksum = assertText('Graph checksum', options.graphChecksum);
-  if (!Number.isInteger(options.samplePeriodUs) || options.samplePeriodUs <= 0) throw new RangeError('HIL sample period must be a positive integer in microseconds.');
+  if (!Number.isSafeInteger(options.samplePeriodUs) || options.samplePeriodUs <= 0) throw new RangeError('HIL sample period must be a positive safe integer in microseconds.');
   if (!finite(options.durationS) || options.durationS <= 0) throw new RangeError('HIL duration must be greater than zero.');
+  requiredHilCycleCount(options.samplePeriodUs, options.durationS);
   const inputs = normalizedChannels(options.inputs, 'input');
   const outputs = normalizedChannels(options.outputs, 'output');
   const allIds = [...inputs, ...outputs].map((channel) => channel.id);
@@ -321,7 +340,7 @@ export function createHilTestContract(options = {}) {
     maxConsecutive: options.overrun?.maxConsecutive ?? 0,
     action: assertText('Overrun action', options.overrun?.action),
   };
-  if (!Number.isInteger(overrun.maxConsecutive) || overrun.maxConsecutive < 0) throw new RangeError('Maximum consecutive overruns must be a non-negative integer.');
+  if (!Number.isSafeInteger(overrun.maxConsecutive) || overrun.maxConsecutive < 0) throw new RangeError('Maximum consecutive overruns must be a non-negative safe integer.');
   const faultSource = Object.hasOwn(options, 'requiredFaults') ? options.requiredFaults : [
     'sensor-open', 'sensor-short', 'sensor-stuck', 'out-of-range',
     'communication-timeout', 'target-overrun', 'power-cycle', 'emergency-safe-state',
@@ -400,9 +419,14 @@ export function verifyHilTestContract(value, options = {}) {
 /** Evaluate evidence measured by a real HIL target; absence stays Unproven. */
 export function evaluateHilEvidence(contract, evidence = null) {
   const verifiedContract = verifyHilTestContract(contract);
+  const requiredCycleCount = requiredHilCycleCount(
+    verifiedContract.samplePeriodUs,
+    verifiedContract.durationS,
+  );
   if (!evidence) return {
     schema: HIL_SCHEMA, kind: 'hardware-in-the-loop', status: 'unproven',
     contractChecksum: verifiedContract.checksum,
+    requiredCycleCount, observedCycleCount: 0,
     headline: 'HIL contract is ready; no target-hardware evidence has been supplied.',
   };
   const identity = ownValue(evidence, 'targetId') === verifiedContract.targetId
@@ -410,8 +434,25 @@ export function evaluateHilEvidence(contract, evidence = null) {
     && ownValue(evidence, 'graphChecksum') === verifiedContract.graphChecksum;
   const suppliedCycleTimes = ownValue(evidence, 'cycleTimesUs');
   const cycleTimesUs = Array.isArray(suppliedCycleTimes) ? suppliedCycleTimes : [];
-  const timing = cycleTimesUs.length > 0 && cycleTimesUs.every((value) => finite(value) && value > 0)
-    && Math.max(...cycleTimesUs) <= verifiedContract.samplePeriodUs;
+  const withinTimingLimit = cycleTimesUs.length <= MAX_HIL_TIMING_SAMPLES;
+  const coverageOk = cycleTimesUs.length >= requiredCycleCount && withinTimingLimit;
+  let valuesOk = cycleTimesUs.length > 0 && withinTimingLimit;
+  let deadlineOk = true;
+  let maxCycleTimeUs = null;
+  for (let index = 0; index < cycleTimesUs.length && withinTimingLimit; index += 1) {
+    if (!Object.hasOwn(cycleTimesUs, index)) {
+      valuesOk = false;
+      continue;
+    }
+    const value = cycleTimesUs[index];
+    if (!finite(value) || value <= 0) {
+      valuesOk = false;
+      continue;
+    }
+    maxCycleTimeUs = maxCycleTimeUs === null ? value : Math.max(maxCycleTimeUs, value);
+    if (value > verifiedContract.samplePeriodUs) deadlineOk = false;
+  }
+  const timing = coverageOk && valuesOk && deadlineOk;
   const io = [...verifiedContract.inputs, ...verifiedContract.outputs]
     .every((channel) => ownValue(ownValue(evidence, 'io'), channel.id) === 'pass');
   const faults = verifiedContract.requiredFaults
@@ -427,7 +468,9 @@ export function evaluateHilEvidence(contract, evidence = null) {
     schema: HIL_SCHEMA, kind: 'hardware-in-the-loop',
     status: Object.values(checks).every(Boolean) ? 'pass' : 'fail',
     contractChecksum: verifiedContract.checksum,
-    checks, maxCycleTimeUs: cycleTimesUs.length ? Math.max(...cycleTimesUs) : null,
+    checks, maxCycleTimeUs,
+    requiredCycleCount,
+    observedCycleCount: cycleTimesUs.length,
     samplePeriodUs: verifiedContract.samplePeriodUs,
     headline: Object.values(checks).every(Boolean)
       ? 'Measured HIL evidence satisfies the declared contract.'

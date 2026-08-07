@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 30);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 31);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -75,6 +75,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-final-artifact-identity-gap',
     'rc-fmi-calibration-key-ignored',
     'rc-fmi-representation-drift',
+    'rc-hil-timing-coverage-gap',
     'rc-loop-contract-identity-gap',
     'rc-nelder-mead-bound-simplex-collapse',
     'rc-nullable-alias-projection',
@@ -118,6 +119,19 @@ test('loop-contract memory preserves the mutation, identity and trust-boundary f
   );
   assert.equal(
     searchRootCauses('schema-only mutable nested SIL HIL contract checksum', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('HIL timing memory keeps duration coverage separate from one fast sample', () => {
+  const record = getRootCauseRecord('rc-hil-timing-coverage-gap');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /30-second[\s\S]*30,000 required cycles/i);
+  assert.match(record.evidence.join(' '), /0\.000123 seconds[\s\S]*123\.00000000000001[\s\S]*cycle 124/i);
+  assert.match(record.rootCause, /declared run coverage[\s\S]*iterative scan/i);
+  assert.match(record.resolution.join(' '), /ceil\(durationS\*1,000,000\/samplePeriodUs\)[\s\S]*one-million[\s\S]*exact BigInt rational[\s\S]*independent of the coverage verdict[\s\S]*required and observed counts/i);
+  assert.equal(
+    searchRootCauses('one fast cycle partial HIL timing spread overflow', { limit: 1 })[0]?.id,
     record.id,
   );
 });

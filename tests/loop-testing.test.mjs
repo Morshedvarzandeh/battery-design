@@ -4,6 +4,7 @@ import {
   HIL_SCHEMA,
   LEGACY_HIL_SCHEMA,
   LEGACY_SIL_SCHEMA,
+  MAX_HIL_TIMING_SAMPLES,
   SIL_SCHEMA,
   createHilTestContract,
   createSilTestPlan,
@@ -181,14 +182,17 @@ test('SIL output oracles read own properties only and reject prototype-path segm
 
 const contract = createHilTestContract({
   targetId: 'rt-target-1', modelId: 'bms-controller', modelVersion: '4.0.0',
-  graphChecksum: 'fnv1a32:abcdef12', samplePeriodUs: 1000, durationS: 30,
+  graphChecksum: 'fnv1a32:abcdef12', samplePeriodUs: 1000, durationS: 0.003,
   inputs: [{ id: 'pack-v', quantity: 'voltage', unit: 'V', min: 0, max: 1000 }],
   outputs: [{ id: 'contactor', quantity: 'boolean', unit: '0/1', min: 0, max: 1, safeValue: 0 }],
   overrun: { maxConsecutive: 0, action: 'Open contactor.' },
 });
 
 test('HIL stays unproven without hardware and passes only complete measured evidence', () => {
-  assert.equal(evaluateHilEvidence(contract).status, 'unproven');
+  const unproven = evaluateHilEvidence(contract);
+  assert.equal(unproven.status, 'unproven');
+  assert.equal(unproven.requiredCycleCount, 3);
+  assert.equal(unproven.observedCycleCount, 0);
   const evidence = {
     targetId: contract.targetId, modelVersion: contract.modelVersion,
     graphChecksum: contract.graphChecksum, cycleTimesUs: [720, 840, 910],
@@ -199,10 +203,72 @@ test('HIL stays unproven without hardware and passes only complete measured evid
   const pass = evaluateHilEvidence(contract, evidence);
   assert.equal(pass.status, 'pass');
   assert.equal(pass.maxCycleTimeUs, 910);
+  assert.equal(pass.requiredCycleCount, 3);
+  assert.equal(pass.observedCycleCount, 3);
+  const partial = evaluateHilEvidence(contract, { ...evidence, cycleTimesUs: [720] });
+  assert.equal(partial.status, 'fail');
+  assert.equal(partial.checks.timing, false);
+  assert.equal(partial.requiredCycleCount, 3);
+  assert.equal(partial.observedCycleCount, 1);
+  assert.equal(partial.maxCycleTimeUs, 720);
   assert.equal(evaluateHilEvidence(contract, { ...evidence, cycleTimesUs: [1200] }).status, 'fail');
   const negativeOverrun = evaluateHilEvidence(contract, { ...evidence, maxConsecutiveOverruns: -1 });
   assert.equal(negativeOverrun.status, 'fail');
   assert.equal(negativeOverrun.checks.overrun, false);
+});
+
+test('HIL timing scans large complete traces without spread overflow and caps impossible contracts', () => {
+  const cycleCount = 200_000;
+  const largeContract = createHilTestContract({
+    targetId: 'fast-target', modelId: 'controller', modelVersion: '1', graphChecksum: 'sha256:model',
+    samplePeriodUs: 1, durationS: cycleCount / 1_000_000,
+    inputs: [{ id: 'input', quantity: 'voltage', unit: 'V', min: 0, max: 1 }],
+    outputs: [{ id: 'safe', quantity: 'boolean', unit: '0/1', min: 0, max: 1, safeValue: 0 }],
+    overrun: { maxConsecutive: 0, action: 'safe' }, requiredFaults: ['fault'],
+  });
+  const result = evaluateHilEvidence(largeContract, {
+    targetId: 'fast-target', modelVersion: '1', graphChecksum: 'sha256:model',
+    cycleTimesUs: Array(cycleCount).fill(0.5),
+    io: { input: 'pass', safe: 'pass' }, faults: { fault: 'pass' },
+    safeState: { safe: 0 }, maxConsecutiveOverruns: 0,
+  });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.requiredCycleCount, cycleCount);
+  assert.equal(result.observedCycleCount, cycleCount);
+  assert.equal(result.maxCycleTimeUs, 0.5);
+
+  assert.throws(() => createHilTestContract({
+    targetId: 'too-long', modelId: 'controller', modelVersion: '1', graphChecksum: 'c',
+    samplePeriodUs: 1, durationS: (MAX_HIL_TIMING_SAMPLES + 1) / 1_000_000,
+    inputs: [{ id: 'i', quantity: 'v', unit: 'V', min: 0, max: 1 }],
+    outputs: [{ id: 'o', quantity: 'b', unit: '0/1', min: 0, max: 1, safeValue: 0 }],
+    overrun: { action: 'safe' },
+  }), /between 1 and 1000000 cycles/i);
+});
+
+test('HIL cycle derivation uses exact decimal boundaries and never hides a partial period', () => {
+  const makeContract = (durationS) => createHilTestContract({
+    targetId: 'boundary-target', modelId: 'controller', modelVersion: '1', graphChecksum: 'c',
+    samplePeriodUs: 1, durationS,
+    inputs: [{ id: 'i', quantity: 'v', unit: 'V', min: 0, max: 1 }],
+    outputs: [{ id: 'o', quantity: 'b', unit: '0/1', min: 0, max: 1, safeValue: 0 }],
+    overrun: { action: 'safe' }, requiredFaults: ['fault'],
+  });
+  const exactBoundary = makeContract(0.000123);
+  const exactResult = evaluateHilEvidence(exactBoundary, {
+    targetId: 'boundary-target', modelVersion: '1', graphChecksum: 'c',
+    cycleTimesUs: Array(123).fill(0.5), io: { i: 'pass', o: 'pass' },
+    faults: { fault: 'pass' }, safeState: { o: 0 }, maxConsecutiveOverruns: 0,
+  });
+  assert.equal(exactResult.requiredCycleCount, 123);
+  assert.equal(exactResult.status, 'pass');
+
+  const justAbove = evaluateHilEvidence(makeContract(0.000123000000001));
+  assert.equal(justAbove.requiredCycleCount, 124);
+  assert.equal(justAbove.status, 'unproven');
+
+  assert.equal(evaluateHilEvidence(makeContract(Number.MIN_VALUE)).requiredCycleCount, 1);
+  assert.throws(() => makeContract(1 + Number.EPSILON), /between 1 and 1000000 cycles/i);
 });
 
 test('HIL rejects unsafe output states and non-integer timing contracts', () => {
@@ -212,7 +278,14 @@ test('HIL rejects unsafe output states and non-integer timing contracts', () => 
     inputs: [{ id: 'i', quantity: 'v', unit: 'V', min: 0, max: 1 }],
     outputs: [{ id: 'o', quantity: 'b', unit: '0/1', min: 0, max: 1, safeValue: 2 }],
     overrun: { action: 'safe' },
-  }), /positive integer/i);
+  }), /positive safe integer/i);
+  assert.throws(() => createHilTestContract({
+    targetId: 't', modelId: 'm', modelVersion: '1', graphChecksum: 'c',
+    samplePeriodUs: Number.MAX_SAFE_INTEGER + 1, durationS: 1,
+    inputs: [{ id: 'i', quantity: 'v', unit: 'V', min: 0, max: 1 }],
+    outputs: [{ id: 'o', quantity: 'b', unit: '0/1', min: 0, max: 1, safeValue: 0 }],
+    overrun: { action: 'safe' },
+  }), /positive safe integer/i);
   assert.throws(() => createHilTestContract({
     targetId: 't', modelId: 'm', modelVersion: '1', graphChecksum: 'c',
     samplePeriodUs: 1000, durationS: 1,
@@ -225,7 +298,7 @@ test('HIL rejects unsafe output states and non-integer timing contracts', () => 
 test('HIL contracts are deterministic deeply frozen snapshots with unique faults', () => {
   const clone = createHilTestContract({
     targetId: 'rt-target-1', modelId: 'bms-controller', modelVersion: '4.0.0',
-    graphChecksum: 'fnv1a32:abcdef12', samplePeriodUs: 1000, durationS: 30,
+    graphChecksum: 'fnv1a32:abcdef12', samplePeriodUs: 1000, durationS: 0.003,
     inputs: [{ id: 'pack-v', quantity: 'voltage', unit: 'V', min: 0, max: 1000 }],
     outputs: [{ id: 'contactor', quantity: 'boolean', unit: '0/1', min: 0, max: 1, safeValue: 0 }],
     overrun: { action: 'Open contactor.', maxConsecutive: 0 },

@@ -66,6 +66,18 @@ I/O channel, each required fault, the observed safe state and recorded
 overruns. Passing a software simulation cannot satisfy any of those hardware
 checks.
 
+Timing evidence must cover at least
+`ceil(durationS × 1,000,000 / samplePeriodUs)` consecutive cycles. A lone fast
+sample cannot prove a complete run. Contracts are capped at 1,000,000 timing
+samples, and the evaluator scans them iteratively rather than expanding an
+unbounded array into function arguments. Results expose both required and
+observed cycle counts plus the maximum measured cycle time.
+Cycle-count derivation evaluates the canonical decimal representation of
+`durationS` as an exact rational number. Thus `0.000123` seconds at 1 µs is
+exactly 123 cycles, while any represented positive partial period requires the
+next cycle. A partial trace fails coverage but retains its measured maximum
+for diagnosis.
+
 ## Safety-calculation evidence
 
 Thermal propagation and vent sizing may be exercised in SIL for regression,
