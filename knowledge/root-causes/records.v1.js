@@ -177,6 +177,56 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-e2e-hidden-state-precondition',
+      title: 'Browser test acts on a control in an inactive UI state',
+      symptom: 'A browser test times out waiting for a visible control even though a hidden DOM locator already found content rendered beside that control.',
+      evidence: [
+        'The FMI export control is rendered inside the Results tab panel while the designer initially opens the Design tab.',
+        'A locator text assertion can match the hidden runner panel, but Playwright role actions correctly wait for a visible button and time out.',
+      ],
+      detection: [
+        {
+          method: 'state-aware browser regression',
+          signal: 'Navigate to the UI state that owns a control, assert that the control is visible, and only then perform the action.',
+          failureCondition: 'The test relies on hidden DOM content or attempts the action before activating the owning tab, dialog or disclosure.',
+        },
+      ],
+      causalChain: [
+        'The application renders controls inside tab panels that remain in the DOM while inactive.',
+        'A broad locator confirms text in the inactive panel without establishing user-visible state.',
+        'The next role-based action requires a visible control and waits until the test timeout.',
+      ],
+      rootCause: 'The end-to-end test treated DOM presence as proof of an actionable UI state and omitted the navigation precondition a real user must satisfy.',
+      resolution: [
+        'Activate the Results tab before locating or clicking the FMI export control.',
+        'Assert the target button is visible before arming the download event and performing the action.',
+      ],
+      prevention: [
+        'Make every state-dependent browser test explicitly enter the tab, dialog or disclosure that owns its target control.',
+        'Use visibility or accessibility-tree assertions for action preconditions rather than hidden-text DOM matches alone.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/e2e/runner.spec.mjs',
+          assertion: 'The authenticated FMI export scenario opens Results and proves the export button is visible before clicking it.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'ci'],
+      tags: ['browser', 'e2e', 'hidden-state', 'playwright', 'precondition'],
+      references: [
+        {
+          kind: 'incident',
+          locator: 'GitHub Actions run 31170518622 job 92841352833',
+          note: 'Hosted failure that timed out while the export control remained in an inactive tab panel.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/e2e/runner.spec.mjs',
+          note: 'Runner-origin export, download, mapping and accessibility regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-final-artifact-identity-gap',
       title: 'A temporary build passes while the released artifact is different',
       symptom: 'Validation is green for an intermediate FMU, but the archive attached to the release was regenerated, repackaged or otherwise not the tested bytes.',

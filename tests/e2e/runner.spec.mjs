@@ -111,7 +111,9 @@ test('the authenticated GUI exports and inspects the canonical FMI mapping acces
   try {
     await prepareDesktopPage(page);
     await page.goto(`${runner.base}/index.html?token=${TOKEN}`);
+    await page.getByRole('tab', { name: 'Results' }).click();
     await expect(page.locator('#runnerBox')).toContainText('your machine');
+    await expect(page.getByRole('button', { name: 'Export FMI 2.0 source kit' })).toBeVisible();
 
     const downloadPromise = page.waitForEvent('download');
     await page.getByRole('button', { name: 'Export FMI 2.0 source kit' }).click();
