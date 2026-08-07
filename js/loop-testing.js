@@ -14,6 +14,7 @@ export const LEGACY_SIL_SCHEMA = 'battery-design/sil-test-plan@1';
 export const LEGACY_HIL_SCHEMA = 'battery-design/hil-test-contract@1';
 export const SIL_SCHEMA = 'battery-design/sil-test-plan@2';
 export const HIL_SCHEMA = 'battery-design/hil-test-contract@2';
+export const SIL_RESULT_SCHEMA = 'battery-design/sil-test-result@1';
 export const MAX_HIL_TIMING_SAMPLES = 1_000_000;
 
 const REQUIRED_CALCULATION_TESTS = Object.freeze([
@@ -144,6 +145,37 @@ function assertOutputPath(value) {
   return path;
 }
 
+function normalizeSilAdapterResult(value) {
+  exactKeys('SIL adapter result', value, [
+    'modelId', 'modelVersion', 'graphChecksum', 'solver', 'outputs', 'units',
+  ]);
+  return deepFreeze({
+    modelId: assertText('Adapter model id', value.modelId),
+    modelVersion: assertText('Adapter model version', value.modelVersion),
+    graphChecksum: assertText('Adapter graph checksum', value.graphChecksum),
+    solver: assertText('Adapter solver', value.solver),
+    outputs: clone(plainObject('Adapter outputs', value.outputs)),
+    units: clone(plainObject('Adapter units', value.units)),
+  });
+}
+
+function silAdapterErrorMessage(error) {
+  try {
+    if (error instanceof Error && typeof error.message === 'string' && error.message.trim()) {
+      return error.message;
+    }
+  } catch {
+    // Continue to the guarded generic conversion.
+  }
+  try {
+    const message = String(error);
+    if (message) return message;
+  } catch {
+    // A thrown value is allowed to have no usable primitive representation.
+  }
+  return 'SIL adapter failed with an unrepresentable thrown value.';
+}
+
 export function createSilTestPlan(options = {}) {
   exactKeys('SIL plan options', options,
     ['modelId', 'modelVersion', 'graphChecksum', 'solver', 'deterministicSeed', 'cases'],
@@ -257,35 +289,41 @@ export function runSoftwareInLoop(plan, adapter) {
       inputs: clone(testCase.inputs), runOptions: clone(testCase.runOptions),
     };
     try {
-      const first = adapter(clone(request));
-      const value = outputAtPath(first?.outputs, testCase.expected.outputPath);
-      const unit = ownValue(first?.units, testCase.expected.outputPath);
-      const identityOk = first?.graphChecksum === verifiedPlan.graphChecksum
-        && first?.modelVersion === verifiedPlan.modelVersion && first?.solver === verifiedPlan.solver;
+      const first = normalizeSilAdapterResult(adapter(clone(request)));
+      const value = outputAtPath(first.outputs, testCase.expected.outputPath);
+      const unit = ownValue(first.units, testCase.expected.outputPath);
+      const identityOk = first.modelId === verifiedPlan.modelId
+        && first.graphChecksum === verifiedPlan.graphChecksum
+        && first.modelVersion === verifiedPlan.modelVersion && first.solver === verifiedPlan.solver;
       const rangeOk = finite(value) && value >= testCase.expected.min && value <= testCase.expected.max;
       const unitOk = unit === testCase.expected.unit;
       let repeatOk = true;
       if (testCase.repeat) {
-        const second = adapter(clone(request));
-        repeatOk = JSON.stringify(first) === JSON.stringify(second);
+        const second = normalizeSilAdapterResult(adapter(clone(request)));
+        repeatOk = semanticDigest(first) === semanticDigest(second);
       }
       const pass = identityOk && rangeOk && unitOk && repeatOk;
       return {
         id: testCase.id, purpose: testCase.purpose, status: pass ? 'pass' : 'fail',
-        actual: value, actualUnit: unit ?? null, expected: testCase.expected,
+        actual: value === undefined ? null : value,
+        actualUnit: unit ?? null, expected: testCase.expected,
         checks: { identity: identityOk, range: rangeOk, unit: unitOk, repeatability: repeatOk },
       };
     } catch (error) {
-      return { id: testCase.id, purpose: testCase.purpose, status: 'fail', error: error.message };
+      return {
+        id: testCase.id, purpose: testCase.purpose, status: 'fail',
+        error: silAdapterErrorMessage(error),
+      };
     }
   });
-  return {
-    schema: SIL_SCHEMA, kind: 'software-in-the-loop',
+  return checkedSnapshot({
+    schema: SIL_RESULT_SCHEMA, kind: 'software-in-the-loop',
     status: cases.every((item) => item.status === 'pass') ? 'pass' : 'fail',
+    planSchema: SIL_SCHEMA,
     planChecksum: verifiedPlan.checksum,
     modelId: verifiedPlan.modelId, modelVersion: verifiedPlan.modelVersion,
     graphChecksum: verifiedPlan.graphChecksum, solver: verifiedPlan.solver, cases,
-  };
+  });
 }
 
 function normalizedChannels(channels, direction) {

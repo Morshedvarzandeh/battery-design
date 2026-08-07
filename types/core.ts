@@ -583,6 +583,38 @@ export interface SilTestPlan {
   readonly checksum: string;
 }
 
+export interface SilTestChecks {
+  readonly identity: boolean;
+  readonly range: boolean;
+  readonly unit: boolean;
+  readonly repeatability: boolean;
+}
+
+export interface SilTestCaseResult {
+  readonly id: string;
+  readonly purpose: string;
+  readonly status: 'pass' | 'fail';
+  readonly actual?: unknown;
+  readonly actualUnit?: string | null;
+  readonly expected?: Readonly<SilExpectedValue>;
+  readonly checks?: Readonly<SilTestChecks>;
+  readonly error?: string;
+}
+
+export interface SilTestResult {
+  readonly schema: 'battery-design/sil-test-result@1';
+  readonly kind: 'software-in-the-loop';
+  readonly status: 'pass' | 'fail';
+  readonly planSchema: 'battery-design/sil-test-plan@2';
+  readonly planChecksum: string;
+  readonly modelId: string;
+  readonly modelVersion: string;
+  readonly graphChecksum: string;
+  readonly solver: string;
+  readonly cases: readonly SilTestCaseResult[];
+  readonly checksum: string;
+}
+
 export interface HilChannel {
   readonly id: string;
   readonly quantity: string;

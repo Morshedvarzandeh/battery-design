@@ -1793,6 +1793,73 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-sil-result-representation-gap',
+      title: 'SIL execution evidence is mutable and compared by JSON key order',
+      symptom: 'A software-in-the-loop run can report a false repeatability failure when an adapter reorders equivalent object keys, while incomplete or mutable adapter evidence can enter an unchecksummed result.',
+      evidence: [
+        'The former repeatability check compared JSON.stringify output, so two semantically identical plain objects with different insertion order were treated as different executions.',
+        'The adapter echoed model version, graph checksum and solver but not model ID, leaving one plan identity field unproved at execution.',
+        'Adapter output accepted undeclared fields and non-JSON values, and the returned result was neither deeply frozen nor bound to the verified plan checksum by its own checksum.',
+        'Converting a thrown null-prototype object with String(error) raised a second exception, so adapter failure escaped instead of becoming checksummed fail evidence.',
+      ],
+      detection: [
+        {
+          method: 'SIL evidence representation regression',
+          signal: 'Run the same verified plan against adapters that reorder keys, change one value, omit or alter identity, add a private field, or return a non-JSON value.',
+          failureCondition: 'Key order changes repeatability, a value change does not, incomplete or open adapter evidence is accepted, or the result can be mutated without changing a bound checksum.',
+        },
+      ],
+      causalChain: [
+        'The adapter response is treated as an informal object rather than a closed execution-evidence contract.',
+        'Repeatability is evaluated on JavaScript serialization order instead of a canonical semantic representation.',
+        'The result projects mutable adapter data without a versioned result schema, verified-plan identity binding or content checksum.',
+        'Consumers cannot reliably distinguish equivalent representations, changed execution values or later evidence mutation.',
+      ],
+      rootCause: 'SIL execution evidence lacked one canonical closed representation spanning adapter identity, semantic comparison, immutable result materialization and plan-bound content identity.',
+      resolution: [
+        'Normalize the adapter response to exact model, graph and solver identity plus closed finite-JSON outputs and units.',
+        'Compare repeat executions with a canonical semantic digest so key order is irrelevant and value changes remain observable.',
+        'Normalize arbitrary thrown values through guarded message extraction with a fixed non-throwing fallback.',
+        'Materialize a deeply frozen battery-design/sil-test-result@1 carrying the verified @2 plan checksum and its own deterministic checksum.',
+      ],
+      prevention: [
+        'Give every persisted execution result a versioned closed schema, canonical content identity and explicit parent-contract checksum.',
+        'Test representation-only reordering separately from semantic mutation, identity mismatch, extra fields and non-JSON values.',
+        'Include hostile thrown primitives, null-prototype objects and conversion failures in adapter-boundary regressions.',
+        'Describe self-contained checksums as content identity, not producer authentication or proof of independent execution.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/loop-testing.test.mjs',
+          assertion: 'SIL evidence accepts semantic key reordering, detects value changes, requires complete closed adapter identity, rejects non-JSON data, contains unrepresentable thrown values, and returns a frozen deterministic result bound to the plan checksum.',
+        },
+      ],
+      affectedSurfaces: ['browser'],
+      tags: ['canonicalization', 'content-identity', 'repeatability', 'sil', 'test-evidence'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/loop-testing.js',
+          note: 'Closed adapter normalization, canonical repeat comparison and checksummed SIL result materialization.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/cosim-studio.js',
+          note: 'Reference adapter echoes the complete governed model identity.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/LOOP_TESTING.md',
+          note: 'SIL result representation, repeatability and checksum trust boundary.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/loop-testing.test.mjs',
+          note: 'Canonical-order, semantic-change, adapter-closure, identity and immutable-result regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-source-revision-self-claim',
       title: 'Manifest Git SHA is accepted without a trusted expectation',
       symptom: 'A package reports a syntactically valid sourceRevision and is labeled verified even though no trusted checkout or caller supplied the expected commit.',

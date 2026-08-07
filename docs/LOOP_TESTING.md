@@ -44,6 +44,15 @@ reported model/checksum/solver identity did not change, checks units, and
 checks the numeric range. A model is not allowed to generate its own accepted
 range from the same run being tested.
 
+The adapter response is closed: it must contain exactly `modelId`,
+`modelVersion`, `graphChecksum`, `solver`, `outputs` and `units`, all as finite
+JSON data where applicable. Repeatability compares canonical content, so
+object key insertion order cannot create a false failure while any value change
+still fails. The returned `battery-design/sil-test-result@1` evidence is deeply
+frozen, binds the plan checksum and carries its own deterministic content
+checksum. As with the plan checksum, this identifies content rather than
+authenticating its producer.
+
 A released calculation package should also include analytical or trusted
 cross-tool cases, tolerance/step convergence, lower/upper boundaries,
 invalid-input behavior, event timing and relevant charge/energy conservation.

@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 31);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 32);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -86,6 +86,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-resource-self-checksum-trust',
     'rc-schema-envelope-permissive',
     'rc-signed-bound-evidence-miss',
+    'rc-sil-result-representation-gap',
     'rc-source-revision-self-claim',
     'rc-test-multiplier-denominator-drift',
     'rc-thermal-explicit-step-instability',
@@ -119,6 +120,19 @@ test('loop-contract memory preserves the mutation, identity and trust-boundary f
   );
   assert.equal(
     searchRootCauses('schema-only mutable nested SIL HIL contract checksum', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('SIL result memory preserves canonical repeat and plan-bound evidence', () => {
+  const record = getRootCauseRecord('rc-sil-result-representation-gap');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /JSON\.stringify[\s\S]*model ID[\s\S]*own checksum[\s\S]*null-prototype/i);
+  assert.match(record.rootCause, /canonical closed representation[\s\S]*content identity/i);
+  assert.match(record.resolution.join(' '), /canonical semantic digest[\s\S]*guarded message[\s\S]*deeply frozen[\s\S]*plan checksum/i);
+  assert.match(record.prevention.join(' '), /content identity[\s\S]*not producer authentication/i);
+  assert.equal(
+    searchRootCauses('SIL repeatability key order mutable adapter result evidence', { limit: 1 })[0]?.id,
     record.id,
   );
 });
@@ -232,6 +246,7 @@ test('lexical search deterministically retrieves causes, fixes and containment p
     ['Euler RC dt tau unstable nonfinite heat', 'rc-rc-euler-step-instability'],
     ['adaptive thermal microsteps module node work preflight', 'rc-adaptive-integration-work-undercount'],
     ['negative signed lower bound atBound evidence', 'rc-signed-bound-evidence-miss'],
+    ['SIL repeatability JSON key order mutable evidence checksum', 'rc-sil-result-representation-gap'],
     ['thermal Euler C G exponential decay coolant phase heat conservation', 'rc-thermal-explicit-step-instability'],
     ['holdout purpose relabel same observations raw source run leakage', 'rc-calibration-holdout-relabel-leakage'],
     ['pooled holdout RMSE hides failed short operating segment', 'rc-calibration-holdout-score-masking'],

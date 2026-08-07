@@ -6,6 +6,7 @@ import {
   LEGACY_SIL_SCHEMA,
   MAX_HIL_TIMING_SAMPLES,
   SIL_SCHEMA,
+  SIL_RESULT_SCHEMA,
   createHilTestContract,
   createSilTestPlan,
   evaluateHilEvidence,
@@ -34,19 +35,87 @@ const plan = createSilTestPlan({
 });
 
 const adapter = (request) => ({
-  graphChecksum: request.graphChecksum, modelVersion: request.modelVersion, solver: request.solver,
+  modelId: request.modelId, graphChecksum: request.graphChecksum,
+  modelVersion: request.modelVersion, solver: request.solver,
   outputs: { energyJ: request.inputs.powerW * request.inputs.durationS }, units: { energyJ: 'J' },
 });
 
 test('SIL executes a versioned calculation and checks identity, units, range and repeatability', () => {
   const result = runSoftwareInLoop(plan, adapter);
+  assert.equal(result.schema, SIL_RESULT_SCHEMA);
   assert.equal(result.status, 'pass');
+  assert.equal(result.planChecksum, plan.checksum);
+  assert.match(result.checksum, /^[a-f0-9]{64}$/);
+  assertDeepFrozen(result);
+  assert.equal(runSoftwareInLoop(plan, adapter).checksum, result.checksum);
   assert.deepEqual(result.cases[0].checks, {
     identity: true, range: true, unit: true, repeatability: true,
   });
   const wrongUnit = runSoftwareInLoop(plan, (request) => ({ ...adapter(request), units: { energyJ: 'Wh' } }));
   assert.equal(wrongUnit.status, 'fail');
   assert.equal(wrongUnit.cases[0].checks.unit, false);
+});
+
+test('SIL repeatability is semantic across key order and detects changed values', () => {
+  let orderedCall = 0;
+  const reordered = runSoftwareInLoop(plan, (request) => {
+    orderedCall += 1;
+    if (orderedCall % 2) {
+      return {
+        modelId: request.modelId, modelVersion: request.modelVersion,
+        graphChecksum: request.graphChecksum, solver: request.solver,
+        outputs: { energyJ: 1000 }, units: { energyJ: 'J' },
+      };
+    }
+    return {
+      units: { energyJ: 'J' }, outputs: { energyJ: 1000 }, solver: request.solver,
+      graphChecksum: request.graphChecksum, modelVersion: request.modelVersion, modelId: request.modelId,
+    };
+  });
+  assert.equal(reordered.status, 'pass');
+  assert.equal(reordered.cases[0].checks.repeatability, true);
+
+  let changedCall = 0;
+  const changed = runSoftwareInLoop(plan, (request) => ({
+    modelId: request.modelId, modelVersion: request.modelVersion,
+    graphChecksum: request.graphChecksum, solver: request.solver,
+    outputs: { energyJ: changedCall++ ? 1000.5 : 1000 }, units: { energyJ: 'J' },
+  }));
+  assert.equal(changed.status, 'fail');
+  assert.equal(changed.cases[0].checks.range, true);
+  assert.equal(changed.cases[0].checks.repeatability, false);
+});
+
+test('SIL adapter responses are closed JSON and must echo the complete model identity', () => {
+  const missingModel = runSoftwareInLoop(plan, (request) => {
+    const value = adapter(request);
+    delete value.modelId;
+    return value;
+  });
+  assert.equal(missingModel.status, 'fail');
+  assert.match(missingModel.cases[0].error, /requires: modelId/i);
+
+  const wrongModel = runSoftwareInLoop(plan, (request) => ({ ...adapter(request), modelId: 'other' }));
+  assert.equal(wrongModel.status, 'fail');
+  assert.equal(wrongModel.cases[0].checks.identity, false);
+
+  const extra = runSoftwareInLoop(plan, (request) => ({ ...adapter(request), privateTrace: [1, 2, 3] }));
+  assert.equal(extra.status, 'fail');
+  assert.match(extra.cases[0].error, /does not accept: privateTrace/i);
+
+  const nonJson = runSoftwareInLoop(plan, (request) => ({
+    ...adapter(request), outputs: { energyJ: 1000, callback: () => 1 },
+  }));
+  assert.equal(nonJson.status, 'fail');
+  assert.match(nonJson.cases[0].error, /only JSON values/i);
+
+  const unrepresentableThrow = runSoftwareInLoop(plan, () => {
+    throw Object.create(null);
+  });
+  assert.equal(unrepresentableThrow.status, 'fail');
+  assert.match(unrepresentableThrow.cases[0].error, /unrepresentable thrown value/i);
+  assert.match(unrepresentableThrow.checksum, /^[a-f0-9]{64}$/);
+  assertDeepFrozen(unrepresentableThrow);
 });
 
 test('SIL refuses self-empty plans and duplicate or unordered oracles', () => {
@@ -153,7 +222,8 @@ test('SIL content identity rejects sparse arrays before adapters can observe a c
 
   const explicitNull = createSilTestPlan(caseWith([null]));
   const observed = runSoftwareInLoop(explicitNull, (request) => ({
-    graphChecksum: request.graphChecksum, modelVersion: request.modelVersion, solver: request.solver,
+    modelId: request.modelId, graphChecksum: request.graphChecksum,
+    modelVersion: request.modelVersion, solver: request.solver,
     outputs: { present: Object.hasOwn(request.inputs.samples, 0) ? 1 : 0 },
     units: { present: '0/1' },
   }));
@@ -171,13 +241,13 @@ test('SIL output oracles read own properties only and reject prototype-path segm
   }), /own-property segments/i);
 
   const inherited = runSoftwareInLoop(plan, (request) => ({
-    graphChecksum: request.graphChecksum, modelVersion: request.modelVersion, solver: request.solver,
+    modelId: request.modelId, graphChecksum: request.graphChecksum,
+    modelVersion: request.modelVersion, solver: request.solver,
     outputs: Object.create({ energyJ: 1000 }),
     units: Object.create({ energyJ: 'J' }),
   }));
   assert.equal(inherited.status, 'fail');
-  assert.equal(inherited.cases[0].checks.range, false);
-  assert.equal(inherited.cases[0].checks.unit, false);
+  assert.match(inherited.cases[0].error, /must be a plain object/i);
 });
 
 const contract = createHilTestContract({
