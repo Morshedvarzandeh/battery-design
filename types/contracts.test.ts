@@ -6,6 +6,8 @@ import { electrical, layoutPack, summarize } from '../js/pack-engine.js';
 import { simulateMission } from '../js/sim1d.js';
 import { defaultParams, simulate as simulateAdvanced } from '../js/sim2.js';
 import { planEcmTuning } from '../js/ecm-tuning.js';
+import { executeEcmTuning } from '../js/ecm-tuning-executor.js';
+import type { EcmTuningResult } from '../js/ecm-tuning-executor.js';
 import type {
   EcmTuningAcceptanceThresholds,
   GovernedEcmTuningDataset,
@@ -60,6 +62,13 @@ const tuningPlan = planEcmTuning({
   acceptance: tuningAcceptance,
 });
 const tuningExecutionReady: false = tuningPlan.readiness.executionReady;
+const tuningResult: EcmTuningResult = executeEcmTuning({
+  plan: tuningPlan,
+  cell,
+  calibrationDatasets: governedCalibration,
+  validationDatasets: governedValidation,
+});
+const tuningAdoption: 'accepted' | 'rejected' = tuningResult.readiness.adoption;
 
 // @ts-expect-error Canonical datasets with nullable source tuples are not governed tuning inputs.
 const incompleteTuningDataset: GovernedEcmTuningDataset = ordinaryDataset;
@@ -77,5 +86,6 @@ const mixedTemperatureAcceptance: EcmTuningAcceptanceThresholds = {
 
 void [
   pack, electricalResult, mission, advanced, tuningPlan, tuningExecutionReady,
+  tuningResult, tuningAdoption,
   incompleteTuningDataset, unsafeTuningAcceptance, mixedTemperatureAcceptance,
 ];

@@ -15,6 +15,7 @@ import {
 } from './calibration-dataset.js';
 import {
   defaultParams,
+  ECM_RC_MINIMUM_TIME_CONSTANT_RATIO,
   MAX_CALIBRATION_DATASETS,
   MAX_PREPROCESSED_SAMPLES_PER_DATASET,
   PARAM_BY_ID,
@@ -73,7 +74,7 @@ const gatePolicyBody = {
   maximumSlowSampleTauFraction: 0.1,
   minimumSlowPulseTauMultiples: 3,
   minimumSlowRestTauMultiples: 3,
-  minimumRcTimeConstantSeparationRatio: 3,
+  minimumRcTimeConstantSeparationRatio: ECM_RC_MINIMUM_TIME_CONSTANT_RATIO,
   minimumSocBasisBins: 3,
   minimumSocBasisSpan: 0.5,
   maximumMidSocBasis: 0.04,
@@ -1005,7 +1006,7 @@ export function planEcmTuning(input) {
   });
   const evaluationAllocations = allocate(
     maxEvaluations, stages,
-    (stage) => stage.fit.length + 1,
+    (stage) => 2 * (stage.fit.length + 1),
     (stage) => (stage.fit.length + 1) * (stage.kind === 'joint' ? 2 : 1),
   );
   const integrationAllocations = allocate(
@@ -1020,7 +1021,9 @@ export function planEcmTuning(input) {
   );
   const plannedStages = stages.map((stage, index) => ({
     ...stage,
+    sensitivityProbeEvaluations: stage.fit.length + 1,
     initialSimplexEvaluations: stage.fit.length + 1,
+    minimumEvaluationReservation: 2 * (stage.fit.length + 1),
     evaluationBudget: evaluationAllocations[index],
     integrationStepBudget: integrationAllocations[index],
     moduleWeightedIntegrationStepBudget: moduleWeightedIntegrationAllocations[index],
@@ -1095,13 +1098,15 @@ export function planEcmTuning(input) {
     budgets: {
       maxEvaluations,
       allocatedEvaluations: evaluationAllocations.reduce((sum, value) => sum + value, 0),
+      reservedSensitivityProbeEvaluations: plannedStages.reduce((sum, stage) => sum + stage.sensitivityProbeEvaluations, 0),
       reservedInitialSimplexEvaluations: plannedStages.reduce((sum, stage) => sum + stage.initialSimplexEvaluations, 0),
+      reservedPreflightEvaluations: plannedStages.reduce((sum, stage) => sum + stage.minimumEvaluationReservation, 0),
       maxIntegrationSteps,
       allocatedIntegrationSteps: integrationAllocations.reduce((sum, value) => sum + value, 0),
       maxModuleWeightedIntegrationSteps,
       allocatedModuleWeightedIntegrationSteps: moduleWeightedIntegrationAllocations.reduce((sum, value) => sum + value, 0),
       maxPreprocessedSamplesPerDataset: maxSamplesPerDataset,
-      allocationPolicy: 'allocated ceilings: minimum-simplex then proportional dimension; joint weight 2; largest remainder by stage id; executor must preflight exact temporal and module-weighted work before its first candidate',
+      allocationPolicy: 'allocated ceilings: one sensitivity baseline-plus-axis set and one optimizer simplex per stage, then proportional dimension; joint weight 2; largest remainder by stage id; executor must preflight exact temporal and module-weighted work before its first candidate',
     },
     readiness: {
       optimizerExecution: 'not-started',

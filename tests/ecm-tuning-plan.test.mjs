@@ -173,6 +173,8 @@ test('the complete matched experiment produces a deeply frozen six-group plan wi
     'r0SocRise', 'r0EaJ', 'hystV',
   ]);
   assert.equal(plan.stages.at(-1).initialSimplexEvaluations, 9);
+  assert.equal(plan.stages.at(-1).sensitivityProbeEvaluations, 9);
+  assert.equal(plan.stages.at(-1).minimumEvaluationReservation, 18);
   assert.ok(plan.groups.every(({ status, gates }) => status === 'active'
     && gates.every(({ status: gateStatus }) => gateStatus === 'pass')));
   const cold = plan.trials.calibration.find(({ id }) => id === 'temp-cold-soc-mid');
@@ -233,22 +235,24 @@ test('evaluation and integration budgets are exact deterministic partitions with
   assert.equal(plan.budgets.allocatedEvaluations, 53);
   assert.equal(plan.stages.reduce((sum, stage) => sum + stage.evaluationBudget, 0), 53);
   assert.deepEqual(plan.stages.map(({ evaluationBudget }) => evaluationBudget),
-    [4, 6, 5, 4, 4, 4, 26]);
+    [4, 7, 7, 4, 5, 4, 22]);
+  assert.equal(plan.budgets.reservedSensitivityProbeEvaluations, 23);
   assert.equal(plan.budgets.reservedInitialSimplexEvaluations, 23);
-  assert.ok(plan.stages.every((stage) => stage.evaluationBudget >= stage.initialSimplexEvaluations));
+  assert.equal(plan.budgets.reservedPreflightEvaluations, 46);
+  assert.ok(plan.stages.every((stage) => stage.evaluationBudget >= stage.minimumEvaluationReservation));
   assert.equal(plan.budgets.allocatedIntegrationSteps, 101);
   assert.equal(plan.stages.reduce((sum, stage) => sum + stage.integrationStepBudget, 0), 101);
   assert.deepEqual(plan.stages.map(({ integrationStepBudget }) => integrationStepBudget),
-    [8, 12, 10, 8, 8, 8, 47]);
+    [8, 14, 13, 8, 10, 8, 40]);
   assert.equal(plan.budgets.allocatedModuleWeightedIntegrationSteps, 113);
   assert.equal(plan.stages.reduce((sum, stage) => sum + stage.moduleWeightedIntegrationStepBudget, 0), 113);
   assert.deepEqual(plan.stages.map(({ moduleWeightedIntegrationStepBudget }) => (
     moduleWeightedIntegrationStepBudget
-  )), [9, 13, 11, 9, 9, 9, 53]);
+  )), [9, 15, 15, 9, 11, 9, 45]);
   assert.match(plan.budgets.allocationPolicy, /allocated ceilings.*preflight exact temporal and module-weighted work/);
   assert.equal(plan.readiness.executionReady, false,
     'partitioned ceilings are not proof that one optimizer candidate fits');
-  assert.throws(() => planEcmTuning(input({ maxEvaluations: 22 })), /cannot fund the 23 units/);
+  assert.throws(() => planEcmTuning(input({ maxEvaluations: 45 })), /cannot fund the 46 units/);
   assert.throws(() => planEcmTuning(input({ maxIntegrationSteps: 6 })), /cannot fund the 7 units/);
   assert.throws(() => planEcmTuning(input({ maxModuleWeightedIntegrationSteps: 6 })), /cannot fund the 7 units/);
 

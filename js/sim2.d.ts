@@ -60,6 +60,23 @@ export function rmse(a: readonly number[], b: readonly number[]): number;
 export const MAX_CALIBRATION_DATASETS: 8;
 export const DEFAULT_MAX_SAMPLES_PER_DATASET: 5000;
 export const MAX_PREPROCESSED_SAMPLES_PER_DATASET: 20000;
+export const ECM_RC_MINIMUM_TIME_CONSTANT_RATIO: 3;
+export const ORDERED_RC_CANDIDATE_POLICY: 'ordered-rc-v1';
+export const CALIBRATION_MINIMUM_NORMALIZED_AXIS_STEP: 1e-8;
+export interface BoundAwareAdmissibleAxisStep {
+  readonly value: number;
+  readonly direction: 'increase' | 'decrease';
+  readonly delta: number;
+  readonly normalizedDelta: number;
+}
+export function boundAwareAdmissibleAxisStep(input: {
+  value: number;
+  lower: number;
+  upper: number;
+  nominalNormalizedStep: number;
+  minimumNormalizedStep?: number;
+  admissible?: ((candidate: number) => boolean) | null;
+}): BoundAwareAdmissibleAxisStep | null;
 export const CALIBRATION_FIT_ELIGIBLE: readonly (keyof AdvancedModelParams)[];
 
 export interface CalibrationMeasuredSeries {
@@ -92,6 +109,10 @@ export interface CalibrationDatasetInput extends CalibrationLimits {
   cell: BatteryCell;
   datasets: CalibrationDataset | readonly CalibrationDataset[];
   maxSamplesPerDataset?: number;
+}
+
+export interface ConstrainedCalibrationDatasetInput extends CalibrationDatasetInput {
+  candidatePolicy: typeof ORDERED_RC_CANDIDATE_POLICY;
 }
 
 export type CalibrationTerminationReason =
@@ -161,5 +182,20 @@ export interface CalibrationResult {
   note: string;
 }
 
+export interface ConstrainedCalibrationResult extends CalibrationResult {
+  candidateConstraintEvidence: {
+    policy: typeof ORDERED_RC_CANDIDATE_POLICY;
+    minimumRcTimeConstantRatio: typeof ECM_RC_MINIMUM_TIME_CONSTANT_RATIO;
+    proposalCount: number;
+    cacheHitCount: number;
+    rejectedCandidateCount: number;
+    minimumProposedRcTimeConstantRatio: number;
+    finalRcTimeConstantRatio: number;
+  };
+}
+
 export function calibrate(input: CalibrationInput): CalibrationResult;
 export function calibrateDatasets(input: CalibrationDatasetInput): CalibrationResult;
+export function calibrateDatasetsConstrained(
+  input: ConstrainedCalibrationDatasetInput,
+): ConstrainedCalibrationResult;

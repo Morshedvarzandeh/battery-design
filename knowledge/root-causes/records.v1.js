@@ -209,6 +209,60 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-calibration-holdout-score-masking',
+      title: 'Pooled holdout score hides a failed operating regime',
+      symptom: 'Automatic tuning passes validation because many low-error samples dilute one failed trial or short operating segment in the pooled RMSE.',
+      evidence: [
+        'A single high-error sample or short pulse can remain below a pooled RMSE limit when a long easy trace contributes most of the sample count.',
+        'A whole-trial metric can still hide the same failure when the affected operating mode occupies only one included segment.',
+        'Reporting only an aggregate improvement therefore does not prove that the candidate transfers across every declared holdout condition.',
+      ],
+      detection: [
+        {
+          method: 'adversarial holdout aggregation regression',
+          signal: 'Inject a large error into one short included validation segment while keeping the remaining full-rate samples exact, then evaluate the predeclared acceptance policy.',
+          failureCondition: 'The pooled and whole-trial metrics pass and the candidate is adopted even though the affected segment exceeds its physical-unit RMSE or maximum-error limit.',
+        },
+      ],
+      causalChain: [
+        'Validation samples from different trials and operating modes are accumulated into one sum of squared error.',
+        'Long or easy regimes dominate that sample-weighted aggregate.',
+        'A localized model failure is numerically diluted below the caller threshold.',
+        'The artifact presents an aggregate pass while the failed condition remains unsafe or unusable.',
+      ],
+      rootCause: 'Acceptance was evaluated only on a micro-averaged holdout score instead of applying the same predeclared physical-unit gates to every trial and included operating segment.',
+      resolution: [
+        'Score fixed holdout parameters at the original sample rate and preserve scalar metrics for every trial and every included segment.',
+        'Apply voltage and eligible module-maximum temperature RMSE, maximum-absolute-error and no-regression gates per segment, per trial and in the pooled aggregate.',
+        'Reject adoption when any condition fails while retaining the candidate as non-adopted diagnostic evidence.',
+      ],
+      prevention: [
+        'Pair every pooled acceptance regression with a deliberately short bad regime that would be hidden by sample weighting.',
+        'Treat new validation partitions or operating-mode labels as additional required acceptance levels, not presentation-only metadata.',
+        'Keep raw traces out of portable evidence while content-addressing the scalar per-condition metric tree.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/ecm-tuning.test.mjs',
+          assertion: 'A short bad validation segment fails its predeclared per-segment voltage gate even while the pooled and whole-trial RMSE values pass.',
+        },
+      ],
+      affectedSurfaces: ['cli', 'local-api'],
+      tags: ['acceptance', 'calibration', 'holdout', 'metrics', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning-executor.js',
+          note: 'Full-rate per-segment, per-trial and pooled scoring with fail-closed adoption.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning.test.mjs',
+          note: 'Localized holdout-error masking and non-adoption regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-calibration-initial-state-ambiguity',
       title: 'Calibration absorbs an undeclared initial state into fitted parameters',
       symptom: 'A fit can improve while compensating for unknown pre-trial RC polarization, hysteresis or thermal state rather than identifying the requested physical coefficients.',
@@ -290,6 +344,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Charge and discharge signs with a vanishing time step do not move the fixed 600 s hysteresis state, so neither calibration nor holdout voltage can observe hystV.',
         'One dataset temperature channel cannot simultaneously represent the cell-average temperature required for near-isothermal Arrhenius evidence and the module maximum required by a thermal acceptance metric.',
         'An unrelated ohmic-only stage can otherwise claim structural readiness while unchanged initial RC time constants already violate the plan-wide ordering constraint required of every candidate.',
+        'A finite-difference probe chosen only by direction order can truncate to a near-zero step at a parameter bound and mistake floating-point roundoff for physical sensitivity even though a full inward probe is available.',
         'A module-maximum temperature channel alone does not uniquely identify module conduction, coolant conductance and worst-module current imbalance.',
         'Treating the complete allowlist as an automatic recipe drives compensating parameters toward bounds and turns optimizer convergence into a misleading identifiability claim.',
       ],
@@ -297,7 +352,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           method: 'versioned excitation and coverage matrix regression',
           signal: 'Build plans for traces that independently add current steps, fast and slow relaxation, ambient-temperature span and thermal observability, then inspect selected and skipped parameter groups.',
-          failureCondition: 'A parameter group is selected without its declared excitation/coverage preconditions, skipped without an explicit reason, or changes selection under a permutation that preserves the same governed evidence.',
+          failureCondition: 'A parameter group is selected without its declared excitation/coverage preconditions, a bound-truncated numerical probe is treated as usable sensitivity, the group is skipped without an explicit reason, or selection changes under a permutation that preserves the same governed evidence.',
         },
       ],
       causalChain: [
@@ -314,6 +369,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'For SoC resistance, require scored nonzero-current holdout evidence at an off-mid basis; for hysteresis, require bidirectional scored state excursion over nonzero duration as well as charge/discharge SoC overlap.',
         'Assign validation channels explicit roles: cell-average temperature may establish Arrhenius observability, while at least one separate module-maximum trial is required when thermal acceptance limits are declared.',
         'Validate the initial two-RC ordering before planning any group, then enforce the same minimum time-constant ratio on every executor candidate and final adoption.',
+        'For numerical sensitivity, prefer a full governed normalized perturbation in either admissible direction, reject probes below the declared usable-step floor, and record the actual direction and delta in evidence.',
         'Select only the parameter groups whose gates pass, preserve a deterministic stable order, and return every omitted group with its exact skipped reason.',
         'Require multi-condition temperature evidence before selecting Arrhenius activation energy and keep confounded thermal groups out of the automatic recipe when only module-maximum temperature is observed.',
         'Score the resulting parameters on disjoint validation trials and report bound hits or incomplete coverage without calling skipped groups calibrated.',
@@ -332,6 +388,10 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           path: 'tests/ecm-tuning-plan.test.mjs',
           assertion: 'The planner selects groups only when prepared excitation passes, rejects mid-SoC and zero-duration hysteresis holdouts, and supports separate Arrhenius and thermal validation-channel roles.',
         },
+        {
+          path: 'tests/ecm-tuning.test.mjs',
+          assertion: 'Execution requires finite normalized sensitivity, full numerical rank and bounded correlation before fitting, and rejects rather than adopts a failed stage.',
+        },
       ],
       affectedSurfaces: ['cli', 'local-api'],
       tags: ['arrhenius', 'calibration', 'confounding', 'ecm', 'identifiability', 'parameter-selection'],
@@ -340,6 +400,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'implementation',
           locator: 'js/ecm-tuning.js',
           note: 'Preprocessing-aware group selection, family qualification, holdout excitation and explicit pending-sensitivity evidence.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning-executor.js',
+          note: 'Normalized prediction-Jacobian sensitivity, constrained staged fitting and fixed full-rate holdout acceptance.',
         },
         {
           kind: 'implementation',
@@ -355,6 +420,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/ecm-tuning-plan.test.mjs',
           note: 'Excluded-evidence, preprocessed-grid, mixed-family, per-trial OCV and observable-holdout regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning.test.mjs',
+          note: 'Sensitivity, constrained-candidate and non-adoption execution regressions.',
         },
       ],
     }),
@@ -562,6 +632,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Allowing maxDtS in the fitted vector changes the number of integration substeps performed by each objective evaluation, so the optimizer mutates its own work cost.',
         'Time-integration counters alone do not bound local-API CPU work when every thermal step also loops over the caller-controlled module count.',
         'A largest-remainder stage allocation performed with floating-point products can exceed a caller-supplied safe-integer ceiling by one near Number.MAX_SAFE_INTEGER even though every input integer is individually valid.',
+        'A staged tuner that runs d+1 numerical-sensitivity probes and then creates a separate d+1 optimizer simplex performs twice the minimum evaluations if the plan reserves only one set.',
       ],
       detection: [
         {
@@ -584,6 +655,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Freeze maxDtS as a run setting and reject it as a fitted physical parameter so candidates cannot change the integration-work contract.',
         'At the local-API boundary, cap module count and translate the module-weighted service budget into the core integration-step limit before optimization starts.',
         'Partition safe-integer stage ceilings with BigInt quotient/remainder arithmetic, convert only final bounded shares back to Number, and assert their exact sum.',
+        'Reserve one baseline-plus-axis sensitivity set and one independent optimizer simplex for every stage before distributing any additional proposal budget.',
       ],
       prevention: [
         'Express calibration limits in directly measurable expensive operations and test every optimizer branch at the exact boundary.',
@@ -602,7 +674,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         },
         {
           path: 'tests/ecm-tuning-plan.test.mjs',
-          assertion: 'Every stage allocation sums exactly to its caller ceiling even at the maximum safe integer.',
+          assertion: 'Every stage reserves separate sensitivity and optimizer simplex evaluations, and all allocations sum exactly to the caller ceiling even at the maximum safe integer.',
+        },
+        {
+          path: 'tests/ecm-tuning.test.mjs',
+          assertion: 'Executor preflight reserves fixed scoring, sensitivity and optimizer work, while exact cumulative temporal and module-weighted counters never reset between stages.',
         },
       ],
       affectedSurfaces: ['browser', 'cli', 'local-api'],
@@ -612,6 +688,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'implementation',
           locator: 'js/sim2.js',
           note: 'Nelder-Mead evaluation accounting, work limit and fit-parameter policy.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning-executor.js',
+          note: 'Zero-simulation cumulative preflight and cross-stage proposal, temporal and module-weighted accounting.',
         },
         {
           kind: 'test',

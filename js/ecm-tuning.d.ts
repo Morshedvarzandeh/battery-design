@@ -175,7 +175,9 @@ export interface EcmTuningRequestEvidence {
 export interface EcmTuningBudgets {
   readonly maxEvaluations: number;
   readonly allocatedEvaluations: number;
+  readonly reservedSensitivityProbeEvaluations: number;
   readonly reservedInitialSimplexEvaluations: number;
+  readonly reservedPreflightEvaluations: number;
   readonly maxIntegrationSteps: number;
   readonly allocatedIntegrationSteps: number;
   readonly maxModuleWeightedIntegrationSteps: number;
@@ -253,7 +255,9 @@ export interface EcmTuningPlan {
     readonly groups: readonly EcmTuningGroupId[];
     readonly fit: readonly (keyof AdvancedModelParams)[];
     readonly calibrationTrialContentChecksums: readonly string[];
+    readonly sensitivityProbeEvaluations: number;
     readonly initialSimplexEvaluations: number;
+    readonly minimumEvaluationReservation: number;
     readonly evaluationBudget: number;
     readonly integrationStepBudget: number;
     readonly moduleWeightedIntegrationStepBudget: number;
