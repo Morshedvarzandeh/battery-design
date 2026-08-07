@@ -593,6 +593,7 @@ is copied into the repository.
 | `js/venting.js` | Conditional emergency pressure-relief free-area range from explicit gas-release evidence and compressible flow |
 | `js/vent-layout.js` | Market-isolated supplier vent quantity, enclosure-fit constraint and provisional multi-face coordinates from the calculated high-case area |
 | `js/loop-testing.js` | Executable SIL calculation plans plus HIL I/O/timing/fault contracts and measured-evidence evaluation |
+| `js/hil-deployment.js` | Closed, checksummed HIL contract-to-target deployment mapping; planning only, with no scheduler, driver or hardware claim |
 | `js/ontology-schema.js`, `js/ontology.js` | Architecture-wide classes, typed relations, declarative rules, semantic graph validation and portable exports; see [`docs/ONTOLOGY.md`](docs/ONTOLOGY.md) |
 | `js/root-cause-library.js`, `knowledge/root-causes/` | Closed, immutable engineering-failure records plus deterministic validation, lookup, search and similar-issue matching; see [`docs/ROOT_CAUSE_LIBRARY.md`](docs/ROOT_CAUSE_LIBRARY.md) |
 | `assets3d/catalog.js` | Reusable original car, vessel, machine and robot visual assets with version, digest, licence and portable geometry; see [`docs/3D_ASSET_LIBRARY.md`](docs/3D_ASSET_LIBRARY.md) |
@@ -646,8 +647,11 @@ unfit layout instead of silently raising the allowable pressure. See
 [`docs/VENT_LAYOUT.md`](docs/VENT_LAYOUT.md). SIL and HIL are likewise separate add-ons:
 SIL executes the exact software model against independent numeric ranges;
 the HIL module freezes I/O, sample time, faults, overruns and safe state and
-can only pass when measured target evidence is supplied. See
-[`docs/LOOP_TESTING.md`](docs/LOOP_TESTING.md). High-order
+can only pass when measured target evidence is supplied. The deployment-plan
+layer maps that reviewed contract to a future runtime ABI, but executes no
+cycle and leaves the physical runtime planned. See
+[`docs/LOOP_TESTING.md`](docs/LOOP_TESTING.md) and
+[`docs/HIL_RUNTIME.md`](docs/HIL_RUNTIME.md). High-order
 SUNDIALS/IDA adapters, sparse DAE backends and an FMI importing master remain
 separate until their own conformance gates exist.
 

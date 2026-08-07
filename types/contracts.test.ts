@@ -7,7 +7,9 @@ import { simulateMission } from '../js/sim1d.js';
 import { defaultParams, simulate as simulateAdvanced } from '../js/sim2.js';
 import { planEcmTuning } from '../js/ecm-tuning.js';
 import { executeEcmTuning } from '../js/ecm-tuning-executor.js';
+import { createHilDeploymentPlan } from '../js/hil-deployment.js';
 import type { EcmTuningResult } from '../js/ecm-tuning-executor.js';
+import type { HilDeploymentFaultRoute } from '../js/hil-deployment.js';
 import type {
   EcmTuningAcceptanceThresholds,
   GovernedEcmTuningDataset,
@@ -16,6 +18,8 @@ import type {
   AdvancedSimulationResult,
   BatteryCell,
   CalibrationDataset,
+  EquationGraphDocument,
+  HilTestContract,
   MissionOutcome,
   PackSummary,
 } from './core.js';
@@ -77,6 +81,40 @@ const unsafeTuningAcceptance: EcmTuningAcceptanceThresholds = {
   // @ts-expect-error Automatic tuning never allows holdout-regression protection to be disabled.
   requireNoHoldoutRegression: false,
 };
+
+declare const hilContract: HilTestContract;
+declare const hilGraph: EquationGraphDocument;
+const hilDeployment = createHilDeploymentPlan({
+  contract: hilContract,
+  expectedContractChecksum: hilContract.checksum,
+  graph: hilGraph,
+  target: {
+    id: hilContract.targetId,
+    platform: 'posix-reference-target',
+    architecture: 'x86_64',
+    driverId: 'battery-design/reference-io@1',
+    clockId: 'clock-monotonic-raw',
+  },
+  channels: {
+    inputs: [{ channelId: 'current', modelPortId: 'plant.current', physicalEndpoint: 'daq/ai/0' }],
+    outputs: [{ channelId: 'voltage', modelPortId: 'dut.voltage', physicalEndpoint: 'daq/ao/0' }],
+  },
+  faults: [{
+    faultId: 'sensor-open', operation: 'sensor-open', injector: 'driver', channelId: 'current',
+  }],
+  safety: {
+    mode: 'latch-declared-safe-outputs',
+    trigger: 'overrun-limit-exceeded-or-runtime-failure',
+  },
+});
+const hilStatus: 'deployment-plan-ready-runtime-not-qualified' = hilDeployment.status;
+const validFaultRoute: HilDeploymentFaultRoute = {
+  faultId: 'target-overrun', operation: 'target-overrun', injector: 'scheduler', channelId: null,
+};
+// @ts-expect-error A fault operation cannot differ from its discriminating fault id.
+const mismatchedFaultRoute: HilDeploymentFaultRoute = {
+  faultId: 'sensor-open', operation: 'sensor-short', injector: 'driver', channelId: 'current',
+};
 // @ts-expect-error Temperature acceptance limits must be both null or both numeric.
 const mixedTemperatureAcceptance: EcmTuningAcceptanceThresholds = {
   ...tuningAcceptance,
@@ -87,5 +125,6 @@ const mixedTemperatureAcceptance: EcmTuningAcceptanceThresholds = {
 void [
   pack, electricalResult, mission, advanced, tuningPlan, tuningExecutionReady,
   tuningResult, tuningAdoption,
+  hilDeployment, hilStatus, validFaultRoute, mismatchedFaultRoute,
   incompleteTuningDataset, unsafeTuningAcceptance, mixedTemperatureAcceptance,
 ];
