@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 33);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 34);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -75,6 +75,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-final-artifact-identity-gap',
     'rc-fmi-calibration-key-ignored',
     'rc-fmi-representation-drift',
+    'rc-hil-contract-deployment-gap',
     'rc-hil-result-identity-gap',
     'rc-hil-timing-coverage-gap',
     'rc-loop-contract-identity-gap',
@@ -134,6 +135,23 @@ test('SIL result memory preserves canonical repeat and plan-bound evidence', () 
   assert.match(record.prevention.join(' '), /content identity[\s\S]*not producer authentication/i);
   assert.equal(
     searchRootCauses('SIL repeatability key order mutable adapter result evidence', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('HIL deployment memory keeps reviewed tests separate from executable target mapping', () => {
+  const record = getRootCauseRecord('rc-hil-contract-deployment-gap');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /test contract deliberately defines[\s\S]*does not claim to be a target runtime manifest/i);
+  assert.match(record.evidence.join(' '), /Number\.MAX_SAFE_INTEGER[\s\S]*plus one[\s\S]*safe integer/i);
+  assert.match(record.evidence.join(' '), /NaN[\s\S]*Infinity[\s\S]*sparse array slots[\s\S]*null[\s\S]*FNV[\s\S]*SHA-256/i);
+  assert.match(record.evidence.join(' '), /own __proto__[\s\S]*prototype setter[\s\S]*alias/i);
+  assert.match(record.evidence.join(' '), /opaque runtime reference[\s\S]*filesystem path[\s\S]*slash separators/i);
+  assert.match(record.rootCause, /test acceptance semantics[\s\S]*runtime deployment semantics[\s\S]*closed content-addressed adapter layer/i);
+  assert.match(record.resolution.join(' '), /expected checksum[\s\S]*before canonical serialization[\s\S]*non-finite[\s\S]*null-prototype[\s\S]*__proto__[\s\S]*runtime-abi@1[\s\S]*relative namespaced references[\s\S]*slash-separated[\s\S]*physical endpoint[\s\S]*contract[\s\S]*never caller-authored semantic copies[\s\S]*fixed driver, scheduler or platform[\s\S]*safe-output vector[\s\S]*overrunMissesBeforeLatch[\s\S]*safe-integer[\s\S]*runtime remains unqualified/i);
+  assert.match(record.prevention.join(' '), /content identity[\s\S]*never producer authentication[\s\S]*physical qualification/i);
+  assert.equal(
+    searchRootCauses('HIL ad hoc glue physical endpoint model port fault injector safe vector deployment', { limit: 1 })[0]?.id,
     record.id,
   );
 });
@@ -243,6 +261,7 @@ test('lexical search deterministically retrieves causes, fixes and containment p
   const cases = [
     ['unknown option defaults typo', 'rc-cli-typo-default-fallback'],
     ['XML I/O map C binary mismatch', 'rc-fmi-representation-drift'],
+    ['HIL physical endpoint model port fault injector deployment plan', 'rc-hil-contract-deployment-gap'],
     ['HIL verdict mutable result schema missing model identity', 'rc-hil-result-identity-gap'],
     ['trusted expected SHA provenance', 'rc-source-revision-self-claim'],
     ['symlink hardlink containment', 'rc-tree-link-containment'],
