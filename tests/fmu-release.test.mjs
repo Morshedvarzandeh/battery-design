@@ -37,7 +37,7 @@ test('matching native hosts and pinned independent validators gate the FMU', () 
   const fmpySmoke = read('tools/fmpy-smoke.py');
   assert.match(workflow, /FMUSIM_LINUX_SHA256: 1854e6ad2b92765db682ba690530d227f0924e14ed12ecb16bd8e06fbe2affa2/);
   assert.match(workflow, /FMUSIM_WINDOWS_SHA256: ffb2a1cb1ba8fb3500244ee3c7646b18b4cabbe0b25a3d08ca9e24a240f50ac9/);
-  assert.match(workflow, /package:[\s\S]*?runs-on: ubuntu-24\.04/,
+  assert.match(workflow, /package:\n    name: Assemble and independently validate compiled FMU\n    needs: \[source, linux64, win64\][\s\S]*?runs-on: ubuntu-24\.04/,
     'the official Linux fmusim validator runs on its GLIBC 2.39 baseline');
   assert.match(fmpyLock, /FMPy==0\.3\.30[\s\S]*?c2e2e4fb2b78dafcb5c9773f8946fce29f02f5d0f2c61699c249cf0fe8391f93/);
   assert.equal((fmpyLock.match(/^\s*--hash=sha256:/gm) || []).length, 7,

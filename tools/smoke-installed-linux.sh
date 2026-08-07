@@ -10,6 +10,8 @@ deb_path=$1
 appimage_path=$2
 [[ -s "$deb_path" ]] || { echo "missing .deb: $deb_path" >&2; exit 1; }
 [[ -s "$appimage_path" ]] || { echo "missing AppImage: $appimage_path" >&2; exit 1; }
+deb_path=$(realpath -- "$deb_path")
+appimage_path=$(realpath -- "$appimage_path")
 
 # Do not let a build-machine success hide an uninstallable customer package.
 # The CI image already carries WebKitGTK development libraries, so launching

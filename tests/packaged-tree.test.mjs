@@ -67,6 +67,15 @@ test('staging refuses repository children and arbitrary existing directories', (
   }
 });
 
+test('installed-package smoke canonicalizes artifact paths before apt sees Tauri filenames', () => {
+  const smoke = readFileSync(path.join(ROOT, 'tools', 'smoke-installed-linux.sh'), 'utf8');
+  const canonicalize = smoke.indexOf('deb_path=$(realpath -- "$deb_path")');
+  const install = smoke.indexOf('sudo apt-get install -y "$deb_path"');
+  assert.ok(canonicalize >= 0, 'the .deb path is canonicalized');
+  assert.ok(install > canonicalize, 'apt receives an absolute local path even when the filename contains spaces');
+  assert.match(smoke, /appimage_path=\$\(realpath -- "\$appimage_path"\)/);
+});
+
 test('staged desktop tree imports and starts from an isolated output', { timeout: 30_000 }, async () => {
   const temporary = mkdtempSync(path.join(os.tmpdir(), 'battery-design-package-'));
   const staged = path.join(temporary, 'runner');
