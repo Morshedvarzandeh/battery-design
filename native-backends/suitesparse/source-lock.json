@@ -1,0 +1,82 @@
+{
+  "format": "battery-design/suitesparse-source-lock@1",
+  "project": "SuiteSparse",
+  "repository": "https://github.com/DrTimothyAldenDavis/SuiteSparse",
+  "version": "7.7.0",
+  "releaseTag": "v7.7.0",
+  "releasePublishedAt": "2024-03-26T21:21:44Z",
+  "tagRefSha": "13806726cbf470914d012d132a85aea1aff9ee77",
+  "commitSha": "13806726cbf470914d012d132a85aea1aff9ee77",
+  "releaseImmutable": false,
+  "upstreamChecksumPublished": false,
+  "sourceArchive": {
+    "fileName": "SuiteSparse-7.7.0.tar.gz",
+    "archiveRoot": "SuiteSparse-7.7.0",
+    "url": "https://github.com/DrTimothyAldenDavis/SuiteSparse/archive/refs/tags/v7.7.0.tar.gz",
+    "sizeBytes": 85876065,
+    "sha256": "529b067f5d80981f45ddf6766627b8fc5af619822f068f342aab776e683df4f3",
+    "entries": 13242,
+    "expandedBytes": 247870383
+  },
+  "selectedSource": {
+    "entries": 307,
+    "expandedBytes": 2744624
+  },
+  "components": {
+    "SuiteSparse_config": {
+      "version": "7.7.0",
+      "spdx": "BSD-3-Clause",
+      "licenseFile": {
+        "path": "SuiteSparse_config/README.txt",
+        "sizeBytes": 3640,
+        "sha256": "c66c35abc0b65ea79744b30a83b87490e8304f76f4945c14dcd02d311163608f"
+      }
+    },
+    "AMD": {
+      "version": "3.3.2",
+      "spdx": "BSD-3-Clause",
+      "licenseFile": {
+        "path": "AMD/Doc/License.txt",
+        "sizeBytes": 1923,
+        "sha256": "e50fdd9a587f4860ce1d503b94576bfff47bccc421f758d1bdc8706c8cd36108"
+      }
+    },
+    "BTF": {
+      "version": "2.3.2",
+      "spdx": "LGPL-2.1-or-later",
+      "licenseFile": {
+        "path": "BTF/Doc/License.txt",
+        "sizeBytes": 961,
+        "sha256": "56ba8d575568e117c26a525dc0b7ccd99950cf8d9a4fe27d21e90616d9e046e7"
+      },
+      "licenseTextFile": {
+        "path": "BTF/Doc/lesser.txt",
+        "sizeBytes": 26530,
+        "sha256": "d1140673af4ac0a12a5c6dcbae3dfe49cf156b31218298bf740a4bdf0b4fc338"
+      }
+    },
+    "COLAMD": {
+      "version": "3.3.3",
+      "spdx": "BSD-3-Clause",
+      "licenseFile": {
+        "path": "COLAMD/Doc/License.txt",
+        "sizeBytes": 1792,
+        "sha256": "0e92b7bb3e216b8a4d1357b3d828043a4f758f762b2abc30b3440cf78063f80f"
+      }
+    },
+    "KLU": {
+      "version": "2.3.3",
+      "spdx": "LGPL-2.1-or-later",
+      "licenseFile": {
+        "path": "KLU/Doc/License.txt",
+        "sizeBytes": 1026,
+        "sha256": "10cac083b3e0dea2a2e1eacbbd4c8ebc989ce6855903db633239840cd7a33482"
+      },
+      "licenseTextFile": {
+        "path": "KLU/Doc/lesser.txt",
+        "sizeBytes": 26432,
+        "sha256": "6095e9ffa777dd22839f7801aa845b31c9ed07f3d6bf8a26dc5d2dec8ccc0ef3"
+      }
+    }
+  }
+}

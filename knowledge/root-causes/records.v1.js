@@ -2694,6 +2694,98 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-solver-sparse-build-provenance-gap',
+      title: 'Sparse solver build inherits an ungoverned second source and link surface',
+      symptom: 'A build can advertise SUNDIALS IDA with KLU while using an unpinned SuiteSparse tree, system fallback libraries, an incomplete static link, or incomplete license evidence.',
+      evidence: [
+        'The governed dense IDA source lock covers SUNDIALS, but enabling KLU introduces a second independently versioned SuiteSparse source, five selected components and a different native link surface.',
+        'The official SuiteSparse 7.7.0 archive contains ordinary spaces in valid member names, so splitting verbose tar output on whitespace or banning spaces rejects the pinned upstream bytes even though traversal, control characters, links and device entries still must fail closed.',
+        'The first curated archive list added standalone nvecserial and sunmatrixsparse archives because the installed CMake package exposes those components, but omit-one direct links still passed: the pinned libsundials_ida.a already embeds the serial-vector and sparse-matrix symbols. Keeping either redundant archive would create a receipt identity that the executable probe could not prove semantically usable.',
+        'SUNDIALS derives SUNDIALS_ENABLE_SUNLINSOL_KLU from the requested KLU option and exposes many configure-check toggles, so accepting every enabled suffix or every *_CHECKS key silently broadens the audited configuration.',
+        'KLU and BTF are LGPL-2.1-or-later while AMD, COLAMD and SuiteSparse_config are BSD-3-Clause; carrying only the umbrella project label or short component notices omits the full LGPL texts and does not establish static-distribution compliance.',
+      ],
+      detection: [
+        {
+          method: 'two-source sparse build and link audit',
+          signal: 'Verify both source archives, parse their bounded inventories, configure only the selected components, inspect every generated cache option, publish an exact static surface, and run a real KLU factor and solve.',
+          failureCondition: 'The build accepts source or configuration drift, reaches a system KLU/BLAS/CHOLMOD/OpenMP dependency, omits a required static archive or license text, or passes without executing the linked sparse solver.',
+        },
+      ],
+      causalChain: [
+        'A previously governed dense native backend adds KLU as an optional linear solver.',
+        'The new option brings a separately released SuiteSparse source, generated SUNDIALS modules, transitive serial-vector symbols and component-specific licenses.',
+        'If the old one-source receipt or a guessed archive list is reused, the visible backend name no longer identifies what was compiled and linked.',
+        'Configuration-only tests can then pass while the actual sparse executable fails to link, falls back to host libraries or lacks the evidence required for distribution review.',
+      ],
+      rootCause: 'The sparse backend was treated as one more SUNDIALS flag instead of a separate governed two-source build, link, license and runtime-evidence boundary.',
+      resolution: [
+        'Pin SuiteSparse 7.7.0 and the exact selected SuiteSparse_config 7.7.0, AMD 3.3.2, BTF 2.3.2, COLAMD 3.3.3 and KLU 2.3.3 source and license identities in native-backends/suitesparse/source-lock.json.',
+        'Verify the exact 85,876,065-byte archive and its measured inventory while parsing the complete tar path remainder so ordinary spaces remain valid and traversal, absolute paths, controls, backslashes, duplicates, links, devices and expansion excess remain rejected.',
+        'Build only the five selected SuiteSparse components with CHOLMOD, BLAS, OpenMP, CUDA, Fortran and system fallbacks disabled; configure SUNDIALS 7.8.0 with KLU checks enabled and audit an exact allowlist of generated enabled options.',
+        'Publish a separate canonical battery-design/native-dae-klu-build-receipt@2 that binds both locks, component versions, critical headers, nine exact license/notice files and exactly eight semantically exercised static archives; omit the redundant standalone nvecserial and sunmatrixsparse archives because the pinned IDA archive supplies those symbols for this adapter.',
+        'Require the installed-prefix probe and the curated direct-link probe to create the serial vectors and sparse matrix, factor and solve a nonsymmetric system with KLU, construct IDA, verify runtime versions and reject governed dynamic dependencies.',
+        'Carry the complete upstream LGPL-2.1 texts for BTF and KLU, but keep the implementation CI-only: hashes and bundled texts do not complete legal review, relinkable-object obligations, source-offer requirements, artifact custody or product-release approval.',
+      ],
+      prevention: [
+        'Treat every optional native solver dependency as a new source, configuration, ABI, link and license boundary rather than extending an old receipt informally.',
+        'Derive the accepted archive surface from a successful real link, remove redundant archives that the probe cannot distinguish from empty replacements, and keep the real factor/solve probe mandatory on initial build, reuse and self-consistent archive-tamper tests.',
+        'Audit exact generated CMake keys instead of suffix classes, and add a rejection regression whenever a newly observed upstream-derived option is admitted.',
+        'Keep the dense build unchanged and keep KLU out of browser, desktop, installer and release surfaces until a separately reviewed LGPL distribution plan and exact artifact campaign exist.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/suitesparse-source-lock.test.mjs',
+          assertion: 'The closed SuiteSparse release, selected component versions, archive inventory and exact component license identities reject source, shape, digest, link and schema drift.',
+        },
+        {
+          path: 'tests/sundials-klu-native-build.test.mjs',
+          assertion: 'The KLU build contract accepts legitimate spaced archive names but rejects unsafe members, system fallbacks, unrelated enabled checks, receipt drift, missing archives and governed dynamic dependencies.',
+        },
+        {
+          path: 'tools/test-native-dae-klu-build.mjs',
+          assertion: 'The reuse campaign rejects lock, receipt, header, license and archive attacks, including self-consistent empty KLU and SUNLINSOL-KLU archives that only the real sparse link can expose.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The sparse two-source provenance cause remains independently searchable and preserves the CI-only and unresolved static-distribution boundary.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['klu', 'license', 'provenance', 'sparse', 'suitesparse', 'sundials'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'native-backends/suitesparse/source-lock.json',
+          note: 'Closed SuiteSparse release, selected-component and license identity.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'tools/verify-suitesparse-source.mjs',
+          note: 'Closed lock, archive and component-license verifier.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'tools/build-sundials-ida-klu.mjs',
+          note: 'Two-source bounded build, cache audit, curated @2 receipt and real installed/direct sparse probes.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/suitesparse-source-lock.test.mjs',
+          note: 'Official source, component, archive and license identity regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sundials-klu-native-build.test.mjs',
+          note: 'Archive, CMake, receipt, static surface, dynamic dependency and real-link contract regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tools/test-native-dae-klu-build.mjs',
+          note: 'Derived root and executable-link tamper campaign.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-source-revision-self-claim',
       title: 'Manifest Git SHA is accepted without a trusted expectation',
       symptom: 'A package reports a syntactically valid sourceRevision and is labeled verified even though no trusted checkout or caller supplied the expected commit.',

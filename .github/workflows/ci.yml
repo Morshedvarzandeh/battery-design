@@ -98,6 +98,70 @@ jobs:
           --archive "$RUNNER_TEMP/sundials-ida-source.tar.gz"
           --root "$DAE_SUNDIALS_ROOT"
 
+  # CI-only sparse reference gate. This root is not copied into browser,
+  # desktop, package, or release outputs and makes no shipped-backend claim.
+  sundials-klu-native-build:
+    name: Pinned SUNDIALS IDA + SuiteSparse KLU Linux build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 50
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Configure the private CI-only native root
+        run: |
+          echo "DAE_SUNDIALS_KLU_ROOT=$RUNNER_TEMP/battery-design-sundials-ida-klu" >> "$GITHUB_ENV"
+      - name: Record the native sparse build toolchain
+        run: |
+          cmake --version
+          cc --version
+          c++ --version
+          ar --version
+          ld --version
+          nm --version
+          tar --version
+      - name: Verify both closed source locks and download exact archives
+        run: |
+          set -euo pipefail
+          npm run sundials:verify-source
+          npm run suitesparse:verify-source
+          sundials_url="$(node --input-type=module -e \
+            'import { SUNDIALS_SOURCE_LOCK as lock } from "./tools/verify-sundials-source.mjs"; process.stdout.write(lock.sourceArchive.url);')"
+          sundials_size="$(node --input-type=module -e \
+            'import { SUNDIALS_SOURCE_LOCK as lock } from "./tools/verify-sundials-source.mjs"; process.stdout.write(String(lock.sourceArchive.sizeBytes));')"
+          suitesparse_url="$(node --input-type=module -e \
+            'import { SUITESPARSE_SOURCE_LOCK as lock } from "./tools/verify-suitesparse-source.mjs"; process.stdout.write(lock.sourceArchive.url);')"
+          suitesparse_size="$(node --input-type=module -e \
+            'import { SUITESPARSE_SOURCE_LOCK as lock } from "./tools/verify-suitesparse-source.mjs"; process.stdout.write(String(lock.sourceArchive.sizeBytes));')"
+          curl --proto '=https' --tlsv1.2 --location --fail --show-error \
+            --connect-timeout 20 --max-time 300 --max-filesize "$sundials_size" \
+            --retry 3 --retry-max-time 60 \
+            --output "$RUNNER_TEMP/sundials-ida-source.tar.gz" "$sundials_url"
+          curl --proto '=https' --tlsv1.2 --location --fail --show-error \
+            --connect-timeout 20 --max-time 900 --max-filesize "$suitesparse_size" \
+            --retry 3 --retry-max-time 120 \
+            --output "$RUNNER_TEMP/suitesparse-source.tar.gz" "$suitesparse_url"
+      - name: Build privately, curate eight archives, and run the real sparse factor solve
+        run: >-
+          npm run dae:native:klu:build --
+          --sundials-archive "$RUNNER_TEMP/sundials-ida-source.tar.gz"
+          --suitesparse-archive "$RUNNER_TEMP/suitesparse-source.tar.gz"
+          --output "$DAE_SUNDIALS_KLU_ROOT"
+      - name: Run all 80 focused source, configuration, receipt and link cases
+        run: >-
+          node --test
+          tests/suitesparse-source-lock.test.mjs
+          tests/sundials-klu-native-build.test.mjs
+      - name: Attack the KLU build, receipt, link and provenance boundary
+        run: >-
+          npm run dae:native:klu:test --
+          --sundials-archive "$RUNNER_TEMP/sundials-ida-source.tar.gz"
+          --suitesparse-archive "$RUNNER_TEMP/suitesparse-source.tar.gz"
+          --root "$DAE_SUNDIALS_KLU_ROOT"
+
   fmu:
     name: FMI 2.0 compiled artifact
     needs: validate

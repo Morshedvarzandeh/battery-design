@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 44);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 45);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -99,6 +99,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-signed-bound-evidence-miss',
     'rc-sil-result-representation-gap',
     'rc-solver-evidence-acceptance-drift',
+    'rc-solver-sparse-build-provenance-gap',
     'rc-source-revision-self-claim',
     'rc-test-multiplier-denominator-drift',
     'rc-thermal-explicit-step-instability',
@@ -199,6 +200,27 @@ test('DAE CSC memory preserves linear construction before sparse qualification',
   assert.doesNotMatch(source, /for column in 0\.\.variable_count\s*\{\s*for variable in variables/);
   assert.equal(
     searchRootCauses('sparse CSC quadratic row column scan 10000 chain lowering', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('sparse native provenance binds both sources, real linkage and license limits', () => {
+  const record = getRootCauseRecord('rc-solver-sparse-build-provenance-gap');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /ordinary spaces[\s\S]*tar output[\s\S]*nvecserial[\s\S]*sunmatrixsparse[\s\S]*omit-one direct links still passed[\s\S]*redundant archive[\s\S]*every \*_CHECKS[\s\S]*LGPL-2\.1-or-later/i);
+  assert.match(record.rootCause, /separate governed two-source build[\s\S]*link[\s\S]*license[\s\S]*runtime-evidence boundary/i);
+  assert.match(record.resolution.join(' '), /SuiteSparse 7\.7\.0[\s\S]*KLU 2\.3\.3[\s\S]*85,876,065-byte[\s\S]*ordinary spaces[\s\S]*exact allowlist[\s\S]*receipt@2[\s\S]*exactly eight[\s\S]*omit the redundant standalone nvecserial and sunmatrixsparse[\s\S]*factor and solve[\s\S]*complete upstream LGPL-2\.1 texts[\s\S]*CI-only/i);
+  assert.match(record.prevention.join(' '), /successful real link[\s\S]*remove redundant archives[\s\S]*initial build, reuse[\s\S]*self-consistent archive-tamper[\s\S]*dense build unchanged[\s\S]*browser, desktop, installer and release/i);
+  assert.deepEqual(
+    record.regressionTests.slice(0, 3).map(({ path }) => path),
+    [
+      'tests/suitesparse-source-lock.test.mjs',
+      'tests/sundials-klu-native-build.test.mjs',
+      'tools/test-native-dae-klu-build.mjs',
+    ],
+  );
+  assert.equal(
+    searchRootCauses('SuiteSparse KLU two source static link license archive spaces nvecserial', { limit: 1 })[0]?.id,
     record.id,
   );
 });
