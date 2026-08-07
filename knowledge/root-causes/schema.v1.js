@@ -128,7 +128,7 @@ export const ROOT_CAUSE_RECORD_SCHEMA = deepFreeze({
         properties: {
           path: {
             type: 'string',
-            pattern: '^(?:(?:tests|tools)/(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*|rust-core/tests/(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*\\.rs)$',
+            pattern: '^(?:(?:tests|tools)/(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*|(?:rust-core|rust-dae-native)/tests/(?!\\.{1,2}(?:/|$))(?!.*\\/\\.{1,2}(?:/|$))[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*\\.rs)$',
             minLength: 8,
           },
           assertion: { type: 'string', minLength: 8 },

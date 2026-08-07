@@ -893,7 +893,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Publish deterministic CSC columns with ascending rows, accumulate duplicate-source contributions, and expose exact buffer requirements plus exact-length no-partial-write initialization, event, residual, Jacobian and output callbacks.',
         'After lowering and initialization construction, keep successful caller-buffer callbacks heap-allocation-free; do not describe lowering itself as allocation-free.',
         'Sort step events and deduplicate only exact numeric equals, including the two signed-zero encodings; preserve every distinct finite event time, evaluate right-continuously at the exact event, reject non-finite values, and fail closed when a Limit Jacobian is requested exactly at a nonsmooth bound.',
-        'Keep SUNDIALS, IDA, SuiteSparse, KLU, native backend qualification and any advanced WebAssembly ABI explicitly unshipped; lowering availability alone is not a solver capability.',
+        'Keep SUNDIALS and IDA outside the Iteration 1 lowering claim: a later optional Linux native reference may consume this contract only under its own tests and records, while SuiteSparse, KLU, product integration and any advanced WebAssembly ABI remain unshipped; lowering availability alone is not a solver capability.',
       ],
       prevention: [
         'Require every implicit backend to consume the versioned lowering contract and prohibit a second graph-to-residual traversal in adapter code.',
@@ -1367,6 +1367,136 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-ida-global-step-accounting-gap',
+      title: 'Repeated IDASolve calls reset a nominal global step budget',
+      symptom: 'A dense output request can consume more internal IDA steps than its declared maximum because each native solve call receives a fresh per-call work allowance.',
+      evidence: [
+        'SUNDIALS IDA applies IDASetMaxNumSteps to one IDASolve invocation, so calling IDASolve separately for each requested row does not create one cumulative request budget.',
+        'A dense requested grid can therefore multiply the accepted internal work even when every individual native call stays below the configured maximum.',
+        'IDA_ONE_STEP exposes exactly one successful internal step per call, while IDAGetNumSteps provides the cumulative native counter needed to detect resets, jumps and off-by-one advancement.',
+        'Requested grid rows need interpolation inside the newly completed step; using a normal solve call for every row conflates output count with internal work and invites extrapolation.',
+      ],
+      detection: [
+        {
+          method: 'cumulative native-step budget regression',
+          signal: 'Solve the same system at one output and at a dense output grid with an exact and one-below-exact step cap, while comparing IDAGetNumSteps deltas with successful IDA_ONE_STEP calls.',
+          failureCondition: 'More than the configured global steps execute, a dense grid resets the budget, a successful step changes the native counter by anything other than one, or a grid row is evaluated outside the newly completed step.',
+        },
+      ],
+      causalChain: [
+        'The adapter needs multiple requested output rows from one initialized IDA session.',
+        'The native maximum-step setting is assumed to cover the whole Rust request even though its scope is one IDASolve call.',
+        'Repeated solve calls can each start with another native allowance.',
+        'The Rust request can exceed its advertised work ceiling without any single native call reporting too much work.',
+      ],
+      rootCause: 'A per-IDASolve native work limit was treated as a cumulative request limit instead of accounting successful internal steps across the complete consumed session.',
+      resolution: [
+        'Advance only with IDA_ONE_STEP toward the final requested time and check the cumulative IDAGetNumSteps value before every native step.',
+        'Set the native maximum to the remaining Rust-owned budget before each call, require every successful call to increase the native counter by exactly one, and stop before calling native code when the cumulative cap is exhausted.',
+        'Drain requested rows only through IDAGetDky inside the just-completed logical interval, including an explicit upper bound because the pinned IDA 7.8.0 implementation does not provide that complete guard.',
+        'Publish solve-statistic deltas from the post-initialization baseline and require one_step_calls to equal the cumulative internal-step delta.',
+      ],
+      prevention: [
+        'Classify every native limit as per-call, per-session or process-wide before mapping it to a public request setting.',
+        'Keep exact-budget, one-below-budget, many-output and dense-final-step cases together whenever the solve loop changes.',
+        'Treat requested output rows and internal integration steps as separate bounded counters.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-dae-native/tests/solve_reference.rs',
+          assertion: 'Public exponential and Robertson solves require the published cumulative internal-step count to equal the number of IDA_ONE_STEP calls while preserving the exact requested grid.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The global-step record remains independently searchable and preserves the per-call-reset cause, cumulative ONE_STEP resolution and no-extrapolation boundary.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['budget', 'dae', 'ida', 'step-accounting', 'sundials'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Consumed IDA_ONE_STEP loop, cumulative counter invariant, remaining-budget registration and bounded dense interpolation.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded exact-cap, one-below-cap, many-output, interpolation and native-counter adversarial unit tests.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/solve_reference.rs',
+          note: 'Public analytical and stiff reference cases binding cumulative steps to ONE_STEP calls.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-ida-initial-target-span-gap',
+      title: 'Finite increasing targets can still be unusable by IDA',
+      symptom: 'A numerically increasing output grid passes Rust validation but IDA rejects it during initialization or solve because the first native target cannot produce a usable initial step.',
+      evidence: [
+        'IDA 7.8.0 estimates an initial step from 0.001 times the target distance, so a positive finite span can underflow to zero or have a non-finite reciprocal.',
+        'At a large or closely spaced initial time, the scaled step can be nonzero yet initial_time plus that step rounds back to the initial time and cannot represent forward progress.',
+        'IDA also rejects target distances below its roundoff threshold even though two finite floating-point values compare strictly increasing.',
+        'Contract-consistent initialization sends the final requested time to IDASolve and may interpolate an earlier near-initial row, while corrected initialization separately sends the first requested time as IDACalcIC tout1.',
+      ],
+      detection: [
+        {
+          method: 'native-target admissibility boundary regression',
+          signal: 'Probe minimum subnormal, reciprocal-overflow, IDA roundoff, nonrepresentable scaled-step and adjacent-float grids under both initial-condition policies before recording any native allocation.',
+          failureCondition: 'An unusable native target reaches allocation or FFI, a representable boundary is rejected, ContractConsistent rejects a legal interpolated near-initial row, or correction accepts that same row as IDACalcIC tout1.',
+        },
+      ],
+      causalChain: [
+        'Request validation checks only that output times are finite and strictly increasing.',
+        'IDA derives an initial native step from the distance between its initial time and the target passed to that native operation.',
+        'IEEE-754 underflow, reciprocal overflow, roundoff distance or a nonrepresentable addition can make that derivation unusable despite a positive Rust comparison.',
+        'Using the same grid point for both initial-condition policies either rejects legal interpolation or sends an invalid correction target into IDA.',
+      ],
+      rootCause: 'The adapter validated abstract time ordering but did not preflight the exact floating-point target span consumed by each IDA operation and initial-condition policy.',
+      resolution: [
+        'Mirror the pinned IDA 7.8.0 target-span gates before native allocation: require a finite positive distance, nonzero 0.001-scaled step, finite reciprocal, finite representable forward addition and the documented roundoff distance.',
+        'For ContractConsistent validate the final IDASolve target while allowing earlier requested rows to be obtained by bounded interpolation.',
+        'For CorrectAlgebraicAndDerivative validate both the final IDASolve target and the first requested IDACalcIC tout1 before allocating request resources.',
+        'Use numeric equality for initial-time checks so SUNDIALS canonicalizing negative zero to positive zero is not reported as time drift.',
+      ],
+      prevention: [
+        'Validate the exact argument passed to each native operation rather than applying one generic time-grid predicate.',
+        'Keep underflow, reciprocal, adjacent-float, roundoff, representable-addition and signed-zero counterexamples at the pre-allocation boundary.',
+        'When a native policy changes which grid point becomes tout or tout1, update its validation and paired policy-difference tests together.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-dae-native/tests/solve_reference.rs',
+          assertion: 'Public analytical and corrected-initial-condition solves exercise both supported target policies over valid nontrivial spans.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The initial-target record remains independently searchable and preserves underflow, roundoff, representable-progress and final-versus-first policy semantics.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['dae', 'floating-point', 'ida', 'initial-conditions', 'time-grid'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Pre-allocation output-distance validation and separate IDASolve-final versus IDACalcIC-first target policy.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded subnormal, reciprocal, roundoff, 500/501-ULP, adjacent-float, signed-zero and policy-difference unit tests.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/solve_reference.rs',
+          note: 'Public contract-consistent and corrected initial-condition solve regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-loop-contract-identity-gap',
       title: 'Loop-test execution trusts a mutable schema-labelled contract',
       symptom: 'A SIL plan or HIL contract changes after review, or a schema-only object reaches execution without the required governed fields.',
@@ -1424,6 +1554,180 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/loop-testing.test.mjs',
           note: 'Contract identity, deep-freeze and forged-envelope regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-native-dae-callback-boundary-gap',
+      title: 'Raw IDA callbacks lack one contained Rust boundary',
+      symptom: 'A native residual or Jacobian callback can create aliased Rust views, unwind through C, lose the first model error behind a native flag or allocate unpredictably during nonlinear iteration.',
+      evidence: [
+        'SUNDIALS supplies opaque user data plus raw N_Vector and SUNMatrix handles whose nullness, lengths, storage shape and address ranges are not expressed in Rust types.',
+        'Constructing mutable Rust slices before proving that callback inputs and outputs are disjoint would make overlapping native views immediate undefined behavior rather than a contained solver error.',
+        'A DaeError must cross a C callback ABI represented only by an integer return code, so a later callback or IDA failure can obscure the first actionable model failure unless Rust retains it.',
+        'A Rust panic may not unwind through the C frames, and Jacobian scatter work allocated inside each callback would make nonlinear cost depend on heap behavior.',
+      ],
+      detection: [
+        {
+          method: 'adversarial callback ABI regression',
+          signal: 'Invoke residual and Jacobian callbacks with null, wrong-sized, aliased, nonsmooth, injected-error and injected-panic views while counting allocations across repeated successful callbacks.',
+          failureCondition: 'A Rust slice is formed from an invalid or overlapping view, a panic crosses FFI, a later failure replaces the first DaeError, or a successful callback allocates after session construction.',
+        },
+      ],
+      causalChain: [
+        'IDA invokes Rust through an untyped C callback and opaque user-data address.',
+        'The adapter maps native memory directly into Rust references without one preflighted ownership and failure boundary.',
+        'Aliasing, unwind and error-precedence rules are then left to incidental callback order and foreign-library behavior.',
+        'The nonlinear solve can become undefined, terminate the process or report the wrong cause despite a deterministic residual contract.',
+      ],
+      rootCause: 'The native callback seam had no pinned, prevalidated translation layer that jointly owned pointer-view safety, unwind containment, first-error preservation and callback workspace.',
+      resolution: [
+        'Pin one callback-state allocation for the session lifetime and register only its stable address as IDA user data.',
+        'Validate every native handle, exact dimension, dense column-major storage span and mutable address-range disjointness before constructing Rust slices or writing callback output.',
+        'Catch every residual and Jacobian unwind at the extern-C boundary, latch exactly the first DaeError or callback-panic identity, return a failure flag to IDA and prefer the latch over the later native flag.',
+        'Preallocate residual/Jacobian scratch and CSC-to-dense scatter state during session construction; repeated successful callbacks perform zero heap allocations, without extending that claim to construction, solve orchestration or error paths.',
+      ],
+      prevention: [
+        'Treat every foreign callback as a hostile raw-view boundary even when the current library is expected to provide well-formed handles.',
+        'Keep null, shape, alias, first-error, panic and allocation tests paired for both residual and Jacobian callbacks.',
+        'Never infer the underlying model failure from an IDA callback flag when a more specific Rust latch exists.',
+        'Scope allocation claims to the measured successful callback region and name all excluded phases.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-dae-native/tests/solve_reference.rs',
+          assertion: 'Public analytical, affine index-one and Robertson solves exercise the same registered residual and Jacobian callbacks through the native IDA runtime.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The callback record remains independently searchable and preserves alias preflight, panic containment, first-error precedence and narrowly scoped zero-allocation semantics.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['allocation', 'dae', 'ffi', 'ida', 'panic-containment'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Pinned callback state, raw-view validation, error latch, unwind containment and preallocated dense callback workspace.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded callback alias, null, shape, kink, first-error, panic and repeated zero-allocation unit tests.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/solve_reference.rs',
+          note: 'Public end-to-end native callback exercise on analytical and stiff index-one systems.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-native-solver-build-provenance-gap',
+      title: 'Native solver path loses source and linked-byte identity',
+      symptom: 'A feature-on native build can report SUNDIALS 7.8.0 while consuming the wrong official asset, an unbounded extraction, a differently configured install or stale linked archives.',
+      evidence: [
+        'A version string, library search path and expected archive names do not bind the build to the official IDA-only release asset, its bounded archive inventory, build policy or exact linked bytes.',
+        'The authoritative upstream lock is battery-design/sundials-source-lock@1 at native-backends/sundials/source-lock.json; a second conflicting source identity would make Task 2A provenance ambiguous.',
+        'The official IDA-only distribution still installs mandatory native vector, matrix and iterative-solver modules because upstream exposes no dense-only binary switch; IDA-only must not be restated as a dense-only archive claim.',
+        'The helper reuse check initially parsed receipt JSON semantically, so an identical duplicate key could pass the helper while build.rs rejected the same noncanonical raw receipt.',
+        'A receipt stored beside mutable archives is useful only when every producer, reuse check and consumer independently recomputes its bound values and requires the same exact closed bytes.',
+        'A self-consistent receipt can truthfully hash an empty but valid static archive, so content agreement alone does not prove that the archive supplies a usable IDA implementation; the real backend-identity link must still succeed.',
+      ],
+      detection: [
+        {
+          method: 'source-to-link provenance and tamper campaign',
+          signal: 'Mutate the official lock, archive inventory, CMake policy, derived receipt, headers or linked archives; add an unexpected module; then run the Node build audit, adapter acceptance and real backend-identity binary.',
+          failureCondition: 'Any stage accepts a different official asset, unsafe archive shape, enabled third-party solver, noncanonical receipt, mismatched linked bytes or unusable IDA archive under the pinned identity.',
+        },
+      ],
+      causalChain: [
+        'Task 2A identifies one official source asset, Task 2B builds and probes it, and the optional Rust feature later consumes a derived native link root.',
+        'Source identity, archive safety, build configuration, installed-module scope and exact linked bytes are distinct trust boundaries.',
+        'If those boundaries use separate informal labels or permissive receipts, producers and Cargo can accept different content under the same visible solver version.',
+        'Runtime metadata then overstates what was actually compiled and linked.',
+      ],
+      rootCause: 'The native pipeline lacked one continuous, closed provenance chain from the authoritative official-source lock through bounded extraction and audited configuration to the exact derived archives Cargo links.',
+      resolution: [
+        'Use only the closed battery-design/sundials-source-lock@1 at native-backends/sundials/source-lock.json: it pins the official SUNDIALS 7.8.0 ida-7.8.0.tar.gz asset, tag object, commit, 5,022,403-byte length, SHA-256, BSD-3-Clause license and NOTICE identities.',
+        'Use tools/verify-sundials-source.mjs and tools/build-sundials-ida.mjs for Tasks 2A and 2B so extraction admits one bounded regular-file IDA archive root, the static Release build fixes double precision and 64-bit indices, optional third-party solvers remain off, and an external installed-package lifecycle probe must pass.',
+        'Preserve the upstream caveat: the official asset is IDA-only by solver family but its installed package contains mandatory native vector, matrix and iterative-solver modules; the reference selects serial vector, dense matrix and dense linear solver without claiming a dense-only binary.',
+        'Bind the derived adapter link root back to that accepted source decision and emit one closed canonical battery-design/sundials-build-receipt@1 containing source, configuration, linked-archive digests and bounded toolchain identity.',
+        'Require adapter reuse and rust-dae-native/build.rs to validate exact canonical receipt bytes, including duplicate or unknown keys, wrong nesting, malformed encoding and trailing data, plus the configuration and exact archive surface Cargo consumes before emitting link directives.',
+        'Require the real feature-on backend-identity binary to link against the accepted archives, then probe runtime SUNDIALS 7.8.0 and expose dense serial identity only after successful construction; receipt consistency alone is not semantic usability.',
+        'Describe hashes and the self-recomputed receipt as content/configuration self-consistency only: they do not authenticate the publisher, prove reproducible-build equivalence, establish compiler trust or preserve artifact custody and chain of possession.',
+      ],
+      prevention: [
+        'Keep one authoritative source lock and make the Node verifier, Node builder, derived receipt and Cargo consumer carry that identity forward explicitly.',
+        'Audit upstream installed-module scope separately from the exact archive surface consumed by the Rust adapter; never collapse IDA-only and dense-only into one claim.',
+        'Run source-lock, archive-inventory, CMake-cache, receipt, archive-hash and real-link attacks at their respective boundaries.',
+        'Keep publisher authentication, reproducible builds, signed custody and product release provenance as separate future gates; never infer them from adjacent SHA-256 values.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/sundials-source-lock.test.mjs',
+          assertion: 'The authoritative official IDA-only source asset, tag/commit, length, digest and checked-in license identities remain closed, immutable and independently verified.',
+        },
+        {
+          path: 'tests/sundials-native-build.test.mjs',
+          assertion: 'The Node build contract rejects unsafe archive inventories, CMake policy drift, unexpected enabled modules and dynamic SUNDIALS linkage while preserving the upstream dense-only non-claim.',
+        },
+        {
+          path: 'tools/test-native-dae-build.mjs',
+          assertion: 'The adapter harness rejects duplicate canonical keys plus derived install, receipt and linked-archive tampering through both reuse and the Cargo link boundary.',
+        },
+        {
+          path: 'rust-dae-native/tests/backend_identity.rs',
+          assertion: 'A successfully constructed feature-on backend reports only the pinned SUNDIALS 7.8.0 IDA dense serial double-precision 64-bit identity and recreates without shared state.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The build-provenance record remains independently searchable and preserves canonical duplicate-key rejection, exact install-surface binding and the authentication/custody non-claim.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation', 'packaging', 'release'],
+      tags: ['build-receipt', 'content-identity', 'provenance', 'sundials', 'supply-chain'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'native-backends/sundials/source-lock.json',
+          note: 'Authoritative closed official IDA-only source, release, commit and license identity.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'tools/verify-sundials-source.mjs',
+          note: 'Closed-lock, exact archive and checked-in license/NOTICE verifier.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'tools/build-sundials-ida.mjs',
+          note: 'Bounded IDA-only archive extraction, audited native build and installed-package lifecycle probe.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/build.rs',
+          note: 'Independent lock, receipt, headers, macros, archive hashes and exact install-surface gate before linking.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sundials-source-lock.test.mjs',
+          note: 'Official lock shape, identity, mutation, digest, symlink and license regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sundials-native-build.test.mjs',
+          note: 'Archive inventory, exact CMake policy, probe scope and dynamic-link regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tools/test-native-dae-build.mjs',
+          note: 'Derived adapter receipt, install-surface, archive-hash and real-link tamper campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/backend_identity.rs',
+          note: 'Runtime version and dense serial backend identity regression.',
         },
       ],
     }),
@@ -1866,12 +2170,14 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
     }),
     record({
       id: 'rc-regression-path-containment-gap',
+      revision: 2,
       title: 'Regression evidence path escapes its governed test root',
-      symptom: 'A root-cause record can identify a path as local Rust regression evidence even though the same string traverses outside rust-core/tests on Windows.',
+      symptom: 'A root-cause record can identify a path as local Rust regression evidence even though the same string traverses outside rust-core/tests or rust-dae-native/tests on Windows.',
       evidence: [
         'The original record schema admitted regression paths only below tests or tools, so a substantive Rust integration test could not be represented as governed evidence.',
         'The first Rust-path extension used a rust-core/tests prefix, a non-whitespace middle and a .rs suffix; that middle admitted Windows backslashes.',
         'A value such as rust-core/tests/..\\src\\dae.rs is an ordinary filename string on Linux but contains a parent traversal when a Windows consumer interprets the backslashes as separators.',
+        'Iteration 2 needed the same governed evidence form below rust-dae-native/tests without broadening the grammar to arbitrary crates, source directories or file types.',
         'Prefix and suffix checks alone also do not state a portable policy for drive-letter, UNC, wrong-root, wrong-extension or explicit dot-segment inputs.',
       ],
       detection: [
@@ -1889,7 +2195,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
       rootCause: 'Repository containment was expressed as a Linux-oriented prefix plus a permissive character class instead of one platform-independent relative-path grammar.',
       resolution: [
-        'Admit Rust regression evidence only below the exact rust-core/tests prefix with a lowercase .rs suffix.',
+        'Admit Rust regression evidence only below the exact rust-core/tests or rust-dae-native/tests prefix with a lowercase .rs suffix.',
         'Limit every accepted path to safe ASCII segments separated only by forward slashes, and reject single-dot or double-dot segments at any depth.',
         'Reject backslashes, drive-letter paths, UNC paths, absolute roots, wrong roots and wrong extensions while retaining the existing tests and tools path forms.',
         'Continue resolving every governed regression and local reference below the repository root and require the referenced file to exist.',
@@ -1902,7 +2208,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       regressionTests: [
         {
           path: 'tests/root-cause-library.test.mjs',
-          assertion: 'A real rust-core/tests .rs path validates while POSIX traversal, Windows traversal, drive-letter, UNC, wrong-root and wrong-extension paths fail closed.',
+          assertion: 'Real rust-core/tests and rust-dae-native/tests .rs paths validate while POSIX traversal, Windows traversal, drive-letter, UNC, wrong-root and wrong-extension paths fail closed for both roots.',
         },
       ],
       affectedSurfaces: ['browser', 'ci', 'documentation'],
@@ -2026,6 +2332,66 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-shared-test-mutex-poison-cascade',
+      title: 'Exact float assertion poisons a shared native test mutex',
+      symptom: 'One harmless floating-point comparison failure turns most of the native solver campaign red with mutex-poison errors that hide the original numerical assertion.',
+      evidence: [
+        'A corrected initial-condition check expected exactly 12.0 but SUNDIALS returned 12.000000000000002, a normal representational difference for the accepted calculation.',
+        'The assertion panicked while its test still owned the global instrumentation mutex.',
+        'That 62-case campaign run reported 10 passes and 52 failures: one source assertion plus 51 follow-on lock().unwrap() poison failures unrelated to their solver behavior.',
+        'The first exact-float failure was therefore buried under a much larger cascade and made the native campaign appear structurally broken.',
+      ],
+      detection: [
+        {
+          method: 'shared-harness failure isolation regression',
+          signal: 'Force a panic while holding the native instrumentation lock, then acquire it for a later independently reset test and compare solver values with a stated numerical tolerance.',
+          failureCondition: 'The later test fails only because the mutex is poisoned, or a mathematically accepted floating-point value is still required to be bitwise exact.',
+        },
+      ],
+      causalChain: [
+        'Many native tests serialize process-global allocation and lifecycle instrumentation through one mutex.',
+        'A numerically overstrict exact-float assertion panics before its guard is dropped normally.',
+        'Rust marks the shared mutex poisoned and later lock().unwrap() calls panic without exercising their test bodies.',
+        'One local assertion produces dozens of misleading secondary failures.',
+      ],
+      rootCause: 'The test harness coupled an unjustified exact floating-point assertion with poison-fatal acquisition of a suite-wide instrumentation mutex.',
+      resolution: [
+        'Compare corrected floating-point components with explicit absolute and relative tolerances appropriate to the analytical contract.',
+        'Centralize acquisition in a poison-recovering test_lock helper and reset each test’s instrumentation state after acquiring the guard.',
+        'Continue reporting the original assertion failure while allowing unrelated tests to execute and provide independent evidence.',
+      ],
+      prevention: [
+        'Use exact equality only for identities or values whose bit pattern is the contract; state tolerances for native numerical outputs.',
+        'Do not let a process-global test lock turn one assertion into suite-wide skipped execution; recover the guard and reinitialize shared instrumentation explicitly.',
+        'When a campaign shows many identical poison failures, inspect the first failing owner before triaging every downstream test.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The mutex-cascade record remains independently searchable and preserves the exact-float trigger, 51 secondary failures, tolerant comparison, poison recovery and explicit state-reset remedy.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['floating-point', 'mutex', 'rust', 'test-harness'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded corrected-initial-condition tolerance and poison-recovering serialized instrumentation harness.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/solve_reference.rs',
+          note: 'Public corrected-initial-condition and numerical-reference regressions using explicit tolerances.',
+        },
+        {
+          kind: 'incident',
+          locator: 'DAE Iteration 2 native feature-on test campaign',
+          note: 'One exact comparison failure poisoned TEST_LOCK and produced 51 misleading follow-on failures.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-signed-bound-evidence-miss',
       title: 'Multiplicative bound evidence misses signed parameter limits',
       symptom: 'A fitted negative parameter lands exactly on its declared lower bound but the result reports atBound false.',
@@ -2140,6 +2506,66 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/loop-testing.test.mjs',
           note: 'Canonical-order, semantic-change, adapter-closure, identity and immutable-result regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-evidence-acceptance-drift',
+      title: 'Solver evidence summary silently weakens the planned acceptance gate',
+      symptom: 'A native solver iteration is documented as complete even though its original acceptance plan required tolerance-convergence and independently identified cross-solver evidence that the test campaign does not yet contain.',
+      evidence: [
+        'The checked-in Iteration 2 plan named stable failure mapping, tolerance-convergence and cross-solver conformance as separate Task 2H outputs.',
+        'The first completion draft replaced those named gates with a looser analytical/index-one/stiff-reference summary and marked Task 2H complete.',
+        'Comparing maximum BDF order 1 with order 5 at one tolerance proves order behavior, not convergence as tolerances tighten.',
+        'Unprovenanced pinned Robertson values and agreement with another in-repository solver do not by themselves identify an independent external reference.',
+      ],
+      detection: [
+        {
+          method: 'planned-versus-delivered solver-evidence audit',
+          signal: 'Compare every named acceptance item in the preimplementation solver plan with an executable regression and identified evidence provenance before changing its status to complete.',
+          failureCondition: 'Documentation marks the evidence task complete after renaming or omitting a planned gate, or a fixed numerical reference has no solver, version, method and tolerance provenance.',
+        },
+      ],
+      causalChain: [
+        'A detailed solver campaign establishes several independent numerical acceptance requirements.',
+        'Implementation accumulates strong analytical and stiff-problem tests but does not preserve a one-to-one checklist against the original wording.',
+        'Completion documentation summarizes the available evidence in broader terms.',
+        'The broader summary hides missing convergence and external-reference proof while presenting the task as complete.',
+      ],
+      rootCause: 'The completion review evaluated a rewritten evidence summary instead of reconciling each original acceptance item with a concrete test and provenance record.',
+      resolution: [
+        'Retain the original Task 2H acceptance names and add a real loose, medium and tight analytical tolerance-convergence regression.',
+        'Cross-check the same ODE graph with rust-core’s independently implemented Dormand–Prince solver while checking both against the closed-form solution.',
+        'Bind the stiff Robertson fixed values to an independently reproduced SciPy 1.17.0 solve_ivp Radau run with exact method, requested times, relative tolerance and absolute tolerance recorded beside the test.',
+        'Update the exact native-case count to the verified 81-case campaign only after the new debug and release cases execute successfully.',
+      ],
+      prevention: [
+        'Keep a stable acceptance matrix from plan through implementation and require an evidence locator for every row before completion.',
+        'Do not treat order comparison, analytical accuracy, in-repository cross-checking and external-reference provenance as interchangeable evidence.',
+        'Pin external numerical references by implementation version, method, tolerance, inputs and requested outputs; label fixed values as reference evidence rather than live dependency execution.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-dae-native/tests/solve_reference.rs',
+          assertion: 'The native reference proves three-level tolerance convergence, agrees with independent rust-core Dormand–Prince on the same ODE graph, and checks the stiff Robertson DAE against an explicitly versioned SciPy Radau reference.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The acceptance-drift record and solver guide preserve the original evidence gates, external reference provenance and corrected 81-case campaign count.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['acceptance', 'cross-validation', 'dae', 'evidence', 'solver', 'tolerance'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/solve_reference.rs',
+          note: 'Analytical tolerance-convergence, independent in-repository solver comparison and externally generated SciPy Radau Robertson reference cases.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/EQUATION_SOLVER.md',
+          note: 'Stable Task 2H acceptance wording, exact evidence provenance and source-only product boundary.',
         },
       ],
     }),

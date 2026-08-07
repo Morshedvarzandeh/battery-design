@@ -2,6 +2,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dae:native:build": "node tools/build-sundials-ida.mjs",
+    "dae:native:test": "node tools/test-native-dae-build.mjs",
     "rust:test": "cargo test --locked --manifest-path rust-core/Cargo.toml",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test tests/*.test.mjs",

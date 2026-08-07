@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 36);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 42);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -79,7 +79,11 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-hil-contract-deployment-gap',
     'rc-hil-result-identity-gap',
     'rc-hil-timing-coverage-gap',
+    'rc-ida-global-step-accounting-gap',
+    'rc-ida-initial-target-span-gap',
     'rc-loop-contract-identity-gap',
+    'rc-native-dae-callback-boundary-gap',
+    'rc-native-solver-build-provenance-gap',
     'rc-nelder-mead-bound-simplex-collapse',
     'rc-nullable-alias-projection',
     'rc-object-allowlist-prototype-bypass',
@@ -89,8 +93,10 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-regression-path-containment-gap',
     'rc-resource-self-checksum-trust',
     'rc-schema-envelope-permissive',
+    'rc-shared-test-mutex-poison-cascade',
     'rc-signed-bound-evidence-miss',
     'rc-sil-result-representation-gap',
+    'rc-solver-evidence-acceptance-drift',
     'rc-source-revision-self-claim',
     'rc-test-multiplier-denominator-drift',
     'rc-thermal-explicit-step-instability',
@@ -110,13 +116,19 @@ test('seed knowledge covers the requested recurring engineering failure classes'
   }
 });
 
-test('regression paths admit governed Rust tests without admitting escapes or non-Rust files', () => {
+test('regression paths admit both governed Rust test roots without admitting escapes or non-Rust files', () => {
   const candidate = structuredClone(ROOT_CAUSE_RECORDS[0]);
-  candidate.regressionTests = [{
-    path: 'rust-core/tests/dae_contract.rs',
-    assertion: 'A repository-local Rust integration test may carry substantive numerical evidence.',
-  }];
-  assert.deepEqual(validateRootCauseRecord(candidate), []);
+  for (const path of [
+    'rust-core/tests/dae_contract.rs',
+    'rust-dae-native/tests/solve_reference.rs',
+    'rust-dae-native/tests/nested/reference_case.rs',
+  ]) {
+    candidate.regressionTests = [{
+      path,
+      assertion: 'A repository-local Rust integration test may carry substantive numerical evidence.',
+    }];
+    assert.deepEqual(validateRootCauseRecord(candidate), [], path);
+  }
 
   for (const path of [
     '/rust-core/tests/dae_contract.rs',
@@ -129,6 +141,16 @@ test('regression paths admit governed Rust tests without admitting escapes or no
     'rust-core/tests/nested/../../src/dae.rs',
     'rust-core/tests/..\\src\\dae.rs',
     'rust-core/tests/nested\\..\\src\\dae.rs',
+    '/rust-dae-native/tests/solve_reference.rs',
+    'D:/rust-dae-native/tests/solve_reference.rs',
+    'D:\\rust-dae-native\\tests\\solve_reference.rs',
+    '\\\\server\\share\\rust-dae-native\\tests\\solve_reference.rs',
+    'rust-dae-native/src/native.rs',
+    'rust-dae-native/tests/solve_reference.mjs',
+    'rust-dae-native/tests/../src/native.rs',
+    'rust-dae-native/tests/nested/../../src/native.rs',
+    'rust-dae-native/tests/..\\src\\native.rs',
+    'rust-dae-native/tests/nested\\..\\src\\native.rs',
     'tests/../package.json',
     'tests\\..\\package.json',
   ]) {
@@ -151,7 +173,7 @@ test('DAE lowering memory separates a residual contract from solver qualificatio
   assert.match(record.resolution.join(' '), /DaeResidualSystem::lower[\s\S]*DAE_RESIDUAL_CONTRACT_VERSION[\s\S]*battery-design\/dae-residual@1[\s\S]*compiled state order[\s\S]*BlockId order[\s\S]*1\/0 differential\/algebraic ID vector[\s\S]*yp - f\(t, y\)[\s\S]*y - rhs\(t, y\)[\s\S]*deterministic CSC[\s\S]*no-partial-write[\s\S]*right-continuously[\s\S]*nonsmooth bound/i);
   assert.match(record.resolution.join(' '), /caller-buffer callbacks heap-allocation-free[\s\S]*lowering itself/i);
   assert.match(record.resolution.join(' '), /deduplicate only exact numeric equals[\s\S]*signed-zero[\s\S]*preserve every distinct finite event time/i);
-  assert.match(record.resolution.join(' '), /SUNDIALS[\s\S]*IDA[\s\S]*SuiteSparse[\s\S]*KLU[\s\S]*unshipped[\s\S]*not a solver capability/i);
+  assert.match(record.resolution.join(' '), /SUNDIALS[\s\S]*IDA[\s\S]*outside the Iteration 1 lowering claim[\s\S]*optional Linux native reference[\s\S]*SuiteSparse[\s\S]*KLU[\s\S]*unshipped[\s\S]*not a solver capability/i);
   assert.deepEqual(record.regressionTests.map(({ path }) => path), [
     'rust-core/tests/dae_contract.rs',
     'rust-core/tests/dae_allocation.rs',
@@ -168,12 +190,95 @@ test('regression-path memory preserves cross-platform repository containment', (
   assert.equal(record?.status, 'resolved');
   assert.match(record.evidence.join(' '), /non-whitespace middle[\s\S]*Windows backslashes[\s\S]*rust-core\/tests\/\.\.\\src\\dae\.rs/i);
   assert.match(record.rootCause, /Linux-oriented prefix[\s\S]*platform-independent relative-path grammar/i);
-  assert.match(record.resolution.join(' '), /exact rust-core\/tests prefix[\s\S]*\.rs suffix[\s\S]*safe ASCII segments[\s\S]*forward slashes[\s\S]*dot segments[\s\S]*backslashes[\s\S]*drive-letter[\s\S]*UNC/i);
+  assert.equal(record.revision, 2);
+  assert.match(record.resolution.join(' '), /exact rust-core\/tests or rust-dae-native\/tests prefix[\s\S]*\.rs suffix[\s\S]*safe ASCII segments[\s\S]*forward slashes[\s\S]*dot segments[\s\S]*backslashes[\s\S]*drive-letter[\s\S]*UNC/i);
   assert.match(record.prevention.join(' '), /Never use[\s\S]*non-whitespace class[\s\S]*POSIX and Windows separators/i);
   assert.equal(
     searchRootCauses('Rust regression evidence Windows backslash traversal UNC containment', { limit: 1 })[0]?.id,
     record.id,
   );
+});
+
+test('native IDA memories keep six causes separate, resolved and exactly searchable', () => {
+  const ids = [
+    'rc-ida-global-step-accounting-gap',
+    'rc-ida-initial-target-span-gap',
+    'rc-native-dae-callback-boundary-gap',
+    'rc-native-solver-build-provenance-gap',
+    'rc-shared-test-mutex-poison-cascade',
+    'rc-solver-evidence-acceptance-drift',
+  ];
+  assert.deepEqual(ids.map((id) => getRootCauseRecord(id)?.status), [
+    'resolved', 'resolved', 'resolved', 'resolved', 'resolved', 'resolved',
+  ]);
+
+  const globalSteps = getRootCauseRecord('rc-ida-global-step-accounting-gap');
+  assert.match(globalSteps.rootCause, /per-IDASolve native work limit[\s\S]*cumulative request limit/i);
+  assert.match(globalSteps.resolution.join(' '), /IDA_ONE_STEP[\s\S]*before every native step[\s\S]*increase the native counter by exactly one[\s\S]*IDAGetDky[\s\S]*explicit upper bound/i);
+
+  const targetSpan = getRootCauseRecord('rc-ida-initial-target-span-gap');
+  assert.match(targetSpan.rootCause, /exact floating-point target span[\s\S]*each IDA operation[\s\S]*initial-condition policy/i);
+  assert.match(targetSpan.resolution.join(' '), /0\.001-scaled step[\s\S]*finite reciprocal[\s\S]*representable forward addition[\s\S]*roundoff[\s\S]*ContractConsistent[\s\S]*final IDASolve target[\s\S]*CorrectAlgebraicAndDerivative[\s\S]*first requested IDACalcIC tout1/i);
+
+  const callbacks = getRootCauseRecord('rc-native-dae-callback-boundary-gap');
+  assert.match(callbacks.rootCause, /pinned[\s\S]*pointer-view safety[\s\S]*unwind containment[\s\S]*first-error preservation[\s\S]*callback workspace/i);
+  assert.match(callbacks.resolution.join(' '), /disjointness before constructing Rust slices[\s\S]*catch every residual and Jacobian unwind[\s\S]*first DaeError[\s\S]*repeated successful callbacks perform zero heap allocations[\s\S]*without extending that claim/i);
+
+  const build = getRootCauseRecord('rc-native-solver-build-provenance-gap');
+  assert.match(build.evidence.join(' '), /authoritative upstream lock[\s\S]*battery-design\/sundials-source-lock@1[\s\S]*native-backends\/sundials\/source-lock\.json[\s\S]*official IDA-only distribution[\s\S]*mandatory native vector, matrix and iterative-solver modules[\s\S]*not[\s\S]*dense-only/i);
+  assert.match(build.evidence.join(' '), /helper reuse check[\s\S]*parsed receipt JSON semantically[\s\S]*identical duplicate key[\s\S]*build\.rs rejected[\s\S]*noncanonical raw receipt/i);
+  assert.match(build.evidence.join(' '), /self-consistent receipt[\s\S]*empty but valid static archive[\s\S]*content agreement alone[\s\S]*real backend-identity link/i);
+  assert.match(build.resolution.join(' '), /battery-design\/sundials-source-lock@1[\s\S]*native-backends\/sundials\/source-lock\.json[\s\S]*ida-7\.8\.0\.tar\.gz[\s\S]*5,022,403-byte[\s\S]*tools\/verify-sundials-source\.mjs[\s\S]*tools\/build-sundials-ida\.mjs[\s\S]*bounded regular-file IDA archive root[\s\S]*official asset is IDA-only by solver family[\s\S]*without claiming a dense-only binary[\s\S]*sundials-build-receipt@1[\s\S]*canonical receipt bytes[\s\S]*real feature-on backend-identity binary[\s\S]*receipt consistency alone is not semantic usability[\s\S]*do not authenticate the publisher[\s\S]*artifact custody/i);
+  assert.deepEqual(
+    build.regressionTests.slice(0, 2).map(({ path }) => path),
+    ['tests/sundials-source-lock.test.mjs', 'tests/sundials-native-build.test.mjs'],
+  );
+
+  const mutex = getRootCauseRecord('rc-shared-test-mutex-poison-cascade');
+  assert.match(mutex.evidence.join(' '), /12\.0[\s\S]*12\.000000000000002[\s\S]*10 passes[\s\S]*52 failures[\s\S]*one source assertion[\s\S]*51 follow-on[\s\S]*poison failures/i);
+  assert.match(mutex.resolution.join(' '), /absolute and relative tolerances[\s\S]*poison-recovering test_lock[\s\S]*reset each test.s instrumentation state/i);
+
+  const evidence = getRootCauseRecord('rc-solver-evidence-acceptance-drift');
+  assert.match(evidence.rootCause, /rewritten evidence summary[\s\S]*each original acceptance item[\s\S]*concrete test[\s\S]*provenance/i);
+  assert.match(evidence.resolution.join(' '), /loose, medium and tight[\s\S]*Dormand–Prince[\s\S]*SciPy 1\.17\.0[\s\S]*solve_ivp[\s\S]*Radau[\s\S]*relative tolerance[\s\S]*absolute tolerance[\s\S]*81-case/i);
+
+  for (const [query, id] of [
+    ['IDA ONE_STEP cumulative global max steps per call reset', 'rc-ida-global-step-accounting-gap'],
+    ['IDA initial target span underflow roundoff representable progress tout tout1', 'rc-ida-initial-target-span-gap'],
+    ['native DAE FFI callback alias panic first error zero allocation', 'rc-native-dae-callback-boundary-gap'],
+    ['official IDA-only source lock bounded archive build receipt exact linked bytes', 'rc-native-solver-build-provenance-gap'],
+    ['exact float assertion poisoned shared test mutex 51 cascading failures', 'rc-shared-test-mutex-poison-cascade'],
+    ['solver acceptance tolerance convergence cross validation external SciPy provenance', 'rc-solver-evidence-acceptance-drift'],
+  ]) {
+    assert.equal(searchRootCauses(query, { limit: 1 })[0]?.id, id, query);
+  }
+});
+
+test('equation-solver guide reports the exact Iteration 2 reference and product boundary', () => {
+  const guide = readFileSync(resolve(ROOT, 'docs/EQUATION_SOLVER.md'), 'utf8');
+  const prose = guide.replace(/\s+/gu, ' ');
+  assert.match(prose, /implements a bounded native Linux reference backend in[\s\S]*battery-design\/native-ida-dense@1[\s\S]*not part of the[\s\S]*browser, desktop, service, npm package or any released product artifact/i);
+  assert.match(prose, /native Linux target using `panic=unwind`[\s\S]*SUNDIALS\/IDA 7\.8\.0[\s\S]*BDF orders 1 through 5[\s\S]*NVECTOR_SERIAL[\s\S]*SUNMATRIX_DENSE[\s\S]*SUNLINSOL_DENSE[\s\S]*static non-MPI linkage[\s\S]*double[\s\S]*64-bit indices/i);
+  assert.match(prose, /at most 256 DAE variables[\s\S]*at most 100,000 requested output points[\s\S]*at most 10,000,000 cumulative internal steps[\s\S]*at most 25,600,000 returned scalar values/i);
+  assert.match(prose, /ContractConsistent[\s\S]*CorrectAlgebraicAndDerivative[\s\S]*scheduled events are explicitly rejected[\s\S]*ida\.events\.unsupported/i);
+  assert.match(prose, /battery-design\/sundials-source-lock@1[\s\S]*native-backends\/sundials\/source-lock\.json[\s\S]*official[\s\S]*ida-7\.8\.0\.tar\.gz[\s\S]*tools\/verify-sundials-source\.mjs[\s\S]*tools\/build-sundials-ida\.mjs/i);
+  assert.match(prose, /official asset is IDA-only at the solver-family level[\s\S]*mandatory native vector, matrix and iterative-solver modules[\s\S]*no dense-only binary switch[\s\S]*selects[\s\S]*NVECTOR_SERIAL[\s\S]*SUNMATRIX_DENSE[\s\S]*SUNLINSOL_DENSE/i);
+  for (const task of ['2A', '2B', '2C', '2D', '2E', '2F', '2G', '2H']) {
+    assert.match(prose, new RegExp(`${task}[^;]*complete`, 'iu'), task);
+  }
+  assert.match(prose, /28 unique tests[\s\S]*81 unique native cases: 80 feature-on[\s\S]*one feature-off[\s\S]*more than twice[\s\S]*not a claim that the repository.s global test suite doubled/i);
+  assert.match(prose, /three-level analytical[\s\S]*tolerance-convergence[\s\S]*Dormand–Prince[\s\S]*SciPy 1\.17\.0[\s\S]*solve_ivp[\s\S]*Radau[\s\S]*rtol=1e-12[\s\S]*atol=1e-14/i);
+  assert.match(prose, /hashes[\s\S]*self-recomputed receipt do not[\s\S]*authenticate the publisher[\s\S]*reproducible-build equivalence[\s\S]*artifact custody[\s\S]*signed chain of possession/i);
+  assert.match(prose, /tests\/sundials-source-lock\.test\.mjs[\s\S]*tests\/sundials-native-build\.test\.mjs[\s\S]*tools\/test-native-dae-build\.mjs[\s\S]*source, build, derived-install[\s\S]*real-link regression boundaries/i);
+  assert.match(prose, /cosim\.html[\s\S]*shipped `rust-core\/` backend, not the source-only native reference/i);
+  for (const boundary of [
+    /SuiteSparse\/KLU/i,
+    /index reduction/i,
+    /browser WebAssembly/i,
+    /native service/i,
+    /desktop integration/i,
+    /product-packaged or released/i,
+  ]) assert.match(prose, boundary);
 });
 
 test('loop-contract memory preserves the mutation, identity and trust-boundary fix', () => {
