@@ -51,14 +51,15 @@ them. Windows and macOS desktop packages are not currently built or advertised.
 |---|---|
 | Browser GUI | Pack/application design, reports, Level-1 mission simulation, Rust/Wasm equation studio, SIL, comparative runaway/vent studies and HIL contract preparation |
 | Desktop GUI extras | Advanced electro-thermal run, source-FMU kit export and the host-machine silhouette; no calibration button is shipped |
-| Source/staged runner CLI | Governed trace import and calibration, bounded multicore search and sweeps, BOM/wiring, grounding, LCA, swap/runaway studies and source-FMU export |
-| Local API | Pack design and ontology, advanced simulation, canonical-dataset calibration, bounded search, and source-FMU export |
-| MCP | Pack design, mission/cell comparisons, ontology queries, known-issue diagnosis and engineering review; no calibration tool is shipped |
+| Source/staged runner CLI | Governed trace import/manual calibration, governed staged ECM tuning, bounded multicore search and sweeps, BOM/wiring, grounding, LCA, swap/runaway studies and source-FMU export |
+| Local API | Pack design and ontology, advanced simulation, canonical-dataset manual calibration and staged ECM tuning, bounded search, and source-FMU export |
+| MCP | Pack design, mission/cell comparisons, ontology queries, known-issue diagnosis and engineering review; no calibration tool is shipped, and no ECM-tuning tool is shipped |
 | Planned—not shipped | Crush, vibration, spatial thermal/corrosion solvers and a deterministic HIL target runtime |
 
 The `.deb` and AppImage currently expose the desktop GUI and its authenticated
 local API. They bundle Node as an internal sidecar but do not install a stable
-customer-facing calibration shell command. Run the CLI from a clone with
+customer-facing calibration shell command or a stable customer-facing
+ECM-tuning shell command. Run the CLI from a clone with
 `node desktop/bd.mjs …`, or from an explicitly staged runner tree; do not treat
 the internal `bd-runner` sidecar as an installed CLI contract.
 
@@ -354,8 +355,26 @@ project's provenance-first datasheet pipeline.
   dropped. The synthetic recovery test generates observations with the same
   battery-design equations and checks optimizer behavior. It is not independent
   validation or evidence that a GT-AutoLion or Simcenter Amesim export has been
-  accepted; both proprietary export paths remain **Not run**. What the model is
-  **not** is stated on every run: not
+  accepted; both proprietary export paths remain **Not run**.
+
+  The separate Action 2 `tune-ecm` workflow takes governed calibration and
+  validation trials, creates a content-addressed
+  `battery-design/ecm-tuning-plan@1`, and runs only the parameter groups whose
+  coverage and normalized sensitivity gates pass. Calibration alone drives the
+  optimizer; the fixed holdout is scored at its original full rate for pooled,
+  per-trial and per-included-segment gates. Its
+  `battery-design/ecm-tuning-result@1` retains both diagnostic
+  `candidateParams` and fail-closed `adoptedParams`: rejection preserves the
+  initial parameters. Exact cumulative temporal and module-weighted work is
+  preflighted and counted, while portable evidence omits raw signal and
+  Jacobian arrays. Checksums identify content; they do not authenticate a
+  producer, prove statistical independence, or establish proprietary accuracy.
+  This operation is shipped only on the source/staged runner CLI and
+  authenticated local API—not the desktop GUI or MCP. See
+  [Governed staged ECM tuning](docs/ECM_TUNING.md) for the groups, limits,
+  artifacts and acceptance boundary.
+
+  What the model is **not** is stated on every run: not
   electrochemical (no P2D, no diffusion), not 3-D (a hot module, not a hot
   corner), and its defaults are class-typical until you calibrate them.
 

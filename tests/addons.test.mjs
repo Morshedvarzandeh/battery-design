@@ -5,7 +5,14 @@
 // the FMI export produces a complete interface suitable for native and host validation.
 import { test } from 'node:test';
 import { ok, throws } from './helpers.mjs';
-import { ADDONS, addonById, addonsFor, capabilityReport, validateAddons } from '../js/addons.js';
+import {
+  ADDONS,
+  addonById,
+  addonsFor,
+  addonsForSurface,
+  capabilityReport,
+  validateAddons,
+} from '../js/addons.js';
 import { FMU_VARIABLES, FMU_PARAMETERS, FMI_VERSION, modelDescriptionXml, fmuSourceC, buildFmu } from '../js/fmi.js';
 import { CONCEPTS } from '../js/knowledge.js';
 import { cellById } from '../js/cells.js';
@@ -98,6 +105,35 @@ test('governed calibration is exposed only on the surfaces that implement it', (
     'the source CLI capability is not promoted into an installer-owned shell command');
   ok(calibration.what === 'The source/staged runner CLI importer normalizes an exactly mapped delimited or columnar-JSON trace into a versioned, checksummed canonical calibration dataset. The CLI and authenticated local API fit canonical datasets to allowlisted existing model parameters with bounded and fully counted optimizer work.',
     'raw source normalization belongs exactly to the CLI importer while both fit surfaces consume canonical datasets');
+});
+
+test('staged ECM tuning is a separate fail-closed CLI and local-API capability', () => {
+  const ingestion = addonById('calibration');
+  const tuning = addonById('ecm-tuning');
+  ok(tuning?.status === 'shipped' && tuning.tier === 'desktop',
+    'Action 2 is independently discoverable from Action 1 ingestion and manual fitting');
+  ok(tuning !== ingestion && tuning.module.includes('ecm-tuning-executor.js'),
+    'the automatic planner/executor is not folded into the ingestion capability');
+  ok(tuning.surfaces.join(',') === 'cli,local-api',
+    'the registry names exactly the two implemented tuning surfaces');
+  ok(!tuning.surfaces.some((surface) => ['browser-gui', 'desktop-gui', 'mcp', 'planned'].includes(surface)),
+    'a runner/API operation is not advertised as a GUI, MCP or roadmap operation');
+  ok(addonsForSurface('cli').includes(tuning) && addonsForSurface('local-api').includes(tuning),
+    'positive surface queries expose the same canonical add-on object');
+  ok(!addonsForSurface('desktop-gui').includes(tuning) && !addonsForSurface('mcp').includes(tuning),
+    'negative surface queries cannot drift from the entry declaration');
+  ok(/separate canonical calibration and validation trials/.test(tuning.what)
+    && /fixed full-rate holdout/.test(tuning.what),
+  'the capability separates optimization input from fixed holdout scoring');
+  ok(/candidate parameters.*adopted parameters/.test(tuning.what)
+    && /fail-closed/.test(tuning.what),
+  'a rejected candidate is not presented as an adopted fit');
+  ok(/caller-predeclared physical-unit acceptance thresholds/.test(tuning.needs.join(' ')),
+    'acceptance policy belongs to the caller before execution');
+  ok(/do not authenticate.*prove statistical independence.*proprietary-tool compatibility.*model accuracy/.test(tuning.why),
+    'content identity is not promoted into authenticity, independence or accuracy evidence');
+  ok(/not raw-trace ingestion/.test(tuning.why) && /not.*desktop-GUI button or MCP tool/.test(tuning.why),
+    'Action 2 does not inherit the importer or unimplemented product surfaces');
 });
 
 test('the FMU declares an interface a host tool can actually couple to', () => {

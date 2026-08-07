@@ -61,6 +61,13 @@ import {
   MAX_CALIBRATION_DATASET_SAMPLES, readCalibrationDataset,
 } from '../js/calibration-dataset.js';
 import {
+  ECM_TUNING_ACCEPTANCE_FIELDS, ECM_TUNING_GROUPS, ECM_TUNING_PLAN_FORMAT,
+  planEcmTuning,
+} from '../js/ecm-tuning.js';
+import {
+  ECM_TUNING_RESULT_FORMAT, executeEcmTuning,
+} from '../js/ecm-tuning-executor.js';
+import {
   importCalibrationDataset, MAX_CALIBRATION_SOURCE_BYTES,
   readCalibrationImportMapping,
 } from '../js/calibration-import.js';
@@ -327,12 +334,24 @@ const CALIBRATE_ALLOWED_FLAGS = new Set([
   'weight-temp', 'max-evaluations', 'max-module-work', 'max-samples', 'json',
   'out', 'params-out',
 ]);
+const TUNE_ECM_ALLOWED_FLAGS = new Set([
+  'calibration', 'validation', 'acceptance', 'groups', 'params', 'cell',
+  'max-evaluations', 'max-module-work', 'max-samples', 'json', 'out',
+  'params-out',
+]);
 const CALIBRATION_REQUEST_KEYS = new Set([
   'format', 'datasets', 'params', 'fit', 'maxIter', 'weightTemp',
   'maxEvaluations', 'maxModuleWeightedIntegrationSteps', 'maxSamplesPerDataset',
 ]);
 const CALIBRATION_REQUEST_FORMAT = 'battery-design/calibration-request@1';
 const CALIBRATION_RESULT_FORMAT = 'battery-design/calibration-result@1';
+const ECM_TUNING_REQUEST_FORMAT = 'battery-design/ecm-tuning-request@1';
+const ECM_TUNING_RUN_FORMAT = 'battery-design/ecm-tuning-run@1';
+const ECM_TUNING_REQUEST_KEYS = new Set([
+  'format', 'calibrationDatasets', 'validationDatasets', 'acceptance', 'params',
+  'groups', 'maxEvaluations', 'maxModuleWeightedIntegrationSteps',
+  'maxSamplesPerDataset',
+]);
 const CALIBRATION_ALGORITHM = Object.freeze({
   id: 'bounded-nelder-mead',
   version: '1.0.0',
@@ -340,6 +359,8 @@ const CALIBRATION_ALGORITHM = Object.freeze({
 });
 const CALIBRATION_MODEL_ID = 'battery-design/sim2-ecm-2rc-thermal-chain';
 const CALIBRATION_MODEL_VERSION = '1.0.0';
+const ECM_TUNING_MODEL_ID = 'battery-design/staged-ecm-arrhenius-tuning';
+const ECM_TUNING_MODEL_VERSION = '1.0.0';
 const CALIBRATION_MODEL_DEPENDENCIES = Object.freeze([
   'js/sim2.js', 'js/sim1d.js', 'js/cells.js',
 ]);
@@ -349,6 +370,23 @@ const CALIBRATION_MODEL_IMPLEMENTATION_CHECKSUM = semanticDigest(Object.fromEntr
     createHash('sha256').update(readFileSync(path.join(ROOT, relative))).digest('hex'),
   ]),
 ));
+const ECM_TUNING_MODEL_DEPENDENCIES = Object.freeze([
+  'js/ecm-tuning.js',
+  'js/ecm-tuning-executor.js',
+  'js/calibration-dataset.js',
+  'js/sim2.js',
+  'js/sim1d.js',
+  'js/cells.js',
+]);
+const ECM_TUNING_MODEL_DEPENDENCY_SHA256 = Object.freeze(Object.fromEntries(
+  ECM_TUNING_MODEL_DEPENDENCIES.map((relative) => [
+    relative,
+    createHash('sha256').update(readFileSync(path.join(ROOT, relative))).digest('hex'),
+  ]),
+));
+const ECM_TUNING_MODEL_IMPLEMENTATION_CHECKSUM = semanticDigest(
+  ECM_TUNING_MODEL_DEPENDENCY_SHA256,
+);
 
 function fmuSpecFrom(args) {
   const unknown = args[PARSED_FLAGS].filter((key) => !FMU_ALLOWED_FLAGS.has(key));
@@ -830,6 +868,288 @@ function calibrationApiRequest(body) {
   };
 }
 
+function tuningGroupsFromCli(args) {
+  if (args.groups == null) return 'auto';
+  const value = requiredFlagValue(args, 'groups').trim();
+  if (value === 'auto') return 'auto';
+  const groups = value.split(',').map((group) => group.trim());
+  if (groups.some((group) => !group)) {
+    throw new TypeError('--groups must equal auto or contain exact comma-separated ECM tuning group ids without empty entries.');
+  }
+  return groups;
+}
+
+function tuningCliRequest(args) {
+  const unknown = args[PARSED_FLAGS].filter((key) => !TUNE_ECM_ALLOWED_FLAGS.has(key));
+  if (unknown.length) {
+    throw new TypeError(`tune-ecm does not accept option(s): ${[...new Set(unknown)]
+      .map((key) => `--${key}`).join(', ')}. Canonical calibration and validation JSON files are required; raw source, mapping, path and URL inputs are not accepted.`);
+  }
+  const positionals = args._.slice(1);
+  if (positionals.length) {
+    throw new TypeError(`tune-ecm does not accept positional arguments: ${positionals.join(', ')}.`);
+  }
+  if (args[DUPLICATE_FLAGS].length) {
+    throw new TypeError(`tune-ecm option(s) may be supplied only once: ${[...new Set(args[DUPLICATE_FLAGS])]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  if (args.json != null && args.json !== true) {
+    throw new TypeError('--json is a boolean flag and does not accept a value.');
+  }
+  for (const name of ['calibration', 'validation', 'acceptance']) requiredFlagValue(args, name);
+  for (const name of ['out', 'params-out']) {
+    if (args[name] != null) requiredFlagValue(args, name);
+  }
+
+  const calibrationFile = requiredFlagValue(args, 'calibration');
+  const validationFile = requiredFlagValue(args, 'validation');
+  const acceptanceFile = requiredFlagValue(args, 'acceptance');
+  const calibrationDatasets = canonicalDatasets(boundedJsonFile(
+    calibrationFile, MAX_CALIBRATION_SOURCE_BYTES, 'ECM tuning calibration datasets',
+  ), 'ECM tuning calibration datasets');
+  const validationDatasets = canonicalDatasets(boundedJsonFile(
+    validationFile, MAX_CALIBRATION_SOURCE_BYTES, 'ECM tuning validation datasets',
+  ), 'ECM tuning validation datasets');
+  const acceptance = boundedJsonFile(
+    acceptanceFile, MAX_CALIBRATION_PARAMS_BYTES, 'ECM tuning acceptance policy',
+  );
+  const combined = [...calibrationDatasets, ...validationDatasets];
+  const metrics = calibrationDatasetMetrics(combined, {
+    maxSamples: MAX_CLI_CALIBRATION_SAMPLES,
+    label: 'CLI ECM tuning input',
+  });
+  const crossCheck = args.cell == null ? null : requiredFlagValue(args, 'cell');
+  const cell = cellForCalibrationDatasets(combined, crossCheck);
+  const params = args.params == null ? null : boundedJsonFile(
+    requiredFlagValue(args, 'params'), MAX_CALIBRATION_PARAMS_BYTES,
+    'ECM tuning parameters',
+  );
+  const groups = tuningGroupsFromCli(args);
+  const maxEvaluations = optionalCliNumber(
+    args, 'max-evaluations', MAX_CALIBRATION_EVALUATIONS,
+    { min: 2, max: MAX_CALIBRATION_EVALUATIONS, integer: true },
+  );
+  const maxModuleWeightedIntegrationSteps = optionalCliNumber(
+    args, 'max-module-work', MAX_CALIBRATION_MODULE_WORK,
+    { min: 1, max: MAX_CALIBRATION_MODULE_WORK, integer: true },
+  );
+  const maxSamplesPerDataset = optionalCliNumber(
+    args, 'max-samples', DEFAULT_MAX_SAMPLES_PER_DATASET,
+    { min: 8, max: MAX_PREPROCESSED_SAMPLES_PER_DATASET, integer: true },
+  );
+
+  const outputPaths = ['out', 'params-out']
+    .filter((name) => args[name] != null)
+    .map((name) => [name, filePathIdentity(requiredFlagValue(args, name))]);
+  const inputPaths = [
+    ['calibration', calibrationFile], ['validation', validationFile],
+    ['acceptance', acceptanceFile],
+    ...(args.params == null ? [] : [['params', requiredFlagValue(args, 'params')]]),
+  ].map(([name, file]) => [name, filePathIdentity(file)]);
+  for (let index = 0; index < outputPaths.length; index++) {
+    const [name, identity] = outputPaths[index];
+    const collision = outputPaths.slice(index + 1).find(([, other]) => sameFileIdentity(identity, other))
+      || inputPaths.find(([, other]) => sameFileIdentity(identity, other));
+    if (collision) {
+      throw new TypeError(`--${name} must not resolve to the same path as --${collision[0]}.`);
+    }
+  }
+
+  return {
+    cell, calibrationDatasets, validationDatasets, acceptance, params, groups,
+    maxEvaluations, maxModuleWeightedIntegrationSteps, maxSamplesPerDataset,
+    metrics,
+  };
+}
+
+function tuningApiRequest(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new TypeError('ECM tuning request body must be one JSON object.');
+  }
+  const unsupported = Object.keys(body).filter((key) => !ECM_TUNING_REQUEST_KEYS.has(key));
+  if (unsupported.length) {
+    throw new TypeError(`ECM tuning request body contains unsupported field(s): ${unsupported.join(', ')}.`);
+  }
+  if (body.format !== ECM_TUNING_REQUEST_FORMAT) {
+    throw new TypeError(`ECM tuning request body format must equal ${ECM_TUNING_REQUEST_FORMAT}.`);
+  }
+  for (const name of ['calibrationDatasets', 'validationDatasets', 'acceptance']) {
+    if (!Object.prototype.hasOwnProperty.call(body, name)) {
+      throw new TypeError(`ECM tuning request body must contain ${name}.`);
+    }
+  }
+  const calibrationDatasets = canonicalDatasets(
+    body.calibrationDatasets, 'ECM tuning calibrationDatasets',
+  );
+  const validationDatasets = canonicalDatasets(
+    body.validationDatasets, 'ECM tuning validationDatasets',
+  );
+  const combined = [...calibrationDatasets, ...validationDatasets];
+  const metrics = calibrationDatasetMetrics(combined, {
+    maxSamples: MAX_API_CALIBRATION_SAMPLES,
+    label: 'API ECM tuning input',
+  });
+  const cell = cellForCalibrationDatasets(combined);
+  const maxEvaluations = optionalApiNumber(
+    body, 'maxEvaluations', MAX_CALIBRATION_EVALUATIONS,
+    { min: 2, max: MAX_CALIBRATION_EVALUATIONS, integer: true },
+  );
+  const maxModuleWeightedIntegrationSteps = optionalApiNumber(
+    body, 'maxModuleWeightedIntegrationSteps', MAX_CALIBRATION_MODULE_WORK,
+    { min: 1, max: MAX_CALIBRATION_MODULE_WORK, integer: true },
+  );
+  const maxSamplesPerDataset = optionalApiNumber(
+    body, 'maxSamplesPerDataset', DEFAULT_MAX_SAMPLES_PER_DATASET,
+    { min: 8, max: DEFAULT_MAX_SAMPLES_PER_DATASET, integer: true },
+  );
+  return {
+    cell,
+    calibrationDatasets,
+    validationDatasets,
+    acceptance: body.acceptance,
+    params: Object.prototype.hasOwnProperty.call(body, 'params') ? body.params : null,
+    groups: Object.prototype.hasOwnProperty.call(body, 'groups') ? body.groups : 'auto',
+    maxEvaluations,
+    maxModuleWeightedIntegrationSteps,
+    maxSamplesPerDataset,
+    metrics,
+  };
+}
+
+function ecmTuningRunEnvelope({
+  plan, result, cell, metrics, surface, maxInputSamples,
+  maxModuleWeightedIntegrationSteps, maxIntegrationSteps, maxSamplesPerDataset,
+  maxPreprocessedSamplesPerDataset,
+}) {
+  const model = {
+    id: ECM_TUNING_MODEL_ID,
+    version: ECM_TUNING_MODEL_VERSION,
+    implementationChecksum: ECM_TUNING_MODEL_IMPLEMENTATION_CHECKSUM,
+    dependencies: [...ECM_TUNING_MODEL_DEPENDENCIES],
+    dependencySha256: { ...ECM_TUNING_MODEL_DEPENDENCY_SHA256 },
+    cellChecksum: semanticDigest(cell),
+  };
+  const envelope = {
+    format: ECM_TUNING_RUN_FORMAT,
+    apiVersion: API_VERSION,
+    model,
+    cell: cell.id,
+    cellChecksum: model.cellChecksum,
+    plan,
+    result,
+    inputEvidence: {
+      calibrationDatasetCount: plan.trials.calibration.length,
+      validationDatasetCount: plan.trials.validation.length,
+      totalSamples: metrics.totalSamples,
+      moduleCount: metrics.moduleCount,
+    },
+    surfaceLimits: {
+      surface,
+      maxDatasetsPerPartition: MAX_CALIBRATION_DATASETS,
+      maxInputSamples,
+      maxModules: MAX_CALIBRATION_MODULES,
+      maxPreprocessedSamplesPerDataset,
+      appliedMaxPreprocessedSamplesPerDataset: maxSamplesPerDataset,
+      maxEvaluations: MAX_CALIBRATION_EVALUATIONS,
+      appliedMaxEvaluations: plan.budgets.maxEvaluations,
+      maxModuleWeightedIntegrationSteps: MAX_CALIBRATION_MODULE_WORK,
+      appliedMaxModuleWeightedIntegrationSteps: maxModuleWeightedIntegrationSteps,
+      appliedMaxIntegrationSteps: maxIntegrationSteps,
+      temporalCeilingDerivation: 'floor(appliedMaxModuleWeightedIntegrationSteps / maximum governed moduleCount)',
+    },
+    checksumSemantics: 'Plan, execution, dependency, request and run checksums identify exact canonical content and implementation bytes. They detect drift but do not authenticate a producer, establish custody or statistical independence, prove source metadata, or validate model accuracy.',
+  };
+  return { ...envelope, checksum: semanticDigest(envelope) };
+}
+
+function runEcmTuningSurface({
+  cell, calibrationDatasets, validationDatasets, acceptance, params, groups,
+  maxEvaluations, maxModuleWeightedIntegrationSteps, maxSamplesPerDataset,
+  metrics, surface, maxInputSamples, maxPreprocessedSamplesPerDataset,
+}) {
+  const maxIntegrationSteps = Math.floor(
+    maxModuleWeightedIntegrationSteps / metrics.moduleCount,
+  );
+  if (maxIntegrationSteps < 1) {
+    throw new RangeError('The module-weighted ECM tuning budget must allow at least one temporal integration step.');
+  }
+  const plan = planEcmTuning({
+    cell,
+    calibrationDatasets,
+    validationDatasets,
+    acceptance,
+    params,
+    groups,
+    maxEvaluations,
+    maxIntegrationSteps,
+    maxModuleWeightedIntegrationSteps,
+    maxSamplesPerDataset,
+  });
+  const result = executeEcmTuning({ plan, cell, calibrationDatasets, validationDatasets });
+  return ecmTuningRunEnvelope({
+    plan, result, cell, metrics, surface, maxInputSamples,
+    maxModuleWeightedIntegrationSteps, maxIntegrationSteps, maxSamplesPerDataset,
+    maxPreprocessedSamplesPerDataset,
+  });
+}
+
+function formatEcmTuningRun(run) {
+  const before = run.result.metrics.before;
+  const after = run.result.metrics.after;
+  const accepted = run.result.callerPolicyVerdict.accepted;
+  const fitted = [...new Set(run.plan.stages.flatMap(({ fit }) => fit))];
+  const lines = [
+    `ECM tuning ${accepted ? 'ACCEPTED' : 'REJECTED'} — ${run.cell}`,
+    `  Calibration voltage RMSE ${before.calibration.pooled.voltage.rmse.toFixed(3)} → ${after.calibration.pooled.voltage.rmse.toFixed(3)} mV/cell`,
+    `  Validation voltage RMSE ${before.validation.pooled.voltage.rmse.toFixed(3)} → ${after.validation.pooled.voltage.rmse.toFixed(3)} mV/cell (original full-rate holdout)`,
+    `  Validation maximum absolute error ${after.validation.pooled.voltage.maxAbs.toFixed(3)} mV/cell`,
+  ];
+  if (after.validation.pooled.temperature !== null) {
+    lines.push(
+      `  Validation module-maximum temperature RMSE ${before.validation.pooled.temperature.rmse.toFixed(3)} → ${after.validation.pooled.temperature.rmse.toFixed(3)} °C`,
+      `  Validation module-maximum temperature maximum absolute error ${after.validation.pooled.temperature.maxAbs.toFixed(3)} °C`,
+    );
+  }
+  const groupLines = run.plan.groups.map((group) => {
+    if (group.status === 'not-requested') {
+      return `    ${group.id}: not requested — excluded by the caller's exact group list`;
+    }
+    if (group.status === 'skipped' || group.status === 'blocked') {
+      return `    ${group.id}: ${group.status} — ${group.reasons.join(' ')}`;
+    }
+    const stage = run.result.stages.find(({ id }) => id === group.id);
+    if (stage?.status === 'blocked-sensitivity') {
+      return `    ${group.id}: blocked — ${stage.sensitivity.detail}`;
+    }
+    if (stage?.status === 'not-run-after-sensitivity-failure') {
+      return `    ${group.id}: not run — an earlier stage failed numerical sensitivity`;
+    }
+    return `    ${group.id}: active — executed`;
+  });
+  lines.push(
+    '',
+    '  Parameter groups',
+    ...groupLines,
+    `  Work ${run.result.work.candidateEvaluations.toLocaleString()} candidate evaluations, ${run.result.work.temporalIntegrationSteps.toLocaleString()} temporal integration steps, ${run.result.work.moduleWeightedIntegrationSteps.toLocaleString()} module-weighted integration steps`,
+    '',
+    pad('parameter', 16) + pad('initial', 14) + pad('candidate', 14) + pad('adopted', 14) + 'unit',
+    ...fitted.map((name) => {
+      const spec = PARAM_SPEC.find(({ id }) => id === name);
+      return pad(name, 16)
+        + pad(run.result.initialParams[name].toFixed(6), 14)
+        + pad(run.result.candidateParams[name].toFixed(6), 14)
+        + pad(run.result.adoptedParams[name].toFixed(6), 14)
+        + (spec?.unit || '');
+    }),
+    '',
+    accepted
+      ? 'The candidate passed the caller-predeclared acceptance policy and is the adopted parameter set.'
+      : 'The candidate failed at least one caller-predeclared acceptance check; the adopted parameter set remains the exact initial parameters.',
+    'Use --out run.json for the complete governed plan/result and --params-out params.json for the adopted parameters only.',
+  );
+  return lines.join('\n');
+}
+
 function emit(args, data, humanLines) {
   if (args.json || args.out) {
     const text = JSON.stringify(data, null, 2);
@@ -1216,6 +1536,28 @@ const COMMANDS = {
     if (args['params-out'] != null) {
       writeFileSync(args['params-out'], `${JSON.stringify(out.params, null, 2)}\n`);
       console.error(`Parameters written: ${args['params-out']}`);
+    }
+  },
+
+  // Staged ECM tuning keeps calibration and validation physically separate.
+  // The optimizer sees only the calibration partition; the original full-rate
+  // holdout is scored before and after, then the caller's predeclared policy
+  // decides whether the candidate may be adopted.
+  'tune-ecm'(args) {
+    const request = tuningCliRequest(args);
+    const run = runEcmTuningSurface({
+      ...request,
+      surface: 'cli',
+      maxInputSamples: MAX_CLI_CALIBRATION_SAMPLES,
+      maxPreprocessedSamplesPerDataset: MAX_PREPROCESSED_SAMPLES_PER_DATASET,
+    });
+    emit(args, run, formatEcmTuningRun(run));
+    if (args['params-out'] != null) {
+      writeFileSync(
+        args['params-out'],
+        `${JSON.stringify(run.result.adoptedParams, null, 2)}\n`,
+      );
+      console.error(`Adopted parameters written: ${args['params-out']}`);
     }
   },
 
@@ -1726,7 +2068,7 @@ const COMMANDS = {
           mcpCapabilities: mcpCapabilities.map((a) => ({ id: a.id, name: a.name })),
           localApiCapabilities: localApiCapabilities.map((a) => ({ id: a.id, name: a.name })),
           plannedCapabilities: addonsForSurface('planned').map((a) => ({ id: a.id, name: a.name })),
-          endpoints: ['/api/design', '/api/ontology', '/api/sim2', '/api/calibrate', '/api/search', '/api/fmu'],
+          endpoints: ['/api/design', '/api/ontology', '/api/sim2', '/api/calibrate', '/api/tune-ecm', '/api/search', '/api/fmu'],
           simulationLimits: {
             maxInputSamples: MAX_PROFILE_SAMPLES,
             maxModules: 64,
@@ -1743,6 +2085,22 @@ const COMMANDS = {
             maxPreprocessedSamplesPerDataset: DEFAULT_MAX_SAMPLES_PER_DATASET,
             maxEvaluations: MAX_CALIBRATION_EVALUATIONS,
             maxModuleWeightedIntegrationSteps: MAX_CALIBRATION_MODULE_WORK,
+          },
+          tuningLimits: {
+            requestFormat: ECM_TUNING_REQUEST_FORMAT,
+            runFormat: ECM_TUNING_RUN_FORMAT,
+            planFormat: ECM_TUNING_PLAN_FORMAT,
+            resultFormat: ECM_TUNING_RESULT_FORMAT,
+            maxBodyBytes: MAX_BODY_BYTES,
+            maxDatasetsPerPartition: MAX_CALIBRATION_DATASETS,
+            maxCombinedInputSamples: MAX_API_CALIBRATION_SAMPLES,
+            maxModules: MAX_CALIBRATION_MODULES,
+            maxPreprocessedSamplesPerDataset: DEFAULT_MAX_SAMPLES_PER_DATASET,
+            maxEvaluations: MAX_CALIBRATION_EVALUATIONS,
+            maxModuleWeightedIntegrationSteps: MAX_CALIBRATION_MODULE_WORK,
+            temporalCeilingDerivation: 'floor(maxModuleWeightedIntegrationSteps / maximum governed moduleCount)',
+            groups: ECM_TUNING_GROUPS.map(({ id }) => id),
+            acceptanceFields: [...ECM_TUNING_ACCEPTANCE_FIELDS],
           },
         });
       }
@@ -1830,6 +2188,21 @@ const COMMANDS = {
           const request = calibrationApiRequest(body);
           return runCalibrationSurface({
             ...request, surface: 'local-api', maxInputSamples: MAX_API_CALIBRATION_SAMPLES,
+          });
+        });
+      }
+
+      // Closed staged-tuning surface. The request contains canonical content,
+      // never paths, URLs or raw source bytes, and the authenticated caller
+      // must predeclare the acceptance policy before any model work begins.
+      if (url === '/api/tune-ecm' && req.method === 'POST') {
+        return withBody((body) => {
+          const request = tuningApiRequest(body);
+          return runEcmTuningSurface({
+            ...request,
+            surface: 'local-api',
+            maxInputSamples: MAX_API_CALIBRATION_SAMPLES,
+            maxPreprocessedSamplesPerDataset: DEFAULT_MAX_SAMPLES_PER_DATASET,
           });
         });
       }
@@ -2040,6 +2413,15 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
             traces, with immutable binding     --data export.csv --mapping mapping.json
                                                [--dataset-out canonical.json]
                                                [--out evidence.json --params-out params.json]
+  tune-ecm  staged calibration with fixed      --calibration calibration.json
+            full-rate validation holdout        --validation validation.json
+                                                --acceptance acceptance.json
+                                                [--groups auto|ID[,ID...]]
+                                                group IDs: ${ECM_TUNING_GROUPS.map(({ id }) => id).join(', ')}
+                                                [--params initial.json --cell ID]
+                                                [--max-evaluations N --max-module-work N]
+                                                [--max-samples N --out run.json]
+                                                [--params-out adopted.json --json]
   params    every coefficient, with bounds     [--cell ID] [--json --out params.json]
   sweep     one variable across a range        --vary cell|mass|payload|energy [--from --to --step]
   search    the whole design space, ranked     --app ev --rank cost|range|mass|density|upfront [--top N]

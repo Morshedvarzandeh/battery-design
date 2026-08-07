@@ -127,7 +127,7 @@ const INPUT_KEYS = new Set([
   'maxEvaluations', 'maxIntegrationSteps', 'maxModuleWeightedIntegrationSteps',
   'maxSamplesPerDataset', 'acceptance',
 ]);
-const ACCEPTANCE_KEYS = Object.freeze([
+export const ECM_TUNING_ACCEPTANCE_FIELDS = deepFreeze([
   'maxVoltageRmseMvPerCell', 'maxVoltageMaxAbsMvPerCell',
   'maxTemperatureRmseC', 'maxTemperatureMaxAbsC',
   'minValidationDatasets', 'minIncludedSamplesPerDataset', 'requiredModes',
@@ -161,8 +161,8 @@ function positiveFinite(value, label) {
 
 function acceptanceThresholds(value) {
   object(value, 'acceptance');
-  const unsupported = Object.keys(value).filter((key) => !ACCEPTANCE_KEYS.includes(key));
-  const missing = ACCEPTANCE_KEYS.filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
+  const unsupported = Object.keys(value).filter((key) => !ECM_TUNING_ACCEPTANCE_FIELDS.includes(key));
+  const missing = ECM_TUNING_ACCEPTANCE_FIELDS.filter((key) => !Object.prototype.hasOwnProperty.call(value, key));
   if (unsupported.length) throw new TypeError(`acceptance contains unsupported field(s): ${unsupported.join(', ')}.`);
   if (missing.length) throw new TypeError(`acceptance is missing required field(s): ${missing.join(', ')}.`);
   const maxVoltageRmseMvPerCell = positiveFinite(value.maxVoltageRmseMvPerCell, 'acceptance.maxVoltageRmseMvPerCell');

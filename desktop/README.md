@@ -29,6 +29,7 @@ node desktop/bd.mjs help
 | `range` | A drive-cycle study — consumption and range across mass × driving mode |
 | `sim2` | The full model: RC dynamics, entropic heat, per-module temperatures, coolant, aging |
 | `calibrate` | From the source/staged Node runner, import one governed trace mapping or consume a canonical dataset, then fit allowlisted existing model parameters |
+| `tune-ecm` | Plan and execute bounded staged ECM tuning against separate governed calibration and fixed validation trials |
 | `params` | Every coefficient, with units, bounds and where its default came from |
 | `fmu` | Export the editable FMI 2.0 source-FMU build kit. This command never emits a compiled `.fmu`; use the release artifact for a prebuilt Linux/Windows component |
 | `bom` | Every conductor sized, every joint checked for corrosion, and the bill of materials |
@@ -401,7 +402,7 @@ honest about the difference between what it found and what it assumed.
 
 ---
 
-## The level-2 model and its governed calibration path
+## The level-2 model and its governed calibration and tuning paths
 
 `js/sim2.js` is the simulation the desktop tier exists for. The browser model
 (level 1) answers *"does this pack survive the duty?"* with one resistance and
@@ -422,6 +423,9 @@ node desktop/bd.mjs sim2 --app ev --modules 8 --ambient 35 --years 8
 node desktop/bd.mjs calibrate --data solver-run.csv --mapping solver-run.mapping.json \
       --fit r0Ref,rc1R,rc1TauS --out calibration-result.json \
       --params-out my-cell.json
+node desktop/bd.mjs tune-ecm --calibration calibration-trials.json \
+      --validation validation-trials.json --acceptance acceptance.json \
+      --groups auto --out ecm-tuning-run.json --params-out adopted-params.json
 node desktop/bd.mjs sim2 --app ev --params my-cell.json   # now it uses the governed fitted parameters
 ```
 
@@ -479,6 +483,39 @@ is an optimizer regression rather than independent physics validation. Actual
 GT-AutoLion and Simcenter Amesim exports have **Not run**: no representative
 licensed fixtures or product-specific acceptance results are present. Generic
 column mapping must not be described as proprietary-tool compatibility.
+
+### Action 1 and Action 2
+
+`calibrate` is Action 1. It imports an exactly mapped raw trace or consumes a
+canonical dataset, then manually fits the caller's allowlisted parameters. Its
+`--out` file is complete calibration evidence and `--params-out` is the
+parameter-only artifact.
+
+`tune-ecm` is the separate Action 2. It accepts only governed canonical
+calibration-purpose and validation-purpose whole trials. It creates an
+immutable `battery-design/ecm-tuning-plan@1`, auto-skips unsupported groups
+with reasons (or blocks a failed explicitly requested group), runs normalized
+sensitivity/rank/correlation gates before each active stage, and returns an
+untouched `battery-design/ecm-tuning-result@1` inside the
+`battery-design/ecm-tuning-run@1` surface envelope. The authenticated local API
+exposes the same operation at `POST /api/tune-ecm`.
+
+Only calibration trials enter the optimizer. The fixed validation holdout is
+scored at its original full rate for pooled, per-trial and per-included-segment
+physical-unit gates. A result keeps diagnostic `candidateParams` separate from
+`adoptedParams`; rejection restores the initial parameters for adoption. Work
+is preflighted before simulation and counts cumulative temporal integration
+and module-weighted thermal-node steps across sensitivity probes, optimizer
+proposals and fixed scoring.
+
+Portable plan/result evidence is versioned and content-addressed but contains
+no raw current, voltage, temperature or Jacobian arrays. Its checksums identify
+content; they do not authenticate a producer, prove holdout statistical
+independence, or establish proprietary-model accuracy or compatibility. The
+workflow remains source/staged CLI and authenticated local API only—there is no
+desktop-GUI or MCP tuning surface. See
+[Governed staged ECM tuning](../docs/ECM_TUNING.md) for its groups, service
+limits, artifact boundary and fail-closed acceptance rules.
 
 ---
 

@@ -187,6 +187,10 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           path: 'tests/ecm-tuning-plan.test.mjs',
           assertion: 'The tuning planner rejects calibration/holdout overlap through observation, trial, raw/prepared scored-electrical, raw-source and source-run checks without blocking controlled condition matrices inside training.',
         },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'The Action 2 guide describes exact duplicate/leakage guards without promoting them into statistical-independence or custody evidence.',
+        },
       ],
       affectedSurfaces: ['cli', 'local-api'],
       tags: ['calibration', 'data-leakage', 'holdout', 'identity', 'validation'],
@@ -205,6 +209,16 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/calibration-dataset.test.mjs',
           note: 'Dataset purpose and complete-checksum identity regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Cross-partition purpose-neutral raw/preprocessed identity collision regressions.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Exact leakage-guard boundary and explicit statistical-independence limitation.',
         },
       ],
     }),
@@ -246,6 +260,10 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           path: 'tests/ecm-tuning.test.mjs',
           assertion: 'A short bad validation segment fails its predeclared per-segment voltage gate even while the pooled and whole-trial RMSE values pass.',
         },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'The Action 2 guide requires original-rate pooled, per-trial and per-included-segment scoring and fail-closed adoption.',
+        },
       ],
       affectedSurfaces: ['cli', 'local-api'],
       tags: ['acceptance', 'calibration', 'holdout', 'metrics', 'validation'],
@@ -259,6 +277,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/ecm-tuning.test.mjs',
           note: 'Localized holdout-error masking and non-adoption regression.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Fixed full-rate holdout levels and candidate-versus-adopted result boundary.',
         },
       ],
     }),
@@ -392,6 +415,10 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           path: 'tests/ecm-tuning.test.mjs',
           assertion: 'Execution requires finite normalized sensitivity, full numerical rank and bounded correlation before fitting, and rejects rather than adopts a failed stage.',
         },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'The Action 2 guide distinguishes coverage gates from local numerical sensitivity and from any global-identifiability claim.',
+        },
       ],
       affectedSurfaces: ['cli', 'local-api'],
       tags: ['arrhenius', 'calibration', 'confounding', 'ecm', 'identifiability', 'parameter-selection'],
@@ -425,6 +452,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/ecm-tuning.test.mjs',
           note: 'Sensitivity, constrained-candidate and non-adoption execution regressions.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Group skip/block, local sensitivity and identifiability-claim boundary.',
         },
       ],
     }),
@@ -506,7 +538,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
       rootCause: 'Calibration evidence described numeric outcome but lacked a content-addressed lineage envelope separating reproducible identity, producer authentication and private source data.',
       resolution: [
-        'Bind request, canonical dataset, algorithm version, model implementation and cell implementation checksums into a deterministic versioned result identity.',
+        'Bind request, canonical dataset, plan and policy versions, model implementation and cell implementation checksums into a deterministic versioned result identity.',
         'State that these digests establish reproducible content identity rather than producer authentication, and keep raw signal arrays out of portable results.',
       ],
       prevention: [
@@ -517,6 +549,14 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           path: 'tests/calibration-surfaces.test.mjs',
           assertion: 'Calibration results carry deterministic request, dataset, algorithm, model and cell identities with identity-not-authentication semantics and no raw traces.',
+        },
+        {
+          path: 'tests/ecm-tuning.test.mjs',
+          assertion: 'ECM tuning results bind the rebuilt plan, execution policy, cell and trial identities, reject forged nested content, and retain no raw signal or Jacobian arrays.',
+        },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'The Action 2 guide distinguishes content-addressed result identity from authentication, custody, independence and accuracy.',
         },
       ],
       affectedSurfaces: ['cli', 'local-api'],
@@ -533,9 +573,24 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           note: 'Versioned algorithm behavior and deterministic calibration evidence inputs.',
         },
         {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning-executor.js',
+          note: 'Nested plan, execution-policy, trial, scalar-metric and result identities without raw signal retention.',
+        },
+        {
           kind: 'test',
           locator: 'tests/calibration-surfaces.test.mjs',
           note: 'Result identity sensitivity, privacy and reproducibility regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning.test.mjs',
+          note: 'Nested checksum integrity, rechecksummed-plan rejection and raw-trace privacy regressions.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Portable tuning artifact and checksum non-authentication boundary.',
         },
       ],
     }),
@@ -1280,12 +1335,15 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'The source and staged Node entry point implements a calibration CLI, while the installed desktop packages expose the runner application and do not yet install an independent bd command wrapper.',
         'Only the CLI importer accepts mapped delimited or columnar-JSON traces; the authenticated local API accepts canonical datasets and cannot normalize raw source exports.',
         'When temperature weighting is enabled, rmseBefore and rmseAfter are voltage RMSE plus weightTemp times temperature RMSE, but the earlier human formatter appended V to that combined score.',
+        'The staged-tuning capability response initially advertised formats, group ids and resource ceilings but omitted the exact nine-field caller acceptance contract even though every field is mandatory and the request fails closed on omissions or additions.',
+        'The CLI help rendered auto followed by all six group ids as one comma-separated alternative, which could be read as requiring the complete list even though any nonempty exact subset is accepted.',
+        'Documentation initially labeled maxSamplesPerDataset as a calibration-only preprocessing cap even though both partitions can have a prepared planning grid while validation scoring alone remains fixed at the original full rate.',
       ],
       detection: [
         {
           method: 'negative surface-capability regression',
           signal: 'Compare the registry, capabilities response, visible GUI controls, MCP tool list, installed entry points, accepted request contracts and human metric labels with their executable implementations.',
-          failureCondition: 'Customer-facing copy assigns a capability to a surface that cannot execute it or gives a combined objective the unit of only one constituent metric.',
+          failureCondition: 'Customer-facing copy assigns a capability to a surface that cannot execute it, omits a required closed request field, misstates accepted group grammar or prepared-grid scope, or gives a combined objective the unit of only one constituent metric.',
         },
       ],
       causalChain: [
@@ -1294,15 +1352,19 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Source-tree and staged-entry execution is also treated as proof that the installed package ships a same-named command wrapper.',
         'Raw import and canonical fitting are described as one undifferentiated operation even though only the CLI owns the importer.',
         'A generic rmse field is formatted as volts without checking whether it contains a weighted temperature term.',
+        'Capabilities, help and prose each hand-maintain a partial projection of the same closed request, so required fields and grid semantics can disappear or be simplified differently on each surface.',
         'Customer copy therefore inherits behavior or units that the underlying surface and metric contracts do not provide.',
       ],
       rootCause: 'Customer-facing capability and metric prose was maintained independently from structured per-surface request and result contracts, so convenient grouping replaced an exact implementation projection.',
       resolution: [
-        'Declare governed calibration as its own shipped add-on on CLI and local API only, separate from the desktop-GUI simulation add-on.',
-        'State explicitly that MCP provides design and review automation but does not run calibration, and expose local-API capabilities separately from GUI and MCP lists.',
-        'Describe CLI commands as source/staged entry-point capabilities until package manifests and installed-tree smoke tests prove a real installed wrapper.',
+        'Declare governed Action 1 calibration and Action 2 staged ECM tuning as separate shipped add-ons on CLI and local API only, apart from the desktop-GUI simulation add-on.',
+        'State explicitly that MCP provides design and review automation but runs neither calibration nor ECM tuning, and expose local-API capabilities separately from GUI and MCP lists.',
+        'Describe calibration and tuning CLI commands as source/staged entry-point capabilities until package manifests and installed-tree smoke tests prove a real installed wrapper.',
         'Assign mapped raw-trace normalization only to the CLI importer and describe both CLI and authenticated API fitting as canonical-dataset consumers.',
         'Print voltage and temperature RMSE separately with their physical units, then label their weighted sum as an objective score without a physical unit.',
+        'Advertise all nine required caller-acceptance field names in local-API capabilities, and test the exact ordered projection in source, staged and installed runners.',
+        'Render group help as auto or one-to-six comma-separated ids rather than making the complete allowed-id catalog look like one required value.',
+        'Label maxSamplesPerDataset as a prepared planning/optimizer-grid ceiling per dataset while stating separately that validation scoring always uses the original full-rate holdout.',
       ],
       prevention: [
         'Test negative surface assertions as well as positive ones whenever a capability is added or moved.',
@@ -1310,11 +1372,13 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Distinguish source, staged and installed entry points in release claims and exercise the exact path customers receive.',
         'Require exact wording tests when one add-on spans surfaces with different accepted input contracts.',
         'Drive human metric labels from explicit result fields and test every multi-metric weighting mode for correct units.',
+        'For every closed request, compare capabilities and help with the authoritative required/optional key sets and fail on an omitted required field.',
+        'Name the data grid and partition role on every sample-count ceiling; a generic preprocessing label is insufficient when planning and scoring use different grids.',
       ],
       regressionTests: [
         {
           path: 'tests/addons.test.mjs',
-          assertion: 'Calibration surface copy assigns raw normalization only to the CLI importer, canonical fitting to CLI/API, and explicitly excludes desktop GUI and MCP.',
+          assertion: 'Action 1 and Action 2 are separate add-ons; raw normalization stays with the CLI importer, while tuning is declared exactly on CLI/local API and excludes desktop GUI and MCP.',
         },
         {
           path: 'tests/calibration-surfaces.test.mjs',
@@ -1322,7 +1386,15 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         },
         {
           path: 'tests/packaged-tree.test.mjs',
-          assertion: 'Package tests distinguish the staged bd entry point from the installed runner and do not invent an unshipped installed CLI wrapper.',
+          assertion: 'Package tests distinguish the staged bd entry point from the installed runner and pin exact tuning formats, caps and required acceptance fields without inventing an installed CLI wrapper.',
+        },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'Product guides pin tune-ecm to CLI/local API, make negative GUI/MCP assertions and separate prepared-grid ceilings from original-full-rate validation scoring.',
+        },
+        {
+          path: 'tests/ecm-tuning-surfaces.test.mjs',
+          assertion: 'Source CLI/API tests pin exact acceptance-field discovery, subset group-help grammar, resource caps and negative GUI/MCP surfaces.',
         },
       ],
       affectedSurfaces: ['browser', 'cli', 'documentation', 'local-api', 'mcp', 'packaging'],
@@ -1341,7 +1413,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           kind: 'test',
           locator: 'tests/addons.test.mjs',
-          note: 'Exact raw-import and canonical-fit surface wording assertions.',
+          note: 'Exact Action 1/Action 2 separation and positive/negative tuning-surface assertions.',
         },
         {
           kind: 'test',
@@ -1351,7 +1423,22 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           kind: 'test',
           locator: 'tests/packaged-tree.test.mjs',
-          note: 'Staged and installed entry-point truthfulness regression.',
+          note: 'Staged entry-point and exact tuning capability-contract regression.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Canonical Action 2 CLI/local-API surface, artifact and non-claim boundary.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-documentation.test.mjs',
+          note: 'Documentation surface, artifact and negative-proprietary-claim regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-surfaces.test.mjs',
+          note: 'Exact tuning capability, help grammar, acceptance-field and cap projection regressions.',
         },
       ],
     }),
@@ -1610,6 +1697,88 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/fmi-package-design-binding.test.mjs',
           note: 'No-claim, self-claim, mismatch and trusted-match regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-test-multiplier-denominator-drift',
+      title: 'Test-count delta is mistaken for a promised coverage multiplier',
+      symptom: 'A delivery reports that testing doubled because 91 top-level tests were added after a convenient checkpoint, even though the promised two-times comparison was against Action 1 and no stable denominator or identical counting population was recorded.',
+      evidence: [
+        'A count of tests newly added since a commit is a delta, while a two-times claim is a ratio that requires a named baseline population and denominator.',
+        'Changing file globs, counting declarations instead of executed cases, or including different repository populations on only one side can change the apparent ratio without adding coverage.',
+        'Action-focused and repository-global totals answer different questions; presenting either as the other hides whether the requested action itself received the promised depth.',
+        'Using one exact repository-global top-level declaration count, pre-Action 1 commit 66f7240 had 708 tests and post-Action 1 commit 4da8c03 had 758, making the Action 1 denominator increase exactly 50.',
+        'The 6094b3b checkpoint had 824 tests; the 91-test checkpoint delta was substantial but still only 91/50, while the corrected Action 2 tree must reach at least 858 total declarations for an increase of at least 100 over 4da8c03.',
+      ],
+      detection: [
+        {
+          method: 'reproducible test-population audit',
+          signal: 'At each pinned revision run `rg -n "^test\\(" tests --glob "*.test.mjs" | wc -l`, label the result repository-global top-level test declarations, and subtract the same 4da8c03 population.',
+          failureCondition: 'A multiplier is claimed without the 50-test Action 1 denominator and pinned revisions/command, a different population is used on either side, or the corrected Action 2 tree contains fewer than 858 declarations.',
+        },
+      ],
+      causalChain: [
+        'A request asks for twice the tests as complexity increases.',
+        'Implementation adds many tests and reports the number added since a convenient commit.',
+        'The delta is compared informally with an unstated memory of earlier coverage rather than a measured Action 1 denominator.',
+        'A large but non-comparable number is promoted into a fulfilled multiplier claim and the shortfall appears only during final audit.',
+      ],
+      rootCause: 'The quality promise did not pin its comparison population, base revision and counting procedure before implementation, so a commit delta, an action-focused total and a repository-global total became interchangeable.',
+      resolution: [
+        'Pin pre-Action 1 commit 66f7240 at 708 declarations and post-Action 1 commit 4da8c03 at 758 declarations, establishing the exact repository-global Action 1 increase of 50.',
+        'Use `rg -n "^test\\(" tests --glob "*.test.mjs" | wc -l` unchanged at every revision; this counts top-level test declarations, not runtime pass/skip events or action-only cases.',
+        'Retain 6094b3b at 824 only as an intermediate Action 2 checkpoint, never as the Action 1 denominator.',
+        'Label the comparison repository-global, state the 50-test denominator beside the multiplier, and require the current Action 2 tree to reach at least 858 declarations for a numerator increase of at least 100.',
+      ],
+      prevention: [
+        'Turn qualitative test multipliers into a predeclared measurement note before coding: both boundary commits, denominator, exact command and whether declarations or runtime results are counted.',
+        'Report raw revision counts and their subtraction with the ratio so reviewers can reproduce the claim without inferring what was counted.',
+        'Keep global regression health separate from action-specific adversarial depth; both are valuable and neither substitutes for the other.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The denominator-drift record is resolved, retrievable by lookup/search, and pins 66f7240=708, 4da8c03=758, 6094b3b=824, the exact top-level command and the >=858 correction.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['audit', 'metrics', 'quality', 'testing'],
+      references: [
+        {
+          kind: 'commit',
+          locator: '66f7240',
+          note: 'Pinned pre-Action 1 revision with 708 repository-global top-level test declarations.',
+        },
+        {
+          kind: 'commit',
+          locator: '4da8c03',
+          note: 'Pinned post-Action 1 revision with 758 declarations and the 50-test denominator.',
+        },
+        {
+          kind: 'commit',
+          locator: '6094b3bd5e5afbb3069fd9ba8a7c5d1558600d6f',
+          note: 'Intermediate Action 2 checkpoint with 824 declarations; not the Action 1 denominator.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Action 2 planning and experiment-governance cases in the focused population.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning.test.mjs',
+          note: 'Action 2 bounded-execution and holdout cases in the focused population.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-surfaces.test.mjs',
+          note: 'Action 2 CLI/local-API contract cases in the focused population.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/packaged-tree.test.mjs',
+          note: 'Isolated staged-package execution cases in the focused population.',
         },
       ],
     }),

@@ -6,6 +6,17 @@ import type {
 import type { CalibrationPreprocessingEvidence } from './calibration-dataset.js';
 
 export const ECM_TUNING_PLAN_FORMAT: 'battery-design/ecm-tuning-plan@1';
+export const ECM_TUNING_ACCEPTANCE_FIELDS: readonly [
+  'maxVoltageRmseMvPerCell',
+  'maxVoltageMaxAbsMvPerCell',
+  'maxTemperatureRmseC',
+  'maxTemperatureMaxAbsC',
+  'minValidationDatasets',
+  'minIncludedSamplesPerDataset',
+  'requiredModes',
+  'requireNoHoldoutRegression',
+  'requireNoFittedParameterAtBound',
+];
 
 export type EcmTuningGroupId =
   | 'ohmic'

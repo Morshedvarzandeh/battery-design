@@ -1,4 +1,4 @@
-# Governed synthetic calibration data
+# Governed synthetic calibration data — Action 1
 
 This workflow brings an external time trace into the existing battery-design
 equivalent-circuit/lumped-thermal calibrator without guessing what any source
@@ -9,6 +9,14 @@ and the optimizer consumes only that snapshot.
 It does not make battery-design a P2D electrochemistry solver or a CFD solver.
 It also does not establish compatibility with a named commercial product merely
 because a caller writes that product's name into source metadata.
+
+This is calibration **Action 1**: governed trace ingestion and bounded manual
+fitting of a caller-selected parameter allowlist. The separately shipped
+[Action 2 staged ECM tuning workflow](ECM_TUNING.md) consumes distinct
+calibration-purpose and validation-purpose canonical datasets, applies group
+coverage and numerical-sensitivity gates, and separates diagnostic candidate
+parameters from fail-closed adopted parameters. Action 2 does not ingest raw
+vendor files or change this mapping contract.
 
 ## What is shipped
 
@@ -29,7 +37,8 @@ One dataset is one explicitly rested state-reset trial. A joint fit can accept u
 compatible trials. Every trial must bind the same non-null catalog cell, S/P
 and module topology; starting SoC and ambient temperature may differ by trial
 and are taken from each immutable dataset binding. This makes multi-context
-ingestion possible without adding a new tuning strategy in this phase.
+Action 1 fitting possible. Automatic staged group selection belongs to the
+separately governed Action 2 workflow.
 
 ## Normalize a source trace
 
@@ -308,11 +317,17 @@ The internal synthetic recovery test generates observations with the same
 battery-design equations and verifies that the optimizer can recover known
 parameters. That is an optimizer regression, not independent model validation.
 
-## Phase boundary
+## Action boundary
 
-This phase adds governed ingestion into the existing calibrator. It does not
-add a vendor-specific calibration recipe, parameter-identifiability study,
-multi-temperature Arrhenius workflow, new RC network, SEI or lithium-plating
-equations, CFD field reduction, or an accuracy claim against proprietary
-ground truth. Those belong to the next calibration action and require their own
-data, acceptance criteria and commits.
+Action 1 adds governed ingestion into the existing calibrator. It does not add
+a vendor-specific calibration recipe, automatic parameter selection, new RC
+network, SEI or lithium-plating equations, CFD field reduction, or an accuracy
+claim against proprietary ground truth.
+
+Action 2 is now separately shipped on the source/staged CLI and authenticated
+local API. It adds a versioned staged recipe for the existing ECM allowlist,
+multi-condition coverage gates, normalized local-sensitivity checks and fixed
+full-rate holdout scoring. Those checks mitigate specific experiment-design
+and score-masking failures; they do not prove global parameter identifiability,
+holdout statistical independence or proprietary-model accuracy. See
+[Governed staged ECM tuning](ECM_TUNING.md) for that contract and its limits.
