@@ -709,7 +709,14 @@ function issue(code, path, message, repair = null) {
 }
 
 function copyIfMissing(target, key, source, sourceKey = key) {
-  if (!own(target, key) && source && own(source, sourceKey)) target[key] = source[sourceKey];
+  // Grouped fields may use null to mean “no optional constraint”.  Their
+  // legacy flat aliases are non-nullable, so projecting that sentinel creates
+  // a value that the same schema then rejects.  Preserve the grouped null and
+  // leave the flat alias absent; real falsey values still project and are
+  // validated normally.
+  if (!own(target, key) && source && own(source, sourceKey) && source[sourceKey] != null) {
+    target[key] = source[sourceKey];
+  }
 }
 
 function jsonEqual(a, b) {

@@ -391,6 +391,70 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-nullable-alias-projection',
+      title: 'Nullable grouped option becomes an invalid legacy alias',
+      symptom: 'A schema-valid browser DesignSpec is rejected by the governed API because an optional grouped null is copied into a non-nullable flat compatibility field.',
+      evidence: [
+        'The GUI legitimately emits null for unset requirements.maxMassKg, requirements.maxDimsMm and requirements.profileScaleW.',
+        'Normalization copied those null sentinels to flat maxMassKg, maxDimsMm and profileScaleW, after which strict validation rejected the generated aliases.',
+      ],
+      detection: [
+        {
+          method: 'cross-shape normalization regression',
+          signal: 'Strictly normalize grouped optional nulls and inspect both the grouped values and generated flat aliases.',
+          failureCondition: 'Normalization creates a non-nullable flat property from a grouped null or rejects the otherwise valid grouped specification.',
+        },
+      ],
+      causalChain: [
+        'The grouped DesignSpec contract uses null as an explicit no-constraint value.',
+        'Backwards-compatible normalization projects grouped properties onto older flat aliases whenever the key exists.',
+        'The projection copies null even though the flat alias accepts only a concrete number, object or string.',
+        'Strict validation evaluates the normalized object and rejects the alias created by normalization itself.',
+      ],
+      rootCause: 'Compatibility projection treated property presence as sufficient without reconciling the grouped nullable domain with the narrower legacy alias domain.',
+      resolution: [
+        'Project grouped compatibility aliases only when the source value is not null or undefined.',
+        'Retain the grouped null so the caller’s explicit no-constraint state remains visible and immutable.',
+      ],
+      prevention: [
+        'Test every grouped-to-flat alias at null, falsey-valid and representative concrete values under strict closed validation.',
+        'Require browser-to-governed-API E2E coverage for the default unset optional fields.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/design-spec.test.mjs',
+          assertion: 'Strict closed normalization preserves grouped nulls without creating invalid flat aliases.',
+        },
+        {
+          path: 'tests/e2e/runner.spec.mjs',
+          assertion: 'The default browser design exports through the governed runner and produces the canonical FMI download and mapping.',
+        },
+        {
+          path: 'tests/runner-security.test.mjs',
+          assertion: 'The authenticated governed FMU API accepts grouped optional nulls without generating invalid flat fields.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'ci', 'design-spec', 'local-api'],
+      tags: ['alias', 'compatibility', 'design-spec', 'normalization', 'null'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/design-spec.js',
+          note: 'Grouped-to-flat compatibility projection and governed normalization.',
+        },
+        {
+          kind: 'incident',
+          locator: 'GitHub Actions run 31171091488 job 92843162531',
+          note: 'Hosted runner export failure for unset optional browser requirements.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/design-spec.test.mjs',
+          note: 'Strict grouped-null projection regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-packaged-dependency-omission',
       title: 'Packaged runtime omits a newly imported dependency tree',
       symptom: 'The source checkout runs correctly, but staged desktop bd and MCP entry points fail at startup because an imported top-level runtime tree is absent from the package.',

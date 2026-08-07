@@ -189,6 +189,22 @@ test('runner FMU export binds one strict DesignSpec to the returned port and lay
   ok(ioMap.guid === built.guid && ioMap.contractChecksum === built.ioContractChecksum,
     'the independently readable port map belongs to the same component');
 
+  const nullableSpec = structuredClone(spec);
+  delete nullableSpec.maxMassKg;
+  delete nullableSpec.maxDimsMm;
+  delete nullableSpec.profileScaleW;
+  nullableSpec.requirements = {
+    maxMassKg: null,
+    maxDimsMm: null,
+    profileScaleW: null,
+  };
+  const nullableResponse = await api(runner.base, '/api/fmu', {
+    method: 'POST', body: { spec: nullableSpec },
+  });
+  const nullableBuilt = await nullableResponse.json();
+  ok(nullableResponse.status === 200 && nullableBuilt.designComplete === true,
+    `grouped optional nulls remain valid across the governed API: ${nullableBuilt.error || ''}`);
+
   const missingSpec = await api(runner.base, '/api/fmu', {
     method: 'POST', body: {},
   });

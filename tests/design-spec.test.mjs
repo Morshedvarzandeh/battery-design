@@ -124,6 +124,58 @@ test('governed closure accepts composed evidence and preserves intentional open 
   }, { strict: true, closed: true }), /typoMetric: Field is not declared/);
 });
 
+test('nullable grouped options remain absent from non-null legacy aliases', () => {
+  const nullableRequirementKeys = [
+    'energyWh', 'deliveredWh', 'contPowerW', 'peakPowerW', 'chargeRateC',
+    'maxMassKg', 'maxDimsMm', 'cyclesPerYear', 'targetYears', 'profileScaleW',
+  ];
+  const normalized = normalizeDesignSpec({
+    schemaVersion: DESIGN_SPEC_SCHEMA_VERSION,
+    application: 'custom',
+    requirements: Object.fromEntries(nullableRequirementKeys.map((key) => [key, null])),
+    regulatory: {
+      batteryCategory: null,
+      evaluationDate: null,
+    },
+  }, { strict: true, closed: true });
+
+  for (const key of nullableRequirementKeys) {
+    assert.equal(normalized.requirements[key], null, `grouped ${key} preserves null`);
+    assert.equal(Object.hasOwn(normalized, key), false, `flat ${key} remains absent`);
+  }
+  assert.equal(Object.hasOwn(normalized, 'batteryCategory'), false);
+  assert.equal(Object.hasOwn(normalized, 'evaluationDate'), false);
+
+  const concreteRequirements = {
+    energyWh: 1000,
+    deliveredWh: 800,
+    contPowerW: 0,
+    peakPowerW: 0,
+    chargeRateC: 0,
+    maxMassKg: 20,
+    maxDimsMm: { x: 400, y: 300, z: 120 },
+    cyclesPerYear: 100,
+    targetYears: 5,
+    profileScaleW: 2000,
+  };
+  const concrete = normalizeDesignSpec({
+    schemaVersion: DESIGN_SPEC_SCHEMA_VERSION,
+    application: 'custom',
+    requirements: concreteRequirements,
+  }, { strict: true, closed: true });
+  for (const [key, value] of Object.entries(concreteRequirements)) {
+    assert.deepEqual(concrete[key], value, `non-null ${key} projects exactly`);
+  }
+
+  const flatWins = normalizeDesignSpec({
+    schemaVersion: DESIGN_SPEC_SCHEMA_VERSION,
+    application: 'custom',
+    maxMassKg: 25,
+    requirements: { maxMassKg: null },
+  }, { strict: true, closed: true });
+  assert.equal(flatWins.maxMassKg, 25, 'an explicit valid flat value retains precedence');
+});
+
 test('architecture and thermal choices are consumed by the canonical engine run', () => {
   const design = designFromSpec({
     application: 'ebike',
