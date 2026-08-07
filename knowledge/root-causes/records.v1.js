@@ -1076,6 +1076,67 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-loop-contract-identity-gap',
+      title: 'Loop-test execution trusts a mutable schema-labelled contract',
+      symptom: 'A SIL plan or HIL contract changes after review, or a schema-only object reaches execution without the required governed fields.',
+      evidence: [
+        'The original builders froze only the outer object and arrays, leaving nested cases, expected limits, channels and run options mutable.',
+        'The SIL runner and HIL evaluator checked only the schema string before consuming caller-owned nested content.',
+        'Neither contract had a canonical content digest that a retained review record could compare with the executed snapshot.',
+        'Sparse arrays were serialized like explicit nulls while map and every skipped their holes, allowing a one-hole SIL case list to pass without an adapter call and a one-hole HIL fault list to waive every fault check.',
+        'A negative measured overrun count was treated as an integer and compared numerically below the allowed maximum, so impossible evidence could pass the overrun check.',
+        'Requiring a checksum while retaining the original @1 schema would silently redefine already serialized documents instead of declaring a new wire contract.',
+      ],
+      detection: [
+        {
+          method: 'nested-mutation and forged-envelope regression',
+          signal: 'Change a nested oracle or safe value; submit sparse arrays or a negative measured overrun count; omit or add fields; or submit only the expected schema label.',
+          failureCondition: 'Execution or evidence evaluation starts without exact reconstruction, checksum verification and recursive immutability.',
+        },
+      ],
+      causalChain: [
+        'A version string is treated as sufficient proof that an object was created by the governed builder.',
+        'Only the outer container is frozen, so nested acceptance limits and I/O facts remain caller-mutable.',
+        'Array length is treated as evidence of content even though JavaScript iteration skips sparse slots and canonical JSON represents them as null.',
+        'The runner consumes those values without reconstructing the canonical contract.',
+        'The executed test can differ from the reviewed test while retaining the same visible schema label.',
+      ],
+      rootCause: 'Contract versioning, structural validation, immutable ownership and content identity were conflated; the execution boundary had no single verifier for untrusted serialized plans.',
+      resolution: [
+        'Create canonical deep-frozen SIL and HIL snapshots with deterministic content checksums.',
+        'Close every governed contract object, validate arbitrary input/run-option data as finite JSON, and reject missing, unknown or invalid fields.',
+        'Require dense arrays before every map/every operation so a declared case, channel or fault cannot be an absent slot.',
+        'Accept measured overrun counts only as non-negative safe integers before comparing them with the contract maximum.',
+        'Publish checksummed snapshots as @2 and rematerialize legacy @1 documents only through explicit migration helpers.',
+        'Reconstruct and verify each contract before execution, with an optional independently retained expected checksum for custody-sensitive use.',
+      ],
+      prevention: [
+        'Route every persisted loop-testing contract through one verifier at the execution boundary rather than checking its schema label directly.',
+        'Test nested mutation, schema-only forgery, sparse arrays, signed count boundaries, unknown fields and coordinated new identities separately.',
+        'Describe self-contained checksums as content identity, not producer authentication or hardware evidence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/loop-testing.test.mjs',
+          assertion: 'SIL and HIL snapshots are deterministic and deeply frozen; strict verification rejects nested mutation, sparse cases/faults, negative overrun evidence, unknown or missing fields and schema-only objects, while legacy @1 migration is explicit.',
+        },
+      ],
+      affectedSurfaces: ['browser'],
+      tags: ['checksum', 'contract', 'hil', 'immutability', 'sil', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/loop-testing.js',
+          note: 'Canonical snapshot builders and strict execution-boundary verifiers.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/loop-testing.test.mjs',
+          note: 'Contract identity, deep-freeze and forged-envelope regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-nelder-mead-bound-simplex-collapse',
       title: 'Bound clamping collapses the Nelder–Mead initial simplex',
       symptom: 'Calibration declares convergence immediately or cannot move a parameter when its starting value is already on a declared bound.',
@@ -1198,11 +1259,13 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'The allowlist was stored in a normal JavaScript object and membership was tested with a truthy property lookup.',
         'Names inherited from Object.prototype therefore appeared present even though they were not own entries in the parameter registry.',
         'Spreading the caller map retained the unexpected own property while later loops over declared parameter specifications never validated or used it.',
+        'A SIL output path such as constructor.length could traverse inherited properties and satisfy an oracle even when the adapter reported no own output value.',
+        'HIL identity, I/O, fault and safe-state evidence inherited from custom prototypes could satisfy pass checks without one own measured field.',
       ],
       detection: [
         {
           method: 'prototype-name boundary fuzzing',
-          signal: 'Submit constructor, toString, valueOf and __proto__-shaped keys anywhere an object-backed allowlist guards external names.',
+          signal: 'Submit constructor, toString, valueOf and __proto__-shaped keys anywhere an object-backed allowlist or dotted output path guards external names.',
           failureCondition: 'Any inherited name passes membership without an own registry entry or survives into the governed result.',
         },
       ],
@@ -1217,6 +1280,8 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Test registry membership with Object.hasOwn, a Set, a Map or an intentionally null-prototype dictionary.',
         'Apply the same own-key rule at both the automatic tuning planner and the core calibrateDatasets parameter-override boundary.',
         'Keep the subsequent value validation driven by the same canonical registry so accepted names and validated names cannot diverge.',
+        'Traverse SIL output paths only through own properties and reject prototype-control path segments before execution.',
+        'Require every HIL identity and measured-evidence lookup to be an own property of the supplied evidence maps.',
       ],
       prevention: [
         'Include common prototype member names in every exact-key and parameter-allowlist negative test matrix.',
@@ -1230,6 +1295,10 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           path: 'tests/sim2.test.mjs',
           assertion: 'The core governed-dataset calibrator rejects constructor and toString parameter overrides as unknown own-key violations.',
+        },
+        {
+          path: 'tests/loop-testing.test.mjs',
+          assertion: 'SIL rejects prototype-control output paths and inherited output/unit properties cannot satisfy an oracle; inherited HIL identity, I/O, fault and safe-state values cannot prove a pass.',
         },
       ],
       affectedSurfaces: ['browser', 'cli', 'local-api'],
@@ -1246,6 +1315,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           note: 'Core calibrateDatasets parameter override boundary using the same own-key registry rule.',
         },
         {
+          kind: 'implementation',
+          locator: 'js/loop-testing.js',
+          note: 'Own-property-only SIL output traversal, prototype-path rejection and HIL evidence lookups.',
+        },
+        {
           kind: 'test',
           locator: 'tests/ecm-tuning-plan.test.mjs',
           note: 'Inherited registry-name rejection regression.',
@@ -1254,6 +1328,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/sim2.test.mjs',
           note: 'Core constructor and toString override rejection regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/loop-testing.test.mjs',
+          note: 'Inherited SIL output/unit and HIL evidence rejection regressions.',
         },
       ],
     }),

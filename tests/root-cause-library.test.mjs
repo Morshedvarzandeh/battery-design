@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 29);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 30);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -75,6 +75,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-final-artifact-identity-gap',
     'rc-fmi-calibration-key-ignored',
     'rc-fmi-representation-drift',
+    'rc-loop-contract-identity-gap',
     'rc-nelder-mead-bound-simplex-collapse',
     'rc-nullable-alias-projection',
     'rc-object-allowlist-prototype-bypass',
@@ -101,6 +102,24 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     assert.ok(record.resolution.length && record.prevention.length);
     assert.ok(record.detection.every((item) => item.method && item.signal && item.failureCondition));
   }
+});
+
+test('loop-contract memory preserves the mutation, identity and trust-boundary fix', () => {
+  const record = getRootCauseRecord('rc-loop-contract-identity-gap');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.rootCause, /versioning[\s\S]*structural validation[\s\S]*content identity/i);
+  assert.match(record.evidence.join(' '), /sparse arrays[\s\S]*waive every fault check/i);
+  assert.match(record.evidence.join(' '), /negative measured overrun count[\s\S]*could pass/i);
+  assert.match(record.resolution.join(' '), /deep-frozen[\s\S]*dense arrays[\s\S]*non-negative safe integers[\s\S]*@2[\s\S]*expected checksum/i);
+  assert.match(record.prevention.join(' '), /content identity[\s\S]*not producer authentication/i);
+  assert.match(
+    getRootCauseRecord('rc-object-allowlist-prototype-bypass')?.resolution.join(' '),
+    /SIL output paths[\s\S]*own properties/i,
+  );
+  assert.equal(
+    searchRootCauses('schema-only mutable nested SIL HIL contract checksum', { limit: 1 })[0]?.id,
+    record.id,
+  );
 });
 
 test('test-multiplier memory pins a reproducible denominator and local evidence', () => {

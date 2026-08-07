@@ -15,6 +15,19 @@ evidence evaluator. A future target runtime remains a separate planned add-on
 because deterministic real time cannot be proven on a browser or ordinary
 workstation.
 
+Both builders return recursively immutable, closed snapshots with a
+deterministic `checksum`. These governed snapshots are
+`battery-design/sil-test-plan@2` and
+`battery-design/hil-test-contract@2`; the original shallow `@1` documents are
+accepted only by the explicit `migrateLegacySilTestPlan()` and
+`migrateLegacyHilTestContract()` rematerializers. They are never executed
+directly. `runSoftwareInLoop()` and `evaluateHilEvidence()`
+reconstruct and verify those snapshots before use. The checksum identifies the
+exact contract content; it is not a signature and does not authenticate its
+producer. A custody-sensitive workflow must retain the reviewed checksum
+separately and pass it as `expectedChecksum` to `verifySilTestPlan()` or
+`verifyHilTestContract()` before execution.
+
 ## SIL calculation contract
 
 Every SIL plan pins:

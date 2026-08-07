@@ -556,52 +556,56 @@ export interface EquationAnalysisModule {
 }
 
 export interface SilExpectedValue {
-  outputPath: string;
-  unit: string;
-  min: number;
-  max: number;
+  readonly outputPath: string;
+  readonly unit: string;
+  readonly min: number;
+  readonly max: number;
 }
 
 export interface SilTestCase {
-  id: string;
-  purpose: string;
-  inputs: Record<string, unknown>;
-  runOptions: Record<string, unknown>;
-  expected: SilExpectedValue;
-  repeat: boolean;
+  readonly id: string;
+  readonly purpose: string;
+  readonly inputs: Readonly<Record<string, unknown>>;
+  readonly runOptions: Readonly<Record<string, unknown>>;
+  readonly expected: Readonly<SilExpectedValue>;
+  readonly repeat: boolean;
 }
 
 export interface SilTestPlan {
-  schema: 'battery-design/sil-test-plan@1';
-  modelId: string;
-  modelVersion: string;
-  graphChecksum: string;
-  solver: string;
-  deterministicSeed: number;
-  cases: SilTestCase[];
+  readonly schema: 'battery-design/sil-test-plan@2';
+  readonly modelId: string;
+  readonly modelVersion: string;
+  readonly graphChecksum: string;
+  readonly solver: string;
+  readonly deterministicSeed: number;
+  readonly cases: readonly SilTestCase[];
+  readonly requiredCalculationTests: readonly string[];
+  readonly checksum: string;
 }
 
 export interface HilChannel {
-  id: string;
-  quantity: string;
-  unit: string;
-  min: number;
-  max: number;
-  safeValue?: number;
+  readonly id: string;
+  readonly quantity: string;
+  readonly unit: string;
+  readonly min: number;
+  readonly max: number;
+  readonly safeValue?: number;
 }
 
 export interface HilTestContract {
-  schema: 'battery-design/hil-test-contract@1';
-  targetId: string;
-  modelId: string;
-  modelVersion: string;
-  graphChecksum: string;
-  samplePeriodUs: number;
-  durationS: number;
-  inputs: HilChannel[];
-  outputs: HilChannel[];
-  requiredFaults: string[];
-  status: 'contract-ready-hardware-run-required';
+  readonly schema: 'battery-design/hil-test-contract@2';
+  readonly targetId: string;
+  readonly modelId: string;
+  readonly modelVersion: string;
+  readonly graphChecksum: string;
+  readonly samplePeriodUs: number;
+  readonly durationS: number;
+  readonly inputs: readonly HilChannel[];
+  readonly outputs: readonly HilChannel[];
+  readonly overrun: Readonly<{ maxConsecutive: number; action: string }>;
+  readonly requiredFaults: readonly string[];
+  readonly status: 'contract-ready-hardware-run-required';
+  readonly checksum: string;
 }
 
 export interface EquationGraphDocument {
