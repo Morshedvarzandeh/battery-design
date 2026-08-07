@@ -862,6 +862,72 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-dae-csc-quadratic-lowering',
+      title: 'Sparse DAE lowering performs a dense quadratic dependency scan',
+      symptom: 'A structurally sparse 10,000-variable chain stores only 19,999 Jacobian entries but lowering still performs roughly one hundred million row-column dependency checks before a sparse backend can start.',
+      evidence: [
+        'The original CSC builder iterated every variable column and then every residual row, scanning that row’s inputs to decide whether one coordinate existed.',
+        'For an N-variable one-input chain, stored Jacobian structure is 2N-1 while the outer column-by-row traversal is N squared.',
+        'The mismatch is hidden on the dense backend’s 256-variable admission limit but becomes a dominant pre-solve cost for the planned 1,000- and 10,000-variable KLU evidence.',
+        'A sparse native matrix would therefore remove dense storage while retaining dense-time graph lowering unless the backend-neutral builder changed first.',
+      ],
+      detection: [
+        {
+          method: 'instrumented sparse-chain lowering regression',
+          signal: 'Lower exact 1,000- and 10,000-variable one-input chains, record dependency visits, allocation requests and resulting CSC coordinates, and compare them with their analytical linear counts.',
+          failureCondition: 'Traversal grows with variable_count squared, storage exceeds the exact 2N-1 nonzeros, columns are not sorted and unique, duplicate ports change structure, or the builder relies on a timing-only assertion.',
+        },
+      ],
+      causalChain: [
+        'The graph already stores each residual row’s small set of incoming dependencies.',
+        'CSC output is column-oriented, so the first implementation discovers each column by rescanning every row instead of transposing the known row dependencies.',
+        'Sparse storage remains linear while construction work becomes quadratic in variable count.',
+        'Large-model sparse qualification spends dense-scale work before SUNDIALS or KLU receives the matrix.',
+      ],
+      rootCause: 'CSC orientation was implemented as a column-by-row search over the whole graph instead of a bounded transpose of the compiled row dependencies.',
+      resolution: [
+        'Traverse rows twice: first count each unique structural column dependency, then prefix-sum column pointers and fill row indices through per-column cursors.',
+        'Use the row index as a generation marker so the diagonal, self-dependency and repeated source ports create one structural coordinate while numeric Jacobian evaluation still accumulates every derivative contribution.',
+        'Process rows in stable variable order so every CSC column is strictly row-sorted without an additional sort.',
+        'Instrument the builder itself and prove four bounded pattern-storage requests, exact linear row/input/nonzero work, deterministic 1,000- and 10,000-variable patterns, and unchanged existing Jacobian values.',
+      ],
+      prevention: [
+        'For every sparse representation, measure construction work as a function of vertices, compiled edges and nonzeros rather than inferring scalability from output size alone.',
+        'Use deterministic work counters and analytical structures for scale gates; wall-clock thresholds are environment-dependent and cannot prove complexity.',
+        'Retain self-edge, repeated-port, duplicate-derivative, sorted-column and replay tests whenever graph lowering changes.',
+        'Do not describe sparse adapter memory or runtime as globally bounded from this lowering result; KLU fill-in and process isolation remain separate gates.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-core/tests/dae_contract.rs',
+          assertion: 'Exact 1,000- and 10,000-variable chain tests preserve deterministic 2N-1 CSC structure while existing duplicate, self-coupled and numerical Jacobian cases remain green.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The quadratic-lowering record stays searchable and preserves the two-pass, generation-marker, exact-work and non-KLU-memory-claim boundaries.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['complexity', 'csc', 'dae', 'jacobian', 'lowering', 'sparse'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/dae.rs',
+          note: 'Two-pass deterministic CSC construction and test-only exact work observer.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_contract.rs',
+          note: 'Large-chain structure, replay and existing Jacobian regressions.',
+        },
+        {
+          kind: 'commit',
+          locator: '9f4a43421de34efd067d38a070a0f2c4b9a859dc',
+          note: 'Frozen pre-Iteration-3 main revision containing the quadratic CSC builder.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-dae-lowering-contract-gap',
       title: 'DAE adapters reconstruct residual structure ad hoc',
       symptom: 'Two implicit backends can assign different variables, residual rows, sparse entries or event values to the same validated equation graph while both appear to accept it.',

@@ -76,6 +76,67 @@ fn constant_integrator_gain_graph() -> (CompiledGraph, usize, usize, usize) {
     (graph.compile().unwrap(), source, state, observed)
 }
 
+fn algebraic_chain(variable_count: usize) -> CompiledGraph {
+    assert!(variable_count > 0);
+    let mut graph = EquationGraph::new();
+    let mut previous = graph
+        .add_block(Block::new(
+            "chain 0",
+            Quantity::Dimensionless,
+            BlockKind::Constant { value: 1.0 },
+        ))
+        .unwrap();
+    for index in 1..variable_count {
+        let current = graph
+            .add_block(Block::new(
+                format!("chain {index}"),
+                Quantity::Dimensionless,
+                BlockKind::Gain {
+                    gain: 1.0,
+                    input: Quantity::Dimensionless,
+                },
+            ))
+            .unwrap();
+        graph.connect(previous, current, 0).unwrap();
+        previous = current;
+    }
+    graph.compile().unwrap()
+}
+
+fn assert_exact_chain_csc(variable_count: usize) {
+    let graph = algebraic_chain(variable_count);
+    let first = lower(&graph);
+    let second = lower(&graph);
+    let first_pattern = first.csc_pattern();
+    let second_pattern = second.csc_pattern();
+    let expected_nonzeros = 2 * variable_count - 1;
+
+    assert_eq!(first.variables().len(), variable_count);
+    assert_eq!(first_pattern.column_pointers().len(), variable_count + 1);
+    assert_eq!(first_pattern.nonzero_count(), expected_nonzeros);
+    assert_eq!(
+        first.buffer_requirements().jacobian_values,
+        expected_nonzeros
+    );
+    assert_eq!(first_pattern, second_pattern);
+
+    for column in 0..variable_count {
+        let start = first_pattern.column_pointers()[column];
+        let end = first_pattern.column_pointers()[column + 1];
+        assert_eq!(start, 2 * column);
+        if column + 1 < variable_count {
+            assert_eq!(end, start + 2);
+            assert_eq!(
+                &first_pattern.row_indices()[start..end],
+                &[column, column + 1]
+            );
+        } else {
+            assert_eq!(end, start + 1);
+            assert_eq!(&first_pattern.row_indices()[start..end], &[column]);
+        }
+    }
+}
+
 #[test]
 fn lowering_classifies_state_first_without_changing_output_order() {
     let (graph, source, state, observed) = constant_integrator_gain_graph();
@@ -458,6 +519,16 @@ fn csc_pattern_and_values_are_replay_deterministic() {
         .unwrap();
     assert_eq!(first, [5.0, -3.0, -2.0, 1.0, 1.0]);
     assert_eq!(first, second);
+}
+
+#[test]
+fn thousand_variable_chain_has_exact_linear_csc_pattern() {
+    assert_exact_chain_csc(1_000);
+}
+
+#[test]
+fn ten_thousand_variable_chain_has_exact_linear_csc_pattern() {
+    assert_exact_chain_csc(10_000);
 }
 
 #[test]

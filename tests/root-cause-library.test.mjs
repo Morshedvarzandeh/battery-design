@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 43);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 44);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -71,6 +71,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-calibration-work-undercount',
     'rc-capability-contract-mismatch',
     'rc-cli-typo-default-fallback',
+    'rc-dae-csc-quadratic-lowering',
     'rc-dae-lowering-contract-gap',
     'rc-e2e-hidden-state-precondition',
     'rc-final-artifact-identity-gap',
@@ -182,6 +183,22 @@ test('DAE lowering memory separates a residual contract from solver qualificatio
   ]);
   assert.equal(
     searchRootCauses('DAE residual CSC duplicate Jacobian event buffer lowering', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('DAE CSC memory preserves linear construction before sparse qualification', () => {
+  const record = getRootCauseRecord('rc-dae-csc-quadratic-lowering');
+  assert.equal(record?.status, 'resolved');
+  assert.match(`${record.symptom} ${record.evidence.join(' ')}`, /10,000-variable[\s\S]*19,999[\s\S]*one hundred million[\s\S]*N squared/i);
+  assert.match(record.rootCause, /column-by-row search[\s\S]*bounded transpose[\s\S]*row dependencies/i);
+  assert.match(record.resolution.join(' '), /Traverse rows twice[\s\S]*prefix-sum[\s\S]*generation marker[\s\S]*strictly row-sorted[\s\S]*four bounded[\s\S]*1,000-[\s\S]*10,000-variable/i);
+  assert.match(record.prevention.join(' '), /vertices[\s\S]*compiled edges[\s\S]*nonzeros[\s\S]*wall-clock thresholds[\s\S]*KLU fill-in/i);
+  const source = readFileSync(resolve(ROOT, 'rust-core/src/dae.rs'), 'utf8');
+  assert.match(source, /Pass one counts each structural[\s\S]*column_counts[\s\S]*Pass two|Pass one counts each structural[\s\S]*Reuse the count buffer as per-column write cursors/i);
+  assert.doesNotMatch(source, /for column in 0\.\.variable_count\s*\{\s*for variable in variables/);
+  assert.equal(
+    searchRootCauses('sparse CSC quadratic row column scan 10000 chain lowering', { limit: 1 })[0]?.id,
     record.id,
   );
 });
