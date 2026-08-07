@@ -1,7 +1,8 @@
 import { expect, test } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -98,6 +99,50 @@ test('the authenticated runner launches the real UI and its Rust/Wasm core under
     expect(csp).toContain("'wasm-unsafe-eval'");
     expect(csp).toContain("'sha256-");
     expect(csp).not.toMatch(/script-src[^;]*unsafe-inline/);
+  } finally {
+    await stopRunner(runner);
+  }
+});
+
+test('the authenticated GUI exports and inspects the canonical FMI mapping accessibly', async ({ page }) => {
+  const runner = await startRunner();
+  const runtimeErrors = [];
+  page.on('pageerror', (error) => runtimeErrors.push(error.message));
+  try {
+    await prepareDesktopPage(page);
+    await page.goto(`${runner.base}/index.html?token=${TOKEN}`);
+    await page.getByRole('tab', { name: 'Results' }).click();
+    await expect(page.locator('#runnerBox')).toContainText('your machine');
+    await expect(page.getByRole('button', { name: 'Export FMI 2.0 source kit' })).toBeVisible();
+
+    const downloadPromise = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Export FMI 2.0 source kit' }).click();
+    const download = await downloadPromise;
+    await expect(page.locator('#runnerOut details')).toBeVisible();
+    await expect(page.locator('#runnerOut summary')).toContainText('3 inputs · 6 outputs · 14 design parameters');
+    await page.locator('#runnerOut summary').click();
+    await expect(page.locator('#runnerOut')).toContainText('battery.pack.terminalCurrent');
+    await expect(page.locator('#runnerOut')).toContainText('battery.pack.terminalPower');
+    await expect(page.locator('#runnerOut')).toContainText('Static design');
+
+    expect(download.suggestedFilename()).toMatch(/BatteryPack-source-fmu-kit\.json$/);
+    const downloadPath = await download.path();
+    expect(downloadPath).toBeTruthy();
+    const manifest = JSON.parse(readFileSync(downloadPath, 'utf8'));
+    expect(manifest.format).toBe('battery-design/source-fmu-kit@1');
+    expect(manifest.files).toEqual(expect.objectContaining({
+      'modelDescription.xml': expect.any(String),
+      'resources/battery-design-io-map.json': expect.any(String),
+      'resources/battery-design-design.json': expect.any(String),
+    }));
+
+    const axe = await new AxeBuilder({ page })
+      .include('#runnerOut')
+      .withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22a', 'wcag22aa'])
+      .analyze();
+    const blocking = axe.violations.filter(({ impact }) => impact === 'serious' || impact === 'critical');
+    expect(blocking, blocking.map(({ id, help }) => `${id}: ${help}`).join('\n')).toEqual([]);
+    expect(runtimeErrors, `runner mapping runtime errors:\n${runtimeErrors.join('\n')}\n${runner.logs()}`).toEqual([]);
   } finally {
     await stopRunner(runner);
   }

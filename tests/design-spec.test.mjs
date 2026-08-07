@@ -4,6 +4,7 @@ import {
   DESIGN_SPEC_FORMAT,
   DESIGN_SPEC_SCHEMA,
   DESIGN_SPEC_SCHEMA_VERSION,
+  GOVERNED_DESIGN_SPEC_SCHEMA,
   DesignSpecValidationError,
   normalizeDesignSpec,
   validateDesignSpec,
@@ -81,6 +82,100 @@ test('runtime validation executes the exported schema, not only the DoD rule', (
   }).valid, true);
 });
 
+test('governed closure accepts composed evidence and preserves intentional open bags', () => {
+  const validationEvidence = {
+    trialId: 'trial-001', vesselId: 'ntnu-gunnerus', assetId: 'asset-001',
+    datasetSha256: 'a'.repeat(64), modelArtifactSha256: 'b'.repeat(64),
+    completedAt: '2026-08-01T00:00:00Z', result: 'pass',
+    metrics: { speedRmsKn: 0.1, courseRmsDeg: 0.2, powerRmsFraction: 0.03 },
+    limits: { speedRmsKn: 0.5, courseRmsDeg: 1, powerRmsFraction: 0.1 },
+  };
+  const governed = {
+    schemaVersion: DESIGN_SPEC_SCHEMA_VERSION,
+    application: 'ev',
+    twinShip: { readiness: { powerBasis: 'dc-bus-trace', validationEvidence } },
+    electricalProtection: {
+      shunt: {
+        supplier: { part: 'CUSTOM-50', revision: 'A' },
+        currentSegments: [{ currentA: 100, durationS: 5 }],
+      },
+    },
+  };
+  const normalized = normalizeDesignSpec(governed, { strict: true, closed: true });
+  assert.equal(normalized.twinShip.readiness.validationEvidence.result, 'pass');
+  assert.equal(normalized.electricalProtection.shunt.supplier.part, 'CUSTOM-50');
+  assert.equal(GOVERNED_DESIGN_SPEC_SCHEMA.$defs.shunt.properties.supplier.additionalProperties, true);
+  assert.equal(GOVERNED_DESIGN_SPEC_SCHEMA.$defs.shunt.properties.currentSegments.items.additionalProperties, true);
+  assert.equal(GOVERNED_DESIGN_SPEC_SCHEMA.$defs.twinValidationEvidence.additionalProperties, false);
+  assert.deepEqual(
+    Object.keys(GOVERNED_DESIGN_SPEC_SCHEMA.$defs.twinValidationEvidence.properties).sort(),
+    ['assetId', 'completedAt', 'datasetSha256', 'limits', 'metrics', 'modelArtifactSha256',
+      'result', 'trialId', 'vesselId'],
+  );
+
+  assert.throws(() => normalizeDesignSpec({
+    ...governed,
+    twinShip: {
+      readiness: {
+        ...governed.twinShip.readiness,
+        validationEvidence: { ...validationEvidence, typoMetric: 1 },
+      },
+    },
+  }, { strict: true, closed: true }), /typoMetric: Field is not declared/);
+});
+
+test('nullable grouped options remain absent from non-null legacy aliases', () => {
+  const nullableRequirementKeys = [
+    'energyWh', 'deliveredWh', 'contPowerW', 'peakPowerW', 'chargeRateC',
+    'maxMassKg', 'maxDimsMm', 'cyclesPerYear', 'targetYears', 'profileScaleW',
+  ];
+  const normalized = normalizeDesignSpec({
+    schemaVersion: DESIGN_SPEC_SCHEMA_VERSION,
+    application: 'custom',
+    requirements: Object.fromEntries(nullableRequirementKeys.map((key) => [key, null])),
+    regulatory: {
+      batteryCategory: null,
+      evaluationDate: null,
+    },
+  }, { strict: true, closed: true });
+
+  for (const key of nullableRequirementKeys) {
+    assert.equal(normalized.requirements[key], null, `grouped ${key} preserves null`);
+    assert.equal(Object.hasOwn(normalized, key), false, `flat ${key} remains absent`);
+  }
+  assert.equal(Object.hasOwn(normalized, 'batteryCategory'), false);
+  assert.equal(Object.hasOwn(normalized, 'evaluationDate'), false);
+
+  const concreteRequirements = {
+    energyWh: 1000,
+    deliveredWh: 800,
+    contPowerW: 0,
+    peakPowerW: 0,
+    chargeRateC: 0,
+    maxMassKg: 20,
+    maxDimsMm: { x: 400, y: 300, z: 120 },
+    cyclesPerYear: 100,
+    targetYears: 5,
+    profileScaleW: 2000,
+  };
+  const concrete = normalizeDesignSpec({
+    schemaVersion: DESIGN_SPEC_SCHEMA_VERSION,
+    application: 'custom',
+    requirements: concreteRequirements,
+  }, { strict: true, closed: true });
+  for (const [key, value] of Object.entries(concreteRequirements)) {
+    assert.deepEqual(concrete[key], value, `non-null ${key} projects exactly`);
+  }
+
+  const flatWins = normalizeDesignSpec({
+    schemaVersion: DESIGN_SPEC_SCHEMA_VERSION,
+    application: 'custom',
+    maxMassKg: 25,
+    requirements: { maxMassKg: null },
+  }, { strict: true, closed: true });
+  assert.equal(flatWins.maxMassKg, 25, 'an explicit valid flat value retains precedence');
+});
+
 test('architecture and thermal choices are consumed by the canonical engine run', () => {
   const design = designFromSpec({
     application: 'ebike',
@@ -129,7 +224,12 @@ test('the whole design result and its semantic binding are deeply immutable', ()
 
 test('the exported schema identifies and freezes the full DesignSpec contract', () => {
   assert.equal(DESIGN_SPEC_SCHEMA.$id, `${DESIGN_SPEC_FORMAT}/${DESIGN_SPEC_SCHEMA_VERSION}`);
+  assert.equal(GOVERNED_DESIGN_SPEC_SCHEMA.$id,
+    `${DESIGN_SPEC_FORMAT}/${DESIGN_SPEC_SCHEMA_VERSION}/governed`);
+  assert.notEqual(GOVERNED_DESIGN_SPEC_SCHEMA.$id, DESIGN_SPEC_SCHEMA.$id,
+    'schema registries must not cache the closed governed contract under the permissive schema id');
   assert.ok(Object.isFrozen(DESIGN_SPEC_SCHEMA));
+  assert.ok(Object.isFrozen(GOVERNED_DESIGN_SPEC_SCHEMA));
   for (const key of [
     'requirements', 'climate', 'architecture', 'thermal', 'charging', 'vehicle', 'route',
     'profileTrace', 'mission', 'components', 'layout', 'market', 'diagnostics',

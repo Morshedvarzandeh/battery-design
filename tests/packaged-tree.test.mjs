@@ -16,7 +16,7 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MUST_SHIP = Object.freeze([
-  'index.html', 'cosim.html', 'cosim.css', 'js', 'wasm', 'vendor',
+  'index.html', 'cosim.html', 'cosim.css', 'js', 'knowledge', 'wasm', 'vendor',
   'assets', 'assets3d', 'profiles', 'desktop',
 ]);
 

@@ -34,7 +34,8 @@ verified `linux64` (glibc 2.17+ baseline) and `win64` x64 binaries. Import the
 native ABI and lifecycle, then imports and steps it with fmusim and FMPy on the
 matching operating systems. These open-source checks do not certify acceptance
 in ANSYS Twin Builder, Simulink or GT-SUITE; record a product/version-specific
-result using the [commercial acceptance checklist](docs/FMI_COMMERCIAL_ACCEPTANCE.md)
+result using the generated [enterprise signal/port map](docs/FMI_SIGNAL_MAP.md)
+and [commercial acceptance checklist](docs/FMI_COMMERCIAL_ACCEPTANCE.md)
 before making a host-support claim.
 
 The desktop GUI, CLI and local API continue to export an editable source-FMU
@@ -54,6 +55,14 @@ them. Windows and macOS desktop packages are not currently built or advertised.
 | Local API | Pack design and ontology, advanced simulation and calibration, bounded search, and source-FMU export |
 | MCP | Pack design, mission/cell comparisons, ontology queries and engineering review for an MCP client |
 | Planned—not shipped | Crush, vibration, spatial thermal/corrosion solvers and a deterministic HIL target runtime |
+
+Resolved engineering failures are kept in a versioned
+[root-cause quality memory](docs/ROOT_CAUSE_LIBRARY.md). The same immutable
+catalog is importable in browser/JavaScript code, searchable from the desktop
+CLI, and used by the MCP `diagnose_known_issue` assistant. Similarity matches
+are retrieval hints, not proof of a diagnosis. Standard design reports do not
+silently diagnose incidents; records expose explicit local references that a
+reviewer can cite.
 
 The local HTTP API binds only to `127.0.0.1`, requires a cryptographically
 generated per-launch token and applies request/work limits. The command
@@ -554,6 +563,7 @@ is copied into the repository.
 | `js/vent-layout.js` | Market-isolated supplier vent quantity, enclosure-fit constraint and provisional multi-face coordinates from the calculated high-case area |
 | `js/loop-testing.js` | Executable SIL calculation plans plus HIL I/O/timing/fault contracts and measured-evidence evaluation |
 | `js/ontology-schema.js`, `js/ontology.js` | Architecture-wide classes, typed relations, declarative rules, semantic graph validation and portable exports; see [`docs/ONTOLOGY.md`](docs/ONTOLOGY.md) |
+| `js/root-cause-library.js`, `knowledge/root-causes/` | Closed, immutable engineering-failure records plus deterministic validation, lookup, search and similar-issue matching; see [`docs/ROOT_CAUSE_LIBRARY.md`](docs/ROOT_CAUSE_LIBRARY.md) |
 | `assets3d/catalog.js` | Reusable original car, vessel, machine and robot visual assets with version, digest, licence and portable geometry; see [`docs/3D_ASSET_LIBRARY.md`](docs/3D_ASSET_LIBRARY.md) |
 | `js/visual-report.js` | Self-contained sub-minute animated decision report built only from the existing report snapshot, mission result, semantic identity and portable 3D assets |
 | `js/training.js` | Interactive walkthrough tracks (simple / advanced) |
@@ -621,6 +631,7 @@ tests use named `test()` blocks and shared assertions from
 ```bash
 node --test tests/*.test.mjs   # every runtime suite
 node --test tests/btms.test.mjs  # one area
+npm run test:root-causes        # quality-memory schema, records and surfaces
 npm ci && npm run typecheck    # strict TypeScript contracts for the core
 npm run rust:test              # native Rust kernel tests
 npm run wasm:build             # browser WebAssembly artifact
@@ -629,7 +640,10 @@ npm run wasm:build             # browser WebAssembly artifact
 CI validates the data contracts, native Rust kernels, generated WebAssembly
 and Rust/JavaScript parity, strict TypeScript contracts, the full runtime test
 suite, and `tools/validate-vs-market.mjs` (the result must still match
-production packs).
+production packs). A pull request that resolves a defect must link an existing
+`rc-*` record or add/update one with the root cause, implemented resolution,
+prevention control and regression test; the repository validator rejects an
+invalid catalog or a broken local test/reference path.
 
 ## References and sources
 

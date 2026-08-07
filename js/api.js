@@ -59,7 +59,7 @@ import {
   semanticDigest, semanticGraphSummary, toJsonLd, toNeo4jProjection, traceSemanticPath,
 } from './ontology.js';
 import {
-  DESIGN_SPEC_FORMAT, DESIGN_SPEC_SCHEMA, DESIGN_SPEC_SCHEMA_VERSION,
+  DESIGN_SPEC_FORMAT, DESIGN_SPEC_SCHEMA, DESIGN_SPEC_SCHEMA_VERSION, GOVERNED_DESIGN_SPEC_SCHEMA,
   canonicalizeDesignSpec, deepFreeze, immutableSnapshot, normalizeDesignSpec, validateDesignSpec,
 } from './design-spec.js';
 
@@ -1365,6 +1365,7 @@ export {
   DESIGN_SPEC_FORMAT,
   DESIGN_SPEC_SCHEMA,
   DESIGN_SPEC_SCHEMA_VERSION,
+  GOVERNED_DESIGN_SPEC_SCHEMA,
   normalizeDesignSpec,
   validateDesignSpec,
 };

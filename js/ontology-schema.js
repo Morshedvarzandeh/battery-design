@@ -289,6 +289,11 @@ export const ARCHITECTURE_MODULE_DEFINITIONS = Object.freeze({
   lifecycle: architectureModule('Lifecycle, service and circular value', 'lifecycle', ['js/lca.js', 'js/optimizer.js', 'js/swap.js'], ['footprint', 'circular-value', 'swappable']),
   workspace: architectureModule('Interactive design workspace', 'product', ['js/garage.js', 'js/garage-ui.js', 'garage3d/'], ['part-swap', 'showroom', 'multi-objective']),
   reporting: architectureModule('Traceable reporting', 'reporting', ['js/report.js', 'js/visual-report.js', 'js/brief.js'], ['report', 'duty-economics', 'multi-objective']),
+  qualityMemory: architectureModule('Root-cause quality memory', 'quality-governance', [
+    'js/root-cause-library.js',
+    'knowledge/root-causes/schema.v1.js',
+    'knowledge/root-causes/records.v1.js',
+  ], ['root-cause-memory'], surfaces('importable-library', 'cli', 'library', 'assistant', 'references')),
   governance: architectureModule('Approval and release governance', 'governance', ['js/governance.js'], ['release-rules']),
 });
 
@@ -468,6 +473,7 @@ export const CONCEPT_DEFINITIONS = Object.freeze({
   'sensors-plan': concept('Sensor plan', 'What the harness must carry, by level.'),
   'release-rules': concept('Release rules & market checklist', 'What certification will demand in each target market.'),
   report: concept('Report & sensitivity', 'The customer document, stress-tested.'),
+  'root-cause-memory': concept('Root-cause engineering memory', 'Resolved defects become searchable cause, resolution, prevention and regression knowledge instead of being rediscovered.'),
   simulation: concept('Mission simulation', 'The design run through time — SoC, sag and temperature over the real profile.'),
   'ac-side': concept('AC side & charging', 'How the pack meets the grid — on-board charger, connectors, charge time.'),
   'charging-strategy': concept('Charging strategy', 'Depot vs opportunity vs tariff windows — a pack-sizing decision, not an afterthought.'),
@@ -539,6 +545,7 @@ export const CONCEPT_APPLICABILITY = Object.freeze({
   'sensors-plan': applies(ALL_APPLICATION_CLASSES),
   'release-rules': applies(ALL_APPLICATION_CLASSES),
   report: applies(ALL_APPLICATION_CLASSES),
+  'root-cause-memory': applies(ALL_APPLICATION_CLASSES),
   simulation: applies(ALL_APPLICATION_CLASSES),
   'ac-side': applies(['vehicle', 'auxiliary', 'marine', 'stationary'], ['powerstation']),
   'charging-strategy': applies(['vehicle', 'industrial', 'stationary', 'marine', 'auxiliary']),

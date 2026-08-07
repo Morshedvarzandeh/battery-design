@@ -541,14 +541,14 @@ test('the MCP server speaks the protocol and returns real answers', () => {
   const ontologyCatalog = JSON.parse(ontologySchema.content[0].text);
   ok(ontologyCatalog.ontology?.version && ontologyCatalog.classes?.length
     && ontologyCatalog.relations?.length && ontologyCatalog.productSurfaces?.length
-    && ontologyCatalog.architectureModules?.length === 22,
+    && ontologyCatalog.architectureModules?.length === 23,
   'get_ontology_schema returns the versioned architecture catalog without generating a design');
   const ontology = call('query_ontology', { type: 'bd:DomainModule' });
   const ontologyText = ontology.content[0].text;
   const architectureModules = describeOntology().architectureModules;
-  ok(architectureModules.length === 22 && /query matched 22 entities/.test(ontologyText)
+  ok(architectureModules.length === 23 && /query matched 23 entities/.test(ontologyText)
     && architectureModules.every((module) => ontologyText.includes(module.label)),
-  'query_ontology exposes all 22 architecture modules, with charging as one peer domain');
+  'query_ontology exposes all 23 architecture modules, including the governed quality memory');
   const design = call('design_pack', { application: 'ev', energyWh: 60000 });
   ok(!design.isError && /kWh/.test(design.content[0].text), 'design_pack answers');
   const euDesign = call('design_pack', {

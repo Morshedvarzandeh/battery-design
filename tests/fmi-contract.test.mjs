@@ -14,7 +14,7 @@ import { spawnSync } from 'node:child_process';
 import { cellById } from '../js/cells.js';
 import {
   buildFmu, FMI2_REQUIRED_CO_SIMULATION_SYMBOLS, FMI_STANDARD_VERSION,
-  FMU_PARAMETERS, FMU_VARIABLES,
+  FMI_IO_CONTRACT, FMI_IO_CONTRACT_CHECKSUM, FMU_PARAMETERS, FMU_VARIABLES,
 } from '../js/fmi.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -54,7 +54,15 @@ test('modelDescription declares a complete scalar co-simulation contract', () =>
 
   assert.match(xml, /<Unit name="degC"><BaseUnit K="1" offset="273\.15"\/><\/Unit>/);
   assert.match(xml, /<Unit name="mOhm"><BaseUnit kg="1" m="2" s="-3" A="-2" factor="0\.001"\/><\/Unit>/);
-  assert.match(xml, /name="r0_mOhm"[\s\S]*?<Real start="42\.5" unit="mOhm"\/>/);
+  assert.match(xml, /name="r0_mOhm" valueReference="6"[\s\S]*?<Real start="42\.5" unit="mOhm" quantity="electricResistance"/);
+  assert.match(xml, /<Unit name="1"><BaseUnit\/><DisplayUnit name="%" factor="100" offset="0"\/><\/Unit>/);
+  assert.match(xml, /name="SoC" valueReference="19"[\s\S]*?<Real unit="1" displayUnit="%"[^>]*min="0" max="1"/);
+  for (const variable of FMI_IO_CONTRACT) {
+    assert.match(xml, new RegExp(`name="${variable.name}" valueReference="${variable.valueReference}"`));
+    const scalar = xml.match(new RegExp(`<ScalarVariable name="${variable.name}"[\\s\\S]*?<\\/ScalarVariable>`))?.[0] || '';
+    if (variable.causality === 'output') assert.doesNotMatch(scalar, /<Real[^>]*\bstart=/);
+    else assert.match(scalar, /<Real[^>]*\bstart=/);
+  }
   for (const variable of [...FMU_PARAMETERS, ...FMU_VARIABLES]) {
     assert.doesNotMatch(variable.name, /[.\[\]]/, `${variable.name} remains portable to strict commercial hosts`);
   }
@@ -66,6 +74,8 @@ test('one immutable defaults object binds XML, C, reset and content identity', (
   const calibrated = buildFmu({ cell: CELL, s: 110, p: 43, params: { ...CUSTOM_PARAMS, r0Ref: 42.6 } });
   const renamed = buildFmu({ cell: CELL, s: 110, p: 43, params: CUSTOM_PARAMS, modelName: 'BatteryPlant' });
   assert.ok(Object.isFrozen(built.defaults));
+  assert.ok(Object.isFrozen(built) && Object.isFrozen(built.files) && Object.isFrozen(built.ioMap));
+  assert.equal(built.ioContractChecksum, FMI_IO_CONTRACT_CHECKSUM);
   assert.equal(built.defaults.cells_series, 110);
   assert.equal(built.defaults.cells_parallel, 43);
   assert.equal(built.defaults.capacity_Ah, CELL.capacityAh);
@@ -85,6 +95,21 @@ test('one immutable defaults object binds XML, C, reset and content identity', (
   assert.doesNotMatch(source, /\bstrncpy\s*\(/, 'generated source avoids deprecated host CRT functions');
   assert.match(source, /instanceNameLength \+ 1 < sizeof\(m->instanceName\)/);
   assert.match(source, /m->instanceName\[instanceNameLength\] = '\\0';/);
+  assert.match(source, /static int is_parameter_vr\(fmi2ValueReference vr\)/);
+  assert.doesNotMatch(source, /vr\[k\]\s*<=\s*VR_/,
+    'append-only future parameters cannot turn existing runtime inputs into initialization-only values');
+  for (const variable of FMI_IO_CONTRACT) {
+    assert.match(source, new RegExp(`\\b${variable.cSymbol} = ${variable.valueReference}\\b`));
+    assert.match(source, new RegExp(`case ${variable.cSymbol}: value\\[k\\] = m->${variable.cField}; break;`));
+    if (variable.causality !== 'output') {
+      assert.match(source, new RegExp(`case ${variable.cSymbol}: trial\\.${variable.cField} = value\\[k\\]; break;`));
+    }
+  }
+  const ioMap = JSON.parse(built.files['resources/battery-design-io-map.json']);
+  assert.equal(ioMap.contractChecksum, FMI_IO_CONTRACT_CHECKSUM);
+  assert.equal(ioMap.guid, built.guid);
+  assert.deepEqual(ioMap.variables.map(({ name, valueReference }) => [name, valueReference]),
+    FMI_IO_CONTRACT.map(({ name, valueReference }) => [name, valueReference]));
   for (const symbol of FMI2_REQUIRED_CO_SIMULATION_SYMBOLS) {
     assert.match(source, new RegExp(`\\b${symbol}\\b`), `${symbol} is implemented`);
   }

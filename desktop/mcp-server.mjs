@@ -17,8 +17,10 @@
 
 import {
   buildArchitectureSemanticGraph, designFromSpec, briefFromDesign, describeOntology, listApplications, listCells, listVessels,
-  querySemanticGraph, API_VERSION,
+  querySemanticGraph, API_VERSION, DESIGN_SPEC_SCHEMA_VERSION, GOVERNED_DESIGN_SPEC_SCHEMA, normalizeDesignSpec,
 } from '../js/api.js';
+import { buildFmu } from '../js/fmi.js';
+import { inspectFmiBuild } from '../js/desktop-link.js';
 import { CELLS, cellById } from '../js/cells.js';
 import { V2X_MODES, v2xParts } from '../js/v2x.js';
 import { CONCEPTS, appNeeds } from '../js/knowledge.js';
@@ -26,6 +28,9 @@ import { buildTopology } from '../js/topology.js';
 import { wiringStudy } from '../js/wiring.js';
 import { groundingStudy, faultFromShortCircuit } from '../js/grounding.js';
 import { designBrief } from '../js/brief.js';
+import {
+  findSimilarRootCauses, ROOT_CAUSE_RECORD_SCHEMA, ROOT_CAUSE_SCHEMA_VERSION,
+} from '../js/root-cause-library.js';
 
 const PROTOCOL_VERSION = '2024-11-05';
 
@@ -126,6 +131,28 @@ const profileTrace = {
     note: { type: 'string' },
   },
   required: ['id', 'dtS', 'p', 'scaleW'],
+};
+const rootCauseStringArray = (itemSchema) => ({
+  type: 'array', minItems: 1, maxItems: 20, uniqueItems: true, items: itemSchema,
+});
+const ROOT_CAUSE_DIAGNOSIS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['symptom'],
+  properties: {
+    symptom: {
+      type: 'string', minLength: 1, maxLength: 4000,
+      description: 'Observed behavior to compare with recorded engineering incidents.',
+    },
+    evidence: rootCauseStringArray({ type: 'string', minLength: 1, maxLength: 4000 }),
+    tags: rootCauseStringArray({
+      type: 'string', pattern: ROOT_CAUSE_RECORD_SCHEMA.properties.tags.items.pattern,
+    }),
+    affectedSurfaces: rootCauseStringArray({
+      type: 'string', enum: ROOT_CAUSE_RECORD_SCHEMA.properties.affectedSurfaces.items.enum,
+    }),
+    limit: { type: 'integer', minimum: 1, maximum: 10, default: 5 },
+  },
 };
 const shoreDeclaration = (detailField) => ({
   type: 'object', additionalProperties: false,
@@ -264,6 +291,22 @@ const TOOLS = [
     inputSchema: { type: 'object', properties: {}, additionalProperties: false },
   },
   {
+    name: 'inspect_fmi_mapping',
+    description: 'Build and inspect the exact FMI 2.0 enterprise mapping for one closed, schema-versioned DesignSpec. Returns the canonical design-bound parameters, host inputs, outputs, sign/update semantics, checksums, and sanitized static pack/layout/module facts without source files, raw traces, or private evidence.',
+    inputSchema: GOVERNED_DESIGN_SPEC_SCHEMA,
+    annotations: {
+      readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false,
+    },
+  },
+  {
+    name: 'diagnose_known_issue',
+    description: 'Compare an observed symptom and optional evidence with the versioned battery-design root-cause catalog. Returns deterministic known-pattern matches and recorded fixes; it is catalog retrieval, not an AI diagnosis or certainty claim.',
+    inputSchema: ROOT_CAUSE_DIAGNOSIS_SCHEMA,
+    annotations: {
+      readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false,
+    },
+  },
+  {
     name: 'query_ontology',
     description: 'Query the architecture-wide ontology or one design semantic graph. This covers applications, pack/cell/component hierarchy, all calculation and simulation modules, requirements, evidence, findings and governance; it is not a charging-only graph.',
     inputSchema: {
@@ -335,6 +378,82 @@ const TOOLS = [
 
 // --- tool implementations ---------------------------------------------------
 const text = (s) => ({ content: [{ type: 'text', text: s }] });
+const structured = (value) => ({
+  // Keep a compact JSON fallback for protocol clients that predate
+  // structuredContent; newer clients receive the object directly.
+  content: [{ type: 'text', text: JSON.stringify(value) }],
+  structuredContent: value,
+});
+
+function rootCauseDiagnosisInput(args) {
+  if (!args || typeof args !== 'object' || Array.isArray(args)) {
+    throw new TypeError('Known-issue diagnosis requires one object.');
+  }
+  const allowed = new Set(['symptom', 'evidence', 'tags', 'affectedSurfaces', 'limit']);
+  const unknown = Object.keys(args).filter((key) => !allowed.has(key)).sort();
+  if (unknown.length) {
+    throw new TypeError(`Known-issue diagnosis does not accept field(s): ${unknown.join(', ')}.`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(args, 'symptom')
+      || typeof args.symptom !== 'string' || !args.symptom.trim()) {
+    throw new TypeError('Known-issue diagnosis requires a non-empty symptom string.');
+  }
+  if (args.symptom.length > 4000) {
+    throw new RangeError('Known-issue diagnosis symptom must not exceed 4000 characters.');
+  }
+  const stringList = (name, { pattern = null, allowedValues = null } = {}) => {
+    if (args[name] == null) return [];
+    if (!Array.isArray(args[name]) || args[name].length < 1 || args[name].length > 20
+        || args[name].some((value) => typeof value !== 'string' || !value || value.length > 4000)) {
+      throw new TypeError(`Known-issue diagnosis ${name} must contain 1 to 20 non-empty strings.`);
+    }
+    if (new Set(args[name]).size !== args[name].length) {
+      throw new TypeError(`Known-issue diagnosis ${name} must not contain duplicates.`);
+    }
+    if (pattern && args[name].some((value) => !pattern.test(value))) {
+      throw new TypeError(`Known-issue diagnosis ${name} contains an invalid value.`);
+    }
+    const unsupported = allowedValues
+      ? args[name].filter((value) => !allowedValues.includes(value)).sort()
+      : [];
+    if (unsupported.length) {
+      throw new TypeError(`Known-issue diagnosis ${name} contains unsupported value(s): ${unsupported.join(', ')}.`);
+    }
+    return [...args[name]].sort();
+  };
+  const tagPattern = new RegExp(ROOT_CAUSE_RECORD_SCHEMA.properties.tags.items.pattern);
+  const surfaces = ROOT_CAUSE_RECORD_SCHEMA.properties.affectedSurfaces.items.enum;
+  const limit = args.limit ?? 5;
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10) {
+    throw new RangeError('Known-issue diagnosis limit must be an integer from 1 to 10.');
+  }
+  return Object.freeze({
+    symptom: args.symptom.trim(),
+    evidence: stringList('evidence'),
+    tags: stringList('tags', { pattern: tagPattern }),
+    affectedSurfaces: stringList('affectedSurfaces', { allowedValues: surfaces }),
+    limit,
+  });
+}
+
+function rootCauseDiagnosisMatch(match) {
+  const { record } = match;
+  return {
+    id: record.id,
+    title: record.title,
+    status: record.status,
+    score: match.score,
+    sharedTokens: match.sharedTokens,
+    affectedSurfaces: record.affectedSurfaces,
+    tags: record.tags,
+    symptom: record.symptom,
+    evidence: record.evidence,
+    rootCause: record.rootCause,
+    resolution: record.resolution,
+    prevention: record.prevention,
+    regressionTests: record.regressionTests,
+  };
+}
 
 function specOf(args) {
   const { passes, startSoC, ambientC, chargeMode, chargeMinutes, cellIds, chemistry, concept, ...spec } = args || {};
@@ -369,6 +488,47 @@ const HANDLERS = {
 
   get_ontology_schema() {
     return text(JSON.stringify(describeOntology(), null, 2));
+  },
+
+  inspect_fmi_mapping(args) {
+    if (!args || typeof args !== 'object' || Array.isArray(args)) {
+      throw new TypeError('FMI mapping requires one governed DesignSpec object.');
+    }
+    if (!Object.prototype.hasOwnProperty.call(args, 'schemaVersion')) {
+      throw new TypeError(`FMI mapping DesignSpec must declare schemaVersion ${DESIGN_SPEC_SCHEMA_VERSION}.`);
+    }
+    const spec = normalizeDesignSpec(args, { strict: true, closed: true });
+    const design = designFromSpec(spec);
+    if (design.warnings.length) {
+      throw new TypeError(`FMI mapping DesignSpec did not resolve exactly: ${design.warnings.join(' ')}`);
+    }
+    return structured(inspectFmiBuild(buildFmu({ design })));
+  },
+
+  diagnose_known_issue(args) {
+    const issue = rootCauseDiagnosisInput(args);
+    const matches = findSimilarRootCauses({
+      symptom: issue.symptom,
+      ...(issue.evidence.length ? { evidence: issue.evidence } : {}),
+      ...(issue.tags.length ? { tags: issue.tags } : {}),
+      ...(issue.affectedSurfaces.length ? { affectedSurfaces: issue.affectedSurfaces } : {}),
+    }, { limit: issue.limit });
+    return structured({
+      format: 'battery-design/root-cause-diagnosis@1',
+      knowledge: {
+        kind: 'versioned-curated-catalog',
+        schemaVersion: ROOT_CAUSE_SCHEMA_VERSION,
+        notice: 'These are deterministic similarities to recorded project evidence, not AI certainty, a live investigation, or proof of causation.',
+      },
+      query: {
+        symptom: issue.symptom,
+        evidence: issue.evidence,
+        tags: issue.tags,
+        affectedSurfaces: issue.affectedSurfaces,
+        limit: issue.limit,
+      },
+      matches: matches.map(rootCauseDiagnosisMatch),
+    });
   },
 
   query_ontology(args) {

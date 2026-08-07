@@ -36,6 +36,9 @@ import { simulate, calibrate, defaultParams, PARAM_SPEC, PARAM_BY_ID } from '../
 import { cellById } from '../js/cells.js';
 import { profileById } from '../js/loadprofiles.js';
 import { buildFmu } from '../js/fmi.js';
+import {
+  DESIGN_SPEC_SCHEMA_VERSION, DesignSpecValidationError, normalizeDesignSpec,
+} from '../js/design-spec.js';
 import { buildTopology, jointCompatibility, billOfMaterials, materialBreakdown } from '../js/topology.js';
 import { wiringStudy, INSTALLATIONS } from '../js/wiring.js';
 import { groundingStudy, faultFromShortCircuit } from '../js/grounding.js';
@@ -46,6 +49,9 @@ import { swapPlan, POLICIES as SWAP_POLICIES } from '../js/swap.js';
 import { layoutPack } from '../js/pack-engine.js';
 import { materialById } from '../js/materials.js';
 import { ADDONS, addonsFor, addonsForSurface, capabilityReport } from '../js/addons.js';
+import {
+  getRootCauseRecord, listRootCauseRecords, ROOT_CAUSE_SCHEMA_VERSION, searchRootCauses,
+} from '../js/root-cause-library.js';
 import { mkdirSync } from 'node:fs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -167,13 +173,22 @@ function safeTokenEqual(received, expected) {
 }
 
 // --- argument parsing, the smallest thing that works ------------------------
+const PARSED_FLAGS = Symbol('parsedFlags');
+const DUPLICATE_FLAGS = Symbol('duplicateFlags');
+
 function parseArgs(argv) {
   const out = { _: [] };
+  out[PARSED_FLAGS] = [];
+  out[DUPLICATE_FLAGS] = [];
+  const seenFlags = new Set();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
+      out[PARSED_FLAGS].push(key);
+      if (seenFlags.has(key)) out[DUPLICATE_FLAGS].push(key);
+      seenFlags.add(key);
       if (next == null || next.startsWith('--')) out[key] = true;
       else { out[key] = next; i++; }
     } else out._.push(a);
@@ -277,6 +292,141 @@ function specFrom(args) {
   return spec;
 }
 
+// A persisted DesignSpec is the complete design input. Mixing it with legacy
+// design flags would create an order-dependent merge, so fail closed instead.
+// Export-only flags such as --out, --name and --params remain valid alongside
+// --spec.
+const FMU_SPEC_CONFLICT_FLAGS = Object.freeze([
+  'app', 'application', 'cell', 'market', 'battery-category', 'evaluation-date',
+  'v2x', 'mode', 'policy', 'energy', 's', 'p', 'dod', 'grade', 'profile',
+  'profile-trace', 'vessel', 'reference-mass', 'payload', 'design-kn',
+  'service-kn', 'current-kn', 'wind-kn', 'propulsion-w', 'hotel-w',
+  'duration-h', 'sea', 'twin-evidence', 'replay', 'shore-connection', 'mass',
+  'passes', 'charge', 'soc', 'chargeW', 'minutes',
+]);
+const FMU_EXPORT_FLAGS = Object.freeze(['spec', 'out', 'name', 'params']);
+const FMU_ALLOWED_FLAGS = new Set([...FMU_EXPORT_FLAGS, ...FMU_SPEC_CONFLICT_FLAGS]);
+const ROOT_CAUSE_ALLOWED_FLAGS = new Set([
+  'id', 'query', 'surface', 'tag', 'status', 'limit', 'json', 'out',
+]);
+
+function fmuSpecFrom(args) {
+  const unknown = args[PARSED_FLAGS].filter((key) => !FMU_ALLOWED_FLAGS.has(key));
+  if (unknown.length) {
+    throw new TypeError(`fmu does not accept option(s): ${[...new Set(unknown)]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  const unexpectedPositionals = args._.slice(1);
+  if (unexpectedPositionals.length) {
+    throw new TypeError(`fmu does not accept positional arguments: ${unexpectedPositionals.join(', ')}.`);
+  }
+  if (args[DUPLICATE_FLAGS].length) {
+    throw new TypeError(`fmu option(s) may be supplied only once: ${[...new Set(args[DUPLICATE_FLAGS])]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  if (args.spec == null) return specFrom(args);
+  const conflicts = FMU_SPEC_CONFLICT_FLAGS.filter((key) => args[key] != null);
+  if (conflicts.length) {
+    throw new TypeError(`--spec cannot be combined with design-shaping flags: ${conflicts.map((key) => `--${key}`).join(', ')}.`);
+  }
+  return loadDesignSpec(args.spec);
+}
+
+function rootCauseRequestFrom(args) {
+  const unknown = args[PARSED_FLAGS].filter((key) => !ROOT_CAUSE_ALLOWED_FLAGS.has(key));
+  if (unknown.length) {
+    throw new TypeError(`root-cause does not accept option(s): ${[...new Set(unknown)]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  const positionals = args._.slice(1);
+  if (positionals.length) {
+    throw new TypeError(`root-cause does not accept positional arguments: ${positionals.join(', ')}.`);
+  }
+  if (args[DUPLICATE_FLAGS].length) {
+    throw new TypeError(`root-cause option(s) may be supplied only once: ${[...new Set(args[DUPLICATE_FLAGS])]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  if (args.json != null && args.json !== true) {
+    throw new TypeError('--json is a boolean flag and does not accept a value.');
+  }
+  if (args.out != null && (typeof args.out !== 'string' || !args.out.trim())) {
+    throw new TypeError('--out requires a file path.');
+  }
+  const hasId = args.id != null;
+  const hasQuery = args.query != null;
+  if (hasId === hasQuery) {
+    throw new TypeError('root-cause requires exactly one of --id ID or --query TEXT.');
+  }
+  const scalar = (name, required = false) => {
+    const value = args[name];
+    if (value == null && !required) return null;
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new TypeError(`--${name} requires a non-empty value.`);
+    }
+    return value.trim();
+  };
+  let limit = 10;
+  if (args.limit != null) {
+    if (typeof args.limit !== 'string' || !/^[1-9]\d*$/.test(args.limit)) {
+      throw new TypeError('--limit requires an integer from 1 to 100.');
+    }
+    limit = Number(args.limit);
+    if (!Number.isSafeInteger(limit) || limit > 100) {
+      throw new RangeError('--limit must be an integer from 1 to 100.');
+    }
+  }
+  return Object.freeze({
+    mode: hasId ? 'id' : 'query',
+    id: hasId ? scalar('id', true) : null,
+    query: hasQuery ? scalar('query', true) : null,
+    surface: scalar('surface'),
+    tag: scalar('tag'),
+    status: scalar('status'),
+    limit,
+  });
+}
+
+function rootCauseMatchView(record, match = {}) {
+  return {
+    id: record.id,
+    title: record.title,
+    status: record.status,
+    score: match.score ?? null,
+    matchedFields: match.matchedFields || [],
+    matchedTokens: match.matchedTokens || [],
+    affectedSurfaces: record.affectedSurfaces,
+    tags: record.tags,
+    symptom: record.symptom,
+    evidence: record.evidence,
+    rootCause: record.rootCause,
+    resolution: record.resolution,
+    prevention: record.prevention,
+    regressionTests: record.regressionTests,
+  };
+}
+
+function formatRootCauseResult(result) {
+  const lines = [
+    `Known root-cause catalog — ${result.matches.length} match${result.matches.length === 1 ? '' : 'es'}`,
+    result.knowledge.notice,
+  ];
+  if (!result.matches.length) {
+    lines.push('', 'No catalog record matched these exact filters. This does not prove the issue is new.');
+    return lines.join('\n');
+  }
+  for (const [index, match] of result.matches.entries()) {
+    lines.push('', `${index + 1}. ${match.id} — ${match.title} [${match.status}]`);
+    lines.push('Symptom:', `  ${match.symptom}`);
+    lines.push('Evidence:', ...match.evidence.map((item) => `  · ${item}`));
+    lines.push('Root cause:', `  ${match.rootCause}`);
+    lines.push('Resolution:', ...match.resolution.map((item) => `  · ${item}`));
+    lines.push('Prevention:', ...match.prevention.map((item) => `  · ${item}`));
+    lines.push('Regression tests:', ...match.regressionTests
+      .map((item) => `  · ${item.path} — ${item.assertion}`));
+  }
+  return lines.join('\n');
+}
+
 function emit(args, data, humanLines) {
   if (args.json || args.out) {
     const text = JSON.stringify(data, null, 2);
@@ -323,6 +473,48 @@ const COMMANDS = {
       ...(missing.length ? ['Unresolved evidence:', ...missing] : ['Unresolved evidence: none declared by the calculation-ready profile']),
       `Graph checksum: ${design.semantics.ontology.checksum}`,
     ].join('\n'));
+  },
+
+  'root-cause'(args) {
+    const request = rootCauseRequestFrom(args);
+    const filters = {
+      ...(request.surface ? { affectedSurfaces: [request.surface] } : {}),
+      ...(request.tag ? { tags: [request.tag] } : {}),
+      ...(request.status ? { status: request.status } : {}),
+    };
+    const eligibleIds = new Set(listRootCauseRecords(filters).map(({ id }) => id));
+    let matches;
+    if (request.mode === 'id') {
+      const record = getRootCauseRecord(request.id);
+      if (!record) throw new TypeError(`Unknown root-cause id "${request.id}".`);
+      matches = eligibleIds.has(record.id) ? [rootCauseMatchView(record, { matchedFields: ['id'] })] : [];
+    } else {
+      matches = searchRootCauses(request.query, {
+        limit: 100,
+        ...(request.status ? { status: request.status } : {}),
+      })
+        .filter(({ id }) => eligibleIds.has(id))
+        .slice(0, request.limit)
+        .map((match) => rootCauseMatchView(match.record, match));
+    }
+    const result = {
+      format: 'battery-design/root-cause-query@1',
+      knowledge: {
+        kind: 'versioned-curated-catalog',
+        schemaVersion: ROOT_CAUSE_SCHEMA_VERSION,
+        notice: 'These are deterministic matches to recorded project evidence, not AI certainty or proof of causation.',
+      },
+      mode: request.mode,
+      input: request.mode === 'id' ? request.id : request.query,
+      filters: {
+        surface: request.surface,
+        tag: request.tag,
+        status: request.status,
+        limit: request.limit,
+      },
+      matches,
+    };
+    return emit(args, result, formatRootCauseResult(result));
   },
 
   // Everything the browser should not do while you wait: change one thing at
@@ -634,15 +826,18 @@ const COMMANDS = {
   // Export the source-FMU build kit. It becomes a loadable FMI 2.0 component
   // only after the target-platform binary is compiled and the tree packaged.
   fmu(args) {
-    const spec = specFrom(args);
+    const spec = fmuSpecFrom(args);
     const d = designFromSpec(spec);
+    if (args.spec != null) assertGovernedDesignResolved(d, args.spec);
     const cell = cellById(d.cell.id);
     const dir = args.out === true || !args.out ? './fmu' : args.out;
-    const built = buildFmu({
-      cell, s: d.pack.s, p: d.pack.p,
+    const buildOptions = {
       params: args.params ? loadParams(args.params) : null,
       modelName: args.name || 'BatteryPack',
-    });
+    };
+    const built = args.spec != null
+      ? buildFmu({ ...buildOptions, design: d })
+      : buildFmu({ ...buildOptions, cell, s: d.pack.s, p: d.pack.p });
     for (const [rel, content] of Object.entries(built.files)) {
       const full = path.join(dir, rel);
       mkdirSync(path.dirname(full), { recursive: true });
@@ -653,6 +848,8 @@ const COMMANDS = {
       `  written to ${dir}/`,
       ...Object.keys(built.files).map((f) => `    ${f}`),
       `  model ${built.modelName}, guid ${built.guid}`,
+      `  design snapshot ${built.designSnapshotChecksum} (${built.designComplete ? 'complete design binding' : 'legacy incomplete provenance'})`,
+      ...built.parameterWarnings.map((warning) => `  warning: ${warning}`),
       '',
       built.note,
       `Compile and package it with the commands in ${dir}/README.md, then validate the resulting .fmu in your host tool.`,
@@ -1254,10 +1451,13 @@ const COMMANDS = {
       // Co-simulation source-kit export: path-preserving files the page serializes for download.
       if (url === '/api/fmu' && req.method === 'POST') {
         return withBody((body) => {
-          const d = designFromSpec(body.spec || {});
-          const cell = cellById(d.cell.id);
-          return buildFmu({ cell, s: d.pack.s, p: d.pack.p, params: body.params || null,
-            modelName: body.modelName || 'BatteryPack' });
+          const request = validateFmuRequestEnvelope(body);
+          const label = 'FMU request body.spec';
+          const spec = normalizeGovernedDesignSpec(request.spec, label);
+          const d = designFromSpec(spec);
+          assertGovernedDesignResolved(d, label);
+          return buildFmu({ design: d, params: request.params ?? null,
+            modelName: request.modelName ?? 'BatteryPack' });
         });
       }
       if (isApi) {
@@ -1358,6 +1558,62 @@ function loadParams(file) {
   }
 }
 
+const FMU_REQUEST_KEYS = new Set(['spec', 'params', 'modelName']);
+
+function validateFmuRequestEnvelope(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new TypeError('FMU request body must be one JSON object.');
+  }
+  const unsupported = Object.keys(body).filter((key) => !FMU_REQUEST_KEYS.has(key));
+  if (unsupported.length) {
+    throw new TypeError(`FMU request body contains unsupported field(s): ${unsupported.join(', ')}.`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(body, 'spec')) {
+    throw new TypeError('FMU request body must contain spec.');
+  }
+  return body;
+}
+
+function normalizeGovernedDesignSpec(input, label) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new TypeError(`${label}: DesignSpec must be one JSON object.`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(input, 'schemaVersion')) {
+    throw new TypeError(
+      `${label}: DesignSpec must declare schemaVersion ${DESIGN_SPEC_SCHEMA_VERSION}.`,
+    );
+  }
+  try {
+    return normalizeDesignSpec(input, { strict: true, closed: true });
+  } catch (error) {
+    if (error instanceof DesignSpecValidationError) {
+      throw new TypeError(`${label}: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+function assertGovernedDesignResolved(design, label) {
+  if (design.warnings.length) {
+    throw new TypeError(
+      `${label}: governed DesignSpec did not resolve exactly: ${design.warnings.join(' ')}`,
+    );
+  }
+}
+
+function loadDesignSpec(file) {
+  if (typeof file !== 'string' || !file) {
+    throw new TypeError('--spec requires a DesignSpec JSON file path.');
+  }
+  let input;
+  try {
+    input = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    throw new TypeError(`Could not read DesignSpec from ${file}: ${error.message}`);
+  }
+  return normalizeGovernedDesignSpec(input, file);
+}
+
 // Measured data: time_s, current_A, voltage_V and optionally temp_C. Header
 // optional, comma or semicolon or tab, because real exports vary.
 function readMeasuredCsv(file) {
@@ -1393,7 +1649,10 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   sweep     one variable across a range        --vary cell|mass|payload|energy [--from --to --step]
   search    the whole design space, ranked     --app ev --rank cost|range|mass|density|upfront [--top N]
   range     drive-cycle study, mass × mode     --app ev --energy 60000 [--from --to --step]
-  fmu       export an FMI 2.0 source-FMU kit   --app ev [--out ./fmu] [--params p.json]
+  fmu       export an FMI 2.0 source-FMU kit   --spec design-spec.json [--out ./fmu]
+                                                  (legacy --app/--energy flags remain supported)
+  root-cause search recorded engineering fixes  --id ID | --query TEXT [--surface NAME]
+                                                  [--tag NAME --status STATUS --limit N --json]
   addons    what this tool can do, and cannot   [--app ev]
   bom       every conductor sized, every       --app ev [--install bundled] [--env harsh]
             joint checked, and the bill of     [--modrun 300 --packrun 400 --pitch 25]

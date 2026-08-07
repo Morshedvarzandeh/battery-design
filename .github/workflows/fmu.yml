@@ -49,7 +49,7 @@ jobs:
       - name: Validate the FMI contract generator
         run: node --test tests/fmi-contract.test.mjs
       - name: Generate the canonical EV source-FMU tree once
-        run: node desktop/bd.mjs fmu --app ev --energy 60000 --out "$FMI_TREE"
+        run: node desktop/bd.mjs fmu --spec fmi/battery-design-ev.design-spec.json --out "$FMI_TREE"
       - name: Preserve the canonical source tree
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -199,7 +199,7 @@ jobs:
           @echo off
           call "$env:FMI_VCVARS64"
           if errorlevel 1 exit /b %errorlevel%
-          node tools\fmu-build.mjs package --tree "$env:FMI_TREE" --output "$winFmu" --require-platforms win64
+          node tools\fmu-build.mjs package --tree "$env:FMI_TREE" --output "$winFmu" --require-platforms win64 --require-complete-design --require-source-revision
           "@ | Set-Content -LiteralPath $script -Encoding ascii
           & $script
           if ($LASTEXITCODE -ne 0) { throw "Windows-only FMU packaging failed with exit code $LASTEXITCODE" }
@@ -244,6 +244,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $fmusimCsv = Join-Path $env:RUNNER_TEMP 'fmusim-win64.csv'
+          $evidenceDirectory = Join-Path $env:RUNNER_TEMP 'fmu-host-evidence-win64'
+          New-Item -ItemType Directory -Path $evidenceDirectory -Force | Out-Null
           & $env:FMUSIM_EXE validate $env:WIN_FMU
           if ($LASTEXITCODE -ne 0) { throw 'fmusim validation failed.' }
           & $env:FMUSIM_EXE simulate --interface-type cs --start-time 0 --stop-time 1 --output-interval 0.1 --fixed-step-size 0.1 `
@@ -252,8 +254,17 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $fmusimCsv -PathType Leaf) -or (Get-Item $fmusimCsv).Length -eq 0) {
             throw 'fmusim did not produce a non-empty simulation result.'
           }
-          python tools/fmpy-smoke.py $env:WIN_FMU
+          python tools/fmpy-smoke.py $env:WIN_FMU `
+            --evidence-json (Join-Path $evidenceDirectory 'fmpy-win64.json') `
+            --evidence-csv (Join-Path $evidenceDirectory 'fmpy-win64.csv')
           if ($LASTEXITCODE -ne 0) { throw 'FMPy trajectory validation failed.' }
+      - name: Preserve the content-bound win64 host evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fmu-host-contract-evidence-win64
+          path: ${{ runner.temp }}/fmu-host-evidence-win64/
+          if-no-files-found: error
+          retention-days: 30
       - name: Preserve the verified win64 binary and inspection record
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -323,8 +334,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           first="$RUNNER_TEMP/battery-design-ev.first.fmu"
-          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output "$first" --require-platforms linux64,win64 --max-glibc 2.17
-          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output dist/battery-design-ev.fmu --require-platforms linux64,win64 --max-glibc 2.17
+          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output "$first" --require-platforms linux64,win64 --max-glibc 2.17 --require-complete-design --require-source-revision
+          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output dist/battery-design-ev.fmu --require-platforms linux64,win64 --max-glibc 2.17 --require-complete-design --require-source-revision
           cmp "$first" dist/battery-design-ev.fmu
           (cd dist && sha256sum battery-design-ev.fmu > battery-design-ev.fmu.sha256)
       - name: Verify the final archive's exact platform set
@@ -350,7 +361,13 @@ jobs:
               assert manifest['binaries'][1].get('exportedSymbols')
           PY
       - name: Exercise the packaged Linux binary and physical invariants
-        run: python tools/fmu-smoke.py dist/battery-design-ev.fmu --platform linux64
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/fmu-host-evidence
+          python tools/fmu-smoke.py dist/battery-design-ev.fmu --platform linux64 \
+            --evidence-json dist/fmu-host-evidence/native-linux64.json \
+            --evidence-csv dist/fmu-host-evidence/native-linux64.csv
       - name: Install SHA-verified fmusim 0.6.0 for Linux
         shell: bash
         run: |
@@ -389,7 +406,16 @@ jobs:
             --output-variable V_pack --output-variable SoC \
             --output-file "$RUNNER_TEMP/fmusim-linux64.csv" dist/battery-design-ev.fmu
           test -s "$RUNNER_TEMP/fmusim-linux64.csv"
-          python tools/fmpy-smoke.py dist/battery-design-ev.fmu
+          python tools/fmpy-smoke.py dist/battery-design-ev.fmu \
+            --evidence-json dist/fmu-host-evidence/fmpy-linux64.json \
+            --evidence-csv dist/fmu-host-evidence/fmpy-linux64.csv
+      - name: Upload content-bound host-contract trajectory evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fmu-host-contract-evidence
+          path: dist/fmu-host-evidence/
+          if-no-files-found: error
+          retention-days: 30
       - name: Upload the release-ready FMU and checksum
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

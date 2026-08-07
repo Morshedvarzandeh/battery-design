@@ -12,7 +12,8 @@
 // time step the master chooses.
 //
 //   inputs   I_pack [A]  (+ discharge),  T_ambient [°C],  coolant flow [kg/s]
-//   outputs  V_pack [V],  SoC [-],  T_cell [°C],  Q_loss [W],  V_min_cell [V]
+//   outputs  V_pack [V],  SoC [-],  T_cell [°C],  Q_loss [W],
+//            V_cell_min [V], P_terminal [W]
 //
 // This module generates the canonical FMI source tree: modelDescription.xml,
 // the complete reduced one-RC C implementation and source-build documentation.
@@ -30,6 +31,26 @@
 
 import { defaultParams, validateParams } from './sim2.js';
 import { semanticDigest } from './ontology.js';
+import { cellById } from './cells.js';
+import {
+  FMI_IO_CONTRACT, FMI_IO_CONTRACT_CHECKSUM, FMI_IO_CONTRACT_FORMAT,
+  FMI_IO_CONTRACT_VERSION, FMI_UNIT_DEFINITIONS,
+  FMU_PARAMETERS, FMU_VARIABLES, materializeFmiIoMap,
+} from './fmi-signal-map.js';
+import {
+  createFmiExportSnapshot, FMI_DESIGN_RESOURCE_FORMAT, FMI_EXPORT_SNAPSHOT_FORMAT,
+  materializeFmiDesignResource, verifyFmiDesignResource,
+} from './fmi-export-snapshot.js';
+
+export {
+  FMI_IO_CONTRACT, FMI_IO_CONTRACT_CHECKSUM, FMI_IO_CONTRACT_FORMAT,
+  FMI_IO_CONTRACT_VERSION, FMI_UNIT_DEFINITIONS,
+  FMU_PARAMETERS, FMU_VARIABLES, materializeFmiIoMap,
+} from './fmi-signal-map.js';
+export {
+  createFmiExportSnapshot, FMI_DESIGN_RESOURCE_FORMAT, FMI_EXPORT_SNAPSHOT_FORMAT,
+  materializeFmiDesignResource, verifyFmiDesignResource,
+} from './fmi-export-snapshot.js';
 
 export const FMI_VERSION = '2.0';
 export const FMI_STANDARD_VERSION = '2.0.5';
@@ -51,42 +72,32 @@ export const FMI2_REQUIRED_CO_SIMULATION_SYMBOLS = Object.freeze([
   'fmi2GetBooleanStatus', 'fmi2GetStringStatus',
 ]);
 
-// The coupling interface. Kept deliberately small: every variable here is one
-// a vehicle or plant model actually has, and nothing is exposed that the
-// master could not sensibly provide.
-export const FMU_VARIABLES = [
-  { name: 'I_pack', causality: 'input', unit: 'A', start: 0, description: 'Pack current, positive on discharge' },
-  { name: 'T_ambient', causality: 'input', unit: 'degC', start: 25, description: 'Ambient temperature around the pack' },
-  { name: 'coolant_flow', causality: 'input', unit: 'kg/s', start: 0.05, description: 'Coolant mass flow; 0 means no loop running' },
-  { name: 'V_pack', causality: 'output', unit: 'V', start: 0, description: 'Terminal voltage under load' },
-  { name: 'SoC', causality: 'output', unit: '1', start: 1, description: 'State of charge, 0 to 1' },
-  { name: 'T_cell', causality: 'output', unit: 'degC', start: 25, description: 'Representative temperature of the single lumped cell node' },
-  { name: 'Q_loss', causality: 'output', unit: 'W', start: 0, description: 'Heat generated, for the thermal side of the co-simulation' },
-  { name: 'V_cell_min', causality: 'output', unit: 'V', start: 0, description: 'Uniform-cell terminal-voltage estimate (not a resolved cell minimum)' },
-  { name: 'P_terminal', causality: 'output', unit: 'W', start: 0, description: 'Electrical power at the terminals' },
-];
-
-// Parameters the master can set once at initialisation. These are a documented
-// subset of js/sim2.js coefficients used by this reduced one-RC plant.
-export const FMU_PARAMETERS = [
-  { name: 'cells_series', unit: '1', description: 'Cells in series' },
-  { name: 'cells_parallel', unit: '1', description: 'Cells in parallel' },
-  { name: 'capacity_Ah', unit: 'A.h', description: 'Cell capacity' },
-  { name: 'ocv_min', unit: 'V', description: 'Cell voltage at empty' },
-  { name: 'ocv_max', unit: 'V', description: 'Cell voltage at full' },
-  { name: 'r0_mOhm', unit: 'mOhm', description: 'Cell series resistance at reference temperature' },
-  { name: 'rc1_mOhm', unit: 'mOhm', description: 'RC branch resistance' },
-  { name: 'rc1_tau_s', unit: 's', description: 'RC branch time constant' },
-  { name: 'r0_Ea_J', unit: 'J/mol', description: 'Activation energy for the resistance temperature dependence' },
-  { name: 'cp_cell', unit: 'J/(kg.K)', description: 'Cell specific heat' },
-  { name: 'mass_cell_kg', unit: 'kg', description: 'Cell mass' },
-  { name: 'h_cool_WK', unit: 'W/K', description: 'Conductance from cells into the coolant' },
-  { name: 'ua_amb_WK', unit: 'W/K', description: 'Conductance from pack to ambient' },
-  { name: 'entropy_VK', unit: 'V/K', description: 'Entropic coefficient dU/dT' },
-];
-
 const xmlEscape = (s) => String(s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;' }[c]));
+
+const xmlAttrs = (attributes) => Object.entries(attributes)
+  .filter(([, value]) => value != null)
+  .map(([name, value]) => `${name}="${xmlEscape(value)}"`)
+  .join(' ');
+
+const unitDefinitionsXml = () => FMI_UNIT_DEFINITIONS.map((unit) => {
+  const base = `<BaseUnit${Object.keys(unit.baseUnit).length ? ` ${xmlAttrs(unit.baseUnit)}` : ''}/>`;
+  const displays = unit.displayUnits
+    .map((display) => `<DisplayUnit ${xmlAttrs(display)}/>`)
+    .join('');
+  return `    <Unit name="${xmlEscape(unit.name)}">${base}${displays}</Unit>`;
+}).join('\n');
+
+// sim2.js has a wider parameter surface than this deliberately reduced
+// one-RC FMU. Accepting a valid sim2 parameter that the FMU does not use is
+// worse than rejecting it: the caller would receive an unchanged component
+// while believing their calibration had been embedded. Keep this allow-list
+// beside the projection below so every accepted override affects the FMU.
+const FMU_PARAMETER_OVERRIDE_KEYS = Object.freeze([
+  'r0Ref', 'rc1R', 'rc1TauS', 'r0EaJ',
+  'cpCellJkgK', 'hCoolWK', 'uaAmbWK', 'entropyVK',
+]);
+const FMU_PARAMETER_OVERRIDE_KEY_SET = new Set(FMU_PARAMETER_OVERRIDE_KEYS);
 
 /**
  * The one set of fixed starts shared by modelDescription.xml and the binary.
@@ -94,12 +105,28 @@ const xmlEscape = (s) => String(s).replace(/[&<>"']/g, (c) =>
  * back into the component, so duplicating these values in C is a correctness
  * bug rather than a harmless default.
  */
-export function fmuParameterValues({ cell, s, p, params = null }) {
+export function resolveFmuParameterValues({ cell, s, p, params = null, strict = false }) {
   if (!cell || typeof cell !== 'object') throw new TypeError('FMU export requires a cell record.');
   if (!Number.isInteger(s) || s < 1 || !Number.isInteger(p) || p < 1) {
     throw new RangeError('FMU series and parallel counts must be positive integers.');
   }
-  const P = validateParams({ ...defaultParams(cell), ...(params || {}) }).params;
+  if (params != null && (typeof params !== 'object' || Array.isArray(params))) {
+    throw new TypeError('FMU parameter overrides must be one JSON object.');
+  }
+  const unsupported = params == null ? [] : Object.keys(params)
+    .filter((name) => !FMU_PARAMETER_OVERRIDE_KEY_SET.has(name))
+    .sort();
+  if (strict && unsupported.length) {
+    throw new TypeError(`FMU parameter overrides are not represented by the reduced one-RC component: ${unsupported.join(', ')}.`);
+  }
+  const supportedOverrides = params == null ? {} : Object.fromEntries(
+    Object.entries(params).filter(([name]) => FMU_PARAMETER_OVERRIDE_KEY_SET.has(name)),
+  );
+  const validated = validateParams({ ...defaultParams(cell), ...supportedOverrides });
+  if (strict && validated.notes.length) {
+    throw new RangeError(`FMU parameter overrides require repair: ${validated.notes.join('; ')}`);
+  }
+  const P = validated.params;
   const values = {
     cells_series: s,
     cells_parallel: p,
@@ -123,43 +150,91 @@ export function fmuParameterValues({ cell, s, p, params = null }) {
       && values.rc1_tau_s > 0 && values.cp_cell > 0 && values.mass_cell_kg > 0)) {
     throw new RangeError('FMU fixed starts violate the battery model physical contract.');
   }
-  return Object.freeze(values);
+  return Object.freeze({
+    values: Object.freeze(values),
+    warnings: Object.freeze([
+      ...unsupported.map((name) => `${name}: ignored because it is not represented by the reduced one-RC FMU`),
+      ...validated.notes,
+    ]),
+  });
+}
+
+export function fmuParameterValues(options) {
+  return resolveFmuParameterValues(options).values;
 }
 
 /** A content identity that changes with every binary-affecting default. */
-export function fmuGuid({ cell, s, p, params = null, modelName = 'BatteryPack' }) {
+export function fmuGuid({
+  cell, s, p, params = null, defaults = null, modelName = 'BatteryPack',
+  designSnapshotChecksum = null,
+}) {
+  if (designSnapshotChecksum != null
+      && !/^[a-f0-9]{64}$/.test(designSnapshotChecksum)) {
+    throw new TypeError('FMU design snapshot checksum must be a lowercase SHA-256 digest.');
+  }
+  const resolvedDefaults = defaults || fmuParameterValues({ cell, s, p, params });
+  const snapshotChecksum = designSnapshotChecksum || createFmiExportSnapshot({
+    cell, s, p, modelName, defaults: resolvedDefaults,
+    ioContractChecksum: FMI_IO_CONTRACT_CHECKSUM,
+    modelRevision: FMU_MODEL_REVISION,
+    fmiVersion: FMI_VERSION,
+    fmiStandardVersion: FMI_STANDARD_VERSION,
+  }).snapshotChecksum;
   const digest = semanticDigest({
     format: 'battery-design/fmi-2.0-co-simulation@1',
     standardPatch: FMI_STANDARD_VERSION,
     modelRevision: FMU_MODEL_REVISION,
     modelName,
     cellId: cell?.id || null,
-    defaults: fmuParameterValues({ cell, s, p, params }),
+    ioContractChecksum: FMI_IO_CONTRACT_CHECKSUM,
+    defaults: resolvedDefaults,
+    designSnapshotChecksum: snapshotChecksum,
   });
   return `{${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}}`;
 }
 
 /** The FMI 2.0 modelDescription.xml — the contract the host tool reads. */
-export function modelDescriptionXml({ cell, s, p, params = null, modelName = 'BatteryPack', guid = null, generatedOn = '1970-01-01T00:00:00Z' }) {
-  const paramValues = fmuParameterValues({ cell, s, p, params });
+export function modelDescriptionXml({
+  cell, s, p, params = null, defaults = null, modelName = 'BatteryPack',
+  guid = null, generatedOn = '1970-01-01T00:00:00Z',
+}) {
+  const paramValues = defaults || fmuParameterValues({ cell, s, p, params });
   // The GUID must match between the XML and the binary. It is derived from the
   // design so the same design always produces the same FMU — reproducible
   // builds matter when someone asks which pack a result came from.
-  const id = guid || fmuGuid({ cell, s, p, params, modelName });
-  let vr = 0;
-  const next = () => ++vr;
-  const varLines = [
-    ...FMU_PARAMETERS.map((v) => `    <ScalarVariable name="${xmlEscape(v.name)}" valueReference="${next()}" causality="parameter" variability="fixed" description="${xmlEscape(v.description)}">
-      <Real start="${paramValues[v.name]}" unit="${xmlEscape(v.unit)}"/>
-    </ScalarVariable>`),
-    ...FMU_VARIABLES.map((v) => `    <ScalarVariable name="${xmlEscape(v.name)}" valueReference="${next()}" causality="${v.causality}" variability="continuous"${v.causality === 'input' ? '' : ' initial="calculated"'} description="${xmlEscape(v.description)}">
-      <Real${v.causality === 'input' ? ` start="${v.start}"` : ''} unit="${xmlEscape(v.unit)}"/>
-    </ScalarVariable>`),
-  ];
-  // Outputs must be listed in the model structure, by index, 1-based.
-  const outputIdx = FMU_VARIABLES
-    .map((v, i) => ({ v, idx: FMU_PARAMETERS.length + i + 1 }))
-    .filter(({ v }) => v.causality === 'output');
+  const id = guid || fmuGuid({ cell, s, p, params, defaults: paramValues, modelName });
+  const ioMap = materializeFmiIoMap({
+    parameterValues: paramValues, modelName, modelRevision: FMU_MODEL_REVISION,
+    guid: id, fmiStandardVersion: FMI_STANDARD_VERSION,
+  });
+  const varLines = ioMap.variables.map((variable) => {
+    const scalarAttributes = {
+      name: variable.name,
+      valueReference: variable.valueReference,
+      causality: variable.causality,
+      variability: variable.variability,
+      initial: variable.initial,
+      description: variable.description,
+    };
+    const realAttributes = {
+      start: variable.causality === 'parameter' || variable.causality === 'input'
+        ? variable.start : null,
+      unit: variable.unit,
+      displayUnit: variable.displayUnit,
+      quantity: variable.quantity,
+      min: variable.min,
+      max: variable.max,
+      nominal: variable.nominal,
+    };
+    return `    <ScalarVariable ${xmlAttrs(scalarAttributes)}>
+      <Real ${xmlAttrs(realAttributes)}/>
+    </ScalarVariable>`;
+  });
+  // ModelStructure Unknown@index is the 1-based ModelVariables position, not
+  // the value reference. Preserve declaration order while VRs stay explicit.
+  const outputIdx = ioMap.variables
+    .map((variable, index) => ({ variable, idx: index + 1 }))
+    .filter(({ variable }) => variable.causality === 'output');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <fmiModelDescription
@@ -188,20 +263,7 @@ export function modelDescriptionXml({ cell, s, p, params = null, modelName = 'Ba
   </CoSimulation>
 
   <UnitDefinitions>
-    <Unit name="A"><BaseUnit A="1"/></Unit>
-    <Unit name="V"><BaseUnit kg="1" m="2" s="-3" A="-1"/></Unit>
-    <Unit name="W"><BaseUnit kg="1" m="2" s="-3"/></Unit>
-    <Unit name="degC"><BaseUnit K="1" offset="273.15"/></Unit>
-    <Unit name="kg/s"><BaseUnit kg="1" s="-1"/></Unit>
-    <Unit name="s"><BaseUnit s="1"/></Unit>
-    <Unit name="1"><BaseUnit/></Unit>
-    <Unit name="A.h"><BaseUnit s="1" A="1" factor="3600"/></Unit>
-    <Unit name="mOhm"><BaseUnit kg="1" m="2" s="-3" A="-2" factor="0.001"/></Unit>
-    <Unit name="J/mol"><BaseUnit kg="1" m="2" s="-2" mol="-1"/></Unit>
-    <Unit name="J/(kg.K)"><BaseUnit m="2" s="-2" K="-1"/></Unit>
-    <Unit name="kg"><BaseUnit kg="1"/></Unit>
-    <Unit name="W/K"><BaseUnit kg="1" m="2" s="-3" K="-1"/></Unit>
-    <Unit name="V/K"><BaseUnit kg="1" m="2" s="-3" A="-1" K="-1"/></Unit>
+${unitDefinitionsXml()}
   </UnitDefinitions>
 
   <DefaultExperiment startTime="0" stopTime="10" tolerance="0.0001" stepSize="0.1"/>
@@ -245,6 +307,11 @@ const cNumber = (value) => {
 };
 
 const validModelIdentifier = (value) => /^[A-Za-z_][A-Za-z0-9_]{0,63}$/.test(value);
+const validGenerationTimestamp = (value) => (
+  typeof value === 'string'
+  && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+  && Number.isFinite(Date.parse(value))
+);
 
 /**
  * The C source implementing FMI 2.0 co-simulation.
@@ -259,6 +326,29 @@ export function fmuSourceC({ modelName = 'BatteryPack', guid = '{00000000-0000-0
   for (const name of FMU_PARAMETERS.map((parameter) => parameter.name)) {
     if (!Number.isFinite(D[name])) throw new TypeError(`Missing finite FMU C default: ${name}`);
   }
+  const parameterContract = FMI_IO_CONTRACT.filter((variable) => variable.causality === 'parameter');
+  const inputContract = FMI_IO_CONTRACT.filter((variable) => variable.causality === 'input');
+  const defaultMacros = parameterContract
+    .map((variable) => `#define ${variable.cDefaultMacro.padEnd(16)} ${cNumber(D[variable.name])}`)
+    .join('\n');
+  const valueReferenceEnum = FMI_IO_CONTRACT
+    .map((variable) => `  ${variable.cSymbol} = ${variable.valueReference}`)
+    .join(',\n');
+  const parameterResets = parameterContract
+    .map((variable) => `m->${variable.cField} = ${variable.cDefaultMacro};`)
+    .join(' ');
+  const inputResets = inputContract
+    .map((variable) => `m->${variable.cField} = ${cNumber(variable.start)};`)
+    .join(' ');
+  const getRealCases = FMI_IO_CONTRACT
+    .map((variable) => `      case ${variable.cSymbol}: value[k] = m->${variable.cField}; break;`)
+    .join('\n');
+  const setRealCases = [...inputContract, ...parameterContract]
+    .map((variable) => `      case ${variable.cSymbol}: trial.${variable.cField} = value[k]; break;`)
+    .join('\n');
+  const parameterPredicateCases = parameterContract
+    .map((variable) => `    case ${variable.cSymbol}: return 1;`)
+    .join('\n');
   return `/* ${modelName}.c — FMI 2.0 co-simulation battery pack.
  *
  * Generated by battery-design (AGPL-3.0-or-later). This reduced plant uses
@@ -283,28 +373,19 @@ export function fmuSourceC({ modelName = 'BatteryPack', guid = '{00000000-0000-0
 #define MAX_SUB_DT 1.0       /* accuracy bound; RC and thermal updates are stable exponentials */
 #define MAX_COMM_STEP 3600.0 /* reject pathological requests instead of doing unbounded work */
 
-#define DEFAULT_S       ${cNumber(D.cells_series)}
-#define DEFAULT_P       ${cNumber(D.cells_parallel)}
-#define DEFAULT_CAP_AH  ${cNumber(D.capacity_Ah)}
-#define DEFAULT_OCV_MIN ${cNumber(D.ocv_min)}
-#define DEFAULT_OCV_MAX ${cNumber(D.ocv_max)}
-#define DEFAULT_R0_MOHM ${cNumber(D.r0_mOhm)}
-#define DEFAULT_R1_MOHM ${cNumber(D.rc1_mOhm)}
-#define DEFAULT_TAU_S   ${cNumber(D.rc1_tau_s)}
-#define DEFAULT_EA_J    ${cNumber(D.r0_Ea_J)}
-#define DEFAULT_CP      ${cNumber(D.cp_cell)}
-#define DEFAULT_MASS_KG ${cNumber(D.mass_cell_kg)}
-#define DEFAULT_HCOOL   ${cNumber(D.h_cool_WK)}
-#define DEFAULT_UA_AMB  ${cNumber(D.ua_amb_WK)}
-#define DEFAULT_ENTROPY ${cNumber(D.entropy_VK)}
+${defaultMacros}
 
-/* Value references must match modelDescription.xml, in declaration order. */
+/* Explicit value references generated from the versioned host I/O contract. */
 enum {
-  VR_S = 1, VR_P, VR_CAP, VR_OCVMIN, VR_OCVMAX, VR_R0, VR_RC1, VR_TAU,
-  VR_EA, VR_CP, VR_MASS, VR_HCOOL, VR_UAAMB, VR_ENTROPY,
-  VR_I, VR_TAMB, VR_FLOW,
-  VR_V, VR_SOC, VR_TCELL, VR_QLOSS, VR_VCELLMIN, VR_PTERM
+${valueReferenceEnum}
 };
+
+static int is_parameter_vr(fmi2ValueReference vr) {
+  switch (vr) {
+${parameterPredicateCases}
+    default: return 0;
+  }
+}
 
 typedef struct {
   /* parameters */
@@ -349,12 +430,8 @@ static void refresh_outputs(Pack *m) {
 }
 
 static void restore_start_values(Pack *m) {
-  m->s = DEFAULT_S; m->p = DEFAULT_P; m->capAh = DEFAULT_CAP_AH;
-  m->ocvMin = DEFAULT_OCV_MIN; m->ocvMax = DEFAULT_OCV_MAX;
-  m->r0 = DEFAULT_R0_MOHM; m->rc1 = DEFAULT_R1_MOHM; m->tau = DEFAULT_TAU_S;
-  m->ea = DEFAULT_EA_J; m->cp = DEFAULT_CP; m->massCell = DEFAULT_MASS_KG;
-  m->hCool = DEFAULT_HCOOL; m->uaAmb = DEFAULT_UA_AMB; m->entropy = DEFAULT_ENTROPY;
-  m->iPack = 0.0; m->tAmb = 25.0; m->flow = 0.05;
+  ${parameterResets}
+  ${inputResets}
   m->soc = 1.0; m->v1 = 0.0; m->tCell = 25.0; m->time = 0.0;
   m->stopTime = 0.0; m->stopTimeDefined = 0;
   refresh_outputs(m);
@@ -474,29 +551,7 @@ fmi2Status fmi2GetReal(fmi2Component c, const fmi2ValueReference vr[], size_t nv
   Pack *m = (Pack *)c; if (!m || (nvr && (!vr || !value))) return fmi2Error;
   for (size_t k = 0; k < nvr; k++) {
     switch (vr[k]) {
-      case VR_V: value[k] = m->vPack; break;
-      case VR_SOC: value[k] = m->soc; break;
-      case VR_TCELL: value[k] = m->tCell; break;
-      case VR_QLOSS: value[k] = m->qLoss; break;
-      case VR_VCELLMIN: value[k] = m->vCellMin; break;
-      case VR_PTERM: value[k] = m->pTerm; break;
-      case VR_I: value[k] = m->iPack; break;
-      case VR_TAMB: value[k] = m->tAmb; break;
-      case VR_FLOW: value[k] = m->flow; break;
-      case VR_S: value[k] = m->s; break;
-      case VR_P: value[k] = m->p; break;
-      case VR_CAP: value[k] = m->capAh; break;
-      case VR_OCVMIN: value[k] = m->ocvMin; break;
-      case VR_OCVMAX: value[k] = m->ocvMax; break;
-      case VR_R0: value[k] = m->r0; break;
-      case VR_RC1: value[k] = m->rc1; break;
-      case VR_TAU: value[k] = m->tau; break;
-      case VR_EA: value[k] = m->ea; break;
-      case VR_CP: value[k] = m->cp; break;
-      case VR_MASS: value[k] = m->massCell; break;
-      case VR_HCOOL: value[k] = m->hCool; break;
-      case VR_UAAMB: value[k] = m->uaAmb; break;
-      case VR_ENTROPY: value[k] = m->entropy; break;
+${getRealCases}
       default: return fmi2Error;
     }
   }
@@ -508,25 +563,9 @@ fmi2Status fmi2SetReal(fmi2Component c, const fmi2ValueReference vr[], size_t nv
   Pack trial = *m;
   for (size_t k = 0; k < nvr; k++) {
     if (!isfinite(value[k])) return fmi2Error;
-    if (vr[k] <= VR_ENTROPY && m->mode != MODE_INSTANTIATED && m->mode != MODE_INITIALIZATION) return fmi2Error;
+    if (is_parameter_vr(vr[k]) && m->mode != MODE_INSTANTIATED && m->mode != MODE_INITIALIZATION) return fmi2Error;
     switch (vr[k]) {
-      case VR_I: trial.iPack = value[k]; break;
-      case VR_TAMB: trial.tAmb = value[k]; break;
-      case VR_FLOW: trial.flow = value[k]; break;
-      case VR_S: trial.s = value[k]; break;
-      case VR_P: trial.p = value[k]; break;
-      case VR_CAP: trial.capAh = value[k]; break;
-      case VR_OCVMIN: trial.ocvMin = value[k]; break;
-      case VR_OCVMAX: trial.ocvMax = value[k]; break;
-      case VR_R0: trial.r0 = value[k]; break;
-      case VR_RC1: trial.rc1 = value[k]; break;
-      case VR_TAU: trial.tau = value[k]; break;
-      case VR_EA: trial.ea = value[k]; break;
-      case VR_CP: trial.cp = value[k]; break;
-      case VR_MASS: trial.massCell = value[k]; break;
-      case VR_HCOOL: trial.hCool = value[k]; break;
-      case VR_UAAMB: trial.uaAmb = value[k]; break;
-      case VR_ENTROPY: trial.entropy = value[k]; break;
+${setRealCases}
       default: return fmi2Error;
     }
   }
@@ -619,15 +658,31 @@ OpenModelica, or another FMI host.
 Your model tells the pack what it is drawing; the pack answers with what that
 costs it.
 
-| Direction | Variable | Unit | Meaning |
-|---|---|---|---|
-${FMU_VARIABLES.map((v) => `| ${v.causality} | \`${v.name}\` | ${v.unit} | ${v.description} |`).join('\n')}
+| Direction | VR | Stable role | Variable | Unit | Meaning and sign |
+|---|---:|---|---|---|---|
+${FMI_IO_CONTRACT.filter((v) => v.causality !== 'parameter')
+    .map((v) => `| ${v.causality} | ${v.valueReference} | \`${v.role}\` | \`${v.name}\` | ${v.unit} | ${v.description} ${v.signConvention} |`)
+    .join('\n')}
 
 Parameters (set once at initialisation) are an explicit subset of the desktop
 model coefficients. Selected R0/RC1 values are baked into both XML and binary
 starts so the declared reduced plant is internally consistent in any host:
 
-${FMU_PARAMETERS.map((v) => `- \`${v.name}\` (${v.unit}) — ${v.description}`).join('\n')}
+${FMI_IO_CONTRACT.filter((v) => v.causality === 'parameter')
+    .map((v) => `- VR ${v.valueReference} \`${v.name}\` (${v.unit}, role \`${v.role}\`) — ${v.description}`)
+    .join('\n')}
+
+The machine-readable form of this exact mapping is
+\`resources/battery-design-io-map.json\`. Its checksum is part of the FMU GUID,
+so host caches cannot silently reuse a component after the interface contract
+changes.
+
+The physical topology, cell facts, module partition, dimensions, mass, layout
+and selected component ids that produced this component are bound separately
+in \`resources/battery-design-design.json\`. Its snapshot checksum is also part
+of the GUID. A governed DesignSpec export marks that resource complete; the
+legacy cell/S/P adapter remains visibly incomplete rather than inventing
+layout provenance it never received.
 
 ## Building it
 
@@ -680,20 +735,64 @@ them, at the cost of a bigger interface.
 }
 
 /** Everything needed to write an FMU to disk, as plain strings. */
-export function buildFmu({ cell, s, p, params = null, modelName = 'BatteryPack', generatedOn = '1970-01-01T00:00:00Z' }) {
+export function buildFmu({
+  design = null, cell = null, s = null, p = null, params = null,
+  modelName = 'BatteryPack', generatedOn = '1970-01-01T00:00:00Z',
+} = {}) {
   if (!validModelIdentifier(modelName)) {
     throw new TypeError('FMU modelName must start with a letter or underscore and contain only letters, numbers and underscores (64 characters maximum).');
   }
-  const defaults = fmuParameterValues({ cell, s, p, params });
-  const guid = fmuGuid({ cell, s, p, params, modelName });
-  return {
-    guid, modelName, standardVersion: FMI_STANDARD_VERSION,
-    modelRevision: FMU_MODEL_REVISION, defaults,
-    files: {
-      'modelDescription.xml': modelDescriptionXml({ cell, s, p, params, modelName, guid, generatedOn }),
-      [`sources/${modelName}.c`]: fmuSourceC({ modelName, guid, defaults }),
-      'README.md': fmuReadme({ modelName, cell, s, p }),
-    },
+  if (!validGenerationTimestamp(generatedOn)) {
+    throw new TypeError('FMU generatedOn must be an ISO 8601 timestamp with a timezone.');
+  }
+  const hasDesign = design != null;
+  const hasAnyLegacy = cell != null || s != null || p != null;
+  if (hasDesign && hasAnyLegacy) {
+    throw new TypeError('FMU export accepts either one complete design or legacy cell/s/p inputs, not both.');
+  }
+  const selectedCell = hasDesign ? cellById(design?.cell?.id) : cell;
+  const selectedS = hasDesign ? design?.pack?.s : s;
+  const selectedP = hasDesign ? design?.pack?.p : p;
+  const parameterResolution = resolveFmuParameterValues({
+    cell: selectedCell, s: selectedS, p: selectedP, params, strict: hasDesign,
+  });
+  const { values: defaults, warnings: parameterWarnings } = parameterResolution;
+  const exportSnapshot = createFmiExportSnapshot({
+    ...(hasDesign
+      ? { design }
+      : { cell: selectedCell, s: selectedS, p: selectedP }),
+    modelName,
+    defaults,
+    ioContractChecksum: FMI_IO_CONTRACT_CHECKSUM,
+    modelRevision: FMU_MODEL_REVISION,
+    fmiVersion: FMI_VERSION,
+    fmiStandardVersion: FMI_STANDARD_VERSION,
+  });
+  const guid = fmuGuid({
+    cell: selectedCell, s: selectedS, p: selectedP, defaults, modelName,
+    designSnapshotChecksum: exportSnapshot.snapshotChecksum,
+  });
+  const designResource = materializeFmiDesignResource({ ...exportSnapshot, guid });
+  const ioMap = materializeFmiIoMap({
+    parameterValues: defaults, modelName, modelRevision: FMU_MODEL_REVISION,
+    guid, fmiStandardVersion: FMI_STANDARD_VERSION,
+  });
+  const files = Object.freeze({
+    'modelDescription.xml': modelDescriptionXml({
+      cell: selectedCell, s: selectedS, p: selectedP, defaults, modelName, guid, generatedOn,
+    }),
+    [`sources/${modelName}.c`]: fmuSourceC({ modelName, guid, defaults }),
+    'resources/battery-design-io-map.json': `${JSON.stringify(ioMap, null, 2)}\n`,
+    'resources/battery-design-design.json': `${JSON.stringify(designResource, null, 2)}\n`,
+    'README.md': fmuReadme({ modelName, cell: selectedCell, s: selectedS, p: selectedP }),
+  });
+  return Object.freeze({
+    guid, modelName, generatedOn, standardVersion: FMI_STANDARD_VERSION,
+    modelRevision: FMU_MODEL_REVISION, ioContractChecksum: FMI_IO_CONTRACT_CHECKSUM,
+    designSnapshotChecksum: exportSnapshot.snapshotChecksum,
+    designComplete: designResource.snapshot.source.complete,
+    designBinding: designResource.snapshot.source.binding,
+    defaults, parameterWarnings, ioMap, designResource, files,
     note: 'A path-preserving source FMU build kit: complete, readable C that must be compiled and packaged for the target platform. It is not a loadable .fmu yet.',
-  };
+  });
 }
