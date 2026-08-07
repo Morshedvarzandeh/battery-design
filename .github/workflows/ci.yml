@@ -28,6 +28,42 @@ jobs:
       - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs
 
+  # This is an independent native reference gate. It neither feeds the
+  # browser/desktop packages nor advertises a shipped DAE capability.
+  sundials-native-build:
+    name: Pinned SUNDIALS IDA Linux build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Record the native build toolchain
+        run: |
+          cmake --version
+          cc --version
+          tar --version
+      - name: Download the exact locked source asset
+        run: |
+          set -euo pipefail
+          node tools/verify-sundials-source.mjs --lock-only
+          archive_url="$(node --input-type=module -e \
+            'import { SUNDIALS_SOURCE_LOCK as lock } from "./tools/verify-sundials-source.mjs"; process.stdout.write(lock.sourceArchive.url);')"
+          archive_size="$(node --input-type=module -e \
+            'import { SUNDIALS_SOURCE_LOCK as lock } from "./tools/verify-sundials-source.mjs"; process.stdout.write(String(lock.sourceArchive.sizeBytes));')"
+          curl --proto '=https' --tlsv1.2 --location --fail --show-error \
+            --connect-timeout 20 --max-time 300 --max-filesize "$archive_size" \
+            --retry 3 --retry-max-time 60 \
+            --output "$RUNNER_TEMP/sundials-ida-source.tar.gz" \
+            "$archive_url"
+      - name: Verify, build, install and run the lifecycle probe
+        run: |
+          node tools/build-sundials-ida.mjs \
+            --archive "$RUNNER_TEMP/sundials-ida-source.tar.gz"
+
   fmu:
     name: FMI 2.0 compiled artifact
     needs: validate
