@@ -140,6 +140,75 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-calibration-holdout-relabel-leakage',
+      title: 'Purpose-dependent dataset identity hides holdout leakage',
+      symptom: 'An automatic tuning run accepts the same physical trial in both calibration and validation after only its dataset id or purpose is relabelled, producing optimistic holdout evidence.',
+      evidence: [
+        'The canonical dataset checksum intentionally covers the complete artifact, including id and purpose, so changing calibration to validation creates a different valid checksum for unchanged observations.',
+        'A split guard that compares only complete dataset checksums therefore misses an exact physical trace copied across the training and holdout partitions.',
+        'A single all-channel observation digest can also be changed by editing an unscored temperature channel or an excluded voltage sample while leaving the scored electrical evidence unchanged.',
+        'Applying the scored-electrical collision rule inside one partition is also wrong: controlled multi-temperature or multi-SoC matrices deliberately reuse one current protocol, and may reproduce identical electrical samples before the later sensitivity gate distinguishes usefulness.',
+        'Different raw traces can also collapse to the same optimizer input and scored voltage after block preprocessing, so raw-level identities alone do not protect the executed holdout objective.',
+        'Raw-source and declared source-run identities catch additional duplicate derivations, but neither replaces a purpose-neutral identity computed from the canonical observations and trial context.',
+      ],
+      detection: [
+        {
+          method: 'adversarial partition-leakage regression',
+          signal: 'Materialize calibration and validation datasets from the same observations while independently changing id, purpose, raw representation or source metadata, then build the tuning plan.',
+          failureCondition: 'The planner accepts a cross-partition pair sharing a purpose-neutral observation, trial, raw scored-electrical, prepared scored-electrical, raw-source or complete source-run identity.',
+        },
+      ],
+      causalChain: [
+        'Dataset identity is defined over the complete governed artifact so any metadata or purpose change is traceable.',
+        'The tuning split treats unequal complete checksums as evidence that calibration and holdout data are independent.',
+        'Relabelling purpose or id changes that checksum without changing the physical samples or trial context.',
+        'The optimizer is then scored on observations it already saw, and the resulting validation metric overstates generalization.',
+      ],
+      rootCause: 'A purpose-dependent artifact identity was reused as a partition-independence identity even though holdout leakage is a property of physical observations and trials, not their labels.',
+      resolution: [
+        'Derive purpose-neutral identities for the complete observation, electrical current history, scored electrical targets and full trial context so unscored-channel edits cannot disguise reused evidence.',
+        'Across calibration and validation, reject overlap on complete observation, trial-content and scored-electrical identities, exact raw-source SHA-256 or a complete declared source-tool/model/run identity; retain electrical-history identity as explicit evidence and bind it into the scored-electrical identity.',
+        'Version and checksum the exact preprocessing policy, derive a prepared scored-electrical identity from its state-driving current and selected voltage objective, and reject that overlap across partitions too.',
+        'Apply scored-electrical collision rejection across calibration and validation partitions, while allowing controlled protocol reuse inside one partition only across declared SoC or ambient condition changes when its complete observation, trial, raw-source and source-run identities remain distinct.',
+        'Return the overlap checks and their identities as governed planning evidence while stating that exact duplicate detection does not prove statistical independence or producer custody.',
+      ],
+      prevention: [
+        'Test purpose and id relabelling explicitly instead of relying on unequal complete dataset checksums.',
+        'Pair every cross-partition leakage test with a legitimate matched-condition matrix so a stronger duplicate rule cannot destroy the intended experiment design.',
+        'When the dataset contract gains metadata, review whether that field belongs to artifact identity, physical-observation identity, trial identity or more than one of them.',
+        'Never promote a caller-designated holdout to independent validation solely because its purpose field says validation.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/calibration-dataset.test.mjs',
+          assertion: 'Dataset identity changes with purpose while canonical observation content remains inspectable for a separate purpose-neutral split check.',
+        },
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'The tuning planner rejects calibration/holdout overlap through observation, trial, raw/prepared scored-electrical, raw-source and source-run checks without blocking controlled condition matrices inside training.',
+        },
+      ],
+      affectedSurfaces: ['cli', 'local-api'],
+      tags: ['calibration', 'data-leakage', 'holdout', 'identity', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/calibration-dataset.js',
+          note: 'Complete canonical artifact identity whose purpose sensitivity requires a separate partition identity.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Whole-trial partition planner enforcing observation, trial, raw/preprocessed scored-electrical, raw-source and declared source-run disjointness.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-dataset.test.mjs',
+          note: 'Dataset purpose and complete-checksum identity regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-calibration-initial-state-ambiguity',
       title: 'Calibration absorbs an undeclared initial state into fitted parameters',
       symptom: 'A fit can improve while compensating for unknown pre-trial RC polarization, hysteresis or thermal state rather than identifying the requested physical coefficients.',
@@ -184,6 +253,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       references: [
         {
           kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Versioned coverage gates, deterministic group selection and explicit skip/block evidence.',
+        },
+        {
+          kind: 'implementation',
           locator: 'js/sim2.js',
           note: 'Rested initialization, dataset enforcement and structured result assumptions.',
         },
@@ -196,6 +270,91 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/sim2.test.mjs',
           note: 'Simulation and calibration initial-state evidence regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-calibration-parameter-identifiability-confounding',
+      status: 'mitigated',
+      title: 'Automatic ECM tuning selects parameters the traces cannot identify',
+      symptom: 'Automatic tuning lowers the training objective by trading correlated resistance, RC, Arrhenius or thermal parameters against one another, but the fitted values are not uniquely supported and fail to transfer to holdout conditions.',
+      evidence: [
+        'R0, RC resistance and RC time constants can produce similar voltage curves when the trace lacks resolved current steps and sufficiently long relaxation windows.',
+        'One ambient-temperature condition cannot separate reference resistance from its Arrhenius activation energy, even when both are individually fit-eligible.',
+        'Counting excluded pulses or accepting matched zero-current trials can make a coverage gate pass even though the scored voltage samples have no sensitivity to the requested resistance parameter.',
+        'A single good rested OCV sample cannot validate the start-SoC/OCV binding of every other trial used by a multi-condition family.',
+        'Evaluating sample-rate and pulse-duration gates before deterministic block preprocessing can activate a fast parameter that the actual optimizer grid no longer resolves.',
+        'Ranking candidate protocol families by size before qualification can select a larger invalid family and hide a smaller family that satisfies every governed gate.',
+        'A zero-current holdout can report no regression for resistance parameters only because its voltage is invariant to those fitted values.',
+        'A mid-SoC-only holdout has a zero symmetric SoC-resistance basis, and a vanishing time step can preserve that zero basis despite strong current signs.',
+        'Charge and discharge signs with a vanishing time step do not move the fixed 600 s hysteresis state, so neither calibration nor holdout voltage can observe hystV.',
+        'One dataset temperature channel cannot simultaneously represent the cell-average temperature required for near-isothermal Arrhenius evidence and the module maximum required by a thermal acceptance metric.',
+        'An unrelated ohmic-only stage can otherwise claim structural readiness while unchanged initial RC time constants already violate the plan-wide ordering constraint required of every candidate.',
+        'A module-maximum temperature channel alone does not uniquely identify module conduction, coolant conductance and worst-module current imbalance.',
+        'Treating the complete allowlist as an automatic recipe drives compensating parameters toward bounds and turns optimizer convergence into a misleading identifiability claim.',
+      ],
+      detection: [
+        {
+          method: 'versioned excitation and coverage matrix regression',
+          signal: 'Build plans for traces that independently add current steps, fast and slow relaxation, ambient-temperature span and thermal observability, then inspect selected and skipped parameter groups.',
+          failureCondition: 'A parameter group is selected without its declared excitation/coverage preconditions, skipped without an explicit reason, or changes selection under a permutation that preserves the same governed evidence.',
+        },
+      ],
+      causalChain: [
+        'The model exposes bounded electrical and thermal parameters that a manual engineer may choose to fit.',
+        'An automatic path mistakes technical fit eligibility for evidence that the submitted experiment identifies every eligible coefficient.',
+        'The optimizer exploits correlated sensitivities and assigns one missing physical effect to another bounded parameter.',
+        'Training error improves while fitted values become non-unique, hit limits or lose accuracy in a genuinely separate operating condition.',
+      ],
+      rootCause: 'Automatic parameter selection was driven by the model allowlist and available channel names rather than by a versioned experiment-coverage contract for each identifiable parameter group.',
+      resolution: [
+        'Define a versioned ECM tuning recipe with explicit sampling, current-excitation, relaxation-duration, temperature-span and near-isothermal coverage gates.',
+        'Apply excitation gates to included scoring windows, require a valid rested OCV baseline for every used trial, and require nonzero resistance excitation in matched SoC and temperature families.',
+        'Run coverage gates on the exact versioned preprocessed grid, choose deterministically among families that pass all gates before considering invalid candidates, and require every holdout to observe the active electrical groups.',
+        'For SoC resistance, require scored nonzero-current holdout evidence at an off-mid basis; for hysteresis, require bidirectional scored state excursion over nonzero duration as well as charge/discharge SoC overlap.',
+        'Assign validation channels explicit roles: cell-average temperature may establish Arrhenius observability, while at least one separate module-maximum trial is required when thermal acceptance limits are declared.',
+        'Validate the initial two-RC ordering before planning any group, then enforce the same minimum time-constant ratio on every executor candidate and final adoption.',
+        'Select only the parameter groups whose gates pass, preserve a deterministic stable order, and return every omitted group with its exact skipped reason.',
+        'Require multi-condition temperature evidence before selecting Arrhenius activation energy and keep confounded thermal groups out of the automatic recipe when only module-maximum temperature is observed.',
+        'Score the resulting parameters on disjoint validation trials and report bound hits or incomplete coverage without calling skipped groups calibrated.',
+      ],
+      prevention: [
+        'Every parameter added to an automatic recipe must bring positive recovery, missing-excitation and confounding regressions before it is selectable.',
+        'Version and content-address the selection recipe so a changed coverage rule cannot reuse older tuning evidence silently.',
+        'Keep manual fit eligibility, automatic selection and validated model maturity as separate product claims.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/calibration-dataset.test.mjs',
+          assertion: 'Canonical trials preserve the timing, segment, temperature-location and operating-context evidence required by tuning coverage gates.',
+        },
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'The planner selects groups only when prepared excitation passes, rejects mid-SoC and zero-duration hysteresis holdouts, and supports separate Arrhenius and thermal validation-channel roles.',
+        },
+      ],
+      affectedSurfaces: ['cli', 'local-api'],
+      tags: ['arrhenius', 'calibration', 'confounding', 'ecm', 'identifiability', 'parameter-selection'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Preprocessing-aware group selection, family qualification, holdout excitation and explicit pending-sensitivity evidence.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Bounded ECM parameter definitions and calibration behavior that require experiment-aware automatic selection.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-dataset.test.mjs',
+          note: 'Governed timing, segment, temperature and binding evidence regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Excluded-evidence, preprocessed-grid, mixed-family, per-trial OCV and observable-holdout regressions.',
         },
       ],
     }),
@@ -319,14 +478,15 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Dropping one malformed CSV row independently from a signal column shifts the remaining observations while leaving numeric arrays that still look usable.',
         'Inferring the sample period from only the first timestamp delta misses later gaps, and an unstated start-versus-end sample phase introduces a one-step offset.',
         'A reduction block crossing an include/exclude boundary can average current over the whole block while scoring voltage from only the included subset, so prediction and observation represent different source samples.',
+        'Counting required modes or included samples on raw segments can claim acceptance coverage even when deterministic preprocessing merges that mode away or leaves fewer scored points than the declared minimum.',
         'The simulator previously stamped sample k at k·dt and combined a pre-transition terminal voltage with post-transition SoC and temperature in the same output row.',
         'A source trace can also declare current per cell while the plant consumes pack current, requiring multiplication by parallelCells; omitting it creates a parallel-count scaling error without changing array alignment.',
       ],
       detection: [
         {
           method: 'adversarial trace-alignment regression',
-          signal: 'Change one signal length, corrupt one CSV row, perturb a non-first timestamp delta, shift the declared sample phase or current scope, and place a segment boundary inside a reduction block.',
-          failureCondition: 'Import or calibration proceeds, compares a shared prefix, or silently realigns any sample instead of rejecting the complete dataset.',
+          signal: 'Change one signal length, corrupt one CSV row, perturb a non-first timestamp delta, shift the declared sample phase or current scope, place a segment boundary inside a reduction block, or make a required mode disappear on the prepared grid.',
+          failureCondition: 'Import or calibration proceeds, compares a shared prefix, silently realigns a sample, or reports raw acceptance coverage that the prepared scored evidence does not retain.',
         },
       ],
       causalChain: [
@@ -341,6 +501,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Normalize complete source rows into one immutable dataset with equal-length current, voltage and optional temperature signals plus explicit end-of-step alignment.',
         'Validate every timestamp delta, reject an invalid row rather than dropping fields independently, and require RMSE operands to have exactly equal nonzero lengths.',
         'Average current over each complete reduction block, retain end-of-step voltage and temperature, and leave every mixed-selection boundary block in state history but out of the scored objective.',
+        'Evaluate minimum scored-sample and required-mode acceptance coverage on the exact prepared blocks; count a mode only when a complete scored block retains it without crossing into another mode.',
         'Normalize cell current to pack amperes by multiplying by parallelCells, and emit simulator time, voltage, SoC and temperature from the same transitioned end state at (k+1)·dt.',
       ],
       prevention: [
@@ -357,6 +518,10 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           path: 'tests/sim2.test.mjs',
           assertion: 'Simulation emits physically aligned end-of-step rows; calibration rejects unequal lengths, preserves that phase and reports mixed preprocessing boundary blocks instead of scoring them.',
         },
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'Tuning acceptance uses prepared included-point counts and rejects a raw one-sample required mode that deterministic block preprocessing merges away.',
+        },
       ],
       affectedSurfaces: ['browser', 'cli', 'local-api'],
       tags: ['calibration', 'csv', 'rmse', 'sample-alignment', 'timebase'],
@@ -372,9 +537,19 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           note: 'Calibration objective and strict full-trace RMSE behavior.',
         },
         {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Prepared-grid acceptance sample and mode coverage checks.',
+        },
+        {
           kind: 'test',
           locator: 'tests/sim2.test.mjs',
           note: 'Optimizer input-alignment and RMSE regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Prepared-grid sample-count and required-mode acceptance regressions.',
         },
       ],
     }),
@@ -386,6 +561,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'The returned iterations value counts outer Nelder-Mead loops but omits initialization, reflection, expansion, contraction, shrink and final before/after simulations.',
         'Allowing maxDtS in the fitted vector changes the number of integration substeps performed by each objective evaluation, so the optimizer mutates its own work cost.',
         'Time-integration counters alone do not bound local-API CPU work when every thermal step also loops over the caller-controlled module count.',
+        'A largest-remainder stage allocation performed with floating-point products can exceed a caller-supplied safe-integer ceiling by one near Number.MAX_SAFE_INTEGER even though every input integer is individually valid.',
       ],
       detection: [
         {
@@ -399,6 +575,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Each iteration performs a variable number of objective simulations and shrink can evaluate most simplex vertices again.',
         'Fitting maxDtS also changes simulation substeps, making both numerical fidelity and cost depend on the candidate vector.',
         'The thermal network performs work per module, so an HTTP boundary that caps only time substeps still leaves a caller-controlled multiplier.',
+        'A weighted partition multiplies safe integers before division, crossing the exact-integer range and rounding a stage share upward.',
         'The reported counter and configured limit therefore understate and fail to bound actual work.',
       ],
       rootCause: 'Calibration governed loop iterations rather than every expensive simulation evaluation, while a numerical solver-control parameter was allowed to alter work from inside the physical fit vector.',
@@ -406,11 +583,13 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Count and cap every objective simulation before it starts, including initialization, shrink and final materialization, and report both iterations and simulation evaluations.',
         'Freeze maxDtS as a run setting and reject it as a fitted physical parameter so candidates cannot change the integration-work contract.',
         'At the local-API boundary, cap module count and translate the module-weighted service budget into the core integration-step limit before optimization starts.',
+        'Partition safe-integer stage ceilings with BigInt quotient/remainder arithmetic, convert only final bounded shares back to Number, and assert their exact sum.',
       ],
       prevention: [
         'Express calibration limits in directly measurable expensive operations and test every optimizer branch at the exact boundary.',
         'Keep solver controls outside the calibratable parameter allowlist unless a separately governed numerical-convergence study explicitly owns them.',
         'Account for every caller-controlled multiplicative dimension when a reusable core is exposed as a local service.',
+        'Test weighted allocation at Number.MAX_SAFE_INTEGER as well as ordinary service ceilings; input validation alone does not make intermediate arithmetic exact.',
       ],
       regressionTests: [
         {
@@ -420,6 +599,10 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           path: 'tests/calibration-surfaces.test.mjs',
           assertion: 'The authenticated calibration endpoint rejects requests exceeding its module-weighted work contract.',
+        },
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'Every stage allocation sums exactly to its caller ceiling even at the maximum safe integer.',
         },
       ],
       affectedSurfaces: ['browser', 'cli', 'local-api'],
@@ -868,6 +1051,73 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/design-spec.test.mjs',
           note: 'Strict grouped-null projection regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-object-allowlist-prototype-bypass',
+      title: 'Inherited object member bypasses an exact-key allowlist',
+      symptom: 'A supposedly closed parameter map accepts a key such as constructor or toString, then silently carries or ignores it even though no governed parameter declares that name.',
+      evidence: [
+        'The allowlist was stored in a normal JavaScript object and membership was tested with a truthy property lookup.',
+        'Names inherited from Object.prototype therefore appeared present even though they were not own entries in the parameter registry.',
+        'Spreading the caller map retained the unexpected own property while later loops over declared parameter specifications never validated or used it.',
+      ],
+      detection: [
+        {
+          method: 'prototype-name boundary fuzzing',
+          signal: 'Submit constructor, toString, valueOf and __proto__-shaped keys anywhere an object-backed allowlist guards external names.',
+          failureCondition: 'Any inherited name passes membership without an own registry entry or survives into the governed result.',
+        },
+      ],
+      causalChain: [
+        'A plain object is used as a convenient string-to-definition lookup table.',
+        'Validation treats lookup truthiness as proof of allowlist membership.',
+        'Prototype-chain properties satisfy that test despite not belonging to the governed registry.',
+        'The external object is merged before exact declared-key validation, so the unknown value is accepted or silently ignored.',
+      ],
+      rootCause: 'Object property lookup and own-key membership were treated as equivalent at a trust boundary even though normal objects inherit prototype members.',
+      resolution: [
+        'Test registry membership with Object.hasOwn, a Set, a Map or an intentionally null-prototype dictionary.',
+        'Apply the same own-key rule at both the automatic tuning planner and the core calibrateDatasets parameter-override boundary.',
+        'Keep the subsequent value validation driven by the same canonical registry so accepted names and validated names cannot diverge.',
+      ],
+      prevention: [
+        'Include common prototype member names in every exact-key and parameter-allowlist negative test matrix.',
+        'Ban truthy object lookup as a membership predicate at external request, configuration and model-parameter boundaries.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'The governed ECM parameter override boundary rejects constructor as an unknown parameter rather than inheriting it from the registry prototype.',
+        },
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'The core governed-dataset calibrator rejects constructor and toString parameter overrides as unknown own-key violations.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['allowlist', 'object-prototype', 'parameters', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Own-key membership check for governed parameter overrides.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Core calibrateDatasets parameter override boundary using the same own-key registry rule.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Inherited registry-name rejection regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sim2.test.mjs',
+          note: 'Core constructor and toString override rejection regression.',
         },
       ],
     }),

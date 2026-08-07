@@ -39,7 +39,11 @@
 // Pure math, no DOM, no I/O. Runs in a browser and in Node.
 
 import { ocvCell } from './sim1d.js';
-import { readCalibrationDataset } from './calibration-dataset.js';
+import {
+  MAX_CALIBRATION_PREPROCESSED_SAMPLES,
+  preprocessCalibrationDataset,
+  readCalibrationDataset,
+} from './calibration-dataset.js';
 
 export const R_GAS = 8.314462618;      // J/(mol·K)
 export const T0_K = 273.15;
@@ -602,7 +606,7 @@ export function rmse(a, b) {
 
 export const MAX_CALIBRATION_DATASETS = 8;
 export const DEFAULT_MAX_SAMPLES_PER_DATASET = 5_000;
-export const MAX_PREPROCESSED_SAMPLES_PER_DATASET = 20_000;
+export const MAX_PREPROCESSED_SAMPLES_PER_DATASET = MAX_CALIBRATION_PREPROCESSED_SAMPLES;
 export const CALIBRATION_FIT_ELIGIBLE = Object.freeze(PARAM_SPEC
   .filter(({ group }) => group === 'electrical' || group === 'thermal')
   .map(({ id }) => id));
@@ -674,7 +678,7 @@ function calibrationFit(fit) {
 function calibrationBaseParams(cell, overrides) {
   if (overrides !== null && overrides !== undefined) calibrationObject(overrides, 'params');
   const supplied = overrides || {};
-  const unknown = Object.keys(supplied).filter((key) => !PARAM_BY_ID[key]);
+  const unknown = Object.keys(supplied).filter((key) => !Object.hasOwn(PARAM_BY_ID, key));
   if (unknown.length) throw new TypeError(`Unknown calibration parameter override(s): ${unknown.join(', ')}.`);
   const base = { ...defaultParams(cell), ...supplied };
   for (const spec of PARAM_SPEC) {
@@ -983,85 +987,6 @@ export function calibrate({
     trials: [{ context, measured: checkedMeasured, selectedIndices: null }],
     params, fit, maxIter, weightTemp, maxEvaluations, maxIntegrationSteps,
   });
-}
-
-function includedAt(segments, index, cursor) {
-  while (cursor.value < segments.length - 1 && index >= segments[cursor.value].endIndexExclusive) cursor.value++;
-  return segments[cursor.value].include;
-}
-
-function preprocessCalibrationDataset(dataset, maxSamplesPerDataset) {
-  const originalSamples = dataset.signals.currentA.length;
-  const factor = Math.max(1, Math.ceil(originalSamples / maxSamplesPerDataset));
-  const usedSamples = Math.floor(originalSamples / factor);
-  const current = new Array(usedSamples);
-  const voltage = new Array(usedSamples);
-  const hasTemperature = dataset.signals.temperatureC !== null;
-  const temperature = hasTemperature ? new Array(usedSamples) : null;
-  const selectedIndices = [];
-  const cursor = { value: 0 };
-  let originalIncludedSamples = 0;
-  for (const segment of dataset.segments) {
-    if (segment.include) originalIncludedSamples += segment.endIndexExclusive - segment.startIndex;
-  }
-  let representedIncludedSamples = 0;
-  let mixedBoundaryBlocks = 0;
-
-  for (let block = 0; block < usedSamples; block++) {
-    const start = block * factor;
-    const end = start + factor;
-    let currentSum = 0;
-    let includedCount = 0;
-    for (let index = start; index < end; index++) {
-      currentSum += dataset.signals.currentA[index];
-      if (includedAt(dataset.segments, index, cursor)) includedCount++;
-    }
-    current[block] = currentSum / factor;
-    // Current is a zero-order-held block mean so charge is preserved. Voltage
-    // and temperature are end-of-step observations, so keep the block's final
-    // sample rather than shifting their phase to a block average.
-    voltage[block] = dataset.signals.voltageV[end - 1];
-    if (hasTemperature) temperature[block] = dataset.signals.temperatureC[end - 1];
-    // Prediction and every observation must describe the exact same interval.
-    // A block that crosses an include/exclude boundary remains in the current
-    // history so model state is continuous, but is not scored.
-    if (includedCount === factor) {
-      selectedIndices.push(block);
-      representedIncludedSamples += factor;
-    } else if (includedCount > 0) mixedBoundaryBlocks++;
-  }
-  if (selectedIndices.length < 3) {
-    throw new RangeError(`Dataset "${dataset.id}" leaves only ${selectedIndices.length} included points after deterministic preprocessing; at least 3 are required.`);
-  }
-  return {
-    measured: {
-      dtS: dataset.samplePeriodS * factor, i: current, v: voltage,
-      t: dataset.conventions.temperatureLocation === 'module-maximum' ? temperature : null,
-    },
-    selectedIndices,
-    preprocessing: Object.freeze({
-      datasetId: dataset.id,
-      checksum: dataset.checksum,
-      rawSha256: dataset.source.rawSha256,
-      sourceTool: dataset.source.tool,
-      sourceRunId: dataset.source.runId,
-      binding: Object.freeze({ ...dataset.binding }),
-      method: factor === 1 ? 'none' : 'block-mean-current-end-sample',
-      factor, originalSamples, usedSamples,
-      originalSamplePeriodS: dataset.samplePeriodS,
-      usedSamplePeriodS: dataset.samplePeriodS * factor,
-      channelLengths: Object.freeze({
-        current: current.length,
-        voltage: voltage.length,
-        temperature: temperature?.length ?? 0,
-      }),
-      originalIncludedSamples, representedIncludedSamples,
-      unrepresentedIncludedSamples: originalIncludedSamples - representedIncludedSamples,
-      mixedBoundaryBlocks,
-      usedIncludedSamples: selectedIndices.length,
-      droppedTailSamples: originalSamples - usedSamples * factor,
-    }),
-  };
 }
 
 /** Calibrate one parameter set against one to eight governed, compatible trials. */

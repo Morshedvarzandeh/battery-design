@@ -283,6 +283,7 @@ export const ARCHITECTURE_MODULE_DEFINITIONS = Object.freeze({
     'js/sim2.js',
     'js/calibration-dataset.js',
     'js/calibration-import.js',
+    'js/ecm-tuning.js',
     'desktop/bd.mjs',
     'rust-core/',
   ], ['simulation']),

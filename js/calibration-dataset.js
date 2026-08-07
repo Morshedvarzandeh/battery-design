@@ -13,6 +13,24 @@ import { semanticDigest } from './ontology.js';
 export const CALIBRATION_DATASET_FORMAT = 'battery-design/calibration-dataset@1';
 export const CALIBRATION_DATASET_SCHEMA_VERSION = '1.0.0';
 export const MAX_CALIBRATION_DATASET_SAMPLES = 250_000;
+export const MAX_CALIBRATION_PREPROCESSED_SAMPLES = 20_000;
+
+const preprocessingPolicyBody = {
+  format: 'battery-design/calibration-preprocessing-policy@1',
+  version: '1.0.0',
+  factor: 'max(1,ceil(originalSamples/maxSamplesPerDataset))',
+  completeBlocks: 'floor(originalSamples/factor)',
+  current: 'arithmetic-mean-over-complete-block',
+  voltage: 'end-of-block-sample',
+  temperature: 'end-of-block-sample',
+  scoring: 'only-blocks-fully-contained-in-included-segments',
+  mixedBoundaryBlocks: 'state-history-only-not-scored',
+  incompleteTail: 'dropped',
+};
+export const CALIBRATION_PREPROCESSING_POLICY = deepFreeze({
+  ...preprocessingPolicyBody,
+  checksum: semanticDigest(preprocessingPolicyBody),
+});
 
 export const CALIBRATION_DATASET_KINDS = Object.freeze(['synthetic', 'measured']);
 export const CALIBRATION_DATASET_PURPOSES = Object.freeze(['calibration', 'validation']);
@@ -344,6 +362,50 @@ function trialContentIdentityPayload(dataset, observationChecksum) {
   };
 }
 
+function electricalTimeConventions(dataset) {
+  const conventions = dataset.conventions;
+  return {
+    timeBasis: conventions.timeBasis,
+    timeOrigin: conventions.timeOrigin,
+    firstSampleOffsetS: conventions.firstSampleOffsetS,
+    sampleAlignment: conventions.sampleAlignment,
+    currentHold: conventions.currentHold,
+    currentPositive: conventions.currentPositive,
+    currentScope: conventions.currentScope,
+    voltageLocation: conventions.voltageLocation,
+  };
+}
+
+function electricalHistoryIdentityPayload(dataset) {
+  return {
+    format: 'battery-design/calibration-electrical-history-identity@1',
+    samplePeriodS: dataset.samplePeriodS,
+    currentA: dataset.signals.currentA,
+    conventions: electricalTimeConventions(dataset),
+  };
+}
+
+function scoredElectricalObservationIdentityPayload(dataset, electricalHistoryChecksum) {
+  const includedIndices = [];
+  const currentA = [];
+  const voltageV = [];
+  for (const segment of dataset.segments) {
+    if (!segment.include) continue;
+    for (let index = segment.startIndex; index < segment.endIndexExclusive; index += 1) {
+      includedIndices.push(index);
+      currentA.push(dataset.signals.currentA[index]);
+      voltageV.push(dataset.signals.voltageV[index]);
+    }
+  }
+  return {
+    format: 'battery-design/calibration-scored-electrical-observation-identity@1',
+    electricalHistoryChecksum,
+    includedIndices,
+    currentA,
+    voltageV,
+  };
+}
+
 /** Validate a materialized dataset without modifying caller-owned data. */
 export function validateCalibrationDataset(value) {
   const errors = [];
@@ -533,6 +595,107 @@ export function readCalibrationDataset(value) {
   return deepFreeze(cloneJson(value));
 }
 
+function includedAt(segments, index, cursor) {
+  while (cursor.value < segments.length - 1
+    && index >= segments[cursor.value].endIndexExclusive) cursor.value++;
+  return segments[cursor.value].include;
+}
+
+/**
+ * Deterministically project a canonical trial onto the optimizer grid.
+ * The returned temperature series preserves the declared observation channel;
+ * `measured.t` remains restricted to the module-maximum channel used by sim2.
+ */
+export function preprocessCalibrationDataset(value, maxSamplesPerDataset) {
+  const dataset = readCalibrationDataset(value);
+  if (!Number.isSafeInteger(maxSamplesPerDataset)
+    || maxSamplesPerDataset < 8
+    || maxSamplesPerDataset > MAX_CALIBRATION_PREPROCESSED_SAMPLES) {
+    throw new RangeError(`maxSamplesPerDataset must be a safe integer from 8 to ${MAX_CALIBRATION_PREPROCESSED_SAMPLES}.`);
+  }
+  const originalSamples = dataset.signals.currentA.length;
+  const factor = Math.max(1, Math.ceil(originalSamples / maxSamplesPerDataset));
+  const usedSamples = Math.floor(originalSamples / factor);
+  const current = new Array(usedSamples);
+  const voltage = new Array(usedSamples);
+  const hasTemperature = dataset.signals.temperatureC !== null;
+  const temperature = hasTemperature ? new Array(usedSamples) : null;
+  const selectedIndices = [];
+  const cursor = { value: 0 };
+  let originalIncludedSamples = 0;
+  for (const segment of dataset.segments) {
+    if (segment.include) originalIncludedSamples += segment.endIndexExclusive - segment.startIndex;
+  }
+  let representedIncludedSamples = 0;
+  let mixedBoundaryBlocks = 0;
+
+  for (let block = 0; block < usedSamples; block++) {
+    const start = block * factor;
+    const end = start + factor;
+    let currentSum = 0;
+    let includedCount = 0;
+    for (let index = start; index < end; index++) {
+      currentSum += dataset.signals.currentA[index];
+      if (includedAt(dataset.segments, index, cursor)) includedCount++;
+    }
+    current[block] = currentSum / factor;
+    // Current is a zero-order-held block mean so charge is preserved. Voltage
+    // and temperature are end-of-step observations and retain that phase.
+    voltage[block] = dataset.signals.voltageV[end - 1];
+    if (hasTemperature) temperature[block] = dataset.signals.temperatureC[end - 1];
+    if (includedCount === factor) {
+      selectedIndices.push(block);
+      representedIncludedSamples += factor;
+    } else if (includedCount > 0) mixedBoundaryBlocks++;
+  }
+  if (selectedIndices.length < 3) {
+    throw new RangeError(`Dataset "${dataset.id}" leaves only ${selectedIndices.length} included points after deterministic preprocessing; at least 3 are required.`);
+  }
+
+  const frozenCurrent = Object.freeze(current);
+  const frozenVoltage = Object.freeze(voltage);
+  const frozenTemperature = temperature === null ? null : Object.freeze(temperature);
+  const frozenSelectedIndices = Object.freeze(selectedIndices);
+  const preprocessing = deepFreeze({
+    datasetId: dataset.id,
+    checksum: dataset.checksum,
+    rawSha256: dataset.source.rawSha256,
+    sourceTool: dataset.source.tool,
+    sourceRunId: dataset.source.runId,
+    binding: { ...dataset.binding },
+    method: factor === 1 ? 'none' : 'block-mean-current-end-sample',
+    factor,
+    originalSamples,
+    usedSamples,
+    originalSamplePeriodS: dataset.samplePeriodS,
+    usedSamplePeriodS: dataset.samplePeriodS * factor,
+    channelLengths: {
+      current: current.length,
+      voltage: voltage.length,
+      temperature: temperature?.length ?? 0,
+    },
+    originalIncludedSamples,
+    representedIncludedSamples,
+    unrepresentedIncludedSamples: originalIncludedSamples - representedIncludedSamples,
+    mixedBoundaryBlocks,
+    usedIncludedSamples: selectedIndices.length,
+    droppedTailSamples: originalSamples - usedSamples * factor,
+  });
+  return deepFreeze({
+    policyChecksum: CALIBRATION_PREPROCESSING_POLICY.checksum,
+    measured: {
+      dtS: dataset.samplePeriodS * factor,
+      i: frozenCurrent,
+      v: frozenVoltage,
+      t: dataset.conventions.temperatureLocation === 'module-maximum'
+        ? frozenTemperature : null,
+    },
+    observedTemperatureC: frozenTemperature,
+    selectedIndices: frozenSelectedIndices,
+    preprocessing,
+  });
+}
+
 /**
  * Return purpose-neutral identities used to detect reused calibration and
  * validation evidence. The observation identity ignores mutable provenance,
@@ -542,10 +705,15 @@ export function readCalibrationDataset(value) {
 export function calibrationDatasetIdentities(value) {
   const dataset = readCalibrationDataset(value);
   const observationChecksum = semanticDigest(observationIdentityPayload(dataset));
+  const electricalHistoryChecksum = semanticDigest(electricalHistoryIdentityPayload(dataset));
   return deepFreeze({
     observationChecksum,
     trialContentChecksum: semanticDigest(
       trialContentIdentityPayload(dataset, observationChecksum),
+    ),
+    electricalHistoryChecksum,
+    scoredElectricalObservationChecksum: semanticDigest(
+      scoredElectricalObservationIdentityPayload(dataset, electricalHistoryChecksum),
     ),
   });
 }

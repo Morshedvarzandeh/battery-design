@@ -601,6 +601,19 @@ test('governed dataset calibration enforces purpose and exact model binding', ()
   assert.throws(() => calibrateDatasets({ ...options, datasets: tampered }), /checksum.*canonical dataset content/);
 });
 
+test('governed dataset parameter overrides reject inherited registry member names', () => {
+  const governed = calibrationDataset({ id: 'prototype-name-parameter-boundary' });
+  for (const name of ['constructor', 'toString']) {
+    assert.throws(() => calibrateDatasets({
+      cell: CELL,
+      datasets: governed,
+      params: { [name]: 1 },
+      fit: ['r0Ref'],
+      maxEvaluations: 2,
+    }), new RegExp(`Unknown calibration parameter override.*${name}`));
+  }
+});
+
 test('rested initial state is explicit in simulation and calibration evidence', () => {
   const simulated = simulate({
     cell: CELL, s: 1, p: 2, profile: flat(3, 0), nModules: 2,

@@ -75,6 +75,8 @@ test('the complete architecture graph is separate, conforming and queryable', ()
   assert.ok(index.outgoing(cosim, 'bd:availableOn').some((edge) =>
     edge.to === semanticId('product-surface', 'desktop-target')));
   assert.equal(Object.keys(PRODUCT_SURFACES).length, 6);
+  assert.ok(ARCHITECTURE_MODULE_DEFINITIONS.simulation.implementation.includes('js/ecm-tuning.js'),
+    'governed ECM tuning is registered with the simulation architecture');
 });
 
 test('implemented shape declarations match the checks the portable validator actually runs', () => {
