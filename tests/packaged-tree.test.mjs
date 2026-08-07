@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { once } from 'node:events';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   OPTIONAL_RUNTIME_ENTRIES,
@@ -14,6 +14,9 @@ import {
   stageApplication,
 } from '../desktop-app/prepare.mjs';
 import { materializeCalibrationDataset } from '../js/calibration-dataset.js';
+import { cellById } from '../js/cells.js';
+import { semanticDigest } from '../js/ontology.js';
+import { defaultParams, simulate } from '../js/sim2.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MUST_SHIP = Object.freeze([
@@ -81,6 +84,152 @@ function packagedCalibrationDataset() {
       temperatureLocation: null,
     },
   });
+}
+
+function packagedTuningProtocol(amplitudeA) {
+  return [
+    ...Array(10).fill(0),
+    ...Array(12).fill(amplitudeA),
+    ...Array(10).fill(0),
+    ...Array(12).fill(-amplitudeA),
+    ...Array(10).fill(0),
+    ...Array(12).fill(amplitudeA * 0.7),
+    ...Array(10).fill(0),
+  ];
+}
+
+function packagedTuningDataset({ id, purpose, amplitudeA, startSoC, truth }) {
+  const cell = cellById('samsung-inr21700-50e');
+  const currentA = packagedTuningProtocol(amplitudeA);
+  const simulated = simulate({
+    cell,
+    s: 1,
+    p: 1,
+    nModules: 1,
+    params: truth,
+    profile: { dtS: 1, i: currentA },
+    startSoC,
+    ambientC: 25,
+  });
+  return materializeCalibrationDataset({
+    id,
+    kind: 'synthetic',
+    purpose,
+    source: {
+      tool: 'battery-design packaged tuning smoke',
+      toolVersion: '1.0.0',
+      model: 'sim2-governed-fixture',
+      runId: id,
+      generatedAt: null,
+      mediaType: 'application/json',
+      rawSha256: semanticDigest(`raw:${id}`),
+    },
+    binding: {
+      cellId: cell.id,
+      seriesCells: 1,
+      parallelCells: 1,
+      startSoC,
+      ambientC: 25,
+      moduleCount: 1,
+      initialState: 'rested-equilibrium-at-ambient',
+    },
+    normalization: {
+      format: 'battery-design/calibration-normalization@1',
+      adapter: 'canonical-json',
+      adapterVersion: '1.0.0',
+      mappingChecksum: semanticDigest(`mapping:${id}`),
+      sourceUnits: { time: 's', current: 'A', voltage: 'V', temperature: null },
+      sourceCurrentPositive: 'discharge',
+      sourceCurrentScope: 'pack',
+      sourceVoltageLocation: 'pack-terminal',
+      sourceTemperatureLocation: null,
+      sourceSampleAlignment: 'end-of-step',
+      sourceFirstSampleTimeS: 1,
+      sourceResetTimeS: 0,
+      timeHandling: 'validated-uniform',
+      originalSampleCount: currentA.length,
+    },
+    samplePeriodS: 1,
+    signals: {
+      currentA,
+      voltageV: simulated.series.v,
+      temperatureC: null,
+    },
+    segments: [{
+      id: 'complete',
+      startIndex: 0,
+      endIndexExclusive: currentA.length,
+      mode: 'dynamic',
+      include: true,
+    }],
+    conventions: {
+      timeBasis: 'uniform-sample-period',
+      timeOrigin: 'trial-reset',
+      firstSampleOffsetS: 1,
+      sampleAlignment: 'end-of-step',
+      currentHold: 'zero-order-hold',
+      currentPositive: 'discharge',
+      currentScope: 'pack',
+      voltageLocation: 'pack-terminal',
+      temperatureLocation: null,
+    },
+  });
+}
+
+function packagedTuningRequest() {
+  const cell = cellById('samsung-inr21700-50e');
+  const initial = defaultParams(cell);
+  const truth = { ...initial, r0Ref: initial.r0Ref * 1.2 };
+  const calibrationDataset = packagedTuningDataset({
+    id: 'packaged-tuning-calibration',
+    purpose: 'calibration',
+    amplitudeA: 8,
+    startSoC: 0.6,
+    truth,
+  });
+  const validationDataset = packagedTuningDataset({
+    id: 'packaged-tuning-validation',
+    purpose: 'validation',
+    amplitudeA: 7.3,
+    startSoC: 0.65,
+    truth,
+  });
+  return {
+    calibrationDataset,
+    validationDataset,
+    body: {
+      format: 'battery-design/ecm-tuning-request@1',
+      calibrationDatasets: [calibrationDataset],
+      validationDatasets: [validationDataset],
+      params: null,
+      groups: ['ohmic'],
+      maxEvaluations: 8,
+      maxModuleWeightedIntegrationSteps: 10_000,
+      maxSamplesPerDataset: 80,
+      acceptance: {
+        maxVoltageRmseMvPerCell: 100,
+        maxVoltageMaxAbsMvPerCell: 200,
+        maxTemperatureRmseC: null,
+        maxTemperatureMaxAbsC: null,
+        minValidationDatasets: 1,
+        minIncludedSamplesPerDataset: 20,
+        requiredModes: ['dynamic'],
+        requireNoHoldoutRegression: true,
+        requireNoFittedParameterAtBound: true,
+      },
+    },
+  };
+}
+
+function containsRawTrace(value) {
+  if (!value || typeof value !== 'object') return false;
+  for (const [key, child] of Object.entries(value)) {
+    if (['signals', 'currentA', 'voltageV', 'residuals', 'predictions',
+      'datasets', 'calibrationDatasets', 'validationDatasets'].includes(key)) return true;
+    if (key === 'temperatureC' && Array.isArray(child)) return true;
+    if (containsRawTrace(child)) return true;
+  }
+  return false;
 }
 
 function reserveFreePort() {
@@ -186,10 +335,21 @@ test('staged desktop tree imports and starts from an isolated output', { timeout
     for (const relative of [
       'js/calibration-dataset.js',
       'js/calibration-import.js',
+      'js/ecm-tuning.js',
+      'js/ecm-tuning-executor.js',
       'js/sim2.js',
     ]) {
-      assert.ok(existsSync(path.join(staged, relative)), `calibration runtime dependency was not staged: ${relative}`);
+      assert.ok(existsSync(path.join(staged, relative)), `model runtime dependency was not staged: ${relative}`);
     }
+
+    const tuningModuleUrls = ['js/ecm-tuning.js', 'js/ecm-tuning-executor.js']
+      .map((relative) => pathToFileURL(path.join(staged, relative)).href);
+    const importedTuning = spawnSync(process.execPath, [
+      '--input-type=module',
+      '--eval',
+      `await Promise.all(${JSON.stringify(tuningModuleUrls)}.map((url) => import(url)));`,
+    ], { encoding: 'utf8', timeout: 15_000 });
+    assert.equal(importedTuning.status, 0, importedTuning.stderr || importedTuning.stdout);
 
     // bd.mjs resolves every static import before dispatching the command. This
     // catches missing JS/data libraries even if a direct UI path is not used
@@ -225,6 +385,50 @@ test('staged desktop tree imports and starts from an isolated output', { timeout
       !capabilities.capabilities.some(({ id }) => id === 'calibration'),
       'the staged runner does not claim a calibration GUI that is not implemented',
     );
+    assert.ok(
+      capabilities.localApiCapabilities.some(({ id }) => id === 'ecm-tuning'),
+      'the staged runner advertises its governed local-API ECM tuning surface',
+    );
+    assert.ok(capabilities.endpoints.includes('/api/tune-ecm'));
+    assert.equal(capabilities.tuningLimits.requestFormat, 'battery-design/ecm-tuning-request@1');
+    assert.equal(capabilities.tuningLimits.runFormat, 'battery-design/ecm-tuning-run@1');
+    assert.equal(capabilities.tuningLimits.planFormat, 'battery-design/ecm-tuning-plan@1');
+    assert.equal(capabilities.tuningLimits.resultFormat, 'battery-design/ecm-tuning-result@1');
+    assert.deepEqual(capabilities.tuningLimits.acceptanceFields, [
+      'maxVoltageRmseMvPerCell',
+      'maxVoltageMaxAbsMvPerCell',
+      'maxTemperatureRmseC',
+      'maxTemperatureMaxAbsC',
+      'minValidationDatasets',
+      'minIncludedSamplesPerDataset',
+      'requiredModes',
+      'requireNoHoldoutRegression',
+      'requireNoFittedParameterAtBound',
+    ], 'the package advertises the exact ordered caller-owned acceptance contract');
+    assert.deepEqual({
+      maxBodyBytes: capabilities.tuningLimits.maxBodyBytes,
+      maxDatasetsPerPartition: capabilities.tuningLimits.maxDatasetsPerPartition,
+      maxCombinedInputSamples: capabilities.tuningLimits.maxCombinedInputSamples,
+      maxModules: capabilities.tuningLimits.maxModules,
+      maxPreprocessedSamplesPerDataset:
+        capabilities.tuningLimits.maxPreprocessedSamplesPerDataset,
+      maxEvaluations: capabilities.tuningLimits.maxEvaluations,
+      maxModuleWeightedIntegrationSteps:
+        capabilities.tuningLimits.maxModuleWeightedIntegrationSteps,
+    }, {
+      maxBodyBytes: 4 * 1024 * 1024,
+      maxDatasetsPerPartition: 8,
+      maxCombinedInputSamples: 20_000,
+      maxModules: 64,
+      maxPreprocessedSamplesPerDataset: 5_000,
+      maxEvaluations: 500,
+      maxModuleWeightedIntegrationSteps: 2_000_000,
+    });
+    assert.ok(
+      !capabilities.capabilities.some(({ id }) => id === 'ecm-tuning')
+        && !capabilities.mcpCapabilities.some(({ id }) => id === 'ecm-tuning'),
+      'the staged runner does not claim unimplemented GUI or MCP ECM tuning surfaces',
+    );
 
     const dataset = packagedCalibrationDataset();
     const calibrationResponse = await fetch(`${baseUrl}/api/calibrate`, {
@@ -254,6 +458,56 @@ test('staged desktop tree imports and starts from an isolated output', { timeout
       'the isolated package executes the exact adaptive work plan budgeted by the request');
     assert.doesNotMatch(JSON.stringify(calibration), /"signals"\s*:/,
       'the packaged API returns governed evidence, not the source trace');
+
+    const tuningFixture = packagedTuningRequest();
+    const tuningResponse = await fetch(`${baseUrl}/api/tune-ecm`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Battery-Design-Token': token,
+      },
+      body: JSON.stringify(tuningFixture.body),
+    });
+    const tuning = await tuningResponse.json();
+    assert.equal(tuningResponse.status, 200, tuning.error);
+    assert.equal(tuning.format, 'battery-design/ecm-tuning-run@1');
+    assert.equal(tuning.plan.format, 'battery-design/ecm-tuning-plan@1');
+    assert.equal(tuning.result.format, 'battery-design/ecm-tuning-result@1');
+    assert.equal(tuning.model.id, 'battery-design/staged-ecm-arrhenius-tuning');
+    assert.match(tuning.model.implementationChecksum, /^[a-f0-9]{64}$/);
+    assert.ok(tuning.model.dependencies.includes('js/ecm-tuning.js'));
+    assert.ok(tuning.model.dependencies.includes('js/ecm-tuning-executor.js'));
+    assert.equal(tuning.surfaceLimits.surface, 'local-api');
+    const tuningBody = { ...tuning };
+    delete tuningBody.checksum;
+    assert.equal(tuning.checksum, semanticDigest(tuningBody));
+    assert.equal(tuning.result.planChecksum, tuning.plan.checksum);
+    assert.deepEqual(
+      tuning.plan.request.calibrationIdentities.map(({ datasetChecksum }) => datasetChecksum),
+      [tuningFixture.calibrationDataset.checksum],
+    );
+    assert.deepEqual(
+      tuning.plan.request.validationIdentities.map(({ datasetChecksum }) => datasetChecksum),
+      [tuningFixture.validationDataset.checksum],
+    );
+    assert.equal(tuning.result.metrics.before.validation.sampleGrid, 'original-full-rate');
+    assert.equal(tuning.result.metrics.after.validation.sampleGrid, 'original-full-rate');
+    assert.equal(tuning.result.readiness.validationRole,
+      'fixed-full-rate-score-only-never-an-optimizer-input');
+    assert.equal(tuning.result.adoptedParamsChecksum, semanticDigest(tuning.result.adoptedParams));
+    assert.equal(tuning.result.work.candidateEvaluations, 8);
+    assert.equal(tuning.result.work.moduleWeightedIntegrationSteps, 5_472,
+      'the deterministic staged fixture executes the exact preflighted simulator work');
+    assert.equal(
+      tuning.result.work.moduleWeightedIntegrationSteps,
+      tuning.result.workPreflight.projectedCeilings.moduleWeightedIntegrationSteps,
+    );
+    assert.ok(tuning.result.work.moduleWeightedIntegrationSteps
+      <= tuning.result.work.limits.moduleWeightedIntegrationSteps);
+    assert.ok(tuning.result.work.moduleWeightedIntegrationSteps
+      <= capabilities.tuningLimits.maxModuleWeightedIntegrationSteps);
+    assert.equal(containsRawTrace(tuning), false,
+      'the packaged tuning response retains checksums and scalar evidence without source traces');
 
     for (const pathname of [
       '/index.html',

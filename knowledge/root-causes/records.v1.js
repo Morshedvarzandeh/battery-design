@@ -140,6 +140,152 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-calibration-holdout-relabel-leakage',
+      title: 'Purpose-dependent dataset identity hides holdout leakage',
+      symptom: 'An automatic tuning run accepts the same physical trial in both calibration and validation after only its dataset id or purpose is relabelled, producing optimistic holdout evidence.',
+      evidence: [
+        'The canonical dataset checksum intentionally covers the complete artifact, including id and purpose, so changing calibration to validation creates a different valid checksum for unchanged observations.',
+        'A split guard that compares only complete dataset checksums therefore misses an exact physical trace copied across the training and holdout partitions.',
+        'A single all-channel observation digest can also be changed by editing an unscored temperature channel or an excluded voltage sample while leaving the scored electrical evidence unchanged.',
+        'Applying the scored-electrical collision rule inside one partition is also wrong: controlled multi-temperature or multi-SoC matrices deliberately reuse one current protocol, and may reproduce identical electrical samples before the later sensitivity gate distinguishes usefulness.',
+        'Different raw traces can also collapse to the same optimizer input and scored voltage after block preprocessing, so raw-level identities alone do not protect the executed holdout objective.',
+        'Raw-source and declared source-run identities catch additional duplicate derivations, but neither replaces a purpose-neutral identity computed from the canonical observations and trial context.',
+      ],
+      detection: [
+        {
+          method: 'adversarial partition-leakage regression',
+          signal: 'Materialize calibration and validation datasets from the same observations while independently changing id, purpose, raw representation or source metadata, then build the tuning plan.',
+          failureCondition: 'The planner accepts a cross-partition pair sharing a purpose-neutral observation, trial, raw scored-electrical, prepared scored-electrical, raw-source or complete source-run identity.',
+        },
+      ],
+      causalChain: [
+        'Dataset identity is defined over the complete governed artifact so any metadata or purpose change is traceable.',
+        'The tuning split treats unequal complete checksums as evidence that calibration and holdout data are independent.',
+        'Relabelling purpose or id changes that checksum without changing the physical samples or trial context.',
+        'The optimizer is then scored on observations it already saw, and the resulting validation metric overstates generalization.',
+      ],
+      rootCause: 'A purpose-dependent artifact identity was reused as a partition-independence identity even though holdout leakage is a property of physical observations and trials, not their labels.',
+      resolution: [
+        'Derive purpose-neutral identities for the complete observation, electrical current history, scored electrical targets and full trial context so unscored-channel edits cannot disguise reused evidence.',
+        'Across calibration and validation, reject overlap on complete observation, trial-content and scored-electrical identities, exact raw-source SHA-256 or a complete declared source-tool/model/run identity; retain electrical-history identity as explicit evidence and bind it into the scored-electrical identity.',
+        'Version and checksum the exact preprocessing policy, derive a prepared scored-electrical identity from its state-driving current and selected voltage objective, and reject that overlap across partitions too.',
+        'Apply scored-electrical collision rejection across calibration and validation partitions, while allowing controlled protocol reuse inside one partition only across declared SoC or ambient condition changes when its complete observation, trial, raw-source and source-run identities remain distinct.',
+        'Return the overlap checks and their identities as governed planning evidence while stating that exact duplicate detection does not prove statistical independence or producer custody.',
+      ],
+      prevention: [
+        'Test purpose and id relabelling explicitly instead of relying on unequal complete dataset checksums.',
+        'Pair every cross-partition leakage test with a legitimate matched-condition matrix so a stronger duplicate rule cannot destroy the intended experiment design.',
+        'When the dataset contract gains metadata, review whether that field belongs to artifact identity, physical-observation identity, trial identity or more than one of them.',
+        'Never promote a caller-designated holdout to independent validation solely because its purpose field says validation.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/calibration-dataset.test.mjs',
+          assertion: 'Dataset identity changes with purpose while canonical observation content remains inspectable for a separate purpose-neutral split check.',
+        },
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'The tuning planner rejects calibration/holdout overlap through observation, trial, raw/prepared scored-electrical, raw-source and source-run checks without blocking controlled condition matrices inside training.',
+        },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'The Action 2 guide describes exact duplicate/leakage guards without promoting them into statistical-independence or custody evidence.',
+        },
+      ],
+      affectedSurfaces: ['cli', 'local-api'],
+      tags: ['calibration', 'data-leakage', 'holdout', 'identity', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/calibration-dataset.js',
+          note: 'Complete canonical artifact identity whose purpose sensitivity requires a separate partition identity.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Whole-trial partition planner enforcing observation, trial, raw/preprocessed scored-electrical, raw-source and declared source-run disjointness.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-dataset.test.mjs',
+          note: 'Dataset purpose and complete-checksum identity regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Cross-partition purpose-neutral raw/preprocessed identity collision regressions.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Exact leakage-guard boundary and explicit statistical-independence limitation.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-calibration-holdout-score-masking',
+      title: 'Pooled holdout score hides a failed operating regime',
+      symptom: 'Automatic tuning passes validation because many low-error samples dilute one failed trial or short operating segment in the pooled RMSE.',
+      evidence: [
+        'A single high-error sample or short pulse can remain below a pooled RMSE limit when a long easy trace contributes most of the sample count.',
+        'A whole-trial metric can still hide the same failure when the affected operating mode occupies only one included segment.',
+        'Reporting only an aggregate improvement therefore does not prove that the candidate transfers across every declared holdout condition.',
+      ],
+      detection: [
+        {
+          method: 'adversarial holdout aggregation regression',
+          signal: 'Inject a large error into one short included validation segment while keeping the remaining full-rate samples exact, then evaluate the predeclared acceptance policy.',
+          failureCondition: 'The pooled and whole-trial metrics pass and the candidate is adopted even though the affected segment exceeds its physical-unit RMSE or maximum-error limit.',
+        },
+      ],
+      causalChain: [
+        'Validation samples from different trials and operating modes are accumulated into one sum of squared error.',
+        'Long or easy regimes dominate that sample-weighted aggregate.',
+        'A localized model failure is numerically diluted below the caller threshold.',
+        'The artifact presents an aggregate pass while the failed condition remains unsafe or unusable.',
+      ],
+      rootCause: 'Acceptance was evaluated only on a micro-averaged holdout score instead of applying the same predeclared physical-unit gates to every trial and included operating segment.',
+      resolution: [
+        'Score fixed holdout parameters at the original sample rate and preserve scalar metrics for every trial and every included segment.',
+        'Apply voltage and eligible module-maximum temperature RMSE, maximum-absolute-error and no-regression gates per segment, per trial and in the pooled aggregate.',
+        'Reject adoption when any condition fails while retaining the candidate as non-adopted diagnostic evidence.',
+      ],
+      prevention: [
+        'Pair every pooled acceptance regression with a deliberately short bad regime that would be hidden by sample weighting.',
+        'Treat new validation partitions or operating-mode labels as additional required acceptance levels, not presentation-only metadata.',
+        'Keep raw traces out of portable evidence while content-addressing the scalar per-condition metric tree.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/ecm-tuning.test.mjs',
+          assertion: 'A short bad validation segment fails its predeclared per-segment voltage gate even while the pooled and whole-trial RMSE values pass.',
+        },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'The Action 2 guide requires original-rate pooled, per-trial and per-included-segment scoring and fail-closed adoption.',
+        },
+      ],
+      affectedSurfaces: ['cli', 'local-api'],
+      tags: ['acceptance', 'calibration', 'holdout', 'metrics', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning-executor.js',
+          note: 'Full-rate per-segment, per-trial and pooled scoring with fail-closed adoption.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning.test.mjs',
+          note: 'Localized holdout-error masking and non-adoption regression.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Fixed full-rate holdout levels and candidate-versus-adopted result boundary.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-calibration-initial-state-ambiguity',
       title: 'Calibration absorbs an undeclared initial state into fitted parameters',
       symptom: 'A fit can improve while compensating for unknown pre-trial RC polarization, hysteresis or thermal state rather than identifying the requested physical coefficients.',
@@ -184,6 +330,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       references: [
         {
           kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Versioned coverage gates, deterministic group selection and explicit skip/block evidence.',
+        },
+        {
+          kind: 'implementation',
           locator: 'js/sim2.js',
           note: 'Rested initialization, dataset enforcement and structured result assumptions.',
         },
@@ -196,6 +347,116 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/sim2.test.mjs',
           note: 'Simulation and calibration initial-state evidence regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-calibration-parameter-identifiability-confounding',
+      status: 'mitigated',
+      title: 'Automatic ECM tuning selects parameters the traces cannot identify',
+      symptom: 'Automatic tuning lowers the training objective by trading correlated resistance, RC, Arrhenius or thermal parameters against one another, but the fitted values are not uniquely supported and fail to transfer to holdout conditions.',
+      evidence: [
+        'R0, RC resistance and RC time constants can produce similar voltage curves when the trace lacks resolved current steps and sufficiently long relaxation windows.',
+        'One ambient-temperature condition cannot separate reference resistance from its Arrhenius activation energy, even when both are individually fit-eligible.',
+        'Counting excluded pulses or accepting matched zero-current trials can make a coverage gate pass even though the scored voltage samples have no sensitivity to the requested resistance parameter.',
+        'A single good rested OCV sample cannot validate the start-SoC/OCV binding of every other trial used by a multi-condition family.',
+        'Evaluating sample-rate and pulse-duration gates before deterministic block preprocessing can activate a fast parameter that the actual optimizer grid no longer resolves.',
+        'Ranking candidate protocol families by size before qualification can select a larger invalid family and hide a smaller family that satisfies every governed gate.',
+        'A zero-current holdout can report no regression for resistance parameters only because its voltage is invariant to those fitted values.',
+        'A mid-SoC-only holdout has a zero symmetric SoC-resistance basis, and a vanishing time step can preserve that zero basis despite strong current signs.',
+        'Charge and discharge signs with a vanishing time step do not move the fixed 600 s hysteresis state, so neither calibration nor holdout voltage can observe hystV.',
+        'One dataset temperature channel cannot simultaneously represent the cell-average temperature required for near-isothermal Arrhenius evidence and the module maximum required by a thermal acceptance metric.',
+        'An unrelated ohmic-only stage can otherwise claim structural readiness while unchanged initial RC time constants already violate the plan-wide ordering constraint required of every candidate.',
+        'A finite-difference probe chosen only by direction order can truncate to a near-zero step at a parameter bound and mistake floating-point roundoff for physical sensitivity even though a full inward probe is available.',
+        'A module-maximum temperature channel alone does not uniquely identify module conduction, coolant conductance and worst-module current imbalance.',
+        'Treating the complete allowlist as an automatic recipe drives compensating parameters toward bounds and turns optimizer convergence into a misleading identifiability claim.',
+      ],
+      detection: [
+        {
+          method: 'versioned excitation and coverage matrix regression',
+          signal: 'Build plans for traces that independently add current steps, fast and slow relaxation, ambient-temperature span and thermal observability, then inspect selected and skipped parameter groups.',
+          failureCondition: 'A parameter group is selected without its declared excitation/coverage preconditions, a bound-truncated numerical probe is treated as usable sensitivity, the group is skipped without an explicit reason, or selection changes under a permutation that preserves the same governed evidence.',
+        },
+      ],
+      causalChain: [
+        'The model exposes bounded electrical and thermal parameters that a manual engineer may choose to fit.',
+        'An automatic path mistakes technical fit eligibility for evidence that the submitted experiment identifies every eligible coefficient.',
+        'The optimizer exploits correlated sensitivities and assigns one missing physical effect to another bounded parameter.',
+        'Training error improves while fitted values become non-unique, hit limits or lose accuracy in a genuinely separate operating condition.',
+      ],
+      rootCause: 'Automatic parameter selection was driven by the model allowlist and available channel names rather than by a versioned experiment-coverage contract for each identifiable parameter group.',
+      resolution: [
+        'Define a versioned ECM tuning recipe with explicit sampling, current-excitation, relaxation-duration, temperature-span and near-isothermal coverage gates.',
+        'Apply excitation gates to included scoring windows, require a valid rested OCV baseline for every used trial, and require nonzero resistance excitation in matched SoC and temperature families.',
+        'Run coverage gates on the exact versioned preprocessed grid, choose deterministically among families that pass all gates before considering invalid candidates, and require every holdout to observe the active electrical groups.',
+        'For SoC resistance, require scored nonzero-current holdout evidence at an off-mid basis; for hysteresis, require bidirectional scored state excursion over nonzero duration as well as charge/discharge SoC overlap.',
+        'Assign validation channels explicit roles: cell-average temperature may establish Arrhenius observability, while at least one separate module-maximum trial is required when thermal acceptance limits are declared.',
+        'Validate the initial two-RC ordering before planning any group, then enforce the same minimum time-constant ratio on every executor candidate and final adoption.',
+        'For numerical sensitivity, prefer a full governed normalized perturbation in either admissible direction, reject probes below the declared usable-step floor, and record the actual direction and delta in evidence.',
+        'Select only the parameter groups whose gates pass, preserve a deterministic stable order, and return every omitted group with its exact skipped reason.',
+        'Require multi-condition temperature evidence before selecting Arrhenius activation energy and keep confounded thermal groups out of the automatic recipe when only module-maximum temperature is observed.',
+        'Score the resulting parameters on disjoint validation trials and report bound hits or incomplete coverage without calling skipped groups calibrated.',
+      ],
+      prevention: [
+        'Every parameter added to an automatic recipe must bring positive recovery, missing-excitation and confounding regressions before it is selectable.',
+        'Version and content-address the selection recipe so a changed coverage rule cannot reuse older tuning evidence silently.',
+        'Keep manual fit eligibility, automatic selection and validated model maturity as separate product claims.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/calibration-dataset.test.mjs',
+          assertion: 'Canonical trials preserve the timing, segment, temperature-location and operating-context evidence required by tuning coverage gates.',
+        },
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'The planner selects groups only when prepared excitation passes, rejects mid-SoC and zero-duration hysteresis holdouts, and supports separate Arrhenius and thermal validation-channel roles.',
+        },
+        {
+          path: 'tests/ecm-tuning.test.mjs',
+          assertion: 'Execution requires finite normalized sensitivity, full numerical rank and bounded correlation before fitting, and rejects rather than adopts a failed stage.',
+        },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'The Action 2 guide distinguishes coverage gates from local numerical sensitivity and from any global-identifiability claim.',
+        },
+      ],
+      affectedSurfaces: ['cli', 'local-api'],
+      tags: ['arrhenius', 'calibration', 'confounding', 'ecm', 'identifiability', 'parameter-selection'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Preprocessing-aware group selection, family qualification, holdout excitation and explicit pending-sensitivity evidence.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning-executor.js',
+          note: 'Normalized prediction-Jacobian sensitivity, constrained staged fitting and fixed full-rate holdout acceptance.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Bounded ECM parameter definitions and calibration behavior that require experiment-aware automatic selection.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-dataset.test.mjs',
+          note: 'Governed timing, segment, temperature and binding evidence regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Excluded-evidence, preprocessed-grid, mixed-family, per-trial OCV and observable-holdout regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning.test.mjs',
+          note: 'Sensitivity, constrained-candidate and non-adoption execution regressions.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Group skip/block, local sensitivity and identifiability-claim boundary.',
         },
       ],
     }),
@@ -277,7 +538,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
       rootCause: 'Calibration evidence described numeric outcome but lacked a content-addressed lineage envelope separating reproducible identity, producer authentication and private source data.',
       resolution: [
-        'Bind request, canonical dataset, algorithm version, model implementation and cell implementation checksums into a deterministic versioned result identity.',
+        'Bind request, canonical dataset, plan and policy versions, model implementation and cell implementation checksums into a deterministic versioned result identity.',
         'State that these digests establish reproducible content identity rather than producer authentication, and keep raw signal arrays out of portable results.',
       ],
       prevention: [
@@ -288,6 +549,14 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           path: 'tests/calibration-surfaces.test.mjs',
           assertion: 'Calibration results carry deterministic request, dataset, algorithm, model and cell identities with identity-not-authentication semantics and no raw traces.',
+        },
+        {
+          path: 'tests/ecm-tuning.test.mjs',
+          assertion: 'ECM tuning results bind the rebuilt plan, execution policy, cell and trial identities, reject forged nested content, and retain no raw signal or Jacobian arrays.',
+        },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'The Action 2 guide distinguishes content-addressed result identity from authentication, custody, independence and accuracy.',
         },
       ],
       affectedSurfaces: ['cli', 'local-api'],
@@ -304,9 +573,24 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           note: 'Versioned algorithm behavior and deterministic calibration evidence inputs.',
         },
         {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning-executor.js',
+          note: 'Nested plan, execution-policy, trial, scalar-metric and result identities without raw signal retention.',
+        },
+        {
           kind: 'test',
           locator: 'tests/calibration-surfaces.test.mjs',
           note: 'Result identity sensitivity, privacy and reproducibility regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning.test.mjs',
+          note: 'Nested checksum integrity, rechecksummed-plan rejection and raw-trace privacy regressions.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Portable tuning artifact and checksum non-authentication boundary.',
         },
       ],
     }),
@@ -319,14 +603,15 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Dropping one malformed CSV row independently from a signal column shifts the remaining observations while leaving numeric arrays that still look usable.',
         'Inferring the sample period from only the first timestamp delta misses later gaps, and an unstated start-versus-end sample phase introduces a one-step offset.',
         'A reduction block crossing an include/exclude boundary can average current over the whole block while scoring voltage from only the included subset, so prediction and observation represent different source samples.',
+        'Counting required modes or included samples on raw segments can claim acceptance coverage even when deterministic preprocessing merges that mode away or leaves fewer scored points than the declared minimum.',
         'The simulator previously stamped sample k at k·dt and combined a pre-transition terminal voltage with post-transition SoC and temperature in the same output row.',
         'A source trace can also declare current per cell while the plant consumes pack current, requiring multiplication by parallelCells; omitting it creates a parallel-count scaling error without changing array alignment.',
       ],
       detection: [
         {
           method: 'adversarial trace-alignment regression',
-          signal: 'Change one signal length, corrupt one CSV row, perturb a non-first timestamp delta, shift the declared sample phase or current scope, and place a segment boundary inside a reduction block.',
-          failureCondition: 'Import or calibration proceeds, compares a shared prefix, or silently realigns any sample instead of rejecting the complete dataset.',
+          signal: 'Change one signal length, corrupt one CSV row, perturb a non-first timestamp delta, shift the declared sample phase or current scope, place a segment boundary inside a reduction block, or make a required mode disappear on the prepared grid.',
+          failureCondition: 'Import or calibration proceeds, compares a shared prefix, silently realigns a sample, or reports raw acceptance coverage that the prepared scored evidence does not retain.',
         },
       ],
       causalChain: [
@@ -341,6 +626,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Normalize complete source rows into one immutable dataset with equal-length current, voltage and optional temperature signals plus explicit end-of-step alignment.',
         'Validate every timestamp delta, reject an invalid row rather than dropping fields independently, and require RMSE operands to have exactly equal nonzero lengths.',
         'Average current over each complete reduction block, retain end-of-step voltage and temperature, and leave every mixed-selection boundary block in state history but out of the scored objective.',
+        'Evaluate minimum scored-sample and required-mode acceptance coverage on the exact prepared blocks; count a mode only when a complete scored block retains it without crossing into another mode.',
         'Normalize cell current to pack amperes by multiplying by parallelCells, and emit simulator time, voltage, SoC and temperature from the same transitioned end state at (k+1)·dt.',
       ],
       prevention: [
@@ -357,6 +643,10 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           path: 'tests/sim2.test.mjs',
           assertion: 'Simulation emits physically aligned end-of-step rows; calibration rejects unequal lengths, preserves that phase and reports mixed preprocessing boundary blocks instead of scoring them.',
         },
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'Tuning acceptance uses prepared included-point counts and rejects a raw one-sample required mode that deterministic block preprocessing merges away.',
+        },
       ],
       affectedSurfaces: ['browser', 'cli', 'local-api'],
       tags: ['calibration', 'csv', 'rmse', 'sample-alignment', 'timebase'],
@@ -372,9 +662,19 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           note: 'Calibration objective and strict full-trace RMSE behavior.',
         },
         {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Prepared-grid acceptance sample and mode coverage checks.',
+        },
+        {
           kind: 'test',
           locator: 'tests/sim2.test.mjs',
           note: 'Optimizer input-alignment and RMSE regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Prepared-grid sample-count and required-mode acceptance regressions.',
         },
       ],
     }),
@@ -386,6 +686,8 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'The returned iterations value counts outer Nelder-Mead loops but omits initialization, reflection, expansion, contraction, shrink and final before/after simulations.',
         'Allowing maxDtS in the fitted vector changes the number of integration substeps performed by each objective evaluation, so the optimizer mutates its own work cost.',
         'Time-integration counters alone do not bound local-API CPU work when every thermal step also loops over the caller-controlled module count.',
+        'A largest-remainder stage allocation performed with floating-point products can exceed a caller-supplied safe-integer ceiling by one near Number.MAX_SAFE_INTEGER even though every input integer is individually valid.',
+        'A staged tuner that runs d+1 numerical-sensitivity probes and then creates a separate d+1 optimizer simplex performs twice the minimum evaluations if the plan reserves only one set.',
       ],
       detection: [
         {
@@ -399,6 +701,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Each iteration performs a variable number of objective simulations and shrink can evaluate most simplex vertices again.',
         'Fitting maxDtS also changes simulation substeps, making both numerical fidelity and cost depend on the candidate vector.',
         'The thermal network performs work per module, so an HTTP boundary that caps only time substeps still leaves a caller-controlled multiplier.',
+        'A weighted partition multiplies safe integers before division, crossing the exact-integer range and rounding a stage share upward.',
         'The reported counter and configured limit therefore understate and fail to bound actual work.',
       ],
       rootCause: 'Calibration governed loop iterations rather than every expensive simulation evaluation, while a numerical solver-control parameter was allowed to alter work from inside the physical fit vector.',
@@ -406,11 +709,14 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Count and cap every objective simulation before it starts, including initialization, shrink and final materialization, and report both iterations and simulation evaluations.',
         'Freeze maxDtS as a run setting and reject it as a fitted physical parameter so candidates cannot change the integration-work contract.',
         'At the local-API boundary, cap module count and translate the module-weighted service budget into the core integration-step limit before optimization starts.',
+        'Partition safe-integer stage ceilings with BigInt quotient/remainder arithmetic, convert only final bounded shares back to Number, and assert their exact sum.',
+        'Reserve one baseline-plus-axis sensitivity set and one independent optimizer simplex for every stage before distributing any additional proposal budget.',
       ],
       prevention: [
         'Express calibration limits in directly measurable expensive operations and test every optimizer branch at the exact boundary.',
         'Keep solver controls outside the calibratable parameter allowlist unless a separately governed numerical-convergence study explicitly owns them.',
         'Account for every caller-controlled multiplicative dimension when a reusable core is exposed as a local service.',
+        'Test weighted allocation at Number.MAX_SAFE_INTEGER as well as ordinary service ceilings; input validation alone does not make intermediate arithmetic exact.',
       ],
       regressionTests: [
         {
@@ -421,6 +727,14 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           path: 'tests/calibration-surfaces.test.mjs',
           assertion: 'The authenticated calibration endpoint rejects requests exceeding its module-weighted work contract.',
         },
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'Every stage reserves separate sensitivity and optimizer simplex evaluations, and all allocations sum exactly to the caller ceiling even at the maximum safe integer.',
+        },
+        {
+          path: 'tests/ecm-tuning.test.mjs',
+          assertion: 'Executor preflight reserves fixed scoring, sensitivity and optimizer work, while exact cumulative temporal and module-weighted counters never reset between stages.',
+        },
       ],
       affectedSurfaces: ['browser', 'cli', 'local-api'],
       tags: ['budget', 'calibration', 'optimizer', 'solver-control', 'work-accounting'],
@@ -429,6 +743,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'implementation',
           locator: 'js/sim2.js',
           note: 'Nelder-Mead evaluation accounting, work limit and fit-parameter policy.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning-executor.js',
+          note: 'Zero-simulation cumulative preflight and cross-stage proposal, temporal and module-weighted accounting.',
         },
         {
           kind: 'test',
@@ -872,6 +1191,73 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-object-allowlist-prototype-bypass',
+      title: 'Inherited object member bypasses an exact-key allowlist',
+      symptom: 'A supposedly closed parameter map accepts a key such as constructor or toString, then silently carries or ignores it even though no governed parameter declares that name.',
+      evidence: [
+        'The allowlist was stored in a normal JavaScript object and membership was tested with a truthy property lookup.',
+        'Names inherited from Object.prototype therefore appeared present even though they were not own entries in the parameter registry.',
+        'Spreading the caller map retained the unexpected own property while later loops over declared parameter specifications never validated or used it.',
+      ],
+      detection: [
+        {
+          method: 'prototype-name boundary fuzzing',
+          signal: 'Submit constructor, toString, valueOf and __proto__-shaped keys anywhere an object-backed allowlist guards external names.',
+          failureCondition: 'Any inherited name passes membership without an own registry entry or survives into the governed result.',
+        },
+      ],
+      causalChain: [
+        'A plain object is used as a convenient string-to-definition lookup table.',
+        'Validation treats lookup truthiness as proof of allowlist membership.',
+        'Prototype-chain properties satisfy that test despite not belonging to the governed registry.',
+        'The external object is merged before exact declared-key validation, so the unknown value is accepted or silently ignored.',
+      ],
+      rootCause: 'Object property lookup and own-key membership were treated as equivalent at a trust boundary even though normal objects inherit prototype members.',
+      resolution: [
+        'Test registry membership with Object.hasOwn, a Set, a Map or an intentionally null-prototype dictionary.',
+        'Apply the same own-key rule at both the automatic tuning planner and the core calibrateDatasets parameter-override boundary.',
+        'Keep the subsequent value validation driven by the same canonical registry so accepted names and validated names cannot diverge.',
+      ],
+      prevention: [
+        'Include common prototype member names in every exact-key and parameter-allowlist negative test matrix.',
+        'Ban truthy object lookup as a membership predicate at external request, configuration and model-parameter boundaries.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/ecm-tuning-plan.test.mjs',
+          assertion: 'The governed ECM parameter override boundary rejects constructor as an unknown parameter rather than inheriting it from the registry prototype.',
+        },
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'The core governed-dataset calibrator rejects constructor and toString parameter overrides as unknown own-key violations.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['allowlist', 'object-prototype', 'parameters', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/ecm-tuning.js',
+          note: 'Own-key membership check for governed parameter overrides.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Core calibrateDatasets parameter override boundary using the same own-key registry rule.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Inherited registry-name rejection regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sim2.test.mjs',
+          note: 'Core constructor and toString override rejection regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-packaged-dependency-omission',
       title: 'Packaged runtime omits a newly imported dependency tree',
       symptom: 'The source checkout runs correctly, but staged desktop bd and MCP entry points fail at startup because an imported top-level runtime tree is absent from the package.',
@@ -949,12 +1335,15 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'The source and staged Node entry point implements a calibration CLI, while the installed desktop packages expose the runner application and do not yet install an independent bd command wrapper.',
         'Only the CLI importer accepts mapped delimited or columnar-JSON traces; the authenticated local API accepts canonical datasets and cannot normalize raw source exports.',
         'When temperature weighting is enabled, rmseBefore and rmseAfter are voltage RMSE plus weightTemp times temperature RMSE, but the earlier human formatter appended V to that combined score.',
+        'The staged-tuning capability response initially advertised formats, group ids and resource ceilings but omitted the exact nine-field caller acceptance contract even though every field is mandatory and the request fails closed on omissions or additions.',
+        'The CLI help rendered auto followed by all six group ids as one comma-separated alternative, which could be read as requiring the complete list even though any nonempty exact subset is accepted.',
+        'Documentation initially labeled maxSamplesPerDataset as a calibration-only preprocessing cap even though both partitions can have a prepared planning grid while validation scoring alone remains fixed at the original full rate.',
       ],
       detection: [
         {
           method: 'negative surface-capability regression',
           signal: 'Compare the registry, capabilities response, visible GUI controls, MCP tool list, installed entry points, accepted request contracts and human metric labels with their executable implementations.',
-          failureCondition: 'Customer-facing copy assigns a capability to a surface that cannot execute it or gives a combined objective the unit of only one constituent metric.',
+          failureCondition: 'Customer-facing copy assigns a capability to a surface that cannot execute it, omits a required closed request field, misstates accepted group grammar or prepared-grid scope, or gives a combined objective the unit of only one constituent metric.',
         },
       ],
       causalChain: [
@@ -963,15 +1352,19 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Source-tree and staged-entry execution is also treated as proof that the installed package ships a same-named command wrapper.',
         'Raw import and canonical fitting are described as one undifferentiated operation even though only the CLI owns the importer.',
         'A generic rmse field is formatted as volts without checking whether it contains a weighted temperature term.',
+        'Capabilities, help and prose each hand-maintain a partial projection of the same closed request, so required fields and grid semantics can disappear or be simplified differently on each surface.',
         'Customer copy therefore inherits behavior or units that the underlying surface and metric contracts do not provide.',
       ],
       rootCause: 'Customer-facing capability and metric prose was maintained independently from structured per-surface request and result contracts, so convenient grouping replaced an exact implementation projection.',
       resolution: [
-        'Declare governed calibration as its own shipped add-on on CLI and local API only, separate from the desktop-GUI simulation add-on.',
-        'State explicitly that MCP provides design and review automation but does not run calibration, and expose local-API capabilities separately from GUI and MCP lists.',
-        'Describe CLI commands as source/staged entry-point capabilities until package manifests and installed-tree smoke tests prove a real installed wrapper.',
+        'Declare governed Action 1 calibration and Action 2 staged ECM tuning as separate shipped add-ons on CLI and local API only, apart from the desktop-GUI simulation add-on.',
+        'State explicitly that MCP provides design and review automation but runs neither calibration nor ECM tuning, and expose local-API capabilities separately from GUI and MCP lists.',
+        'Describe calibration and tuning CLI commands as source/staged entry-point capabilities until package manifests and installed-tree smoke tests prove a real installed wrapper.',
         'Assign mapped raw-trace normalization only to the CLI importer and describe both CLI and authenticated API fitting as canonical-dataset consumers.',
         'Print voltage and temperature RMSE separately with their physical units, then label their weighted sum as an objective score without a physical unit.',
+        'Advertise all nine required caller-acceptance field names in local-API capabilities, and test the exact ordered projection in source, staged and installed runners.',
+        'Render group help as auto or one-to-six comma-separated ids rather than making the complete allowed-id catalog look like one required value.',
+        'Label maxSamplesPerDataset as a prepared planning/optimizer-grid ceiling per dataset while stating separately that validation scoring always uses the original full-rate holdout.',
       ],
       prevention: [
         'Test negative surface assertions as well as positive ones whenever a capability is added or moved.',
@@ -979,11 +1372,13 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Distinguish source, staged and installed entry points in release claims and exercise the exact path customers receive.',
         'Require exact wording tests when one add-on spans surfaces with different accepted input contracts.',
         'Drive human metric labels from explicit result fields and test every multi-metric weighting mode for correct units.',
+        'For every closed request, compare capabilities and help with the authoritative required/optional key sets and fail on an omitted required field.',
+        'Name the data grid and partition role on every sample-count ceiling; a generic preprocessing label is insufficient when planning and scoring use different grids.',
       ],
       regressionTests: [
         {
           path: 'tests/addons.test.mjs',
-          assertion: 'Calibration surface copy assigns raw normalization only to the CLI importer, canonical fitting to CLI/API, and explicitly excludes desktop GUI and MCP.',
+          assertion: 'Action 1 and Action 2 are separate add-ons; raw normalization stays with the CLI importer, while tuning is declared exactly on CLI/local API and excludes desktop GUI and MCP.',
         },
         {
           path: 'tests/calibration-surfaces.test.mjs',
@@ -991,7 +1386,15 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         },
         {
           path: 'tests/packaged-tree.test.mjs',
-          assertion: 'Package tests distinguish the staged bd entry point from the installed runner and do not invent an unshipped installed CLI wrapper.',
+          assertion: 'Package tests distinguish the staged bd entry point from the installed runner and pin exact tuning formats, caps and required acceptance fields without inventing an installed CLI wrapper.',
+        },
+        {
+          path: 'tests/calibration-documentation.test.mjs',
+          assertion: 'Product guides pin tune-ecm to CLI/local API, make negative GUI/MCP assertions and separate prepared-grid ceilings from original-full-rate validation scoring.',
+        },
+        {
+          path: 'tests/ecm-tuning-surfaces.test.mjs',
+          assertion: 'Source CLI/API tests pin exact acceptance-field discovery, subset group-help grammar, resource caps and negative GUI/MCP surfaces.',
         },
       ],
       affectedSurfaces: ['browser', 'cli', 'documentation', 'local-api', 'mcp', 'packaging'],
@@ -1010,7 +1413,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           kind: 'test',
           locator: 'tests/addons.test.mjs',
-          note: 'Exact raw-import and canonical-fit surface wording assertions.',
+          note: 'Exact Action 1/Action 2 separation and positive/negative tuning-surface assertions.',
         },
         {
           kind: 'test',
@@ -1020,7 +1423,22 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           kind: 'test',
           locator: 'tests/packaged-tree.test.mjs',
-          note: 'Staged and installed entry-point truthfulness regression.',
+          note: 'Staged entry-point and exact tuning capability-contract regression.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/ECM_TUNING.md',
+          note: 'Canonical Action 2 CLI/local-API surface, artifact and non-claim boundary.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-documentation.test.mjs',
+          note: 'Documentation surface, artifact and negative-proprietary-claim regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-surfaces.test.mjs',
+          note: 'Exact tuning capability, help grammar, acceptance-field and cap projection regressions.',
         },
       ],
     }),
@@ -1279,6 +1697,88 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/fmi-package-design-binding.test.mjs',
           note: 'No-claim, self-claim, mismatch and trusted-match regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-test-multiplier-denominator-drift',
+      title: 'Test-count delta is mistaken for a promised coverage multiplier',
+      symptom: 'A delivery reports that testing doubled because 91 top-level tests were added after a convenient checkpoint, even though the promised two-times comparison was against Action 1 and no stable denominator or identical counting population was recorded.',
+      evidence: [
+        'A count of tests newly added since a commit is a delta, while a two-times claim is a ratio that requires a named baseline population and denominator.',
+        'Changing file globs, counting declarations instead of executed cases, or including different repository populations on only one side can change the apparent ratio without adding coverage.',
+        'Action-focused and repository-global totals answer different questions; presenting either as the other hides whether the requested action itself received the promised depth.',
+        'Using one exact repository-global top-level declaration count, pre-Action 1 commit 66f7240 had 708 tests and post-Action 1 commit 4da8c03 had 758, making the Action 1 denominator increase exactly 50.',
+        'The 6094b3b checkpoint had 824 tests; the 91-test checkpoint delta was substantial but still only 91/50, while the corrected Action 2 tree must reach at least 858 total declarations for an increase of at least 100 over 4da8c03.',
+      ],
+      detection: [
+        {
+          method: 'reproducible test-population audit',
+          signal: 'At each pinned revision run `rg -n "^test\\(" tests --glob "*.test.mjs" | wc -l`, label the result repository-global top-level test declarations, and subtract the same 4da8c03 population.',
+          failureCondition: 'A multiplier is claimed without the 50-test Action 1 denominator and pinned revisions/command, a different population is used on either side, or the corrected Action 2 tree contains fewer than 858 declarations.',
+        },
+      ],
+      causalChain: [
+        'A request asks for twice the tests as complexity increases.',
+        'Implementation adds many tests and reports the number added since a convenient commit.',
+        'The delta is compared informally with an unstated memory of earlier coverage rather than a measured Action 1 denominator.',
+        'A large but non-comparable number is promoted into a fulfilled multiplier claim and the shortfall appears only during final audit.',
+      ],
+      rootCause: 'The quality promise did not pin its comparison population, base revision and counting procedure before implementation, so a commit delta, an action-focused total and a repository-global total became interchangeable.',
+      resolution: [
+        'Pin pre-Action 1 commit 66f7240 at 708 declarations and post-Action 1 commit 4da8c03 at 758 declarations, establishing the exact repository-global Action 1 increase of 50.',
+        'Use `rg -n "^test\\(" tests --glob "*.test.mjs" | wc -l` unchanged at every revision; this counts top-level test declarations, not runtime pass/skip events or action-only cases.',
+        'Retain 6094b3b at 824 only as an intermediate Action 2 checkpoint, never as the Action 1 denominator.',
+        'Label the comparison repository-global, state the 50-test denominator beside the multiplier, and require the current Action 2 tree to reach at least 858 declarations for a numerator increase of at least 100.',
+      ],
+      prevention: [
+        'Turn qualitative test multipliers into a predeclared measurement note before coding: both boundary commits, denominator, exact command and whether declarations or runtime results are counted.',
+        'Report raw revision counts and their subtraction with the ratio so reviewers can reproduce the claim without inferring what was counted.',
+        'Keep global regression health separate from action-specific adversarial depth; both are valuable and neither substitutes for the other.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The denominator-drift record is resolved, retrievable by lookup/search, and pins 66f7240=708, 4da8c03=758, 6094b3b=824, the exact top-level command and the >=858 correction.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['audit', 'metrics', 'quality', 'testing'],
+      references: [
+        {
+          kind: 'commit',
+          locator: '66f7240',
+          note: 'Pinned pre-Action 1 revision with 708 repository-global top-level test declarations.',
+        },
+        {
+          kind: 'commit',
+          locator: '4da8c03',
+          note: 'Pinned post-Action 1 revision with 758 declarations and the 50-test denominator.',
+        },
+        {
+          kind: 'commit',
+          locator: '6094b3bd5e5afbb3069fd9ba8a7c5d1558600d6f',
+          note: 'Intermediate Action 2 checkpoint with 824 declarations; not the Action 1 denominator.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-plan.test.mjs',
+          note: 'Action 2 planning and experiment-governance cases in the focused population.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning.test.mjs',
+          note: 'Action 2 bounded-execution and holdout cases in the focused population.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/ecm-tuning-surfaces.test.mjs',
+          note: 'Action 2 CLI/local-API contract cases in the focused population.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/packaged-tree.test.mjs',
+          note: 'Isolated staged-package execution cases in the focused population.',
         },
       ],
     }),

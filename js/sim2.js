@@ -39,7 +39,11 @@
 // Pure math, no DOM, no I/O. Runs in a browser and in Node.
 
 import { ocvCell } from './sim1d.js';
-import { readCalibrationDataset } from './calibration-dataset.js';
+import {
+  MAX_CALIBRATION_PREPROCESSED_SAMPLES,
+  preprocessCalibrationDataset,
+  readCalibrationDataset,
+} from './calibration-dataset.js';
 
 export const R_GAS = 8.314462618;      // J/(mol·K)
 export const T0_K = 273.15;
@@ -602,7 +606,10 @@ export function rmse(a, b) {
 
 export const MAX_CALIBRATION_DATASETS = 8;
 export const DEFAULT_MAX_SAMPLES_PER_DATASET = 5_000;
-export const MAX_PREPROCESSED_SAMPLES_PER_DATASET = 20_000;
+export const MAX_PREPROCESSED_SAMPLES_PER_DATASET = MAX_CALIBRATION_PREPROCESSED_SAMPLES;
+export const ECM_RC_MINIMUM_TIME_CONSTANT_RATIO = 3;
+export const ORDERED_RC_CANDIDATE_POLICY = 'ordered-rc-v1';
+export const CALIBRATION_MINIMUM_NORMALIZED_AXIS_STEP = 1e-8;
 export const CALIBRATION_FIT_ELIGIBLE = Object.freeze(PARAM_SPEC
   .filter(({ group }) => group === 'electrical' || group === 'thermal')
   .map(({ id }) => id));
@@ -674,7 +681,7 @@ function calibrationFit(fit) {
 function calibrationBaseParams(cell, overrides) {
   if (overrides !== null && overrides !== undefined) calibrationObject(overrides, 'params');
   const supplied = overrides || {};
-  const unknown = Object.keys(supplied).filter((key) => !PARAM_BY_ID[key]);
+  const unknown = Object.keys(supplied).filter((key) => !Object.hasOwn(PARAM_BY_ID, key));
   if (unknown.length) throw new TypeError(`Unknown calibration parameter override(s): ${unknown.join(', ')}.`);
   const base = { ...defaultParams(cell), ...supplied };
   for (const spec of PARAM_SPEC) {
@@ -733,29 +740,114 @@ class CalibrationBudgetStop extends Error {
   }
 }
 
-function boundAwareInitialSimplex(x0, bounds) {
+/**
+ * Choose one deterministic, numerically usable perturbation inside scalar
+ * bounds and an optional coupled-candidate constraint. Full nominal steps in
+ * either direction always win over a truncated boundary sliver; geometric
+ * shrinking is used only when the coupled constraint requires it.
+ */
+export function boundAwareAdmissibleAxisStep({
+  value,
+  lower,
+  upper,
+  nominalNormalizedStep,
+  minimumNormalizedStep = CALIBRATION_MINIMUM_NORMALIZED_AXIS_STEP,
+  admissible = null,
+}) {
+  for (const [candidate, label] of [
+    [value, 'value'], [lower, 'lower'], [upper, 'upper'],
+    [nominalNormalizedStep, 'nominalNormalizedStep'],
+    [minimumNormalizedStep, 'minimumNormalizedStep'],
+  ]) {
+    if (!Number.isFinite(candidate)) throw new TypeError(`${label} must be finite.`);
+  }
+  if (!(upper > lower) || value < lower || value > upper) {
+    throw new RangeError('Axis bounds must contain value and have positive span.');
+  }
+  if (!(nominalNormalizedStep > 0 && nominalNormalizedStep <= 1)
+    || !(minimumNormalizedStep > 0
+      && minimumNormalizedStep <= nominalNormalizedStep)) {
+    throw new RangeError('Normalized axis steps must satisfy 0 < minimum <= nominal <= 1.');
+  }
+  if (admissible !== null && typeof admissible !== 'function') {
+    throw new TypeError('admissible must be a function or null.');
+  }
+
+  const span = upper - lower;
+  const nominalStep = span * nominalNormalizedStep;
+  const minimumStep = span * minimumNormalizedStep;
+  const room = new Map([[1, upper - value], [-1, value - lower]]);
+  const directions = room.get(1) >= room.get(-1) ? [1, -1] : [-1, 1];
+  const accept = (direction, step) => {
+    const candidate = value + direction * step;
+    if (candidate === value || candidate < lower || candidate > upper) return null;
+    if (admissible && !admissible(candidate)) return null;
+    return Object.freeze({
+      value: candidate,
+      direction: direction > 0 ? 'increase' : 'decrease',
+      delta: candidate - value,
+      normalizedDelta: (candidate - value) / span,
+    });
+  };
+
+  // First inspect both directions at the complete governed step. This avoids
+  // selecting a roundoff-sized outward sliver when a full inward probe exists.
+  for (const direction of directions) {
+    if (room.get(direction) >= nominalStep) {
+      const accepted = accept(direction, nominalStep);
+      if (accepted) return accepted;
+    }
+  }
+
+  // Coupled constraints can make a full step inadmissible even when a smaller
+  // one is useful. Halving is deterministic and stops at the governed floor.
+  for (const direction of directions) {
+    let step = Math.min(room.get(direction), nominalStep);
+    if (room.get(direction) >= nominalStep) step /= 2;
+    while (step >= minimumStep) {
+      const accepted = accept(direction, step);
+      if (accepted) return accepted;
+      step /= 2;
+    }
+  }
+  return null;
+}
+
+function boundAwareInitialSimplex(x0, bounds, admissible = null) {
   return [x0, ...x0.map((_, axis) => {
-    const point = [...x0];
     const value = x0[axis];
     const [lower, upper] = bounds[axis];
-    const lowerRoom = value - lower;
-    const upperRoom = upper - value;
-    const direction = upperRoom >= lowerRoom ? 1 : -1;
-    const room = direction > 0 ? upperRoom : lowerRoom;
     const nominalStep = Math.max(
       (upper - lower) * 0.05,
       Math.abs(value) * 0.25,
       Number.EPSILON * Math.max(1, Math.abs(value)),
     );
-    const step = Math.min(room, nominalStep);
-    point[axis] = value + direction * step;
-    // Every declared parameter has a finite nonzero span. Using the farther
-    // bound as a final representable fallback keeps one independent axis per
-    // vertex even when x0 itself is exactly on a bound.
-    if (point[axis] === value) point[axis] = direction > 0 ? upper : lower;
-    if (point[axis] === value) throw new Error(`Cannot construct a full-rank simplex for ${axis}.`);
-    return point;
+    const selected = boundAwareAdmissibleAxisStep({
+      value,
+      lower,
+      upper,
+      nominalNormalizedStep: Math.min(1, nominalStep / (upper - lower)),
+      admissible: admissible ? (candidate) => {
+        const point = [...x0];
+        point[axis] = candidate;
+        return admissible(point);
+      } : null,
+    });
+    if (selected) {
+      const point = [...x0];
+      point[axis] = selected.value;
+      return point;
+    }
+    throw new Error(`Cannot construct a full-rank admissible simplex for axis ${axis}.`);
   })];
+}
+
+function calibrationCandidatePolicy(value) {
+  if (value === null) return null;
+  if (value !== ORDERED_RC_CANDIDATE_POLICY) {
+    throw new TypeError(`candidatePolicy must equal "${ORDERED_RC_CANDIDATE_POLICY}".`);
+  }
+  return value;
 }
 
 function calibrationThermalStabilityParams(base, fittedNames) {
@@ -780,9 +872,17 @@ function parameterAtBound(value, spec) {
 function calibrateTrials({
   cell, trials, params, fit, maxIter, weightTemp, maxEvaluations,
   maxIntegrationSteps, datasetChecksums = [], preprocessing = [], notes = [],
+  candidatePolicy = null,
 }) {
   const names = calibrationFit(fit);
   const base = calibrationBaseParams(cell, params);
+  const appliedCandidatePolicy = calibrationCandidatePolicy(candidatePolicy);
+  const orderedRcAdmissibleParams = (candidate) => (
+    candidate.rc2TauS / candidate.rc1TauS >= ECM_RC_MINIMUM_TIME_CONSTANT_RATIO
+  );
+  if (appliedCandidatePolicy && !orderedRcAdmissibleParams(base)) {
+    throw new RangeError(`candidatePolicy "${appliedCandidatePolicy}" requires rc2TauS to remain at least ${ECM_RC_MINIMUM_TIME_CONSTANT_RATIO} times rc1TauS; the initial ratio is ${base.rc2TauS / base.rc1TauS}.`);
+  }
   validateCalibrationLimits({ names, maxIter, maxEvaluations, maxIntegrationSteps, weightTemp });
   const initialStateAssumptions = Object.freeze(trials.map((trial, index) => (
     restedInitialStateAssumption({
@@ -837,23 +937,52 @@ function calibrateTrials({
   let evaluationCount = 0;
   let integrationStepCount = 0;
   let thermalNodeUpdateCount = 0;
+  let rejectedCandidateCount = 0;
+  let proposalCount = 0;
+  let cacheHitCount = 0;
+  let minimumProposedRcTimeConstantRatio = Infinity;
   let bestRecord = null;
   const cache = new Map();
 
   const run = (vec) => {
+    if (appliedCandidatePolicy) {
+      if (proposalCount >= maxEvaluations) throw new CalibrationBudgetStop('max-evaluations');
+      proposalCount++;
+    }
     const key = JSON.stringify(vec);
     const cached = cache.get(key);
-    if (cached) return cached;
-    if (evaluationCount >= maxEvaluations) throw new CalibrationBudgetStop('max-evaluations');
+    if (cached) {
+      if (appliedCandidatePolicy) cacheHitCount++;
+      return cached;
+    }
+    if (!appliedCandidatePolicy && evaluationCount >= maxEvaluations) {
+      throw new CalibrationBudgetStop('max-evaluations');
+    }
+    const trialParams = { ...base };
+    names.forEach((name, index) => { trialParams[name] = vec[index]; });
+    if (appliedCandidatePolicy) {
+      minimumProposedRcTimeConstantRatio = Math.min(
+        minimumProposedRcTimeConstantRatio,
+        trialParams.rc2TauS / trialParams.rc1TauS,
+      );
+    }
+    if (appliedCandidatePolicy && !orderedRcAdmissibleParams(trialParams)) {
+      evaluationCount++;
+      rejectedCandidateCount++;
+      const rejected = {
+        vec: [...vec], params: trialParams, cost: Infinity,
+        voltageRmse: Infinity, temperatureRmse: null,
+        voltageSampleCount: 0, temperatureSampleCount: 0,
+      };
+      cache.set(key, rejected);
+      return rejected;
+    }
     if (integrationStepCount + workPerEvaluation > maxIntegrationSteps) {
       throw new CalibrationBudgetStop('max-integration-steps');
     }
     evaluationCount++;
     integrationStepCount += workPerEvaluation;
     thermalNodeUpdateCount += nodeWorkPerEvaluation;
-
-    const trialParams = { ...base };
-    names.forEach((name, index) => { trialParams[name] = vec[index]; });
     let voltageSum = 0, voltageCount = 0, temperatureSum = 0, temperatureCount = 0;
     for (let trialIndex = 0; trialIndex < trials.length; trialIndex++) {
       const trial = trials[trialIndex];
@@ -894,9 +1023,14 @@ function calibrateTrials({
   const x0 = names.map((name) => base[name]);
   const bounds = names.map((name) => [PARAM_BY_ID[name].min, PARAM_BY_ID[name].max]);
   const clampVec = (vec) => vec.map((value, index) => Math.min(bounds[index][1], Math.max(bounds[index][0], value)));
-  const simplex = boundAwareInitialSimplex(x0, bounds);
+  const admissibleVector = appliedCandidatePolicy ? (vec) => {
+    const candidate = { ...base };
+    names.forEach((name, index) => { candidate[name] = vec[index]; });
+    return orderedRcAdmissibleParams(candidate);
+  } : null;
+  const simplex = boundAwareInitialSimplex(x0, bounds, admissibleVector);
   let evals = simplex.map((vec) => ({ vec, cost: run(vec).cost }));
-  const before = run(x0);
+  const before = cache.get(JSON.stringify(x0));
   let iterations = 0;
   let terminationReason = 'max-iterations';
 
@@ -966,6 +1100,17 @@ function calibrateTrials({
     note: after.cost < before.cost
       ? 'The fitted parameters reproduce your measurements more closely than the defaults did. Check any parameter marked atBound — it wanted to go further than its limit allows, which usually means the model is missing an effect rather than the value being extreme.'
       : 'The fit did not improve on the defaults. Either the defaults already describe this cell, or the parameters chosen are not the ones your data is sensitive to.',
+    ...(appliedCandidatePolicy ? {
+      candidateConstraintEvidence: {
+        policy: appliedCandidatePolicy,
+        minimumRcTimeConstantRatio: ECM_RC_MINIMUM_TIME_CONSTANT_RATIO,
+        proposalCount,
+        cacheHitCount,
+        rejectedCandidateCount,
+        minimumProposedRcTimeConstantRatio,
+        finalRcTimeConstantRatio: after.params.rc2TauS / after.params.rc1TauS,
+      },
+    } : {}),
   };
 }
 
@@ -985,92 +1130,12 @@ export function calibrate({
   });
 }
 
-function includedAt(segments, index, cursor) {
-  while (cursor.value < segments.length - 1 && index >= segments[cursor.value].endIndexExclusive) cursor.value++;
-  return segments[cursor.value].include;
-}
-
-function preprocessCalibrationDataset(dataset, maxSamplesPerDataset) {
-  const originalSamples = dataset.signals.currentA.length;
-  const factor = Math.max(1, Math.ceil(originalSamples / maxSamplesPerDataset));
-  const usedSamples = Math.floor(originalSamples / factor);
-  const current = new Array(usedSamples);
-  const voltage = new Array(usedSamples);
-  const hasTemperature = dataset.signals.temperatureC !== null;
-  const temperature = hasTemperature ? new Array(usedSamples) : null;
-  const selectedIndices = [];
-  const cursor = { value: 0 };
-  let originalIncludedSamples = 0;
-  for (const segment of dataset.segments) {
-    if (segment.include) originalIncludedSamples += segment.endIndexExclusive - segment.startIndex;
-  }
-  let representedIncludedSamples = 0;
-  let mixedBoundaryBlocks = 0;
-
-  for (let block = 0; block < usedSamples; block++) {
-    const start = block * factor;
-    const end = start + factor;
-    let currentSum = 0;
-    let includedCount = 0;
-    for (let index = start; index < end; index++) {
-      currentSum += dataset.signals.currentA[index];
-      if (includedAt(dataset.segments, index, cursor)) includedCount++;
-    }
-    current[block] = currentSum / factor;
-    // Current is a zero-order-held block mean so charge is preserved. Voltage
-    // and temperature are end-of-step observations, so keep the block's final
-    // sample rather than shifting their phase to a block average.
-    voltage[block] = dataset.signals.voltageV[end - 1];
-    if (hasTemperature) temperature[block] = dataset.signals.temperatureC[end - 1];
-    // Prediction and every observation must describe the exact same interval.
-    // A block that crosses an include/exclude boundary remains in the current
-    // history so model state is continuous, but is not scored.
-    if (includedCount === factor) {
-      selectedIndices.push(block);
-      representedIncludedSamples += factor;
-    } else if (includedCount > 0) mixedBoundaryBlocks++;
-  }
-  if (selectedIndices.length < 3) {
-    throw new RangeError(`Dataset "${dataset.id}" leaves only ${selectedIndices.length} included points after deterministic preprocessing; at least 3 are required.`);
-  }
-  return {
-    measured: {
-      dtS: dataset.samplePeriodS * factor, i: current, v: voltage,
-      t: dataset.conventions.temperatureLocation === 'module-maximum' ? temperature : null,
-    },
-    selectedIndices,
-    preprocessing: Object.freeze({
-      datasetId: dataset.id,
-      checksum: dataset.checksum,
-      rawSha256: dataset.source.rawSha256,
-      sourceTool: dataset.source.tool,
-      sourceRunId: dataset.source.runId,
-      binding: Object.freeze({ ...dataset.binding }),
-      method: factor === 1 ? 'none' : 'block-mean-current-end-sample',
-      factor, originalSamples, usedSamples,
-      originalSamplePeriodS: dataset.samplePeriodS,
-      usedSamplePeriodS: dataset.samplePeriodS * factor,
-      channelLengths: Object.freeze({
-        current: current.length,
-        voltage: voltage.length,
-        temperature: temperature?.length ?? 0,
-      }),
-      originalIncludedSamples, representedIncludedSamples,
-      unrepresentedIncludedSamples: originalIncludedSamples - representedIncludedSamples,
-      mixedBoundaryBlocks,
-      usedIncludedSamples: selectedIndices.length,
-      droppedTailSamples: originalSamples - usedSamples * factor,
-    }),
-  };
-}
-
-/** Calibrate one parameter set against one to eight governed, compatible trials. */
-export function calibrateDatasets({
+function calibrateDatasetsImpl({
   cell, datasets, params = null, fit = ['r0Ref', 'rc1R', 'rc1TauS'],
   maxIter = 300, weightTemp = 0, maxEvaluations = DEFAULT_MAX_EVALUATIONS,
   maxIntegrationSteps = DEFAULT_MAX_INTEGRATION_STEPS,
   maxSamplesPerDataset = DEFAULT_MAX_SAMPLES_PER_DATASET,
-}) {
+}, candidatePolicy = null) {
   const values = Array.isArray(datasets) ? datasets : [datasets];
   if (values.length < 1 || values.length > MAX_CALIBRATION_DATASETS) {
     throw new RangeError(`datasets must contain 1 to ${MAX_CALIBRATION_DATASETS} canonical datasets.`);
@@ -1124,5 +1189,34 @@ export function calibrateDatasets({
     params, fit, maxIter, weightTemp, maxEvaluations, maxIntegrationSteps,
     datasetChecksums: canonical.map(({ checksum }) => checksum),
     preprocessing: prepared.map(({ preprocessing }) => preprocessing), notes,
+    candidatePolicy,
   });
+}
+
+/** Calibrate one parameter set against one to eight governed, compatible trials. */
+export function calibrateDatasets(input) {
+  return calibrateDatasetsImpl(input);
+}
+
+/**
+ * Governed staged-tuning seam with one closed coupled-candidate policy.
+ * The ordinary Action 1 calibrateDatasets API and result shape remain unchanged.
+ */
+export function calibrateDatasetsConstrained(input) {
+  calibrationObject(input, 'constrained calibration input');
+  const allowed = new Set([
+    'cell', 'datasets', 'params', 'fit', 'maxIter', 'weightTemp',
+    'maxEvaluations', 'maxIntegrationSteps', 'maxSamplesPerDataset',
+    'candidatePolicy',
+  ]);
+  const unsupported = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unsupported.length) {
+    throw new TypeError(`Constrained calibration input contains unsupported field(s): ${unsupported.join(', ')}.`);
+  }
+  if (!Object.hasOwn(input, 'candidatePolicy')) {
+    throw new TypeError(`Constrained calibration input requires candidatePolicy "${ORDERED_RC_CANDIDATE_POLICY}".`);
+  }
+  const { candidatePolicy, ...ordinary } = input;
+  calibrationCandidatePolicy(candidatePolicy);
+  return calibrateDatasetsImpl(ordinary, candidatePolicy);
 }

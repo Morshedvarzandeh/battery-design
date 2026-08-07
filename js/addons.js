@@ -143,6 +143,15 @@ export const ADDONS = [
     why: 'Calibration is a governed source/staged-runner CLI and local-API workflow, not an installed shell wrapper, desktop-GUI button or MCP tool. Dataset identity proves exact content, not who produced it or whether a commercial solver accepts the result.',
   },
   {
+    id: 'ecm-tuning', name: 'Governed staged ECM tuning', tier: 'desktop', status: 'shipped',
+    surfaces: ['cli', 'local-api'],
+    module: 'ecm-tuning.js + ecm-tuning-executor.js + desktop/bd.mjs', concepts: ['simulation'],
+    what: 'The source/staged runner CLI and authenticated local API build a versioned staged plan from separate canonical calibration and validation trials, execute only the plan\'s active parameter groups under exact work limits, and return diagnostic candidate parameters plus fail-closed adopted parameters with fixed full-rate holdout evidence.',
+    provides: ['content-addressed ECM tuning plan and result', 'group coverage, skip and numerical-sensitivity evidence', 'candidate and adopted parameter artifacts with exact work counters'],
+    needs: ['separate governed calibration-purpose and validation-purpose whole trials', 'caller-predeclared physical-unit acceptance thresholds', 'a known catalog cell and explicit S/P/module operating context'],
+    why: 'Automatic ECM tuning is a separate Action 2 CLI/local-API workflow, not raw-trace ingestion, an installed shell wrapper, desktop-GUI button or MCP tool. Checksums identify governed content; they do not authenticate its producer, prove statistical independence, establish proprietary-tool compatibility or validate model accuracy.',
+  },
+  {
     id: 'search', name: 'Design-space search', tier: 'desktop', status: 'shipped',
     surfaces: ['cli', 'local-api'],
     module: 'desktop/bd.mjs + desktop/pool.mjs', concepts: ['multi-objective'],

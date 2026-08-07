@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 24);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 29);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -61,7 +61,10 @@ test('seed knowledge covers the requested recurring engineering failure classes'
   assert.deepEqual(ROOT_CAUSE_RECORDS.map(({ id }) => id), [
     'rc-adaptive-integration-work-undercount',
     'rc-allof-closure-collision',
+    'rc-calibration-holdout-relabel-leakage',
+    'rc-calibration-holdout-score-masking',
     'rc-calibration-initial-state-ambiguity',
+    'rc-calibration-parameter-identifiability-confounding',
     'rc-calibration-result-artifact-shape',
     'rc-calibration-result-identity-gap',
     'rc-calibration-trace-alignment-loss',
@@ -74,6 +77,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-fmi-representation-drift',
     'rc-nelder-mead-bound-simplex-collapse',
     'rc-nullable-alias-projection',
+    'rc-object-allowlist-prototype-bypass',
     'rc-packaged-dependency-omission',
     'rc-product-surface-claim-drift',
     'rc-rc-euler-step-instability',
@@ -81,15 +85,56 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-schema-envelope-permissive',
     'rc-signed-bound-evidence-miss',
     'rc-source-revision-self-claim',
+    'rc-test-multiplier-denominator-drift',
     'rc-thermal-explicit-step-instability',
     'rc-tree-link-containment',
   ]);
+  assert.equal(ROOT_CAUSE_RECORDS.find(({ id }) => (
+    id === 'rc-calibration-holdout-relabel-leakage'
+  )).status, 'resolved');
+  assert.equal(ROOT_CAUSE_RECORDS.find(({ id }) => (
+    id === 'rc-calibration-parameter-identifiability-confounding'
+  )).status, 'mitigated');
 
   for (const record of ROOT_CAUSE_RECORDS) {
     assert.ok(record.causalChain.length >= 2);
     assert.ok(record.resolution.length && record.prevention.length);
     assert.ok(record.detection.every((item) => item.method && item.signal && item.failureCondition));
   }
+});
+
+test('test-multiplier memory pins a reproducible denominator and local evidence', () => {
+  const id = 'rc-test-multiplier-denominator-drift';
+  const multiplier = getRootCauseRecord(id);
+  assert.equal(multiplier?.status, 'resolved');
+  assert.match(multiplier.rootCause, /comparison population[\s\S]*base revision[\s\S]*counting procedure/i);
+  const resolution = multiplier.resolution.join(' ');
+  assert.match(resolution, /66f7240 at 708[\s\S]*4da8c03 at 758[\s\S]*increase of 50/i);
+  assert.match(resolution, /rg -n "\^test\\\(" tests --glob "\*\.test\.mjs" \| wc -l/);
+  assert.match(resolution, /6094b3b at 824 only as an intermediate/i);
+  assert.match(resolution, /at least 858 declarations[\s\S]*increase of at least 100/i);
+
+  assert.deepEqual(
+    multiplier.references.filter(({ kind }) => kind === 'commit').map(({ locator }) => locator),
+    ['66f7240', '4da8c03', '6094b3bd5e5afbb3069fd9ba8a7c5d1558600d6f'],
+  );
+
+  const localTests = multiplier.references
+    .filter(({ kind }) => kind === 'test')
+    .map(({ locator }) => locator);
+  assert.deepEqual(localTests, [
+    'tests/ecm-tuning-plan.test.mjs',
+    'tests/ecm-tuning.test.mjs',
+    'tests/ecm-tuning-surfaces.test.mjs',
+    'tests/packaged-tree.test.mjs',
+  ]);
+  for (const locator of localTests) assert.ok(existsSync(resolve(ROOT, locator)), locator);
+
+  const matches = searchRootCauses(
+    '91 tests Action 1 denominator 708 758 top-level declaration counting command',
+    { limit: 3 },
+  );
+  assert.equal(matches[0]?.id, id);
 });
 
 test('validation is deterministic, non-mutating and rejects unknown or ambiguous data', () => {
@@ -155,6 +200,10 @@ test('lexical search deterministically retrieves causes, fixes and containment p
     ['adaptive thermal microsteps module node work preflight', 'rc-adaptive-integration-work-undercount'],
     ['negative signed lower bound atBound evidence', 'rc-signed-bound-evidence-miss'],
     ['thermal Euler C G exponential decay coolant phase heat conservation', 'rc-thermal-explicit-step-instability'],
+    ['holdout purpose relabel same observations raw source run leakage', 'rc-calibration-holdout-relabel-leakage'],
+    ['pooled holdout RMSE hides failed short operating segment', 'rc-calibration-holdout-score-masking'],
+    ['automatic ECM Arrhenius parameter confounding insufficient excitation coverage skipped groups', 'rc-calibration-parameter-identifiability-confounding'],
+    ['constructor inherited prototype parameter allowlist membership', 'rc-object-allowlist-prototype-bypass'],
   ];
   for (const [query, expected] of cases) {
     const first = searchRootCauses(query, { limit: 3 });

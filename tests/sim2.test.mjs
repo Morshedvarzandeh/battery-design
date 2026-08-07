@@ -12,8 +12,11 @@ import { ok, near } from './helpers.mjs';
 import { readFileSync } from 'fs';
 import {
   PARAM_SPEC, PARAM_BY_ID, defaultParams, validateParams,
-  simulate, estimateSim2Work, calibrate, calibrateDatasets, agingEstimate, rmse, R_GAS,
+  simulate, estimateSim2Work, calibrate, calibrateDatasets,
+  calibrateDatasetsConstrained, agingEstimate, rmse, R_GAS,
   CALIBRATION_FIT_ELIGIBLE, MAX_CALIBRATION_DATASETS, SIM2_SUPPORTED_INITIAL_STATE,
+  ECM_RC_MINIMUM_TIME_CONSTANT_RATIO, ORDERED_RC_CANDIDATE_POLICY,
+  CALIBRATION_MINIMUM_NORMALIZED_AXIS_STEP, boundAwareAdmissibleAxisStep,
 } from '../js/sim2.js';
 import { materializeCalibrationDataset } from '../js/calibration-dataset.js';
 import { cellById } from '../js/cells.js';
@@ -569,6 +572,37 @@ test('the initial simplex stays full-rank when every fitted value starts on its 
   'at least one independent inward axis step is selectable');
 });
 
+test('bound-aware axis steps prefer a full inward probe and shrink only for coupled feasibility', () => {
+  const nearUpper = boundAwareAdmissibleAxisStep({
+    value: 500 - 5.684341886080802e-14,
+    lower: 0.05,
+    upper: 500,
+    nominalNormalizedStep: 1e-3,
+  });
+  assert.equal(nearUpper.direction, 'decrease');
+  near(Math.abs(nearUpper.normalizedDelta), 1e-3, 1e-12,
+    'a roundoff-sized outward room never wins over the complete inward step');
+
+  const coupled = boundAwareAdmissibleAxisStep({
+    value: 0.1,
+    lower: 0.1,
+    upper: 600,
+    nominalNormalizedStep: 0.05,
+    admissible: (candidate) => 1 / candidate >= ECM_RC_MINIMUM_TIME_CONSTANT_RATIO,
+  });
+  assert.equal(coupled.direction, 'increase');
+  assert.ok(coupled.value > 0.1 && coupled.value <= 1 / ECM_RC_MINIMUM_TIME_CONSTANT_RATIO);
+  assert.ok(Math.abs(coupled.normalizedDelta) >= CALIBRATION_MINIMUM_NORMALIZED_AXIS_STEP);
+
+  assert.equal(boundAwareAdmissibleAxisStep({
+    value: 1,
+    lower: 0,
+    upper: 2,
+    nominalNormalizedStep: 0.1,
+    admissible: () => false,
+  }), null, 'an unusable probe fails closed instead of returning a sub-floor perturbation');
+});
+
 test('governed dataset calibration enforces purpose and exact model binding', () => {
   const valid = calibrationDataset();
   const options = { cell: CELL, datasets: valid, fit: ['r0Ref'], maxEvaluations: 2 };
@@ -599,6 +633,102 @@ test('governed dataset calibration enforces purpose and exact model binding', ()
   const tampered = structuredClone(valid);
   tampered.signals.voltageV[0] += 0.01;
   assert.throws(() => calibrateDatasets({ ...options, datasets: tampered }), /checksum.*canonical dataset content/);
+});
+
+test('governed dataset parameter overrides reject inherited registry member names', () => {
+  const governed = calibrationDataset({ id: 'prototype-name-parameter-boundary' });
+  for (const name of ['constructor', 'toString']) {
+    assert.throws(() => calibrateDatasets({
+      cell: CELL,
+      datasets: governed,
+      params: { [name]: 1 },
+      fit: ['r0Ref'],
+      maxEvaluations: 2,
+    }), new RegExp(`Unknown calibration parameter override.*${name}`));
+  }
+});
+
+test('the constrained calibrator enforces ordered RC candidates before simulation without changing the ordinary result', () => {
+  const ordinaryDataset = calibrationDataset({
+    id: 'ordered-rc-candidate-policy', n: 200, temperature: false,
+  });
+  const payload = structuredClone(ordinaryDataset);
+  delete payload.format;
+  delete payload.schemaVersion;
+  delete payload.checksum;
+  payload.source.rawSha256 = 'c'.repeat(64);
+  const truth = simulate({
+    cell: CELL, s: 1, p: 1, nModules: 1,
+    params: { ...defaultParams(CELL), rc1TauS: 125, rc2TauS: 300 },
+    profile: { dtS: 1, i: payload.signals.currentA },
+    startSoC: payload.binding.startSoC,
+    ambientC: payload.binding.ambientC,
+  });
+  payload.signals.voltageV = truth.series.v;
+  const governed = materializeCalibrationDataset(payload);
+  const work = exactTemporalWork({
+    params: { rc1TauS: 100, rc2TauS: 300 },
+    dtS: governed.samplePeriodS,
+    i: governed.signals.currentA,
+  });
+  const base = {
+    cell: CELL,
+    datasets: governed,
+    params: { rc1TauS: 100, rc2TauS: 300 },
+    fit: ['rc1TauS'],
+    maxIter: 10,
+    maxEvaluations: 20,
+    maxIntegrationSteps: work * 20,
+    maxSamplesPerDataset: 200,
+  };
+  const ordinary = calibrateDatasets(base);
+  assert.equal(Object.hasOwn(ordinary, 'candidateConstraintEvidence'), false,
+    'the Action 1 result shape remains byte-compatible when no policy is requested');
+  const constrained = calibrateDatasetsConstrained({
+    ...base,
+    candidatePolicy: ORDERED_RC_CANDIDATE_POLICY,
+  });
+  assert.equal(constrained.candidateConstraintEvidence.policy, ORDERED_RC_CANDIDATE_POLICY);
+  assert.equal(constrained.candidateConstraintEvidence.minimumRcTimeConstantRatio,
+    ECM_RC_MINIMUM_TIME_CONSTANT_RATIO);
+  assert.ok(constrained.candidateConstraintEvidence.proposalCount
+    >= constrained.evaluationCount);
+  assert.ok(constrained.candidateConstraintEvidence.cacheHitCount >= 0);
+  assert.ok(constrained.candidateConstraintEvidence.rejectedCandidateCount >= 1,
+    'the truth tries to increase rc1TauS beyond the admissible coupled boundary');
+  assert.ok(constrained.candidateConstraintEvidence.minimumProposedRcTimeConstantRatio
+    < ECM_RC_MINIMUM_TIME_CONSTANT_RATIO,
+  'inadmissible proposals are recorded but rejected before model integration');
+  assert.ok(constrained.candidateConstraintEvidence.finalRcTimeConstantRatio
+    >= ECM_RC_MINIMUM_TIME_CONSTANT_RATIO);
+  assert.equal(constrained.integrationStepCount,
+    (constrained.evaluationCount - constrained.candidateConstraintEvidence.rejectedCandidateCount)
+      * constrained.workPerEvaluation,
+  'rejected candidates consume the evaluation budget but execute no hidden integration work');
+
+  const coupledLowerBound = calibrateDatasetsConstrained({
+    ...base,
+    params: { rc1TauS: 0.1, rc2TauS: 1 },
+    candidatePolicy: ORDERED_RC_CANDIDATE_POLICY,
+  });
+  assert.ok(coupledLowerBound.candidateConstraintEvidence.finalRcTimeConstantRatio
+    >= ECM_RC_MINIMUM_TIME_CONSTANT_RATIO,
+  'a smaller feasible positive rc1 step forms the simplex when the nominal step violates the coupled ratio');
+
+  assert.throws(() => calibrateDatasetsConstrained({
+    ...base,
+    params: { rc1TauS: 100, rc2TauS: 250 },
+    candidatePolicy: ORDERED_RC_CANDIDATE_POLICY,
+  }), /initial ratio is 2.5/);
+  assert.throws(() => calibrateDatasetsConstrained({
+    ...base,
+    candidatePolicy: 'unknown-policy',
+  }), /candidatePolicy must equal/);
+  assert.throws(() => calibrateDatasetsConstrained({
+    ...base,
+    candidatePolicy: ORDERED_RC_CANDIDATE_POLICY,
+    typo: true,
+  }), /unsupported field.*typo/);
 });
 
 test('rested initial state is explicit in simulation and calibration evidence', () => {

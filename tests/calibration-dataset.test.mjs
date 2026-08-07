@@ -5,9 +5,12 @@ import {
   CALIBRATION_DATASET_FORMAT,
   CALIBRATION_DATASET_SCHEMA,
   CALIBRATION_DATASET_SCHEMA_VERSION,
+  CALIBRATION_PREPROCESSING_POLICY,
   CalibrationDatasetValidationError,
   MAX_CALIBRATION_DATASET_SAMPLES,
+  calibrationDatasetIdentities,
   materializeCalibrationDataset,
+  preprocessCalibrationDataset,
   readCalibrationDataset,
   validateCalibrationDataset,
   verifyCalibrationDataset,
@@ -173,8 +176,220 @@ test('sample phase and ordered segments are explicit and negative zero is canoni
 
 test('calibration and validation datasets remain explicitly distinct', () => {
   const calibration = materializeCalibrationDataset(payload());
-  const validation = materializeCalibrationDataset(payload({ purpose: 'validation' }));
+  const validation = materializeCalibrationDataset(payload({
+    id: 'relabeled-validation-copy',
+    purpose: 'validation',
+    source: {
+      ...payload().source,
+      tool: 'Relabeled export',
+      runId: 'renamed-run',
+      rawSha256: 'e'.repeat(64),
+    },
+  }));
+  const calibrationIdentities = calibrationDatasetIdentities(calibration);
+  const validationIdentities = calibrationDatasetIdentities(validation);
   assert.equal(calibration.purpose, 'calibration');
   assert.equal(validation.purpose, 'validation');
   assert.notEqual(calibration.checksum, validation.checksum);
+  assert.deepEqual(validationIdentities, calibrationIdentities,
+    'relabeling the same trace cannot create independent observation or trial content');
+  assertDeepFrozen(calibrationIdentities);
+});
+
+test('observation and trial-content identities separate numeric evidence from binding', () => {
+  const first = materializeCalibrationDataset(payload());
+  const rebound = materializeCalibrationDataset(payload({
+    id: 'same-observations-different-binding',
+    purpose: 'validation',
+    source: { ...payload().source, rawSha256: 'c'.repeat(64), runId: 'run-0043' },
+    binding: {
+      ...payload().binding,
+      seriesCells: 48,
+      parallelCells: 8,
+      startSoC: 0.7,
+      ambientC: 10,
+      moduleCount: 4,
+    },
+  }));
+  const firstIdentities = calibrationDatasetIdentities(first);
+  const reboundIdentities = calibrationDatasetIdentities(rebound);
+
+  assert.equal(reboundIdentities.observationChecksum, firstIdentities.observationChecksum,
+    'identical sample timing, signals and conventions retain one observation identity');
+  assert.notEqual(reboundIdentities.trialContentChecksum, firstIdentities.trialContentChecksum,
+    'binding and initial-condition context remain part of trial content');
+  assertDeepFrozen(reboundIdentities);
+});
+
+test('segment selection changes trial content without changing the observation identity', () => {
+  const first = materializeCalibrationDataset(payload());
+  const reselection = materializeCalibrationDataset(payload({
+    id: 'same-observations-new-segment-selection',
+    purpose: 'validation',
+    source: { ...payload().source, rawSha256: 'f'.repeat(64), runId: 'run-0045' },
+    segments: [
+      { id: 'warm-up', startIndex: 0, endIndexExclusive: 1, mode: 'rest', include: false },
+      { id: 'held-out-pulse', startIndex: 1, endIndexExclusive: 4, mode: 'pulse', include: true },
+    ],
+  }));
+  const firstIdentities = calibrationDatasetIdentities(first);
+  const reselectionIdentities = calibrationDatasetIdentities(reselection);
+
+  assert.equal(reselectionIdentities.observationChecksum, firstIdentities.observationChecksum);
+  assert.notEqual(reselectionIdentities.trialContentChecksum, firstIdentities.trialContentChecksum,
+    'segment ids, modes and include decisions are governed trial content');
+});
+
+test('a valid signal change alters both purpose-neutral identities deterministically', () => {
+  const first = materializeCalibrationDataset(payload());
+  const changed = materializeCalibrationDataset(payload({
+    id: 'changed-observation',
+    purpose: 'validation',
+    source: { ...payload().source, rawSha256: 'd'.repeat(64), runId: 'run-0044' },
+    signals: { ...payload().signals, voltageV: [403, 392, 389.9, 400] },
+  }));
+  const firstIdentities = calibrationDatasetIdentities(first);
+  const changedIdentities = calibrationDatasetIdentities(changed);
+
+  assert.notEqual(changedIdentities.observationChecksum, firstIdentities.observationChecksum);
+  assert.notEqual(changedIdentities.trialContentChecksum, firstIdentities.trialContentChecksum);
+  assert.deepEqual(calibrationDatasetIdentities(structuredClone(first)), firstIdentities,
+    'serialized canonical content reproduces the exact same identities');
+  assert.match(firstIdentities.observationChecksum, /^[0-9a-f]{64}$/);
+  assert.match(firstIdentities.trialContentChecksum, /^[0-9a-f]{64}$/);
+  assertDeepFrozen(firstIdentities);
+});
+
+test('scored electrical identity ignores temperature and excluded voltage evidence', () => {
+  const segments = [
+    { id: 'warm-up', startIndex: 0, endIndexExclusive: 1, mode: 'rest', include: false },
+    { id: 'score', startIndex: 1, endIndexExclusive: 4, mode: 'dynamic', include: true },
+  ];
+  const first = materializeCalibrationDataset(payload({ segments }));
+  const changedTemperature = materializeCalibrationDataset(payload({
+    id: 'same-electrical-observations-new-temperature',
+    purpose: 'validation',
+    source: { ...payload().source, rawSha256: '6'.repeat(64), runId: 'run-new-temperature' },
+    signals: { ...payload().signals, temperatureC: [25, 25.2, 25.6, 25.8] },
+    segments,
+  }));
+  const withoutTemperature = materializeCalibrationDataset(payload({
+    id: 'same-electrical-observations-no-temperature',
+    purpose: 'validation',
+    source: { ...payload().source, rawSha256: '1'.repeat(64), runId: 'run-no-temperature' },
+    normalization: {
+      ...payload().normalization,
+      sourceUnits: { ...payload().normalization.sourceUnits, temperature: null },
+      sourceTemperatureLocation: null,
+    },
+    signals: { ...payload().signals, temperatureC: null },
+    segments,
+    conventions: { ...payload().conventions, temperatureLocation: null },
+  }));
+  const changedExcludedVoltage = materializeCalibrationDataset(payload({
+    id: 'same-scored-electrical-observations-new-warm-up-voltage',
+    purpose: 'validation',
+    source: { ...payload().source, rawSha256: '2'.repeat(64), runId: 'run-new-warm-up-voltage' },
+    signals: { ...payload().signals, voltageV: [401, 392, 390, 400] },
+    segments,
+  }));
+  const firstIdentities = calibrationDatasetIdentities(first);
+  const changedTemperatureIdentities = calibrationDatasetIdentities(changedTemperature);
+  const withoutTemperatureIdentities = calibrationDatasetIdentities(withoutTemperature);
+  const changedExcludedVoltageIdentities = calibrationDatasetIdentities(changedExcludedVoltage);
+
+  for (const identities of [
+    changedTemperatureIdentities,
+    withoutTemperatureIdentities,
+    changedExcludedVoltageIdentities,
+  ]) {
+    assert.equal(identities.electricalHistoryChecksum, firstIdentities.electricalHistoryChecksum);
+    assert.equal(identities.scoredElectricalObservationChecksum,
+      firstIdentities.scoredElectricalObservationChecksum);
+  }
+  assert.notEqual(changedTemperatureIdentities.observationChecksum, firstIdentities.observationChecksum,
+    'complete observation identity still records changed temperature evidence');
+  assert.notEqual(withoutTemperatureIdentities.observationChecksum, firstIdentities.observationChecksum,
+    'complete observation identity still records whether temperature evidence exists');
+  assert.notEqual(changedExcludedVoltageIdentities.observationChecksum, firstIdentities.observationChecksum,
+    'complete observation identity still records excluded voltage history');
+});
+
+test('scored electrical identity binds included observations and all current state history', () => {
+  const segments = [
+    { id: 'warm-up', startIndex: 0, endIndexExclusive: 1, mode: 'rest', include: false },
+    { id: 'score', startIndex: 1, endIndexExclusive: 4, mode: 'dynamic', include: true },
+  ];
+  const first = materializeCalibrationDataset(payload({ segments }));
+  const changedIncludedVoltage = materializeCalibrationDataset(payload({
+    id: 'changed-included-voltage',
+    source: { ...payload().source, rawSha256: '3'.repeat(64), runId: 'run-included-voltage' },
+    signals: { ...payload().signals, voltageV: [403, 391.9, 390, 400] },
+    segments,
+  }));
+  const changedIncludedCurrent = materializeCalibrationDataset(payload({
+    id: 'changed-included-current',
+    source: { ...payload().source, rawSha256: '4'.repeat(64), runId: 'run-included-current' },
+    signals: { ...payload().signals, currentA: [0, 41, 40, 0] },
+    segments,
+  }));
+  const changedExcludedCurrent = materializeCalibrationDataset(payload({
+    id: 'changed-warm-up-current',
+    source: { ...payload().source, rawSha256: '5'.repeat(64), runId: 'run-warm-up-current' },
+    signals: { ...payload().signals, currentA: [1, 40, 40, 0] },
+    segments,
+  }));
+  const firstIdentities = calibrationDatasetIdentities(first);
+  const includedVoltageIdentities = calibrationDatasetIdentities(changedIncludedVoltage);
+  const includedCurrentIdentities = calibrationDatasetIdentities(changedIncludedCurrent);
+  const excludedCurrentIdentities = calibrationDatasetIdentities(changedExcludedCurrent);
+
+  assert.equal(includedVoltageIdentities.electricalHistoryChecksum,
+    firstIdentities.electricalHistoryChecksum,
+    'voltage is an observation rather than electrical state-driving history');
+  assert.notEqual(includedVoltageIdentities.scoredElectricalObservationChecksum,
+    firstIdentities.scoredElectricalObservationChecksum);
+  for (const identities of [includedCurrentIdentities, excludedCurrentIdentities]) {
+    assert.notEqual(identities.electricalHistoryChecksum, firstIdentities.electricalHistoryChecksum);
+    assert.notEqual(identities.scoredElectricalObservationChecksum,
+      firstIdentities.scoredElectricalObservationChecksum,
+      'even excluded current changes the state arriving at later scored samples');
+  }
+  assert.deepEqual(Object.keys(firstIdentities), [
+    'observationChecksum', 'trialContentChecksum', 'electricalHistoryChecksum',
+    'scoredElectricalObservationChecksum',
+  ]);
+  assert.deepEqual(calibrationDatasetIdentities(structuredClone(first)), firstIdentities);
+  assert.match(firstIdentities.electricalHistoryChecksum, /^[0-9a-f]{64}$/);
+  assert.match(firstIdentities.scoredElectricalObservationChecksum, /^[0-9a-f]{64}$/);
+  assertDeepFrozen(firstIdentities);
+});
+
+test('the versioned preprocessing policy is deterministic, aligned and deeply immutable', () => {
+  const currentA = [0, 0, 4, 6, 0, 0, -6, -4, 0, 0, 2, 4, 0, 0, -4, -2];
+  const source = materializeCalibrationDataset(payload({
+    normalization: { ...payload().normalization, originalSampleCount: currentA.length },
+    signals: {
+      currentA,
+      voltageV: currentA.map((current) => 400 - current),
+      temperatureC: currentA.map((_, index) => 25 + index / 10),
+    },
+    segments: [{
+      id: 'all', startIndex: 0, endIndexExclusive: currentA.length,
+      mode: 'dynamic', include: true,
+    }],
+  }));
+  const prepared = preprocessCalibrationDataset(source, 8);
+  assert.equal(prepared.policyChecksum, CALIBRATION_PREPROCESSING_POLICY.checksum);
+  const policyBody = { ...CALIBRATION_PREPROCESSING_POLICY };
+  delete policyBody.checksum;
+  assert.equal(CALIBRATION_PREPROCESSING_POLICY.checksum, semanticDigest(policyBody));
+  assert.deepEqual(prepared.measured.i, [0, 5, 0, -5, 0, 3, 0, -3]);
+  assert.deepEqual(prepared.measured.v, [400, 394, 400, 404, 400, 396, 400, 402]);
+  assert.equal(prepared.measured.dtS, 0.2);
+  assert.equal(prepared.preprocessing.factor, 2);
+  assert.deepEqual(preprocessCalibrationDataset(structuredClone(source), 8), prepared);
+  assertDeepFrozen(prepared);
+  assert.throws(() => { prepared.measured.i[0] = 99; }, TypeError);
+  assert.throws(() => preprocessCalibrationDataset(source, 7), /safe integer from 8/);
 });

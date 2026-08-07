@@ -18,14 +18,27 @@ script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # runner still performs its own checksum and closed-schema validation, so this
 # fixture cannot make a missing packaged dependency or stale endpoint pass.
 calibration_request_file=$(mktemp "/tmp/battery-design-calibration-request.XXXXXX.json")
-trap 'rm -f -- "$calibration_request_file"' EXIT
-node --input-type=module - "$script_dir/../js/calibration-dataset.js" "$calibration_request_file" <<'NODE'
+tuning_request_file=$(mktemp "/tmp/battery-design-tuning-request.XXXXXX.json")
+trap 'rm -f -- "$calibration_request_file" "$tuning_request_file"' EXIT
+node --input-type=module - \
+  "$script_dir/../js/calibration-dataset.js" \
+  "$script_dir/../js/cells.js" \
+  "$script_dir/../js/sim2.js" \
+  "$script_dir/../js/ontology.js" \
+  "$calibration_request_file" \
+  "$tuning_request_file" <<'NODE'
 import { writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
-const modulePath = process.argv[2];
-const outputPath = process.argv[3];
-const { materializeCalibrationDataset } = await import(pathToFileURL(modulePath));
+const [datasetModulePath, cellsModulePath, sim2ModulePath, ontologyModulePath,
+  calibrationOutputPath, tuningOutputPath] = process.argv.slice(2);
+const [{ materializeCalibrationDataset }, { cellById }, { defaultParams, simulate },
+  { semanticDigest }] = await Promise.all([
+  import(pathToFileURL(datasetModulePath)),
+  import(pathToFileURL(cellsModulePath)),
+  import(pathToFileURL(sim2ModulePath)),
+  import(pathToFileURL(ontologyModulePath)),
+]);
 const dataset = materializeCalibrationDataset({
   id: 'installed-runner-smoke', kind: 'synthetic', purpose: 'calibration',
   source: {
@@ -58,10 +71,98 @@ const dataset = materializeCalibrationDataset({
     voltageLocation: 'pack-terminal', temperatureLocation: null,
   },
 });
-writeFileSync(outputPath, JSON.stringify({
+writeFileSync(calibrationOutputPath, JSON.stringify({
   format: 'battery-design/calibration-request@1', datasets: dataset, params: null,
   fit: ['r0Ref'], maxIter: 1, weightTemp: 0, maxEvaluations: 2,
   maxModuleWeightedIntegrationSteps: 36, maxSamplesPerDataset: 8,
+}));
+
+const tuningCell = cellById('samsung-inr21700-50e');
+const initialParams = defaultParams(tuningCell);
+const truthParams = { ...initialParams, r0Ref: initialParams.r0Ref * 1.2 };
+const protocol = (amplitudeA) => [
+  ...Array(10).fill(0),
+  ...Array(12).fill(amplitudeA),
+  ...Array(10).fill(0),
+  ...Array(12).fill(-amplitudeA),
+  ...Array(10).fill(0),
+  ...Array(12).fill(amplitudeA * 0.7),
+  ...Array(10).fill(0),
+];
+const tuningDataset = ({ id, purpose, amplitudeA, startSoC }) => {
+  const currentA = protocol(amplitudeA);
+  const simulated = simulate({
+    cell: tuningCell,
+    s: 1,
+    p: 1,
+    nModules: 1,
+    params: truthParams,
+    profile: { dtS: 1, i: currentA },
+    startSoC,
+    ambientC: 25,
+  });
+  return materializeCalibrationDataset({
+    id, kind: 'synthetic', purpose,
+    source: {
+      tool: 'battery-design installed tuning smoke', toolVersion: '1.0.0',
+      model: 'sim2-governed-fixture', runId: id, generatedAt: null,
+      mediaType: 'application/json', rawSha256: semanticDigest(`raw:${id}`),
+    },
+    binding: {
+      cellId: tuningCell.id, seriesCells: 1, parallelCells: 1,
+      startSoC, ambientC: 25, moduleCount: 1,
+      initialState: 'rested-equilibrium-at-ambient',
+    },
+    normalization: {
+      format: 'battery-design/calibration-normalization@1', adapter: 'canonical-json',
+      adapterVersion: '1.0.0', mappingChecksum: semanticDigest(`mapping:${id}`),
+      sourceUnits: { time: 's', current: 'A', voltage: 'V', temperature: null },
+      sourceCurrentPositive: 'discharge', sourceCurrentScope: 'pack',
+      sourceVoltageLocation: 'pack-terminal', sourceTemperatureLocation: null,
+      sourceSampleAlignment: 'end-of-step', sourceFirstSampleTimeS: 1,
+      sourceResetTimeS: 0, timeHandling: 'validated-uniform',
+      originalSampleCount: currentA.length,
+    },
+    samplePeriodS: 1,
+    signals: { currentA, voltageV: simulated.series.v, temperatureC: null },
+    segments: [{
+      id: 'complete', startIndex: 0, endIndexExclusive: currentA.length,
+      mode: 'dynamic', include: true,
+    }],
+    conventions: {
+      timeBasis: 'uniform-sample-period', timeOrigin: 'trial-reset',
+      firstSampleOffsetS: 1, sampleAlignment: 'end-of-step',
+      currentHold: 'zero-order-hold', currentPositive: 'discharge', currentScope: 'pack',
+      voltageLocation: 'pack-terminal', temperatureLocation: null,
+    },
+  });
+};
+const calibrationDataset = tuningDataset({
+  id: 'installed-tuning-calibration', purpose: 'calibration', amplitudeA: 8, startSoC: 0.6,
+});
+const validationDataset = tuningDataset({
+  id: 'installed-tuning-validation', purpose: 'validation', amplitudeA: 7.3, startSoC: 0.65,
+});
+writeFileSync(tuningOutputPath, JSON.stringify({
+  format: 'battery-design/ecm-tuning-request@1',
+  calibrationDatasets: [calibrationDataset],
+  validationDatasets: [validationDataset],
+  params: null,
+  groups: ['ohmic'],
+  maxEvaluations: 8,
+  maxModuleWeightedIntegrationSteps: 10_000,
+  maxSamplesPerDataset: 80,
+  acceptance: {
+    maxVoltageRmseMvPerCell: 100,
+    maxVoltageMaxAbsMvPerCell: 200,
+    maxTemperatureRmseC: null,
+    maxTemperatureMaxAbsC: null,
+    minValidationDatasets: 1,
+    minIncludedSamplesPerDataset: 20,
+    requiredModes: ['dynamic'],
+    requireNoHoldoutRegression: true,
+    requireNoFittedParameterAtBound: true,
+  },
 }));
 NODE
 
@@ -92,6 +193,7 @@ smoke_launch() {
   local log_file
   log_file=$(mktemp "/tmp/battery-design-${label}.XXXXXX.log")
   local calibration_result_file=''
+  local tuning_result_file=''
   local launcher_pid=''
   local runner_pid=''
 
@@ -109,6 +211,9 @@ smoke_launch() {
     rm -f -- "$log_file"
     if [[ -n "$calibration_result_file" ]]; then
       rm -f -- "$calibration_result_file"
+    fi
+    if [[ -n "$tuning_result_file" ]]; then
+      rm -f -- "$tuning_result_file"
     fi
   }
 
@@ -181,7 +286,140 @@ NODE
             cleanup_launch
             return 1
           fi
-          echo "$label smoke passed: installed UI, authenticated runner and governed calibration started"
+
+          tuning_result_file=$(mktemp "/tmp/battery-design-${label}-tuning.XXXXXX.json")
+          if ! curl --fail --silent --show-error --max-time 30 \
+            --header "X-Battery-Design-Token: $token" \
+            --header 'Content-Type: application/json' \
+            --data-binary "@$tuning_request_file" \
+            "http://127.0.0.1:${port}/api/tune-ecm" >"$tuning_result_file"; then
+            echo "$label authenticated ECM tuning request failed" >&2
+            sed -n '1,200p' "$log_file" >&2
+            cleanup_launch
+            return 1
+          fi
+          if ! CAPABILITIES_JSON="$capabilities" node --input-type=module - \
+            "$tuning_result_file" \
+            "$tuning_request_file" \
+            "$script_dir/../js/ontology.js" <<'NODE'
+import { readFileSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+
+const run = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+const request = JSON.parse(readFileSync(process.argv[3], 'utf8'));
+const capabilities = JSON.parse(process.env.CAPABILITIES_JSON || '{}');
+const { semanticDigest } = await import(pathToFileURL(process.argv[4]));
+const containsRawTrace = (value) => {
+  if (!value || typeof value !== 'object') return false;
+  for (const [key, child] of Object.entries(value)) {
+    if (['signals', 'currentA', 'voltageV', 'residuals', 'predictions',
+      'datasets', 'calibrationDatasets', 'validationDatasets'].includes(key)) return true;
+    if (key === 'temperatureC' && Array.isArray(child)) return true;
+    if (containsRawTrace(child)) return true;
+  }
+  return false;
+};
+
+if (!capabilities.endpoints?.includes('/api/tune-ecm')) {
+  throw new Error('installed runner does not advertise /api/tune-ecm');
+}
+if (!capabilities.localApiCapabilities?.some(({ id }) => id === 'ecm-tuning')) {
+  throw new Error('installed runner does not advertise its governed local-API ECM tuning surface');
+}
+if (capabilities.capabilities?.some(({ id }) => id === 'ecm-tuning')
+  || capabilities.mcpCapabilities?.some(({ id }) => id === 'ecm-tuning')) {
+  throw new Error('installed runner claims an unimplemented GUI or MCP ECM tuning surface');
+}
+const limits = capabilities.tuningLimits;
+if (!limits || limits.requestFormat !== 'battery-design/ecm-tuning-request@1'
+  || limits.runFormat !== 'battery-design/ecm-tuning-run@1'
+  || limits.planFormat !== 'battery-design/ecm-tuning-plan@1'
+  || limits.resultFormat !== 'battery-design/ecm-tuning-result@1') {
+  throw new Error('installed runner advertises stale ECM tuning artifact formats');
+}
+const acceptanceFields = [
+  'maxVoltageRmseMvPerCell',
+  'maxVoltageMaxAbsMvPerCell',
+  'maxTemperatureRmseC',
+  'maxTemperatureMaxAbsC',
+  'minValidationDatasets',
+  'minIncludedSamplesPerDataset',
+  'requiredModes',
+  'requireNoHoldoutRegression',
+  'requireNoFittedParameterAtBound',
+];
+if (JSON.stringify(limits.acceptanceFields) !== JSON.stringify(acceptanceFields)) {
+  throw new Error('installed runner advertises a stale or reordered ECM tuning acceptance contract');
+}
+if (limits.maxBodyBytes !== 4 * 1024 * 1024
+  || limits.maxDatasetsPerPartition !== 8
+  || limits.maxCombinedInputSamples !== 20_000
+  || limits.maxModules !== 64
+  || limits.maxPreprocessedSamplesPerDataset !== 5_000
+  || limits.maxEvaluations !== 500
+  || limits.maxModuleWeightedIntegrationSteps !== 2_000_000) {
+  throw new Error('installed runner advertises stale ECM tuning resource caps');
+}
+if (limits.maxEvaluations < request.maxEvaluations
+  || limits.maxModuleWeightedIntegrationSteps < request.maxModuleWeightedIntegrationSteps
+  || limits.maxPreprocessedSamplesPerDataset < request.maxSamplesPerDataset) {
+  throw new Error('installed runner executed a request outside its advertised ECM tuning caps');
+}
+if (run.format !== 'battery-design/ecm-tuning-run@1') throw new Error('unexpected ECM tuning run format');
+if (run.plan?.format !== 'battery-design/ecm-tuning-plan@1') throw new Error('missing governed tuning plan');
+if (run.result?.format !== 'battery-design/ecm-tuning-result@1') throw new Error('missing governed tuning result');
+if (run.result.planChecksum !== run.plan.checksum) throw new Error('tuning result is not bound to its plan');
+if (run.surfaceLimits?.surface !== 'local-api'
+  || run.surfaceLimits?.appliedMaxEvaluations !== request.maxEvaluations
+  || run.surfaceLimits?.appliedMaxModuleWeightedIntegrationSteps
+    !== request.maxModuleWeightedIntegrationSteps
+  || run.surfaceLimits?.appliedMaxPreprocessedSamplesPerDataset
+    !== request.maxSamplesPerDataset) {
+  throw new Error('installed tuning run does not identify its applied local-API ceilings');
+}
+if (!/^[a-f0-9]{64}$/.test(run.model?.implementationChecksum || '')) {
+  throw new Error('missing model implementation identity');
+}
+const runBody = { ...run }; delete runBody.checksum;
+if (run.checksum !== semanticDigest(runBody)) throw new Error('ECM tuning run checksum is invalid');
+const planBody = { ...run.plan }; delete planBody.checksum;
+if (run.plan.checksum !== semanticDigest(planBody)) throw new Error('ECM tuning plan checksum is invalid');
+const resultBody = { ...run.result }; delete resultBody.checksum;
+if (run.result.checksum !== semanticDigest(resultBody)) throw new Error('ECM tuning result checksum is invalid');
+if (run.result.adoptedParamsChecksum !== semanticDigest(run.result.adoptedParams)) {
+  throw new Error('adopted parameter checksum is invalid');
+}
+if (run.result.metrics?.before?.validation?.sampleGrid !== 'original-full-rate'
+  || run.result.metrics?.after?.validation?.sampleGrid !== 'original-full-rate'
+  || run.result.readiness?.validationRole !== 'fixed-full-rate-score-only-never-an-optimizer-input') {
+  throw new Error('validation was not retained as a fixed original-rate holdout');
+}
+if (run.result.work?.candidateEvaluations !== 8
+  || run.result.work?.moduleWeightedIntegrationSteps !== 5_472
+  || run.result.work?.moduleWeightedIntegrationSteps
+    !== run.result.workPreflight?.projectedCeilings?.moduleWeightedIntegrationSteps) {
+  throw new Error('ECM tuning did not execute its exact deterministic preflighted work plan');
+}
+if (run.result.work.moduleWeightedIntegrationSteps
+    > run.result.work.limits.moduleWeightedIntegrationSteps
+  || run.result.work.moduleWeightedIntegrationSteps
+    > limits.maxModuleWeightedIntegrationSteps) {
+  throw new Error('ECM tuning exceeded an advertised module-weighted work ceiling');
+}
+const expectedCalibrationChecksum = request.calibrationDatasets[0].checksum;
+const expectedValidationChecksum = request.validationDatasets[0].checksum;
+if (run.plan.request?.calibrationIdentities?.[0]?.datasetChecksum !== expectedCalibrationChecksum
+  || run.plan.request?.validationIdentities?.[0]?.datasetChecksum !== expectedValidationChecksum) {
+  throw new Error('ECM tuning plan is not bound to the submitted canonical trials');
+}
+if (containsRawTrace(run)) throw new Error('ECM tuning response echoed source signal arrays');
+NODE
+          then
+            echo "$label returned an invalid governed ECM tuning result" >&2
+            cleanup_launch
+            return 1
+          fi
+          echo "$label smoke passed: installed UI, authenticated runner, governed calibration and ECM tuning started"
           cleanup_launch
           return 0
         fi
