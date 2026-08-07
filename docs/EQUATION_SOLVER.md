@@ -126,9 +126,26 @@ The campaign is split into independently reviewable gates:
    variables, residual rows, numeric differential/algebraic IDs, initialization,
    events, CSC structure and work-buffer sizes. This iteration adds no external
    library dependency.
-2. **Native IDA adapter:** bind a pinned SUNDIALS/IDA build behind an optional
-   native feature, then prove lifecycle, initialization, tolerance and failure
-   behavior against independent benchmarks.
+2. **Native dense IDA reference path:** this is split again so that every
+   change remains short and independently reversible:
+   - **2A — source pin:** lock the exact official release asset, tag object,
+     commit, byte length, SHA-256, BSD-3-Clause license and NOTICE identities;
+   - **2B — minimal Linux build:** compile the official IDA-only distribution
+     with every third-party solver disabled, then prove the reference probe
+     selects the serial vector, dense matrix and dense linear solver; upstream
+     does not expose a native-module switch for a dense-only binary;
+   - **2C — FFI compile contract:** bind and version-check only the C symbols
+     required by the adapter, without running a solve;
+   - **2D — safe lifecycle:** construct and destroy native objects through
+     owned Rust wrappers, without residual callbacks;
+   - **2E — residual bridge:** connect the allocation-free residual contract
+     to IDA with panic and error containment;
+   - **2F — dense Jacobian bridge:** map the deterministic Jacobian into the
+     dense reference matrix and verify its orientation;
+   - **2G — initialization and solve:** apply IDs and tolerances, calculate
+     consistent conditions when required and solve independent small cases;
+   - **2H — diagnostics and evidence:** publish stable failure mapping,
+     tolerance-convergence and cross-solver conformance evidence.
 3. **Sparse native path:** add an explicitly qualified sparse Jacobian and KLU
    configuration, with sparsity, scaling and large-model convergence evidence.
 4. **Native execution integration:** add governed event restart plus a bounded
@@ -147,6 +164,12 @@ conformance evidence exist. A SUNDIALS WebAssembly build is an optional later
 qualification track, not an implied outcome of native acceptance: Emscripten
 uses a distinct platform ABI, while the current standalone WebAssembly solver
 remains intact.
+
+Task 2A adds `native-backends/sundials/source-lock.json`, checked-in license
+notices and an offline byte verifier. The lock identifies the official
+SUNDIALS 7.8.0 IDA-only source distribution; it does not download, extract,
+compile, link or execute upstream code. Those actions remain gated behind
+Task 2B.
 
 ## Numerical contract
 

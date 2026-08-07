@@ -9,6 +9,7 @@
     "test:packaged": "node --test tests/packaged-tree.test.mjs",
     "test:root-causes": "node --test tests/root-cause-library.test.mjs tests/root-cause-surfaces.test.mjs tests/root-cause-architecture.test.mjs",
     "test:e2e": "playwright test",
+    "sundials:verify-source": "node tools/verify-sundials-source.mjs --lock-only",
     "wasm:build": "node tools/build-wasm.mjs",
     "validate": "node tools/validate.mjs && npm run typecheck && npm test && node tools/validate-vs-market.mjs"
   },
