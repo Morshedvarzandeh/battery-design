@@ -76,6 +76,23 @@ test('installed-package smoke canonicalizes artifact paths before apt sees Tauri
   assert.match(smoke, /appimage_path=\$\(realpath -- "\$appimage_path"\)/);
 });
 
+test('installed-package smoke launches the Cargo GUI instead of an arbitrary sidecar', () => {
+  const smoke = readFileSync(path.join(ROOT, 'tools', 'smoke-installed-linux.sh'), 'utf8');
+  const cargo = readFileSync(path.join(ROOT, 'desktop-app', 'src-tauri', 'Cargo.toml'), 'utf8');
+  const packageName = cargo.match(/^name\s*=\s*"([^"]+)"/m)?.[1];
+  assert.ok(packageName, 'the Tauri Cargo package declares its default binary name');
+  assert.ok(
+    smoke.includes(`deb_binary=/usr/bin/${packageName}`),
+    'the installed smoke launches the default Cargo GUI binary',
+  );
+  assert.match(smoke, /dpkg -L "\$deb_package" \| grep -Fx "\$deb_binary"/);
+  assert.doesNotMatch(
+    smoke,
+    /deb_binary=.*dpkg -L/,
+    'package member order must not choose between the GUI and bd-runner sidecar',
+  );
+});
+
 test('staged desktop tree imports and starts from an isolated output', { timeout: 30_000 }, async () => {
   const temporary = mkdtempSync(path.join(os.tmpdir(), 'battery-design-package-'));
   const staged = path.join(temporary, 'runner');

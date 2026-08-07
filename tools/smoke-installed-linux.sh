@@ -25,8 +25,13 @@ grep -q 'libgtk-3' <<<"$deb_dependencies" \
 
 sudo apt-get install -y "$deb_path"
 deb_package=$(dpkg-deb -f "$deb_path" Package)
-deb_binary=$(dpkg -L "$deb_package" | awk '/^\/usr\/bin\/[^/]+$/ { print; exit }')
-[[ -x "$deb_binary" ]] || { echo "installed package has no executable in /usr/bin" >&2; exit 1; }
+# The package also installs /usr/bin/bd-runner. Package member order is not a
+# launch contract: choosing the first /usr/bin entry can start the Node
+# sidecar without arguments, which exits cleanly and never creates the UI.
+deb_binary=/usr/bin/battery-design
+dpkg -L "$deb_package" | grep -Fx "$deb_binary" >/dev/null \
+  || { echo "installed package does not own its expected main executable: $deb_binary" >&2; exit 1; }
+[[ -x "$deb_binary" ]] || { echo "installed package has no main executable at $deb_binary" >&2; exit 1; }
 chmod +x "$appimage_path"
 
 smoke_launch() {
