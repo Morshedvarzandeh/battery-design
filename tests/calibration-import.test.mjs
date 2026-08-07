@@ -14,7 +14,9 @@ import {
   readCalibrationImportMapping,
   validateCalibrationImportMapping,
 } from '../js/calibration-import.js';
+import { cellById } from '../js/cells.js';
 import { semanticDigest } from '../js/ontology.js';
+import { calibrateDatasets, defaultParams, simulate } from '../js/sim2.js';
 
 function mappingPayload(overrides = {}) {
   const base = {
@@ -28,12 +30,16 @@ function mappingPayload(overrides = {}) {
     binding: {
       cellId: 'cell-001', seriesCells: 96, parallelCells: 4,
       startSoC: 0.9, ambientC: 25, moduleCount: 8,
+      initialState: 'rested-equilibrium-at-ambient',
     },
     columns: { time: 'time', current: 'current', voltage: 'voltage', temperature: 'temperature' },
     units: { time: 's', current: 'A', voltage: 'V', temperature: 'degC' },
     sourceCurrentPositive: 'discharge',
+    sourceCurrentScope: 'pack',
     sourceVoltageLocation: 'pack-terminal',
     sourceTemperatureLocation: 'cell-core',
+    sourceSampleAlignment: 'end-of-step',
+    sourceFirstSampleTimeS: 0,
     timeToleranceS: 1e-9,
     segments: null,
   };
@@ -168,12 +174,13 @@ test('canonical JSON uses exact named arrays and allowlisted unit conversions', 
   }
 });
 
-test('cell voltage scaling, charge polarity and absent temperature are explicit', () => {
+test('cell voltage/current scaling, charge polarity and absent temperature are explicit', () => {
   const importMap = mapping({
     adapter: 'canonical-json', delimiter: null,
     columns: { time: 't', current: 'i', voltage: 'cell_v', temperature: null },
     units: { time: 's', current: 'A', voltage: 'V', temperature: null },
     sourceCurrentPositive: 'charge',
+    sourceCurrentScope: 'cell',
     sourceVoltageLocation: 'cell-terminal',
     sourceTemperatureLocation: null,
     binding: { seriesCells: 4 },
@@ -181,11 +188,14 @@ test('cell voltage scaling, charge polarity and absent temperature are explicit'
   const dataset = importCalibrationDataset(JSON.stringify({
     t: [0, 1, 2], i: [0, 3, -2], cell_v: [3.7, 3.6, 3.5], temperature_guess: [99, 99, 99],
   }), importMap);
-  assert.deepEqual(dataset.signals.currentA, [0, -3, 2]);
+  assert.deepEqual(dataset.signals.currentA, [0, -12, 8],
+    'cell current is converted to pack current with the governed parallel count');
   assert.deepEqual(dataset.signals.voltageV, [14.8, 14.4, 14]);
   assert.equal(dataset.signals.temperatureC, null);
   assert.equal(dataset.conventions.temperatureLocation, null);
   assert.equal(dataset.normalization.sourceUnits.temperature, null);
+  assert.equal(dataset.normalization.sourceCurrentScope, 'cell');
+  assert.equal(dataset.conventions.currentScope, 'pack');
 });
 
 test('no aliases are guessed and duplicate or missing delimited headers fail closed', () => {
@@ -242,6 +252,15 @@ test('every timestamp delta is increasing and uniform within the explicit tolera
   assert.equal(accepted.normalization.originalSampleCount, 3);
   assert.equal(accepted.samplePeriodS, 1);
   assert.equal(accepted.conventions.sampleAlignment, 'end-of-step');
+  assert.equal(accepted.normalization.sourceFirstSampleTimeS, 0);
+  assert.equal(accepted.normalization.sourceResetTimeS, -1);
+  assert.equal(accepted.conventions.firstSampleOffsetS, 1);
+
+  assert.throws(() => importCalibrationDataset(csv([1, 2, 3]), mapping()),
+    /first time sample 1 s does not match governed sourceFirstSampleTimeS 0 s/);
+  const shifted = importCalibrationDataset(csv([1, 2, 3]), mapping({ sourceFirstSampleTimeS: 1 }));
+  assert.equal(shifted.normalization.sourceResetTimeS, 0,
+    'the canonical trial reset is derived exactly one interval before the governed first observation');
 });
 
 test('exact mapped segments are optional and must cover the source once', () => {
@@ -309,6 +328,9 @@ test('adapter pairing, selected channels and source bounds fail closed', () => {
   assert.throws(() => mapping({ columns: { current: 'time' } }), /must not reuse the time column name/);
   assert.throws(() => mapping({ columns: { temperature: null } }), /temperature column, unit and location.*all be present or all be null/);
   assert.throws(() => mapping({ units: { current: 'amps' } }), /units.current.*must be one of/);
+  assert.throws(() => mapping({ sourceCurrentScope: 'unknown' }), /sourceCurrentScope.*cell or pack/);
+  assert.throws(() => mapping({ sourceSampleAlignment: 'unknown' }), /sourceSampleAlignment.*end-of-step/);
+  assert.throws(() => mapping({ binding: { initialState: 'warm-start' } }), /initialState.*rested-equilibrium-at-ambient/);
   assert.throws(() => importCalibrationDataset('x'.repeat(MAX_CALIBRATION_SOURCE_BYTES + 1), mapping()), /byte limit/);
 
   const tooManyColumns = Object.fromEntries(Array.from(
@@ -332,4 +354,75 @@ test('tab delimiter is exact and produces the standard tabular media type', () =
   const dataset = importCalibrationDataset(source, mapping({ delimiter: '\t' }));
   assert.equal(dataset.source.mediaType, 'text/tab-separated-values');
   assert.deepEqual(dataset.signals.currentA, [0, 1, 0]);
+});
+
+test('two imported operating conditions recover known resistance and reduce joint RMSE', () => {
+  const cell = cellById('samsung-inr21700-50e');
+  const truth = { ...defaultParams(cell), r0Ref: 52 };
+  const topology = { seriesCells: 96, parallelCells: 4, moduleCount: 4 };
+
+  const imported = [
+    { id: 'cold-high-soc', startSoC: 0.88, ambientC: 10, phase: 0 },
+    { id: 'hot-mid-soc', startSoC: 0.55, ambientC: 35, phase: 5 },
+  ].map(({ id, startSoC, ambientC, phase }) => {
+    const currentA = Array.from({ length: 96 }, (_, index) => {
+      const position = (index + phase) % 24;
+      return position < 6 ? 0 : position < 14 ? 32 : position < 20 ? 8 : -4;
+    });
+    const reference = simulate({
+      cell,
+      s: topology.seriesCells,
+      p: topology.parallelCells,
+      params: truth,
+      profile: { dtS: 1, i: currentA },
+      startSoC,
+      ambientC,
+      nModules: topology.moduleCount,
+    });
+    const source = [
+      'time,current,voltage',
+      ...currentA.map((current, index) => (
+        `${index + 1},${current},${reference.series.v[index].toPrecision(17)}`
+      )),
+    ].join('\n');
+    const importMap = mapping({
+      dataset: { id },
+      source: {
+        tool: 'High-fidelity synthetic fixture', model: 'reference-cell', runId: id,
+      },
+      binding: { cellId: cell.id, ...topology, startSoC, ambientC },
+      columns: { time: 'time', current: 'current', voltage: 'voltage', temperature: null },
+      units: { time: 's', current: 'A', voltage: 'V', temperature: null },
+      sourceTemperatureLocation: null,
+      sourceFirstSampleTimeS: 1,
+      timeToleranceS: 0,
+    });
+    const dataset = importCalibrationDataset(source, importMap);
+    assert.deepEqual(dataset.signals.currentA, currentA,
+      `${id} preserves every imported excitation sample`);
+    reference.series.v.forEach((voltage, index) => {
+      assert.equal(dataset.signals.voltageV[index], voltage,
+        `${id} preserves full-precision synthetic voltage sample ${index}`);
+    });
+    return dataset;
+  });
+
+  const result = calibrateDatasets({
+    cell,
+    datasets: imported,
+    fit: ['r0Ref'],
+    maxIter: 100,
+    maxEvaluations: 30,
+    maxIntegrationSteps: 96 * imported.length * 30,
+    maxSamplesPerDataset: 96,
+  });
+
+  assert.ok(result.rmseAfter < result.rmseBefore * 0.0001,
+    `joint imported fit reduces RMSE by more than 99.99% (${result.rmseBefore} -> ${result.rmseAfter})`);
+  assert.ok(Math.abs(result.params.r0Ref - truth.r0Ref) / truth.r0Ref < 0.001,
+    `known r0Ref is recovered within 0.1% (${result.params.r0Ref} vs ${truth.r0Ref})`);
+  assert.equal(result.voltageSampleCount, 192, 'both 96-sample conditions enter the objective');
+  assert.deepEqual(result.datasetChecksums, imported.map(({ checksum }) => checksum));
+  assert.ok(result.evaluationCount <= 30 && result.integrationStepCount <= 96 * 2 * 30,
+    'numerical recovery remains inside the declared deterministic work bounds');
 });

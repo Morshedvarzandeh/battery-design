@@ -26,13 +26,16 @@ function payload(overrides = {}) {
     binding: {
       cellId: 'samsung-inr21700-50e', seriesCells: 96, parallelCells: 4,
       startSoC: 0.9, ambientC: 25, moduleCount: 8,
+      initialState: 'rested-equilibrium-at-ambient',
     },
     normalization: {
       format: 'battery-design/calibration-normalization@1',
       adapter: 'delimited-columns', adapterVersion: '1.0.0', mappingChecksum: 'b'.repeat(64),
       sourceUnits: { time: 's', current: 'A', voltage: 'V', temperature: 'degC' },
-      sourceCurrentPositive: 'discharge', sourceVoltageLocation: 'pack-terminal',
-      sourceTemperatureLocation: 'cell-core', timeHandling: 'validated-uniform',
+      sourceCurrentPositive: 'discharge', sourceCurrentScope: 'pack',
+      sourceVoltageLocation: 'pack-terminal', sourceTemperatureLocation: 'cell-core',
+      sourceSampleAlignment: 'end-of-step', sourceFirstSampleTimeS: 0,
+      sourceResetTimeS: -0.1, timeHandling: 'validated-uniform',
       originalSampleCount: 4,
     },
     samplePeriodS: 0.1,
@@ -45,8 +48,9 @@ function payload(overrides = {}) {
       { id: 'pulse', startIndex: 1, endIndexExclusive: 4, mode: 'dynamic', include: true },
     ],
     conventions: {
-      timeBasis: 'uniform-sample-period', sampleAlignment: 'end-of-step',
-      currentHold: 'zero-order-hold', currentPositive: 'discharge',
+      timeBasis: 'uniform-sample-period', timeOrigin: 'trial-reset',
+      firstSampleOffsetS: 0.1, sampleAlignment: 'end-of-step',
+      currentHold: 'zero-order-hold', currentPositive: 'discharge', currentScope: 'pack',
       voltageLocation: 'pack-terminal', temperatureLocation: 'cell-core',
     },
     ...overrides,
@@ -147,6 +151,9 @@ test('sample phase and ordered segments are explicit and negative zero is canoni
   }));
   assert.equal(Object.is(dataset.signals.currentA[0], -0), false);
   assert.equal(dataset.conventions.sampleAlignment, 'end-of-step');
+  assert.equal(dataset.conventions.timeOrigin, 'trial-reset');
+  assert.equal(dataset.conventions.firstSampleOffsetS, dataset.samplePeriodS);
+  assert.equal(dataset.conventions.currentScope, 'pack');
   assert.equal(dataset.conventions.currentHold, 'zero-order-hold');
 
   assert.throws(() => materializeCalibrationDataset(payload({
@@ -155,6 +162,13 @@ test('sample phase and ordered segments are explicit and negative zero is canoni
       { id: 'gap', startIndex: 2, endIndexExclusive: 4, mode: 'dynamic', include: true },
     ],
   })), /startIndex.*ordered full coverage/);
+
+  assert.throws(() => materializeCalibrationDataset(payload({
+    binding: { ...payload().binding, initialState: 'unknown' },
+  })), /initialState.*rested-equilibrium-at-ambient/);
+  assert.throws(() => materializeCalibrationDataset(payload({
+    conventions: { ...payload().conventions, firstSampleOffsetS: 0.2 },
+  })), /firstSampleOffsetS.*must equal samplePeriodS/);
 });
 
 test('calibration and validation datasets remain explicitly distinct', () => {

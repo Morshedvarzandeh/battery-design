@@ -8,6 +8,7 @@ import type {
 
 export const R_GAS: number;
 export const T0_K: number;
+export const SIM2_SUPPORTED_INITIAL_STATE: 'rested-equilibrium-at-ambient';
 export const PARAM_SPEC: readonly {
   id: keyof AdvancedModelParams;
   group: string;
@@ -25,7 +26,34 @@ export function validateParams(params: Partial<AdvancedModelParams>): {
   params: AdvancedModelParams;
   notes: string[];
 };
-export function simulate(input: AdvancedSimulationInput): AdvancedSimulationResult | null;
+export interface Sim2InitialStateAssumption {
+  kind: typeof SIM2_SUPPORTED_INITIAL_STATE;
+  datasetId: string | null;
+  rcPolarizationV: readonly [0, 0];
+  hysteresisState: 0;
+  thermalNodes: {
+    count: number;
+    temperatureC: number;
+  };
+}
+export interface Sim2SimulationResult extends AdvancedSimulationResult {
+  initialStateAssumptions: readonly Sim2InitialStateAssumption[];
+}
+export interface Sim2WorkEstimate {
+  profileSamples: number;
+  nModules: number;
+  electricalSubstepsPerSample: number;
+  thermalSubstepsPerElectricalStep: number;
+  temporalStepsPerSample: number;
+  integrationStepCount: number;
+  thermalNodeUpdateCount: number;
+  electricalStepS: number;
+  thermalStepS: number;
+  cthModuleJK: number;
+  maximumThermalStepS: number;
+}
+export function estimateSim2Work(input: AdvancedSimulationInput): Readonly<Sim2WorkEstimate>;
+export function simulate(input: AdvancedSimulationInput): Sim2SimulationResult | null;
 export function agingEstimate(input: Record<string, unknown>): Record<string, unknown>;
 export function rmse(a: readonly number[], b: readonly number[]): number;
 
@@ -118,6 +146,8 @@ export interface CalibrationResult {
   evaluationCount: number;
   integrationStepCount: number;
   workPerEvaluation: number;
+  nodeWorkPerEvaluation: number;
+  thermalNodeUpdateCount: number;
   terminationReason: CalibrationTerminationReason;
   maxEvaluations: number;
   maxIntegrationSteps: number;
@@ -127,6 +157,7 @@ export interface CalibrationResult {
   checksumSemantics: string | null;
   preprocessing: CalibrationPreprocessingEvidence[];
   notes: string[];
+  initialStateAssumptions: readonly Sim2InitialStateAssumption[];
   note: string;
 }
 

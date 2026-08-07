@@ -43,6 +43,7 @@ export interface CalibrationImportMappingPayload {
     startSoC: number;
     ambientC: number;
     moduleCount: number;
+    initialState: 'rested-equilibrium-at-ambient';
   };
   columns: {
     time: string;
@@ -57,8 +58,11 @@ export interface CalibrationImportMappingPayload {
     temperature: CalibrationTemperatureUnit | null;
   };
   sourceCurrentPositive: 'charge' | 'discharge';
+  sourceCurrentScope: 'cell' | 'pack';
   sourceVoltageLocation: 'cell-terminal' | 'pack-terminal';
   sourceTemperatureLocation: CalibrationTemperatureLocation | null;
+  sourceSampleAlignment: 'end-of-step';
+  sourceFirstSampleTimeS: number;
   timeToleranceS: number;
   segments: readonly CalibrationImportSegment[] | null;
 }

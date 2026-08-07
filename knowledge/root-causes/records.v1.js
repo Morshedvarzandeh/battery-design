@@ -27,6 +27,69 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
   version: ROOT_CAUSE_SCHEMA_VERSION,
   records: [
     record({
+      id: 'rc-adaptive-integration-work-undercount',
+      title: 'Service preflight omits adaptive thermal and module work',
+      symptom: 'A simulation or calibration request passes its advertised work limit but executes far more thermal-node updates than the service budget permits.',
+      evidence: [
+        'The original endpoint estimate multiplied profile samples only by ceil(profileDtS/maxDtS) and therefore counted electrical time steps but not stability/accuracy-limited thermal microsteps.',
+        'Each thermal microstep updates every module node, so a valid stiff request can advertise fewer than five million operations while requiring billions of node updates.',
+        'Re-deriving work independently at the HTTP boundary lets the service estimate drift whenever the core integration plan changes.',
+      ],
+      detection: [
+        {
+          method: 'core-to-service work equivalence regression',
+          signal: 'Preflight a legal maximum-conductance, minimum-heat-capacity request and compare the public estimate, executed integration counters and endpoint decision.',
+          failureCondition: 'The boundary omits a thermal microstep or module multiplier, disagrees with core work evidence, or enters simulation before rejecting an over-budget request.',
+        },
+      ],
+      causalChain: [
+        'Electrical and thermal states use different internal step requirements.',
+        'The service copies the older electrical-only ceil(dt/maxDt) formula instead of consuming the core integration plan.',
+        'Adaptive thermal subdivision adds a hidden temporal multiplier and the module network adds a hidden spatial multiplier.',
+        'The request passes preflight even though its actual node-update work exceeds the service contract.',
+      ],
+      rootCause: 'Work estimation was duplicated outside the simulator and modeled only the electrical time grid rather than the complete adaptive temporal plan multiplied by thermal-node count.',
+      resolution: [
+        'Export one immutable browser-safe estimateSim2Work plan from the simulator and use its exact thermalNodeUpdateCount at every service preflight.',
+        'Return nodeWorkPerEvaluation and thermalNodeUpdateCount in calibration evidence while retaining the distinct temporal integrationStepCount.',
+        'Reject excessive direct-simulation or calibration work before entering any integration or optimizer loop.',
+      ],
+      prevention: [
+        'Make external resource gates consume a public core estimator rather than duplicating numerical formulas.',
+        'Keep temporal steps and module-weighted node updates as separate named counters and test both at their exact boundaries.',
+        'Treat any new adaptive solver dimension as a required update to work evidence, service capabilities and adversarial preflight tests.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'The immutable estimator matches adaptive simulation and calibration temporal/node work, and direct simulation rejects excessive node work before integration.',
+        },
+        {
+          path: 'tests/runner-security.test.mjs',
+          assertion: 'The authenticated simulation endpoint gates the exact core thermal-node estimate for a legal stiff request.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['adaptive-integration', 'budget', 'preflight', 'thermal', 'work-accounting'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Canonical adaptive integration plan, public estimator and exact calibration counters.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'desktop/bd.mjs',
+          note: 'Local-service preflight consuming the core thermal-node estimate.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/runner-security.test.mjs',
+          note: 'Endpoint adaptive-work rejection regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-allof-closure-collision',
       title: 'Closed allOf branches reject one another’s properties',
       symptom: 'A valid composed DesignSpec fails closed validation because a property owned by one allOf branch is unknown to another branch.',
@@ -77,6 +140,177 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-calibration-initial-state-ambiguity',
+      title: 'Calibration absorbs an undeclared initial state into fitted parameters',
+      symptom: 'A fit can improve while compensating for unknown pre-trial RC polarization, hysteresis or thermal state rather than identifying the requested physical coefficients.',
+      evidence: [
+        'The simulator initializes both RC voltages and hysteresis to zero and every thermal node to ambient, but older calibration inputs declared only start SoC and ambient temperature.',
+        'Two trials with the same current, SoC and ambient can produce different early voltage and temperature traces when one begins polarized or thermally soaked.',
+      ],
+      detection: [
+        {
+          method: 'initial-state contract regression',
+          signal: 'Remove or change the dataset initial-state declaration and inspect the structured simulation and calibration result assumptions.',
+          failureCondition: 'An undeclared or unsupported warm start is accepted, or the zero-RC, zero-hysteresis and ambient-node initialization is absent from returned evidence.',
+        },
+      ],
+      causalChain: [
+        'Dynamic ECM and thermal outputs depend on hidden states as well as coefficients and excitation.',
+        'The numerical implementation chooses a rested equilibrium state when no explicit state vector is supplied.',
+        'A dataset without the same declaration can contain a different prehistory while still matching topology, SoC and ambient metadata.',
+        'The optimizer then changes resistances, time constants or thermal coefficients to explain an initial-condition mismatch.',
+      ],
+      rootCause: 'The calibration contract bound static trial context but did not bind the dynamic state at trial reset or expose the simulator’s implicit rested-state choice in result evidence.',
+      resolution: [
+        'Require every governed dataset to declare rested-equilibrium-at-ambient, the only currently supported initial state.',
+        'Return a structured assumption per simulation or calibration trial stating zero RC polarization, zero hysteresis and all modeled thermal nodes at that trial’s ambient temperature.',
+      ],
+      prevention: [
+        'Reject an absent or unsupported dataset initial state before optimization starts.',
+        'Introduce non-rested calibration only with explicit versioned state variables, normalization rules and parameter-identifiability regressions.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'Simulation and calibration return structured rested-state assumptions and calibration rejects missing or unsupported dataset initial-state declarations.',
+        },
+        {
+          path: 'tests/calibration-dataset.test.mjs',
+          assertion: 'The canonical dataset binding requires exactly rested-equilibrium-at-ambient.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['calibration', 'initial-state', 'model-identifiability', 'rested-state'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Rested initialization, dataset enforcement and structured result assumptions.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/calibration-dataset.js',
+          note: 'Closed governed initial-state declaration.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sim2.test.mjs',
+          note: 'Simulation and calibration initial-state evidence regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-calibration-result-artifact-shape',
+      title: 'Calibration evidence envelope is mistaken for a parameter file',
+      symptom: 'The CLI says a calibration result written with --out can be passed to sim2 --params, but the written JSON is a result envelope rather than the parameter object that sim2 accepts.',
+      evidence: [
+        'The calibration --out path is handled by the shared result emitter and therefore contains apiVersion, cell, metrics and fitted evidence around the params member.',
+        'The documented follow-up command passes that complete envelope to --params, whose governed parameter boundary expects only named numeric model parameters.',
+      ],
+      detection: [
+        {
+          method: 'producer-to-consumer artifact regression',
+          signal: 'Run calibration with both evidence and parameter outputs, then pass the declared reusable parameter artifact to sim2.',
+          failureCondition: 'The documented parameter artifact contains result-wrapper keys, is rejected by sim2, or the evidence output is silently reduced to parameters.',
+        },
+      ],
+      causalChain: [
+        'One generic --out emitter serializes the complete command result.',
+        'Human guidance describes that output as though it were the nested params member.',
+        'The next command consumes a different JSON contract and rejects the wrapper or treats its keys as unknown parameters.',
+      ],
+      rootCause: 'One filename option was assigned two incompatible artifact roles—a complete calibration evidence record and a reusable model-parameter object—without an explicit projection between them.',
+      resolution: [
+        'Keep --out as the complete calibration evidence result and add a distinct --params-out projection containing only the validated parameter object.',
+        'Describe and test each artifact by the contract of its actual downstream consumer.',
+      ],
+      prevention: [
+        'Exercise documented producer-to-consumer command sequences, not only each command in isolation.',
+        'Give differently shaped persisted artifacts different flags, format identities and user guidance.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/calibration-surfaces.test.mjs',
+          assertion: 'The governed calibration CLI writes a full evidence result separately from a parameter-only artifact that sim2 accepts.',
+        },
+      ],
+      affectedSurfaces: ['cli', 'local-api'],
+      tags: ['artifact-contract', 'calibration', 'cli', 'output-shape'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'desktop/bd.mjs',
+          note: 'Calibration result projection and distinct persisted output flags.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/SYNTHETIC_CALIBRATION.md',
+          note: 'Canonical dataset, evidence-result and parameter-artifact boundaries.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-surfaces.test.mjs',
+          note: 'End-to-end calibration CLI artifact compatibility regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-calibration-result-identity-gap',
+      title: 'Calibration result cannot be tied to the executed request and implementation',
+      symptom: 'Two calibration evidence files look comparable but do not prove that they used the same normalized datasets, algorithm, model implementation, cell definition or governed request.',
+      evidence: [
+        'A fitted parameter map and RMSE values alone omit the executable and request identities that produced them.',
+        'Repeating raw source traces inside a result increases disclosure and artifact size without proving their origin or custody.',
+        'A checksum stored beside its own content identifies bytes but does not authenticate the producer that supplied those bytes.',
+      ],
+      detection: [
+        {
+          method: 'result-lineage and privacy regression',
+          signal: 'Change one governed request field, dataset, algorithm/model source or cell implementation and inspect the portable result; also search it for raw signal arrays.',
+          failureCondition: 'The result identity remains unchanged, a required implementation identity is absent, or raw calibration samples are echoed into evidence.',
+        },
+      ],
+      causalChain: [
+        'Optimization produces useful numeric outputs from several versioned inputs and executable components.',
+        'A convenience result initially serializes only metrics, fitted values and caller-facing metadata.',
+        'Downstream reviewers cannot distinguish a changed request or implementation, while copying raw traces still does not establish trusted custody.',
+      ],
+      rootCause: 'Calibration evidence described numeric outcome but lacked a content-addressed lineage envelope separating reproducible identity, producer authentication and private source data.',
+      resolution: [
+        'Bind request, canonical dataset, algorithm version, model implementation and cell implementation checksums into a deterministic versioned result identity.',
+        'State that these digests establish reproducible content identity rather than producer authentication, and keep raw signal arrays out of portable results.',
+      ],
+      prevention: [
+        'Add identity-sensitivity tests for every governed input and executable implementation that can change a fit.',
+        'Audit portable evidence recursively for raw current, voltage and temperature traces and require separate custody evidence when authenticity matters.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/calibration-surfaces.test.mjs',
+          assertion: 'Calibration results carry deterministic request, dataset, algorithm, model and cell identities with identity-not-authentication semantics and no raw traces.',
+        },
+      ],
+      affectedSurfaces: ['cli', 'local-api'],
+      tags: ['artifact-identity', 'calibration', 'checksum', 'privacy', 'provenance'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'desktop/bd.mjs',
+          note: 'Governed calibration request and portable result evidence projection.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Versioned algorithm behavior and deterministic calibration evidence inputs.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-surfaces.test.mjs',
+          note: 'Result identity sensitivity, privacy and reproducibility regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-calibration-trace-alignment-loss',
       title: 'Calibration silently compares misaligned trace samples',
       symptom: 'A calibration can report a plausible or improved RMSE even though current, voltage and temperature no longer describe the same samples.',
@@ -84,36 +318,44 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'A prefix-only RMSE based on the shorter array discards every unmatched tail value instead of rejecting unequal signal lengths.',
         'Dropping one malformed CSV row independently from a signal column shifts the remaining observations while leaving numeric arrays that still look usable.',
         'Inferring the sample period from only the first timestamp delta misses later gaps, and an unstated start-versus-end sample phase introduces a one-step offset.',
+        'A reduction block crossing an include/exclude boundary can average current over the whole block while scoring voltage from only the included subset, so prediction and observation represent different source samples.',
+        'The simulator previously stamped sample k at k·dt and combined a pre-transition terminal voltage with post-transition SoC and temperature in the same output row.',
+        'A source trace can also declare current per cell while the plant consumes pack current, requiring multiplication by parallelCells; omitting it creates a parallel-count scaling error without changing array alignment.',
       ],
       detection: [
         {
           method: 'adversarial trace-alignment regression',
-          signal: 'Change one signal length, corrupt one CSV row, perturb a non-first timestamp delta, and shift the declared sample phase.',
+          signal: 'Change one signal length, corrupt one CSV row, perturb a non-first timestamp delta, shift the declared sample phase or current scope, and place a segment boundary inside a reduction block.',
           failureCondition: 'Import or calibration proceeds, compares a shared prefix, or silently realigns any sample instead of rejecting the complete dataset.',
         },
       ],
       causalChain: [
         'Delimited columns and measured arrays enter the optimizer without one enforced row identity and time convention.',
         'Invalid values can be removed independently, or irregular timing can be summarized from the first interval alone.',
+        'Independent reduction rules can also mix source rows at an include/exclude boundary while preserving equal output-array lengths.',
+        'If simulator output rows mix start- and end-state values, even a correctly imported end-of-step observation is compared against a physically different instant.',
         'The objective compares only the common prefix and therefore hides both missing tails and one-step phase shifts behind a finite RMSE.',
       ],
       rootCause: 'The calibration boundary lacked a single fail-closed trace contract that binds equal signal cardinality, every timestamp interval and explicit sample phase before objective evaluation.',
       resolution: [
         'Normalize complete source rows into one immutable dataset with equal-length current, voltage and optional temperature signals plus explicit end-of-step alignment.',
         'Validate every timestamp delta, reject an invalid row rather than dropping fields independently, and require RMSE operands to have exactly equal nonzero lengths.',
+        'Average current over each complete reduction block, retain end-of-step voltage and temperature, and leave every mixed-selection boundary block in state history but out of the scored objective.',
+        'Normalize cell current to pack amperes by multiplying by parallelCells, and emit simulator time, voltage, SoC and temperature from the same transitioned end state at (k+1)·dt.',
       ],
       prevention: [
         'Never truncate calibration operands to their shortest shared prefix or infer a timebase from one interval.',
-        'Keep malformed-row, unequal-array, nonuniform-time and one-sample phase-shift cases in the governed import and optimizer regressions.',
+        'Keep malformed-row, unequal-array, nonuniform-time, one-sample phase-shift and non-factor-aligned segment-boundary cases in the governed import and optimizer regressions.',
+        'Bind source time origin, first-sample offset, sample phase and current scope into the checksummed normalization record.',
       ],
       regressionTests: [
         {
           path: 'tests/calibration-import.test.mjs',
-          assertion: 'CSV import rejects malformed rows and every nonuniform timestamp interval while preserving the declared end-of-step sample alignment.',
+          assertion: 'Import rejects malformed rows and nonuniform timing, binds source/reset time and end-step phase, and converts declared cell current to pack current by parallelCells.',
         },
         {
           path: 'tests/sim2.test.mjs',
-          assertion: 'Calibration and RMSE reject unequal signal lengths instead of scoring only their shared prefix.',
+          assertion: 'Simulation emits physically aligned end-of-step rows; calibration rejects unequal lengths, preserves that phase and reports mixed preprocessing boundary blocks instead of scoring them.',
         },
       ],
       affectedSurfaces: ['browser', 'cli', 'local-api'],
@@ -143,33 +385,41 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       evidence: [
         'The returned iterations value counts outer Nelder-Mead loops but omits initialization, reflection, expansion, contraction, shrink and final before/after simulations.',
         'Allowing maxDtS in the fitted vector changes the number of integration substeps performed by each objective evaluation, so the optimizer mutates its own work cost.',
+        'Time-integration counters alone do not bound local-API CPU work when every thermal step also loops over the caller-controlled module count.',
       ],
       detection: [
         {
           method: 'instrumented optimizer work regression',
-          signal: 'Count every simulator invocation and integration substep across initialization, each Nelder-Mead branch and final result materialization.',
-          failureCondition: 'The observed work exceeds the declared cap, differs from reported counters, or changes because a solver-control parameter was fitted.',
+          signal: 'Count every simulator invocation and integration substep across initialization, each Nelder-Mead branch and final result materialization, then weight the external service cap by module count.',
+          failureCondition: 'The observed work exceeds the declared cap, differs from reported counters, changes because a solver-control parameter was fitted, or a large module count bypasses the local-service CPU limit.',
         },
       ],
       causalChain: [
         'The optimizer exposes a maximum outer-iteration count as though it were the complete computational budget.',
         'Each iteration performs a variable number of objective simulations and shrink can evaluate most simplex vertices again.',
         'Fitting maxDtS also changes simulation substeps, making both numerical fidelity and cost depend on the candidate vector.',
+        'The thermal network performs work per module, so an HTTP boundary that caps only time substeps still leaves a caller-controlled multiplier.',
         'The reported counter and configured limit therefore understate and fail to bound actual work.',
       ],
       rootCause: 'Calibration governed loop iterations rather than every expensive simulation evaluation, while a numerical solver-control parameter was allowed to alter work from inside the physical fit vector.',
       resolution: [
         'Count and cap every objective simulation before it starts, including initialization, shrink and final materialization, and report both iterations and simulation evaluations.',
         'Freeze maxDtS as a run setting and reject it as a fitted physical parameter so candidates cannot change the integration-work contract.',
+        'At the local-API boundary, cap module count and translate the module-weighted service budget into the core integration-step limit before optimization starts.',
       ],
       prevention: [
         'Express calibration limits in directly measurable expensive operations and test every optimizer branch at the exact boundary.',
         'Keep solver controls outside the calibratable parameter allowlist unless a separately governed numerical-convergence study explicitly owns them.',
+        'Account for every caller-controlled multiplicative dimension when a reusable core is exposed as a local service.',
       ],
       regressionTests: [
         {
           path: 'tests/sim2.test.mjs',
           assertion: 'Calibration enforces and reports the exact simulation-evaluation budget across all simplex branches and refuses maxDtS as a fit target.',
+        },
+        {
+          path: 'tests/calibration-surfaces.test.mjs',
+          assertion: 'The authenticated calibration endpoint rejects requests exceeding its module-weighted work contract.',
         },
       ],
       affectedSurfaces: ['browser', 'cli', 'local-api'],
@@ -184,6 +434,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/sim2.test.mjs',
           note: 'Exact simulation-count, work-cap and solver-control rejection regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-surfaces.test.mjs',
+          note: 'Local-API module and work-multiplier boundary regression.',
         },
       ],
     }),
@@ -502,6 +757,57 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-nelder-mead-bound-simplex-collapse',
+      title: 'Bound clamping collapses the Nelder–Mead initial simplex',
+      symptom: 'Calibration declares convergence immediately or cannot move a parameter when its starting value is already on a declared bound.',
+      evidence: [
+        'The original initializer perturbed every axis in the positive direction and then clamped the candidate to its upper bound.',
+        'At an upper-bound starting value the perturbed vertex became byte-for-byte identical to x0, removing that independent simplex direction.',
+      ],
+      detection: [
+        {
+          method: 'boundary-rank optimizer regression',
+          signal: 'Start every fitted parameter at its upper bound and limit work to x0 plus one vertex per fitted axis.',
+          failureCondition: 'Fewer than n+1 distinct objective points are evaluated, the simplex reports false convergence, or no inward bound-safe candidate can improve the fit.',
+        },
+      ],
+      causalChain: [
+        'The initial simplex always proposes a positive coordinate perturbation.',
+        'A fitted value already equals its upper bound, so constraint clamping maps the proposed point back to the base point.',
+        'One or more simplex vertices are duplicates and the n-dimensional simplex becomes rank deficient.',
+        'The cost spread can appear zero even though the objective improves in the untested inward direction.',
+      ],
+      rootCause: 'Constraint handling was applied after a one-direction initializer that did not consider available room on either side of each bounded coordinate.',
+      resolution: [
+        'For each axis, choose the direction with more available bound room and take a representable inward step based on parameter span and scale.',
+        'Guarantee one distinct axis vertex per fitted dimension before the first objective evaluation.',
+      ],
+      prevention: [
+        'Test initial-simplex rank at lower bounds, upper bounds, zero-valued starts and mixed parameter scales.',
+        'Treat duplicate cached evaluations during initialization as a construction defect rather than as legitimate optimizer savings.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'A fit starting all selected parameters at their upper bounds evaluates n+1 distinct initial points and selects an improving inward vertex.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['bounds', 'calibration', 'nelder-mead', 'optimizer', 'simplex'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Bound-aware full-rank initial simplex construction.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sim2.test.mjs',
+          note: 'Upper-bound simplex rank and improvement regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-nullable-alias-projection',
       title: 'Nullable grouped option becomes an invalid legacy alias',
       symptom: 'A schema-valid browser DesignSpec is rejected by the governed API because an optional grouped null is copied into a non-nullable flat compatibility field.',
@@ -572,6 +878,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       evidence: [
         'The root-cause library imports schema and seed records from knowledge/root-causes while desktop staging previously copied js and desktop but not knowledge.',
         'The isolated packaged-tree smoke reports an import failure only after source-level tests have already passed.',
+        'A healthy installed runner proves static imports resolved, but only an authenticated calibration request proves the newly shipped dataset/import/core path executes from the installed resource tree.',
       ],
       detection: [
         {
@@ -590,15 +897,21 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       resolution: [
         'Add the knowledge tree to the required staged runtime entries and to the independent MUST_SHIP regression list.',
         'Keep the isolated staged import/startup smoke as the acceptance test for the packaged dependency closure.',
+        'Exercise one tiny governed calibration through both the staged runner and each installed Linux package.',
       ],
       prevention: [
         'Review desktop staging whenever a shipped entry point imports from a new top-level directory.',
         'Require both manifest membership and an isolated staged entry-point import so copying a name without usable dependencies cannot pass.',
+        'When a packaged local-API capability gains a dependency path, add a bounded authenticated request to the installed smoke rather than relying on the capabilities probe alone.',
       ],
       regressionTests: [
         {
           path: 'tests/packaged-tree.test.mjs',
-          assertion: 'Desktop staging must ship knowledge and the isolated staged bd import/startup must succeed without reaching back into the checkout.',
+          assertion: 'Desktop staging must ship knowledge and calibration dependencies, then the isolated staged runner must execute an authenticated governed calibration without reaching back into the checkout.',
+        },
+        {
+          path: 'tools/smoke-installed-linux.sh',
+          assertion: 'Each installed .deb and AppImage runner answers one bounded authenticated canonical-dataset calibration request.',
         },
       ],
       affectedSurfaces: ['cli', 'local-api', 'mcp', 'packaging'],
@@ -618,6 +931,148 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/packaged-tree.test.mjs',
           note: 'Isolated staged-tree dependency and startup regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tools/smoke-installed-linux.sh',
+          note: 'Installed Linux package launch and authenticated calibration execution gate.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-product-surface-claim-drift',
+      title: 'Product surface copy drifts from executable capability and metric contracts',
+      symptom: 'Customer output assigns calibration behavior to a surface that does not implement it or labels a mixed-unit calibration objective as though it were voltage RMSE.',
+      evidence: [
+        'The add-on registry identifies concrete desktop-GUI, CLI, local-API and MCP surfaces, but freehand status copy used one slash-separated interface phrase for several different capabilities.',
+        'The MCP tool registry contains design, mission, review and diagnosis operations but no operation that accepts a calibration dataset or runs the optimizer.',
+        'The source and staged Node entry point implements a calibration CLI, while the installed desktop packages expose the runner application and do not yet install an independent bd command wrapper.',
+        'Only the CLI importer accepts mapped delimited or columnar-JSON traces; the authenticated local API accepts canonical datasets and cannot normalize raw source exports.',
+        'When temperature weighting is enabled, rmseBefore and rmseAfter are voltage RMSE plus weightTemp times temperature RMSE, but the earlier human formatter appended V to that combined score.',
+      ],
+      detection: [
+        {
+          method: 'negative surface-capability regression',
+          signal: 'Compare the registry, capabilities response, visible GUI controls, MCP tool list, installed entry points, accepted request contracts and human metric labels with their executable implementations.',
+          failureCondition: 'Customer-facing copy assigns a capability to a surface that cannot execute it or gives a combined objective the unit of only one constituent metric.',
+        },
+      ],
+      causalChain: [
+        'Several desktop-only capabilities are summarized in one manually written sentence.',
+        'CLI, local API and MCP are treated as interchangeable automation surfaces.',
+        'Source-tree and staged-entry execution is also treated as proof that the installed package ships a same-named command wrapper.',
+        'Raw import and canonical fitting are described as one undifferentiated operation even though only the CLI owns the importer.',
+        'A generic rmse field is formatted as volts without checking whether it contains a weighted temperature term.',
+        'Customer copy therefore inherits behavior or units that the underlying surface and metric contracts do not provide.',
+      ],
+      rootCause: 'Customer-facing capability and metric prose was maintained independently from structured per-surface request and result contracts, so convenient grouping replaced an exact implementation projection.',
+      resolution: [
+        'Declare governed calibration as its own shipped add-on on CLI and local API only, separate from the desktop-GUI simulation add-on.',
+        'State explicitly that MCP provides design and review automation but does not run calibration, and expose local-API capabilities separately from GUI and MCP lists.',
+        'Describe CLI commands as source/staged entry-point capabilities until package manifests and installed-tree smoke tests prove a real installed wrapper.',
+        'Assign mapped raw-trace normalization only to the CLI importer and describe both CLI and authenticated API fitting as canonical-dataset consumers.',
+        'Print voltage and temperature RMSE separately with their physical units, then label their weighted sum as an objective score without a physical unit.',
+      ],
+      prevention: [
+        'Test negative surface assertions as well as positive ones whenever a capability is added or moved.',
+        'Build capability summaries from the surface registry where possible and keep unavoidable prose explicit rather than using ambiguous slash-grouped interfaces.',
+        'Distinguish source, staged and installed entry points in release claims and exercise the exact path customers receive.',
+        'Require exact wording tests when one add-on spans surfaces with different accepted input contracts.',
+        'Drive human metric labels from explicit result fields and test every multi-metric weighting mode for correct units.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/addons.test.mjs',
+          assertion: 'Calibration surface copy assigns raw normalization only to the CLI importer, canonical fitting to CLI/API, and explicitly excludes desktop GUI and MCP.',
+        },
+        {
+          path: 'tests/calibration-surfaces.test.mjs',
+          assertion: 'Capability responses separate GUI, CLI, API and MCP, while weighted CLI output keeps voltage, temperature and combined-objective units distinct.',
+        },
+        {
+          path: 'tests/packaged-tree.test.mjs',
+          assertion: 'Package tests distinguish the staged bd entry point from the installed runner and do not invent an unshipped installed CLI wrapper.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'documentation', 'local-api', 'mcp', 'packaging'],
+      tags: ['calibration', 'capability', 'messaging', 'metric-units', 'packaging', 'product-surface'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/addons.js',
+          note: 'Canonical shipped/planned status and concrete product-surface declarations.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/desktop-link.js',
+          note: 'Browser and authenticated desktop runner status copy.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/addons.test.mjs',
+          note: 'Exact raw-import and canonical-fit surface wording assertions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/calibration-surfaces.test.mjs',
+          note: 'Weighted-objective human metric unit regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/packaged-tree.test.mjs',
+          note: 'Staged and installed entry-point truthfulness regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-rc-euler-step-instability',
+      title: 'Euler RC update becomes unstable inside declared solver bounds',
+      symptom: 'A valid short RC time constant and coarse allowed solver step produce oscillating or exploding polarization voltage and nonphysical heat.',
+      evidence: [
+        'The explicit Euler multiplier dt/tau can reach 600 with maxDtS=60 s and rc1TauS=0.1 s, far beyond its stable range.',
+        'Heat was calculated from the newly overshot RC voltage squared, so one unstable state step was amplified into extreme or non-finite thermal bookkeeping.',
+        'The same output row mixed pre-transition terminal voltage with post-transition RC, SoC and temperature states, obscuring the numerical failure phase.',
+      ],
+      detection: [
+        {
+          method: 'closed-form bound-extreme regression',
+          signal: 'Run every minimum/maximum tau and maxDtS combination under a constant-current step and compare polarization with 1-exp(-dt/tau).',
+          failureCondition: 'Polarization differs from the analytic update or any instantaneous/integrated heat value is negative or non-finite.',
+        },
+      ],
+      causalChain: [
+        'A continuous first-order RC state is advanced with explicit Euler integration.',
+        'Declared parameter and solver bounds permit dt to be hundreds of time constants.',
+        'Euler overshoots the bounded exponential relaxation and repeated steps amplify the error.',
+        'Squaring the unstable voltage contaminates irreversible loss and thermal state.',
+      ],
+      rootCause: 'The implementation used a conditionally stable numerical approximation for a linear state whose exact constant-current exponential transition is available and inexpensive.',
+      resolution: [
+        'Advance each RC branch with an expm1-based exact exponential update that remains accurate for both very small and very large dt/tau.',
+        'Integrate branch resistive heat consistently over the exact state transition and report instantaneous heat from the aligned end state.',
+      ],
+      prevention: [
+        'Validate numerical methods across the Cartesian product of declared state and solver bounds, not only at default values.',
+        'Use analytic transitions for linear submodels and keep energy/heat bookkeeping tied to the same state trajectory.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'All tau/maxDt bound combinations match the analytic RC step and retain finite non-negative instantaneous and integrated irreversible heat.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['ecm', 'numerical-stability', 'rc-network', 'thermal'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Exact RC state transition and stable heat integration.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sim2.test.mjs',
+          note: 'Analytic step response and bound-extreme numerical regressions.',
         },
       ],
     }),
@@ -727,6 +1182,57 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-signed-bound-evidence-miss',
+      title: 'Multiplicative bound evidence misses signed parameter limits',
+      symptom: 'A fitted negative parameter lands exactly on its declared lower bound but the result reports atBound false.',
+      evidence: [
+        'The former check compared value <= min*(1+epsilon), which moves a negative minimum farther below the legal interval rather than creating an inward tolerance.',
+        'The same sign-dependent arithmetic applies different effective tolerances at lower and upper bounds and behaves poorly near zero.',
+      ],
+      detection: [
+        {
+          method: 'signed-bound calibration regression',
+          signal: 'Fit a signed coefficient from exact synthetic traces initialized at its negative lower bound, positive upper bound and an interior negative value.',
+          failureCondition: 'Either exact bound is not flagged or the interior value is reported as bound-limited.',
+        },
+      ],
+      causalChain: [
+        'Optimizer evidence tries to tolerate floating-point movement around declared parameter limits.',
+        'Tolerance is implemented by multiplying each bound by one plus or minus epsilon.',
+        'Multiplication reverses the intended inward direction for a negative lower bound and degenerates around zero.',
+        'The reported constraint evidence disagrees with the optimizer’s actual legal interval.',
+      ],
+      rootCause: 'Bound proximity was defined as a multiplicative comparison against signed endpoint values instead of an absolute distance scaled by the declared interval.',
+      resolution: [
+        'Measure absolute distance from both endpoints using the maximum of a span-relative tolerance and a machine-precision absolute tolerance.',
+        'Apply the same symmetric predicate to negative, positive and zero-adjacent parameter ranges.',
+      ],
+      prevention: [
+        'Test every evidence predicate across negative lower, positive upper and interior signed values.',
+        'Use interval span or explicit engineering tolerance for proximity; never infer direction by multiplying a signed endpoint.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'Synthetic entropyVK fits flag both -0.002 and +0.002 bounds while leaving an interior negative value unflagged.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['bounds', 'calibration', 'evidence', 'signed-parameter'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Span-scaled absolute parameter-bound evidence predicate.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sim2.test.mjs',
+          note: 'Negative lower, positive upper and signed interior bound regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-source-revision-self-claim',
       title: 'Manifest Git SHA is accepted without a trusted expectation',
       symptom: 'A package reports a syntactically valid sourceRevision and is labeled verified even though no trusted checkout or caller supplied the expected commit.',
@@ -773,6 +1279,61 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/fmi-package-design-binding.test.mjs',
           note: 'No-claim, self-claim, mismatch and trusted-match regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-thermal-explicit-step-instability',
+      title: 'Thermal Euler step violates stability, accuracy and state alignment',
+      symptom: 'Legal thermal coefficients and solver steps produce exploding, severely over-damped or phase-misaligned module and coolant temperatures.',
+      evidence: [
+        'At cpCellJkgK=300, hCoolWK=500, uaAmbWK=200 and maxDtS=60, a one-cell node was advanced far beyond its C/G stability scale and diverged catastrophically.',
+        'Using exactly C/G prevents sign oscillation but maps a one-time-constant cooling interval almost directly to equilibrium instead of the analytic exp(-1) remaining temperature.',
+        'The coolant outlet retained the pre-update temperature of the final microstep while voltage, SoC and module temperature were reported from the transitioned end state.',
+        'For one module the currentImbalance multiplier was applied to all generated pack heat, violating heat-capacity conservation; multi-node shares also require an exact unit sum.',
+      ],
+      detection: [
+        {
+          method: 'closed-form thermal and conservation regression',
+          signal: 'Run the legal stiff one-node case, a one-time-constant zero-heat cooling decay, single/multi-node heat balances and an end-step coolant outlet calculation.',
+          failureCondition: 'Any state is non-finite or leaves physical bounds, decay differs materially from exp(-1), generated heat is not conserved, or coolant output uses a pre-transition node state.',
+        },
+      ],
+      causalChain: [
+        'The electrical maxDt setting is reused as though it also resolved every thermal time constant.',
+        'Large legal conductance and small node heat capacity make the fastest C/G thermal scale orders of magnitude shorter than that electrical step.',
+        'Unrestricted Euler updates diverge, while a bare monotonicity limit is stable but too inaccurate for parameter calibration.',
+        'Heat allocation and coolant reporting are then evaluated with inconsistent node multiplicity or state phase, contaminating otherwise finite results.',
+      ],
+      rootCause: 'The thermal network lacked one governed numerical contract tying declared coefficient bounds to accuracy-limited stable steps, conserved heat shares and fully end-of-step output semantics.',
+      resolution: [
+        'Substep the explicit thermal network at no more than 0.02*C/G for the worst local conductance, providing at least fifty steps per fastest time constant and non-negative update weights.',
+        'Freeze a conservative thermal step across every calibration candidate and charge every added temporal and node update to its work evidence.',
+        'Use exactly one total generated-heat share for a one-node network, unit-sum imbalance shares for multiple nodes, and reevaluate coolant outlet from final node temperatures for reporting.',
+      ],
+      prevention: [
+        'Test numerical stability and convergence across the Cartesian product of declared thermal bounds, not only default packs.',
+        'Compare linear one-node cases with closed-form exponential decay and enforce energy conservation independently of current-imbalance settings.',
+        'Require every reported channel to name and regress its sample phase whenever integration gains internal microsteps.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/sim2.test.mjs',
+          assertion: 'Legal stiff thermal cases remain bounded, match one-time-constant exponential cooling, conserve single/multi-node heat and report final-state coolant output.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api'],
+      tags: ['energy-conservation', 'numerical-accuracy', 'numerical-stability', 'thermal'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/sim2.js',
+          note: 'Accuracy-limited thermal integration, conserved heat allocation and final-state reporting.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sim2.test.mjs',
+          note: 'Closed-form, bound-extreme, conservation and phase regressions.',
         },
       ],
     }),

@@ -55,8 +55,9 @@ export const CALIBRATION_IMPORT_MAPPING_SCHEMA = deepFreeze({
   required: [
     'format', 'schemaVersion', 'adapter', 'delimiter', 'dataset', 'source',
     'binding', 'columns', 'units', 'sourceCurrentPositive',
-    'sourceVoltageLocation', 'sourceTemperatureLocation', 'timeToleranceS',
-    'segments', 'checksum',
+    'sourceCurrentScope', 'sourceVoltageLocation', 'sourceTemperatureLocation',
+    'sourceSampleAlignment', 'sourceFirstSampleTimeS', 'timeToleranceS', 'segments',
+    'checksum',
   ],
   properties: {
     format: { const: CALIBRATION_IMPORT_MAPPING_FORMAT },
@@ -88,7 +89,10 @@ export const CALIBRATION_IMPORT_MAPPING_SCHEMA = deepFreeze({
     },
     binding: {
       type: 'object', additionalProperties: false,
-      required: ['cellId', 'seriesCells', 'parallelCells', 'startSoC', 'ambientC', 'moduleCount'],
+      required: [
+        'cellId', 'seriesCells', 'parallelCells', 'startSoC', 'ambientC',
+        'moduleCount', 'initialState',
+      ],
       properties: {
         cellId: nullableString,
         seriesCells: { type: 'integer', minimum: 1, maximum: 100_000 },
@@ -96,6 +100,7 @@ export const CALIBRATION_IMPORT_MAPPING_SCHEMA = deepFreeze({
         startSoC: { type: 'number', minimum: 0, maximum: 1 },
         ambientC: { type: 'number', minimum: -100, maximum: 200 },
         moduleCount: { type: 'integer', minimum: 1, maximum: 10_000 },
+        initialState: { const: 'rested-equilibrium-at-ambient' },
       },
     },
     columns: {
@@ -117,9 +122,14 @@ export const CALIBRATION_IMPORT_MAPPING_SCHEMA = deepFreeze({
       },
     },
     sourceCurrentPositive: { type: 'string', enum: ['charge', 'discharge'] },
+    sourceCurrentScope: { type: 'string', enum: ['cell', 'pack'] },
     sourceVoltageLocation: { type: 'string', enum: ['cell-terminal', 'pack-terminal'] },
     sourceTemperatureLocation: {
       type: ['string', 'null'], enum: [...CALIBRATION_TEMPERATURE_LOCATIONS, null],
+    },
+    sourceSampleAlignment: { const: 'end-of-step' },
+    sourceFirstSampleTimeS: {
+      type: 'number', minimum: -1_000_000_000_000, maximum: 1_000_000_000_000,
     },
     timeToleranceS: { type: 'number', minimum: 0, maximum: 60 },
     segments: {
@@ -148,13 +158,17 @@ export const CALIBRATION_IMPORT_MAPPING_SCHEMA = deepFreeze({
 const ROOT_KEYS = Object.freeze([
   'format', 'schemaVersion', 'adapter', 'delimiter', 'dataset', 'source',
   'binding', 'columns', 'units', 'sourceCurrentPositive',
-  'sourceVoltageLocation', 'sourceTemperatureLocation', 'timeToleranceS',
-  'segments', 'checksum',
+  'sourceCurrentScope', 'sourceVoltageLocation', 'sourceTemperatureLocation',
+  'sourceSampleAlignment', 'sourceFirstSampleTimeS', 'timeToleranceS', 'segments',
+  'checksum',
 ]);
 const PAYLOAD_KEYS = Object.freeze(ROOT_KEYS.filter((key) => !['format', 'schemaVersion', 'checksum'].includes(key)));
 const DATASET_KEYS = Object.freeze(['id', 'kind', 'purpose']);
 const SOURCE_KEYS = Object.freeze(['tool', 'toolVersion', 'model', 'runId', 'generatedAt']);
-const BINDING_KEYS = Object.freeze(['cellId', 'seriesCells', 'parallelCells', 'startSoC', 'ambientC', 'moduleCount']);
+const BINDING_KEYS = Object.freeze([
+  'cellId', 'seriesCells', 'parallelCells', 'startSoC', 'ambientC', 'moduleCount',
+  'initialState',
+]);
 const COLUMN_KEYS = Object.freeze(['time', 'current', 'voltage', 'temperature']);
 const UNIT_KEYS = Object.freeze(['time', 'current', 'voltage', 'temperature']);
 const SEGMENT_KEYS = Object.freeze(['id', 'startIndex', 'endIndexExclusive', 'mode', 'include']);
@@ -273,6 +287,9 @@ export function validateCalibrationImportMapping(value) {
     finiteInRange(value.binding.startSoC, 0, 1, '$.binding.startSoC', errors);
     finiteInRange(value.binding.ambientC, -100, 200, '$.binding.ambientC', errors);
     finiteInRange(value.binding.moduleCount, 1, 10_000, '$.binding.moduleCount', errors, true);
+    if (value.binding.initialState !== 'rested-equilibrium-at-ambient') {
+      errors.push(issue('$.binding.initialState', 'const', 'must equal rested-equilibrium-at-ambient; this phase does not infer non-rested RC, hysteresis or thermal states'));
+    }
   }
 
   if (exactKeys(value.columns, COLUMN_KEYS, '$.columns', errors)) {
@@ -300,10 +317,13 @@ export function validateCalibrationImportMapping(value) {
   }
 
   if (!['charge', 'discharge'].includes(value.sourceCurrentPositive)) errors.push(issue('$.sourceCurrentPositive', 'enum', 'must be charge or discharge'));
+  if (!['cell', 'pack'].includes(value.sourceCurrentScope)) errors.push(issue('$.sourceCurrentScope', 'enum', 'must be cell or pack'));
   if (!['cell-terminal', 'pack-terminal'].includes(value.sourceVoltageLocation)) errors.push(issue('$.sourceVoltageLocation', 'enum', 'must be cell-terminal or pack-terminal'));
   if (value.sourceTemperatureLocation !== null && !CALIBRATION_TEMPERATURE_LOCATIONS.includes(value.sourceTemperatureLocation)) errors.push(issue('$.sourceTemperatureLocation', 'enum', 'must be null or an allowlisted temperature location'));
   const hasTemperature = value.columns?.temperature !== null;
   if (hasTemperature !== (value.units?.temperature !== null) || hasTemperature !== (value.sourceTemperatureLocation !== null)) errors.push(issue('$.columns.temperature', 'pairing', 'temperature column, unit and location must all be present or all be null'));
+  if (value.sourceSampleAlignment !== 'end-of-step') errors.push(issue('$.sourceSampleAlignment', 'const', 'must equal end-of-step; unknown or start-of-step exports require an explicit upstream phase conversion'));
+  finiteInRange(value.sourceFirstSampleTimeS, -1_000_000_000_000, 1_000_000_000_000, '$.sourceFirstSampleTimeS', errors);
   finiteInRange(value.timeToleranceS, 0, 60, '$.timeToleranceS', errors);
 
   if (value.segments !== null) {
@@ -539,7 +559,7 @@ function convertSeries(values, convert, name) {
   });
 }
 
-function validateTimeSeries(values, unit, toleranceS) {
+function validateTimeSeries(values, unit, toleranceS, expectedFirstSampleTimeS) {
   const seconds = convertSeries(values, (value) => value * TIME_FACTORS[unit], 'time');
   const deltas = [];
   for (let index = 1; index < seconds.length; index += 1) {
@@ -549,12 +569,20 @@ function validateTimeSeries(values, unit, toleranceS) {
   }
   const samplePeriodS = (seconds[seconds.length - 1] - seconds[0]) / (seconds.length - 1);
   if (!Number.isFinite(samplePeriodS) || samplePeriodS <= 0 || samplePeriodS > 3_600) sourceFailure('mean sample period must be greater than 0 and no more than 3,600 seconds.');
+  const firstSampleTimeS = seconds[0];
+  const numericTolerance = Math.max(
+    toleranceS,
+    Number.EPSILON * 32 * Math.max(1, Math.abs(firstSampleTimeS), Math.abs(expectedFirstSampleTimeS)),
+  );
+  if (Math.abs(firstSampleTimeS - expectedFirstSampleTimeS) > numericTolerance) {
+    sourceFailure(`first time sample ${firstSampleTimeS} s does not match governed sourceFirstSampleTimeS ${expectedFirstSampleTimeS} s.`);
+  }
   if (toleranceS > samplePeriodS * 0.1) sourceFailure(`mapping timeToleranceS ${toleranceS} exceeds 10% of the ${samplePeriodS}-second mean sample period.`);
   for (let index = 0; index < deltas.length; index += 1) {
     const error = Math.abs(deltas[index] - samplePeriodS);
     if (error > toleranceS) sourceFailure(`time delta ${index + 1} (${deltas[index]} s) differs from the mean ${samplePeriodS} s by ${error} s, beyond the explicit ${toleranceS} s tolerance.`);
   }
-  return samplePeriodS;
+  return { samplePeriodS, firstSampleTimeS };
 }
 
 function convertTemperature(value, unit) {
@@ -575,10 +603,15 @@ export function importCalibrationDataset(sourceText, mappingValue) {
   const rawColumns = mapping.adapter === 'canonical-json'
     ? canonicalJsonColumns(sourceText, mapping)
     : delimitedColumns(sourceText, mapping);
-  const samplePeriodS = validateTimeSeries(rawColumns.time, mapping.units.time, mapping.timeToleranceS);
+  const { samplePeriodS, firstSampleTimeS } = validateTimeSeries(
+    rawColumns.time, mapping.units.time, mapping.timeToleranceS,
+    mapping.sourceFirstSampleTimeS,
+  );
   const currentSign = mapping.sourceCurrentPositive === 'discharge' ? 1 : -1;
+  const currentScale = mapping.sourceCurrentScope === 'cell' ? mapping.binding.parallelCells : 1;
   const currentA = convertSeries(rawColumns.current,
-    (value) => value * CURRENT_FACTORS[mapping.units.current] * currentSign, 'current');
+    (value) => value * CURRENT_FACTORS[mapping.units.current] * currentSign * currentScale,
+    'current');
   const voltageScale = mapping.sourceVoltageLocation === 'cell-terminal' ? mapping.binding.seriesCells : 1;
   const voltageV = convertSeries(rawColumns.voltage,
     (value) => value * VOLTAGE_FACTORS[mapping.units.voltage] * voltageScale, 'voltage');
@@ -610,8 +643,12 @@ export function importCalibrationDataset(sourceText, mappingValue) {
       mappingChecksum: mapping.checksum,
       sourceUnits: mapping.units,
       sourceCurrentPositive: mapping.sourceCurrentPositive,
+      sourceCurrentScope: mapping.sourceCurrentScope,
       sourceVoltageLocation: mapping.sourceVoltageLocation,
       sourceTemperatureLocation: mapping.sourceTemperatureLocation,
+      sourceSampleAlignment: mapping.sourceSampleAlignment,
+      sourceFirstSampleTimeS: firstSampleTimeS,
+      sourceResetTimeS: firstSampleTimeS - samplePeriodS,
       timeHandling: 'validated-uniform',
       originalSampleCount: sampleCount,
     },
@@ -620,9 +657,12 @@ export function importCalibrationDataset(sourceText, mappingValue) {
     segments,
     conventions: {
       timeBasis: 'uniform-sample-period',
+      timeOrigin: 'trial-reset',
+      firstSampleOffsetS: samplePeriodS,
       sampleAlignment: 'end-of-step',
       currentHold: 'zero-order-hold',
       currentPositive: 'discharge',
+      currentScope: 'pack',
       voltageLocation: 'pack-terminal',
       temperatureLocation: mapping.sourceTemperatureLocation,
     },

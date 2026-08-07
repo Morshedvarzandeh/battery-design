@@ -79,6 +79,27 @@ test('the capability report answers "what can this do" with numbers', () => {
   ok(/no application has been chosen/.test(capabilityReport(null).note), 'and a different one when nothing is chosen');
 });
 
+test('governed calibration is exposed only on the surfaces that implement it', () => {
+  const calibration = addonById('calibration');
+  const advanced = addonById('sim2');
+  ok(calibration?.status === 'shipped' && calibration.tier === 'desktop',
+    'governed calibration is a shipped desktop-tier capability');
+  ok(calibration.surfaces.join(',') === 'cli,local-api',
+    'calibration names only its implemented CLI and local API surfaces');
+  ok(!calibration.surfaces.includes('desktop-gui') && !calibration.surfaces.includes('mcp'),
+    'a callable endpoint is not advertised as a GUI button or MCP tool');
+  ok(advanced.surfaces.includes('desktop-gui'),
+    'the advanced simulation itself remains a real desktop-GUI capability');
+  ok(/exact source-column mapping|canonical dataset/.test(calibration.needs.join(' ')),
+    'the capability declares its governed ingestion precondition');
+  ok(/not who produced it|commercial solver/.test(calibration.why),
+    'content identity is not promoted into producer or proprietary-tool validation');
+  ok(/source\/staged-runner CLI/.test(calibration.why) && /not an installed shell wrapper/.test(calibration.why),
+    'the source CLI capability is not promoted into an installer-owned shell command');
+  ok(calibration.what === 'The source/staged runner CLI importer normalizes an exactly mapped delimited or columnar-JSON trace into a versioned, checksummed canonical calibration dataset. The CLI and authenticated local API fit canonical datasets to allowlisted existing model parameters with bounded and fully counted optimizer work.',
+    'raw source normalization belongs exactly to the CLI importer while both fit surfaces consume canonical datasets');
+});
+
 test('the FMU declares an interface a host tool can actually couple to', () => {
   const xml = modelDescriptionXml({ cell: CELL, s: 96, p: 44 });
   ok(xml.startsWith('<?xml'), 'it is XML');

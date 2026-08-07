@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 15);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 24);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -59,7 +59,11 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
 
 test('seed knowledge covers the requested recurring engineering failure classes', () => {
   assert.deepEqual(ROOT_CAUSE_RECORDS.map(({ id }) => id), [
+    'rc-adaptive-integration-work-undercount',
     'rc-allof-closure-collision',
+    'rc-calibration-initial-state-ambiguity',
+    'rc-calibration-result-artifact-shape',
+    'rc-calibration-result-identity-gap',
     'rc-calibration-trace-alignment-loss',
     'rc-calibration-work-undercount',
     'rc-capability-contract-mismatch',
@@ -68,11 +72,16 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-final-artifact-identity-gap',
     'rc-fmi-calibration-key-ignored',
     'rc-fmi-representation-drift',
+    'rc-nelder-mead-bound-simplex-collapse',
     'rc-nullable-alias-projection',
     'rc-packaged-dependency-omission',
+    'rc-product-surface-claim-drift',
+    'rc-rc-euler-step-instability',
     'rc-resource-self-checksum-trust',
     'rc-schema-envelope-permissive',
+    'rc-signed-bound-evidence-miss',
     'rc-source-revision-self-claim',
+    'rc-thermal-explicit-step-instability',
     'rc-tree-link-containment',
   ]);
 
@@ -135,8 +144,17 @@ test('lexical search deterministically retrieves causes, fixes and containment p
     ['hidden tab button timeout', 'rc-e2e-hidden-state-precondition'],
     ['grouped null invalid flat alias', 'rc-nullable-alias-projection'],
     ['packaged runtime missing imported dependency', 'rc-packaged-dependency-omission'],
+    ['calibration evidence envelope reusable params output file', 'rc-calibration-result-artifact-shape'],
+    ['MCP calibration GUI product surface capability claim', 'rc-product-surface-claim-drift'],
     ['prefix RMSE mismatched arrays CSV row first timestamp delta sample phase', 'rc-calibration-trace-alignment-loss'],
     ['optimizer iterations undercount simulations maxDtS work budget', 'rc-calibration-work-undercount'],
+    ['unknown polarization hysteresis warm start calibration', 'rc-calibration-initial-state-ambiguity'],
+    ['calibration result algorithm model cell checksum raw trace identity', 'rc-calibration-result-identity-gap'],
+    ['upper bound duplicate simplex false convergence', 'rc-nelder-mead-bound-simplex-collapse'],
+    ['Euler RC dt tau unstable nonfinite heat', 'rc-rc-euler-step-instability'],
+    ['adaptive thermal microsteps module node work preflight', 'rc-adaptive-integration-work-undercount'],
+    ['negative signed lower bound atBound evidence', 'rc-signed-bound-evidence-miss'],
+    ['thermal Euler C G exponential decay coolant phase heat conservation', 'rc-thermal-explicit-step-instability'],
   ];
   for (const [query, expected] of cases) {
     const first = searchRootCauses(query, { limit: 3 });

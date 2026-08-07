@@ -273,6 +273,7 @@ export interface CalibrationDatasetPayload {
     startSoC: number;
     ambientC: number;
     moduleCount: number;
+    initialState: 'rested-equilibrium-at-ambient';
   };
   normalization: {
     format: 'battery-design/calibration-normalization@1';
@@ -286,8 +287,12 @@ export interface CalibrationDatasetPayload {
       temperature: string | null;
     };
     sourceCurrentPositive: 'charge' | 'discharge';
+    sourceCurrentScope: 'cell' | 'pack';
     sourceVoltageLocation: 'cell-terminal' | 'pack-terminal';
     sourceTemperatureLocation: CalibrationTemperatureLocation | null;
+    sourceSampleAlignment: 'end-of-step';
+    sourceFirstSampleTimeS: number;
+    sourceResetTimeS: number;
     timeHandling: 'validated-uniform';
     originalSampleCount: number;
   };
@@ -306,9 +311,12 @@ export interface CalibrationDatasetPayload {
   }[];
   conventions: {
     timeBasis: 'uniform-sample-period';
+    timeOrigin: 'trial-reset';
+    firstSampleOffsetS: number;
     sampleAlignment: 'end-of-step';
     currentHold: 'zero-order-hold';
     currentPositive: 'discharge';
+    currentScope: 'pack';
     voltageLocation: 'pack-terminal';
     temperatureLocation: CalibrationTemperatureLocation | null;
   };

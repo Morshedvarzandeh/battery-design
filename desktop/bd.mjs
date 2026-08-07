@@ -32,7 +32,11 @@ import {
 import { CELLS } from '../js/cells.js';
 import { vehicleDefaultsFor, traceForApp, driveCyclePower, rangeKm } from '../js/vehicle.js';
 import { runPool, coreCount, PARALLEL_THRESHOLD } from './pool.mjs';
-import { simulate, calibrate, defaultParams, PARAM_SPEC, PARAM_BY_ID } from '../js/sim2.js';
+import {
+  simulate, estimateSim2Work, calibrateDatasets, defaultParams, PARAM_SPEC,
+  MAX_CALIBRATION_DATASETS, DEFAULT_MAX_SAMPLES_PER_DATASET,
+  MAX_PREPROCESSED_SAMPLES_PER_DATASET,
+} from '../js/sim2.js';
 import { cellById } from '../js/cells.js';
 import { profileById } from '../js/loadprofiles.js';
 import { buildFmu } from '../js/fmi.js';
@@ -52,6 +56,14 @@ import { ADDONS, addonsFor, addonsForSurface, capabilityReport } from '../js/add
 import {
   getRootCauseRecord, listRootCauseRecords, ROOT_CAUSE_SCHEMA_VERSION, searchRootCauses,
 } from '../js/root-cause-library.js';
+import { semanticDigest } from '../js/ontology.js';
+import {
+  MAX_CALIBRATION_DATASET_SAMPLES, readCalibrationDataset,
+} from '../js/calibration-dataset.js';
+import {
+  importCalibrationDataset, MAX_CALIBRATION_SOURCE_BYTES,
+  readCalibrationImportMapping,
+} from '../js/calibration-import.js';
 import { mkdirSync } from 'node:fs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -66,9 +78,14 @@ const TOKEN_HEADER = 'x-battery-design-token';
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_JSON_ITEMS = 500_000;
 const MAX_PROFILE_SAMPLES = 100_000;
-const MAX_CALIBRATION_SAMPLES = 10_000;
+const MAX_API_CALIBRATION_SAMPLES = 20_000;
+const MAX_CLI_CALIBRATION_SAMPLES = MAX_CALIBRATION_DATASET_SAMPLES;
+const MAX_CALIBRATION_MODULES = 64;
+const MAX_CALIBRATION_EVALUATIONS = 500;
+const MAX_CALIBRATION_MODULE_WORK = 2_000_000;
+const MAX_CALIBRATION_MAPPING_BYTES = 1024 * 1024;
+const MAX_CALIBRATION_PARAMS_BYTES = 256 * 1024;
 const MAX_SIM_WORK = 5_000_000;
-const MAX_CALIBRATION_WORK = 2_000_000;
 const MAX_RANGE_POINTS = 5_000;
 const MAX_SEARCH_CANDIDATES = 5_000;
 const CSP_DIRECTIVES = [
@@ -160,10 +177,6 @@ function validateProfile(profile, { maxSamples = MAX_PROFILE_SAMPLES, label = 'p
   if (values.length > maxSamples) throw new RequestError(400, `${label} has ${values.length.toLocaleString()} samples; the limit is ${maxSamples.toLocaleString()}.`);
   if (!values.every(Number.isFinite)) throw new RequestError(400, `${label} samples must all be finite numbers.`);
   return { dtS, samples: values.length };
-}
-
-function workForProfile({ dtS, samples }, maxDtS, modules = 1, repetitions = 1) {
-  return samples * Math.ceil(dtS / maxDtS) * modules * repetitions;
 }
 
 function safeTokenEqual(received, expected) {
@@ -309,6 +322,33 @@ const FMU_ALLOWED_FLAGS = new Set([...FMU_EXPORT_FLAGS, ...FMU_SPEC_CONFLICT_FLA
 const ROOT_CAUSE_ALLOWED_FLAGS = new Set([
   'id', 'query', 'surface', 'tag', 'status', 'limit', 'json', 'out',
 ]);
+const CALIBRATE_ALLOWED_FLAGS = new Set([
+  'dataset', 'data', 'mapping', 'dataset-out', 'cell', 'params', 'fit', 'iter',
+  'weight-temp', 'max-evaluations', 'max-module-work', 'max-samples', 'json',
+  'out', 'params-out',
+]);
+const CALIBRATION_REQUEST_KEYS = new Set([
+  'format', 'datasets', 'params', 'fit', 'maxIter', 'weightTemp',
+  'maxEvaluations', 'maxModuleWeightedIntegrationSteps', 'maxSamplesPerDataset',
+]);
+const CALIBRATION_REQUEST_FORMAT = 'battery-design/calibration-request@1';
+const CALIBRATION_RESULT_FORMAT = 'battery-design/calibration-result@1';
+const CALIBRATION_ALGORITHM = Object.freeze({
+  id: 'bounded-nelder-mead',
+  version: '1.0.0',
+  objective: 'voltage-rmse-plus-weighted-module-maximum-temperature-rmse',
+});
+const CALIBRATION_MODEL_ID = 'battery-design/sim2-ecm-2rc-thermal-chain';
+const CALIBRATION_MODEL_VERSION = '1.0.0';
+const CALIBRATION_MODEL_DEPENDENCIES = Object.freeze([
+  'js/sim2.js', 'js/sim1d.js', 'js/cells.js',
+]);
+const CALIBRATION_MODEL_IMPLEMENTATION_CHECKSUM = semanticDigest(Object.fromEntries(
+  CALIBRATION_MODEL_DEPENDENCIES.map((relative) => [
+    relative,
+    createHash('sha256').update(readFileSync(path.join(ROOT, relative))).digest('hex'),
+  ]),
+));
 
 function fmuSpecFrom(args) {
   const unknown = args[PARSED_FLAGS].filter((key) => !FMU_ALLOWED_FLAGS.has(key));
@@ -425,6 +465,369 @@ function formatRootCauseResult(result) {
       .map((item) => `  · ${item.path} — ${item.assertion}`));
   }
   return lines.join('\n');
+}
+
+const STRICT_CLI_NUMBER = /^[+-]?(?:(?:\d+(?:\.\d*)?)|(?:\.\d+))(?:[eE][+-]?\d+)?$/;
+
+function requiredFlagValue(args, name) {
+  const value = args[name];
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new TypeError(`--${name} requires a non-empty value.`);
+  }
+  return value;
+}
+
+function optionalCliNumber(args, name, fallback, { min, max, integer = false }) {
+  if (args[name] == null) return fallback;
+  const value = requiredFlagValue(args, name);
+  if (!STRICT_CLI_NUMBER.test(value)) {
+    throw new TypeError(`--${name} must be a ${integer ? 'whole ' : ''}decimal number from ${min} to ${max}.`);
+  }
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < min || number > max || (integer && !Number.isInteger(number))) {
+    throw new RangeError(`--${name} must be a ${integer ? 'whole ' : ''}number from ${min} to ${max}.`);
+  }
+  return number;
+}
+
+function boundedFileBuffer(file, maxBytes, label) {
+  if (typeof file !== 'string' || !file.trim()) throw new TypeError(`${label} requires a file path.`);
+  let stats;
+  try { stats = statSync(file); } catch (error) { throw new TypeError(`${label}: cannot inspect ${file}: ${error.message}`); }
+  if (!stats.isFile()) throw new TypeError(`${label}: ${file} is not a regular file.`);
+  if (stats.size > maxBytes) throw new RangeError(`${label}: ${file} exceeds the ${maxBytes.toLocaleString()}-byte limit.`);
+  let bytes;
+  try { bytes = readFileSync(file); } catch (error) { throw new TypeError(`${label}: cannot read ${file}: ${error.message}`); }
+  if (bytes.length > maxBytes) throw new RangeError(`${label}: ${file} exceeds the ${maxBytes.toLocaleString()}-byte limit.`);
+  return bytes;
+}
+
+function boundedJsonFile(file, maxBytes, label) {
+  const text = exactUtf8(boundedFileBuffer(file, maxBytes, label), `${label} ${file}`);
+  try { return JSON.parse(text); } catch (error) { throw new TypeError(`${label}: ${file} is not valid JSON (${error.message}).`); }
+}
+
+function exactUtf8(bytes, label) {
+  try {
+    // ignoreBOM means "treat the BOM as content" in TextDecoder terminology.
+    // Preserving it makes source.rawSha256 identify the exact valid UTF-8 file
+    // bytes rather than a silently rewritten text representation.
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    throw new TypeError(`${label} must be valid UTF-8; invalid bytes are never replaced before provenance is computed.`);
+  }
+}
+
+function filePathIdentity(file) {
+  const absolute = path.resolve(file);
+  let canonical;
+  try {
+    canonical = realpathSync(absolute);
+  } catch {
+    try { canonical = path.join(realpathSync(path.dirname(absolute)), path.basename(absolute)); }
+    catch { canonical = absolute; }
+  }
+  let inode = null;
+  try {
+    const stats = statSync(absolute);
+    inode = `${stats.dev}:${stats.ino}`;
+  } catch { /* an output may not exist yet */ }
+  return { canonical, inode };
+}
+
+function sameFileIdentity(left, right) {
+  return left.canonical === right.canonical
+    || (left.inode !== null && right.inode !== null && left.inode === right.inode);
+}
+
+function canonicalDatasets(value, label) {
+  const inputs = Array.isArray(value) ? value : [value];
+  if (inputs.length < 1 || inputs.length > MAX_CALIBRATION_DATASETS) {
+    throw new RangeError(`${label} must contain 1 to ${MAX_CALIBRATION_DATASETS} canonical datasets.`);
+  }
+  return inputs.map((dataset) => readCalibrationDataset(dataset));
+}
+
+function calibrationDatasetMetrics(datasets, { maxSamples, label }) {
+  let totalSamples = 0;
+  let moduleCount = 1;
+  for (const dataset of datasets) {
+    const samples = dataset.signals.currentA.length;
+    if (!Number.isSafeInteger(totalSamples + samples)) throw new RangeError(`${label} sample count exceeds the safe integer range.`);
+    totalSamples += samples;
+    moduleCount = Math.max(moduleCount, dataset.binding.moduleCount);
+  }
+  if (totalSamples > maxSamples) {
+    throw new RangeError(`${label} contains ${totalSamples.toLocaleString()} total samples; the surface limit is ${maxSamples.toLocaleString()}.`);
+  }
+  if (moduleCount > MAX_CALIBRATION_MODULES) {
+    throw new RangeError(`${label} requests ${moduleCount.toLocaleString()} modules; calibration surfaces allow at most ${MAX_CALIBRATION_MODULES}.`);
+  }
+  return { totalSamples, moduleCount };
+}
+
+function cellForCalibrationDatasets(datasets, crossCheck = null) {
+  const cellId = datasets[0]?.binding.cellId;
+  if (typeof cellId !== 'string' || !cellId) {
+    throw new TypeError('The first canonical dataset must bind a non-null cellId from the shipped cell library.');
+  }
+  const cell = cellById(cellId);
+  if (!cell) throw new TypeError(`Canonical dataset cellId "${cellId}" is not in the shipped cell library.`);
+  if (crossCheck !== null && crossCheck !== cellId) {
+    throw new TypeError(`--cell ${JSON.stringify(crossCheck)} does not match immutable dataset binding.cellId ${JSON.stringify(cellId)}.`);
+  }
+  return cell;
+}
+
+function calibrationFitFromCli(args) {
+  if (args.fit == null) return ['r0Ref', 'rc1R', 'rc1TauS'];
+  const value = requiredFlagValue(args, 'fit');
+  const fit = value.split(',').map((name) => name.trim());
+  if (fit.some((name) => !name)) throw new TypeError('--fit must be a comma-separated list of exact parameter names without empty entries.');
+  return fit;
+}
+
+function calibrationEvidence(result, {
+  cell, datasets, fit, maxIter, weightTemp, totalSamples, moduleCount, surface,
+  maxInputSamples, maxSamplesPerDataset, maxModuleWeightedIntegrationSteps,
+}) {
+  const moduleWeightedIntegrationStepCount = result.thermalNodeUpdateCount;
+  const moduleWeightedWorkPerEvaluation = result.nodeWorkPerEvaluation;
+  const initialParams = { ...result.params };
+  for (const [name, evidence] of Object.entries(result.fitted)) initialParams[name] = evidence.from;
+  const model = {
+    id: CALIBRATION_MODEL_ID,
+    version: CALIBRATION_MODEL_VERSION,
+    implementationChecksum: CALIBRATION_MODEL_IMPLEMENTATION_CHECKSUM,
+    dependencies: [...CALIBRATION_MODEL_DEPENDENCIES],
+    cellChecksum: semanticDigest(cell),
+  };
+  const request = {
+    format: CALIBRATION_REQUEST_FORMAT,
+    cell: cell.id,
+    datasetChecksums: datasets.map(({ checksum }) => checksum),
+    initialParams,
+    fit: [...fit],
+    maxIter,
+    weightTemp,
+    maxEvaluations: result.maxEvaluations,
+    maxIntegrationSteps: result.maxIntegrationSteps,
+    maxModuleWeightedIntegrationSteps,
+    maxSamplesPerDataset,
+    algorithm: CALIBRATION_ALGORITHM,
+    model,
+  };
+  const requestChecksum = semanticDigest(request);
+  const evidence = {
+    format: CALIBRATION_RESULT_FORMAT,
+    apiVersion: API_VERSION,
+    cell: cell.id,
+    algorithm: CALIBRATION_ALGORITHM,
+    model,
+    request,
+    requestChecksum,
+    fit: [...fit],
+    maxIter,
+    weightTemp,
+    params: result.params,
+    fitted: result.fitted,
+    rmseBefore: result.rmseBefore,
+    rmseAfter: result.rmseAfter,
+    voltageRmseBefore: result.voltageRmseBefore,
+    voltageRmseAfter: result.voltageRmseAfter,
+    temperatureRmseBefore: result.temperatureRmseBefore,
+    temperatureRmseAfter: result.temperatureRmseAfter,
+    improvementPct: result.improvementPct,
+    iterations: result.iterations,
+    evaluationCount: result.evaluationCount,
+    integrationStepCount: result.integrationStepCount,
+    moduleWeightedIntegrationStepCount,
+    workPerEvaluation: result.workPerEvaluation,
+    moduleWeightedWorkPerEvaluation,
+    terminationReason: result.terminationReason,
+    maxEvaluations: result.maxEvaluations,
+    maxIntegrationSteps: result.maxIntegrationSteps,
+    maxModuleWeightedIntegrationSteps,
+    voltageSampleCount: result.voltageSampleCount,
+    temperatureSampleCount: result.temperatureSampleCount,
+    datasetChecksums: result.datasetChecksums,
+    preprocessing: result.preprocessing,
+    initialStateAssumptions: result.initialStateAssumptions,
+    notes: result.notes,
+    note: result.note,
+    inputEvidence: {
+      datasetCount: datasets.length,
+      totalSamples,
+      moduleCount,
+    },
+    surfaceLimits: {
+      surface,
+      maxDatasets: MAX_CALIBRATION_DATASETS,
+      maxInputSamples,
+      maxModules: MAX_CALIBRATION_MODULES,
+      maxPreprocessedSamplesPerDataset: maxSamplesPerDataset,
+      maxEvaluations: MAX_CALIBRATION_EVALUATIONS,
+      maxModuleWeightedIntegrationSteps: MAX_CALIBRATION_MODULE_WORK,
+    },
+    checksumSemantics: 'Dataset, request and result checksums identify exact canonical content and execution configuration. They detect drift but do not authenticate a producer, establish custody, prove source metadata, or validate model accuracy.',
+  };
+  return { ...evidence, checksum: semanticDigest(evidence) };
+}
+
+function runCalibrationSurface({
+  cell, datasets, params, fit, maxIter, weightTemp, maxEvaluations,
+  maxModuleWeightedIntegrationSteps, maxSamplesPerDataset, metrics, surface, maxInputSamples,
+}) {
+  const maxIntegrationSteps = Math.floor(maxModuleWeightedIntegrationSteps / metrics.moduleCount);
+  if (maxIntegrationSteps < 1) {
+    throw new RangeError('The module-weighted integration budget must allow at least one time step.');
+  }
+  let result;
+  try {
+    result = calibrateDatasets({
+      cell, datasets, params, fit, maxIter, weightTemp, maxEvaluations,
+      maxIntegrationSteps, maxSamplesPerDataset,
+    });
+  } catch (error) {
+    if (/maxIntegrationSteps must allow|Calibration evaluation requires more than .* thermal node updates/.test(error?.message || '')) {
+      throw new RangeError(`Calibration exceeds the applied ${maxModuleWeightedIntegrationSteps.toLocaleString()} module-weighted integration-step budget. ${error.message}`);
+    }
+    throw error;
+  }
+  return calibrationEvidence(result, {
+    cell, datasets, fit, maxIter, weightTemp,
+    totalSamples: metrics.totalSamples, moduleCount: metrics.moduleCount,
+    surface, maxInputSamples, maxSamplesPerDataset, maxModuleWeightedIntegrationSteps,
+  });
+}
+
+function calibrationCliRequest(args) {
+  const unknown = args[PARSED_FLAGS].filter((key) => !CALIBRATE_ALLOWED_FLAGS.has(key));
+  if (unknown.length) {
+    const migration = unknown.includes('map') ? ' Use --mapping MAP.json; --map is not an alias.' : '';
+    throw new TypeError(`calibrate does not accept option(s): ${[...new Set(unknown)]
+      .map((key) => `--${key}`).join(', ')}.${migration}`);
+  }
+  const positionals = args._.slice(1);
+  if (positionals.length) throw new TypeError(`calibrate does not accept positional arguments: ${positionals.join(', ')}.`);
+  if (args[DUPLICATE_FLAGS].length) {
+    throw new TypeError(`calibrate option(s) may be supplied only once: ${[...new Set(args[DUPLICATE_FLAGS])]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  if (args.json != null && args.json !== true) throw new TypeError('--json is a boolean flag and does not accept a value.');
+  for (const name of ['out', 'params-out', 'dataset-out']) {
+    if (args[name] != null) requiredFlagValue(args, name);
+  }
+  const hasDataset = args.dataset != null;
+  const hasSource = args.data != null;
+  if (hasDataset === hasSource) throw new TypeError('calibrate requires exactly one of --dataset canonical.json or --data source.csv --mapping mapping.json.');
+  if (hasSource !== (args.mapping != null)) throw new TypeError('--data and --mapping must be supplied together; source semantics are never guessed.');
+  if (hasDataset && args['dataset-out'] != null) throw new TypeError('--dataset-out is only for --data/--mapping normalization; a canonical --dataset is already reusable.');
+
+  let datasets;
+  if (hasDataset) {
+    const file = requiredFlagValue(args, 'dataset');
+    datasets = canonicalDatasets(
+      boundedJsonFile(file, MAX_CALIBRATION_SOURCE_BYTES, 'calibration dataset'),
+      'calibration dataset file',
+    );
+  } else {
+    const sourceFile = requiredFlagValue(args, 'data');
+    const mappingFile = requiredFlagValue(args, 'mapping');
+    const mapping = readCalibrationImportMapping(boundedJsonFile(
+      mappingFile, MAX_CALIBRATION_MAPPING_BYTES, 'calibration mapping',
+    ));
+    const source = exactUtf8(boundedFileBuffer(
+      sourceFile, MAX_CALIBRATION_SOURCE_BYTES, 'calibration source',
+    ), `calibration source ${sourceFile}`);
+    datasets = [importCalibrationDataset(source, mapping)];
+  }
+
+  const metrics = calibrationDatasetMetrics(datasets, {
+    maxSamples: MAX_CLI_CALIBRATION_SAMPLES, label: 'CLI calibration input',
+  });
+  const crossCheck = args.cell == null ? null : requiredFlagValue(args, 'cell');
+  const cell = cellForCalibrationDatasets(datasets, crossCheck);
+  const params = args.params == null ? null : boundedJsonFile(
+    requiredFlagValue(args, 'params'), MAX_CALIBRATION_PARAMS_BYTES, 'calibration parameters',
+  );
+  const fit = calibrationFitFromCli(args);
+  const maxIter = optionalCliNumber(args, 'iter', 100, { min: 1, max: 300, integer: true });
+  const weightTemp = optionalCliNumber(args, 'weight-temp', 0, { min: 0, max: 1_000_000 });
+  const maxEvaluations = optionalCliNumber(args, 'max-evaluations', MAX_CALIBRATION_EVALUATIONS, {
+    min: 2, max: MAX_CALIBRATION_EVALUATIONS, integer: true,
+  });
+  const maxModuleWeightedIntegrationSteps = optionalCliNumber(
+    args, 'max-module-work', MAX_CALIBRATION_MODULE_WORK,
+    { min: 1, max: MAX_CALIBRATION_MODULE_WORK, integer: true },
+  );
+  const maxSamplesPerDataset = optionalCliNumber(
+    args, 'max-samples', DEFAULT_MAX_SAMPLES_PER_DATASET,
+    { min: 8, max: MAX_PREPROCESSED_SAMPLES_PER_DATASET, integer: true },
+  );
+
+  const outputPaths = ['out', 'params-out', 'dataset-out']
+    .filter((name) => args[name] != null)
+    .map((name) => [name, filePathIdentity(requiredFlagValue(args, name))]);
+  const inputPaths = ['dataset', 'data', 'mapping', 'params']
+    .filter((name) => args[name] != null)
+    .map((name) => [name, filePathIdentity(requiredFlagValue(args, name))]);
+  for (let index = 0; index < outputPaths.length; index++) {
+    const [name, identity] = outputPaths[index];
+    const collision = outputPaths.slice(index + 1).find(([, other]) => sameFileIdentity(identity, other))
+      || inputPaths.find(([, other]) => sameFileIdentity(identity, other));
+    if (collision) throw new TypeError(`--${name} must not resolve to the same path as --${collision[0]}.`);
+  }
+
+  return {
+    cell, datasets, params, fit, maxIter, weightTemp, maxEvaluations,
+    maxModuleWeightedIntegrationSteps, maxSamplesPerDataset, metrics,
+  };
+}
+
+function optionalApiNumber(body, name, fallback, { min, max, integer = false }) {
+  if (!Object.prototype.hasOwnProperty.call(body, name)) return fallback;
+  const value = body[name];
+  if (!Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
+    throw new RangeError(`${name} must be ${integer ? 'an integer ' : ''}from ${min} to ${max}.`);
+  }
+  return value;
+}
+
+function calibrationApiRequest(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new TypeError('Calibration request body must be one JSON object.');
+  }
+  const unsupported = Object.keys(body).filter((key) => !CALIBRATION_REQUEST_KEYS.has(key));
+  if (unsupported.length) throw new TypeError(`Calibration request body contains unsupported field(s): ${unsupported.join(', ')}.`);
+  if (body.format !== CALIBRATION_REQUEST_FORMAT) {
+    throw new TypeError(`Calibration request body format must equal ${CALIBRATION_REQUEST_FORMAT}.`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(body, 'datasets')) throw new TypeError('Calibration request body must contain datasets.');
+  const datasets = canonicalDatasets(body.datasets, 'Calibration request datasets');
+  const metrics = calibrationDatasetMetrics(datasets, {
+    maxSamples: MAX_API_CALIBRATION_SAMPLES, label: 'API calibration input',
+  });
+  const cell = cellForCalibrationDatasets(datasets);
+  const maxIter = optionalApiNumber(body, 'maxIter', 100, { min: 1, max: 300, integer: true });
+  const weightTemp = optionalApiNumber(body, 'weightTemp', 0, { min: 0, max: 1_000_000 });
+  const maxEvaluations = optionalApiNumber(body, 'maxEvaluations', MAX_CALIBRATION_EVALUATIONS, {
+    min: 2, max: MAX_CALIBRATION_EVALUATIONS, integer: true,
+  });
+  const maxModuleWeightedIntegrationSteps = optionalApiNumber(
+    body, 'maxModuleWeightedIntegrationSteps', MAX_CALIBRATION_MODULE_WORK,
+    { min: 1, max: MAX_CALIBRATION_MODULE_WORK, integer: true },
+  );
+  const maxSamplesPerDataset = optionalApiNumber(
+    body, 'maxSamplesPerDataset', DEFAULT_MAX_SAMPLES_PER_DATASET,
+    { min: 8, max: DEFAULT_MAX_SAMPLES_PER_DATASET, integer: true },
+  );
+  return {
+    cell, datasets, params: Object.prototype.hasOwnProperty.call(body, 'params') ? body.params : null,
+    fit: Object.prototype.hasOwnProperty.call(body, 'fit') ? body.fit : ['r0Ref', 'rc1R', 'rc1TauS'],
+    maxIter, weightTemp, maxEvaluations, maxModuleWeightedIntegrationSteps,
+    maxSamplesPerDataset, metrics,
+  };
 }
 
 function emit(args, data, humanLines) {
@@ -772,26 +1175,29 @@ const COMMANDS = {
     }, lines.join('\n'));
   },
 
-  // Correct the model against your own measurements. This is the command
-  // that turns a class-typical model into a model of YOUR cell.
+  // Fit the model only from governed canonical datasets. Vendor CSV/JSON is
+  // first normalized through an exact checksummed mapping; column aliases,
+  // units, polarity, binding and sample alignment are never guessed here.
   calibrate(args) {
-    if (!args.data) { console.error('Give --data FILE.csv with columns: time_s,current_A,voltage_V[,temp_C]'); process.exit(2); }
-    const measured = readMeasuredCsv(args.data);
-    const cell = cellById(args.cell || 'samsung-inr21700-50e');
-    if (!cell) { console.error(`Unknown cell "${args.cell}". Use: cells`); process.exit(2); }
-    const fit = (args.fit === true || !args.fit ? 'r0Ref,rc1R,rc1TauS' : args.fit).split(',').map((x) => x.trim());
-    const unknown = fit.filter((f) => !PARAM_BY_ID[f]);
-    if (unknown.length) { console.error(`Not parameters: ${unknown.join(', ')}. Run: params`); process.exit(2); }
-    const out = calibrate({
-      cell, s: num(args.s, 1), p: num(args.p, 1), measured,
-      params: args.params ? loadParams(args.params) : null,
-      fit, startSoC: num(args.soc, 1) > 1 ? num(args.soc) / 100 : num(args.soc, 1),
-      ambientC: num(args.ambient, 25), nModules: num(args.modules, 1),
-      maxIter: num(args.iter, 300),
+    const request = calibrationCliRequest(args);
+    const out = runCalibrationSurface({
+      ...request, surface: 'cli', maxInputSamples: MAX_CLI_CALIBRATION_SAMPLES,
     });
+    const usedSamples = out.preprocessing.reduce((sum, item) => sum + item.usedSamples, 0);
+    const progress = `${out.improvementPct.toFixed(1)}% objective improvement, ${out.iterations} iterations`;
+    const metricLines = out.weightTemp > 0
+      ? [
+        `  Voltage RMSE ${out.voltageRmseBefore.toFixed(4)} V → ${out.voltageRmseAfter.toFixed(4)} V`,
+        `  Temperature RMSE ${out.temperatureRmseBefore.toFixed(4)} °C → ${out.temperatureRmseAfter.toFixed(4)} °C`,
+        `  Weighted objective score ${out.rmseBefore.toFixed(4)} → ${out.rmseAfter.toFixed(4)} (temperature weight ${out.weightTemp}; ${progress})`,
+      ]
+      : [
+        `  Voltage RMSE ${out.voltageRmseBefore.toFixed(4)} V → ${out.voltageRmseAfter.toFixed(4)} V  (${progress})`,
+      ];
     const lines = [
-      `Calibrated ${cell.name} against ${measured.i.length} measured points (${args.data})`,
-      `  RMSE ${out.rmseBefore.toFixed(4)} V → ${out.rmseAfter.toFixed(4)} V  (${out.improvementPct.toFixed(1)}% closer, ${out.iterations} iterations)`,
+      `Calibrated ${request.cell.name} against ${out.inputEvidence.totalSamples.toLocaleString()} governed samples (${usedSamples.toLocaleString()} after deterministic preprocessing)`,
+      ...metricLines,
+      `  Work ${out.evaluationCount.toLocaleString()} evaluations, ${out.moduleWeightedIntegrationStepCount.toLocaleString()} module-weighted integration steps (${out.terminationReason})`,
       '',
       pad('parameter', 14) + pad('default', 12) + pad('fitted', 12) + pad('change', 12) + 'unit',
       ...Object.entries(out.fitted).map(([k, f]) => pad(k, 14) + pad(f.from?.toFixed(3), 12) + pad(f.to?.toFixed(3), 12)
@@ -800,9 +1206,17 @@ const COMMANDS = {
       '',
       out.note,
       '',
-      `Save these with --out params.json, then use them everywhere: sim2 --params params.json`,
+      'Use --out evidence.json for the complete governed result and --params-out params.json for direct model parameters.',
     ];
-    emit(args, { apiVersion: API_VERSION, cell: cell.id, ...out }, lines.join('\n'));
+    emit(args, out, lines.join('\n'));
+    if (args['dataset-out'] != null) {
+      writeFileSync(args['dataset-out'], `${JSON.stringify(request.datasets[0], null, 2)}\n`);
+      console.error(`Canonical dataset written: ${args['dataset-out']}`);
+    }
+    if (args['params-out'] != null) {
+      writeFileSync(args['params-out'], `${JSON.stringify(out.params, null, 2)}\n`);
+      console.error(`Parameters written: ${args['params-out']}`);
+    }
   },
 
   // Every knob, what it means, and what it is allowed to be.
@@ -819,7 +1233,7 @@ const COMMANDS = {
       lines.push(`  ${' '.repeat(17)}source: ${s.source}`);
     }
     lines.push('', 'Dump them with --json --out params.json, edit, then: sim2 --params params.json');
-    lines.push('Or let your own measurements set them: calibrate --data test.csv --fit r0Ref,rc1R,rc1TauS');
+    lines.push('Or fit governed traces: calibrate --dataset canonical.json --fit r0Ref,rc1R,rc1TauS');
     console.log(lines.join('\n'));
   },
 
@@ -1302,6 +1716,7 @@ const COMMANDS = {
         const guiCapabilities = addonsForSurface('desktop-gui');
         const cliCapabilities = addonsForSurface('cli');
         const mcpCapabilities = addonsForSurface('mcp');
+        const localApiCapabilities = addonsForSurface('local-api');
         return json(200, {
           runner: 'battery-design desktop', runnerId: RUNNER_ID, apiVersion: API_VERSION,
           cores: coreCount(),
@@ -1309,8 +1724,26 @@ const COMMANDS = {
             .map((a) => ({ id: a.id, name: a.name, what: a.what })),
           cliCapabilities: cliCapabilities.map((a) => ({ id: a.id, name: a.name })),
           mcpCapabilities: mcpCapabilities.map((a) => ({ id: a.id, name: a.name })),
+          localApiCapabilities: localApiCapabilities.map((a) => ({ id: a.id, name: a.name })),
           plannedCapabilities: addonsForSurface('planned').map((a) => ({ id: a.id, name: a.name })),
           endpoints: ['/api/design', '/api/ontology', '/api/sim2', '/api/calibrate', '/api/search', '/api/fmu'],
+          simulationLimits: {
+            maxInputSamples: MAX_PROFILE_SAMPLES,
+            maxModules: 64,
+            maxThermalNodeUpdates: MAX_SIM_WORK,
+            accounting: 'exact adaptive temporal integration steps multiplied by modeled modules',
+          },
+          calibrationLimits: {
+            requestFormat: CALIBRATION_REQUEST_FORMAT,
+            resultFormat: CALIBRATION_RESULT_FORMAT,
+            maxBodyBytes: MAX_BODY_BYTES,
+            maxDatasets: MAX_CALIBRATION_DATASETS,
+            maxInputSamples: MAX_API_CALIBRATION_SAMPLES,
+            maxModules: MAX_CALIBRATION_MODULES,
+            maxPreprocessedSamplesPerDataset: DEFAULT_MAX_SAMPLES_PER_DATASET,
+            maxEvaluations: MAX_CALIBRATION_EVALUATIONS,
+            maxModuleWeightedIntegrationSteps: MAX_CALIBRATION_MODULE_WORK,
+          },
         });
       }
       if (url === '/api/ontology' && req.method === 'GET') return json(200, describeOntology());
@@ -1352,14 +1785,17 @@ const COMMANDS = {
             }
             throw new Error('Nothing to simulate: pick an application on the Usage tab, or send a profile of your own.');
           })();
-          const profileMetrics = validateProfile(prof);
+          validateProfile(prof);
           const nModules = finiteInRange(body.nModules, 4, { label: 'nModules', min: 1, max: 64, integer: true });
-          const maxDtS = finiteInRange(body.params?.maxDtS, defaultParams(cell).maxDtS, {
+          finiteInRange(body.params?.maxDtS, defaultParams(cell).maxDtS, {
             label: 'params.maxDtS', min: 0.001, max: 60,
           });
-          const work = workForProfile(profileMetrics, maxDtS, nModules);
-          if (work > MAX_SIM_WORK) {
-            throw new RequestError(400, `Simulation requests ${work.toLocaleString()} integration-module steps; the limit is ${MAX_SIM_WORK.toLocaleString()}. Shorten/downsample the profile or increase maxDtS.`);
+          const work = estimateSim2Work({
+            cell, s: d.pack.s, p: d.pack.p, params: body.params || null,
+            profile: prof, nModules,
+          });
+          if (work.thermalNodeUpdateCount > MAX_SIM_WORK) {
+            throw new RequestError(400, `Simulation requests ${work.thermalNodeUpdateCount.toLocaleString()} thermal node updates after exact adaptive integration planning (${work.integrationStepCount.toLocaleString()} temporal steps × ${work.nModules.toLocaleString()} modules); the limit is ${MAX_SIM_WORK.toLocaleString()}. Shorten or downsample the profile, or revise the modeled topology and thermal coefficients.`);
           }
           const r = simulate({
             cell, s: d.pack.s, p: d.pack.p, params: body.params || null, profile: prof,
@@ -1386,38 +1822,14 @@ const COMMANDS = {
         });
       }
 
-      // Correct the model against measured data, from the browser.
+      // Governed calibration is available to authenticated local clients.
+      // The API accepts canonical content only: it never opens caller paths,
+      // follows URLs, fetches remote data or guesses source semantics.
       if (url === '/api/calibrate' && req.method === 'POST') {
         return withBody((body) => {
-          const cell = cellById(body.cell) || cellById('samsung-inr21700-50e');
-          const measuredMetrics = validateProfile(
-            { dtS: body.measured?.dtS, i: body.measured?.i },
-            { maxSamples: MAX_CALIBRATION_SAMPLES, label: 'measured' },
-          );
-          for (const key of ['v', 't']) {
-            const values = body.measured?.[key];
-            if (key === 't' && values == null) continue;
-            if (!Array.isArray(values) || values.length !== measuredMetrics.samples || !values.every(Number.isFinite)) {
-              throw new RequestError(400, `measured.${key} must contain ${measuredMetrics.samples.toLocaleString()} finite samples.`);
-            }
-          }
-          if (body.fit != null && (!Array.isArray(body.fit) || body.fit.length < 1 || body.fit.length > 8)) {
-            throw new RequestError(400, 'fit must contain between 1 and 8 parameter names.');
-          }
-          const nModules = finiteInRange(body.nModules, 1, { label: 'nModules', min: 1, max: 64, integer: true });
-          const maxIter = finiteInRange(body.maxIter, 100, { label: 'maxIter', min: 1, max: 300, integer: true });
-          const maxDtS = finiteInRange(body.params?.maxDtS, defaultParams(cell).maxDtS, {
-            label: 'params.maxDtS', min: 0.001, max: 60,
-          });
-          const work = workForProfile(measuredMetrics, maxDtS, nModules, maxIter);
-          if (work > MAX_CALIBRATION_WORK) {
-            throw new RequestError(400, `Calibration requests ${work.toLocaleString()} integration-module iterations; the limit is ${MAX_CALIBRATION_WORK.toLocaleString()}. Downsample the data or reduce maxIter.`);
-          }
-          return calibrate({
-            cell, s: body.s ?? 1, p: body.p ?? 1, measured: body.measured,
-            params: body.params || null, fit: body.fit || ['r0Ref', 'rc1R', 'rc1TauS'],
-            startSoC: body.startSoC ?? 1, ambientC: body.ambientC ?? 25,
-            nModules, maxIter,
+          const request = calibrationApiRequest(body);
+          return runCalibrationSurface({
+            ...request, surface: 'local-api', maxInputSamples: MAX_API_CALIBRATION_SAMPLES,
           });
         });
       }
@@ -1614,25 +2026,6 @@ function loadDesignSpec(file) {
   return normalizeGovernedDesignSpec(input, file);
 }
 
-// Measured data: time_s, current_A, voltage_V and optionally temp_C. Header
-// optional, comma or semicolon or tab, because real exports vary.
-function readMeasuredCsv(file) {
-  let text;
-  try { text = readFileSync(file, 'utf8'); } catch (e) { console.error(`Cannot read ${file}: ${e.message}`); process.exit(2); }
-  const rows = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)
-    .map((l) => l.split(/[,;\t]/).map((x) => parseFloat(x)))
-    .filter((r) => r.length >= 3 && r.every((x, i) => i > 3 || isFinite(x)));
-  if (rows.length < 3) { console.error(`${file}: need at least 3 rows of time_s,current_A,voltage_V`); process.exit(2); }
-  const dtS = rows.length > 1 ? (rows[1][0] - rows[0][0]) : 1;
-  if (!(dtS > 0)) { console.error(`${file}: the time column must increase.`); process.exit(2); }
-  return {
-    dtS,
-    i: rows.map((r) => r[1]),
-    v: rows.map((r) => r[2]),
-    t: rows.every((r) => isFinite(r[3])) ? rows.map((r) => r[3]) : null,
-  };
-}
-
 const HELP = `battery-design — desktop runner (API v${API_VERSION})
 
   design    one design, fully worked           --app ev --energy 60000 [--cell ID] [--s N --p N]
@@ -1643,8 +2036,10 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   sim2      the full model: RC dynamics,       --app ev [--modules 8] [--ambient 35] [--params p.json]
             entropic heat, per-module
             temperatures, coolant, aging
-  calibrate correct the model against YOUR     --data test.csv --cell ID [--fit r0Ref,rc1R,rc1TauS]
-            measurements
+  calibrate fit governed synthetic/measured   --dataset canonical.json [--cell ID]
+            traces, with immutable binding     --data export.csv --mapping mapping.json
+                                               [--dataset-out canonical.json]
+                                               [--out evidence.json --params-out params.json]
   params    every coefficient, with bounds     [--cell ID] [--json --out params.json]
   sweep     one variable across a range        --vary cell|mass|payload|energy [--from --to --step]
   search    the whole design space, ranked     --app ev --rank cost|range|mass|density|upfront [--top N]

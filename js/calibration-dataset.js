@@ -88,7 +88,7 @@ export const CALIBRATION_DATASET_SCHEMA = deepFreeze({
       type: 'object', additionalProperties: false,
       required: [
         'cellId', 'seriesCells', 'parallelCells', 'startSoC', 'ambientC',
-        'moduleCount',
+        'moduleCount', 'initialState',
       ],
       properties: {
         cellId: nullableString,
@@ -97,14 +97,17 @@ export const CALIBRATION_DATASET_SCHEMA = deepFreeze({
         startSoC: { type: 'number', minimum: 0, maximum: 1 },
         ambientC: { type: 'number', minimum: -100, maximum: 200 },
         moduleCount: { type: 'integer', minimum: 1, maximum: 10_000 },
+        initialState: { const: 'rested-equilibrium-at-ambient' },
       },
     },
     normalization: {
       type: 'object', additionalProperties: false,
       required: [
         'format', 'adapter', 'adapterVersion', 'mappingChecksum', 'sourceUnits',
-        'sourceCurrentPositive', 'sourceVoltageLocation', 'sourceTemperatureLocation',
-        'timeHandling', 'originalSampleCount',
+        'sourceCurrentPositive', 'sourceCurrentScope', 'sourceVoltageLocation',
+        'sourceTemperatureLocation', 'sourceSampleAlignment',
+        'sourceFirstSampleTimeS', 'sourceResetTimeS', 'timeHandling',
+        'originalSampleCount',
       ],
       properties: {
         format: { const: 'battery-design/calibration-normalization@1' },
@@ -122,10 +125,14 @@ export const CALIBRATION_DATASET_SCHEMA = deepFreeze({
           },
         },
         sourceCurrentPositive: { type: 'string', enum: ['charge', 'discharge'] },
+        sourceCurrentScope: { type: 'string', enum: ['cell', 'pack'] },
         sourceVoltageLocation: { type: 'string', enum: ['cell-terminal', 'pack-terminal'] },
         sourceTemperatureLocation: {
           type: ['string', 'null'], enum: [...CALIBRATION_TEMPERATURE_LOCATIONS, null],
         },
+        sourceSampleAlignment: { const: 'end-of-step' },
+        sourceFirstSampleTimeS: { type: 'number', minimum: -1_000_000_000_000, maximum: 1_000_000_000_000 },
+        sourceResetTimeS: { type: 'number', minimum: -1_000_000_000_000, maximum: 1_000_000_000_000 },
         timeHandling: { const: 'validated-uniform' },
         originalSampleCount: {
           type: 'integer', minimum: 3, maximum: MAX_CALIBRATION_DATASET_SAMPLES,
@@ -159,14 +166,18 @@ export const CALIBRATION_DATASET_SCHEMA = deepFreeze({
     conventions: {
       type: 'object', additionalProperties: false,
       required: [
-        'timeBasis', 'sampleAlignment', 'currentHold', 'currentPositive',
-        'voltageLocation', 'temperatureLocation',
+        'timeBasis', 'timeOrigin', 'firstSampleOffsetS', 'sampleAlignment',
+        'currentHold', 'currentPositive', 'currentScope', 'voltageLocation',
+        'temperatureLocation',
       ],
       properties: {
         timeBasis: { const: 'uniform-sample-period' },
+        timeOrigin: { const: 'trial-reset' },
+        firstSampleOffsetS: { type: 'number', exclusiveMinimum: 0, maximum: 3_600 },
         sampleAlignment: { const: 'end-of-step' },
         currentHold: { const: 'zero-order-hold' },
         currentPositive: { const: 'discharge' },
+        currentScope: { const: 'pack' },
         voltageLocation: { const: 'pack-terminal' },
         temperatureLocation: {
           type: ['string', 'null'], enum: [...CALIBRATION_TEMPERATURE_LOCATIONS, null],
@@ -190,16 +201,18 @@ const SOURCE_KEYS = Object.freeze([
 ]);
 const BINDING_KEYS = Object.freeze([
   'cellId', 'seriesCells', 'parallelCells', 'startSoC', 'ambientC', 'moduleCount',
+  'initialState',
 ]);
 const SIGNAL_KEYS = Object.freeze(['currentA', 'voltageV', 'temperatureC']);
 const CONVENTION_KEYS = Object.freeze([
-  'timeBasis', 'sampleAlignment', 'currentHold', 'currentPositive',
-  'voltageLocation', 'temperatureLocation',
+  'timeBasis', 'timeOrigin', 'firstSampleOffsetS', 'sampleAlignment', 'currentHold',
+  'currentPositive', 'currentScope', 'voltageLocation', 'temperatureLocation',
 ]);
 const NORMALIZATION_KEYS = Object.freeze([
   'format', 'adapter', 'adapterVersion', 'mappingChecksum', 'sourceUnits',
-  'sourceCurrentPositive', 'sourceVoltageLocation', 'sourceTemperatureLocation',
-  'timeHandling', 'originalSampleCount',
+  'sourceCurrentPositive', 'sourceCurrentScope', 'sourceVoltageLocation',
+  'sourceTemperatureLocation', 'sourceSampleAlignment', 'sourceFirstSampleTimeS',
+  'sourceResetTimeS', 'timeHandling', 'originalSampleCount',
 ]);
 const SOURCE_UNIT_KEYS = Object.freeze(['time', 'current', 'voltage', 'temperature']);
 const SEGMENT_KEYS = Object.freeze(['id', 'startIndex', 'endIndexExclusive', 'mode', 'include']);
@@ -342,6 +355,9 @@ export function validateCalibrationDataset(value) {
     finiteInRange(value.binding.startSoC, 0, 1, '$.binding.startSoC', errors);
     finiteInRange(value.binding.ambientC, -100, 200, '$.binding.ambientC', errors);
     finiteInRange(value.binding.moduleCount, 1, 10_000, '$.binding.moduleCount', errors, true);
+    if (value.binding.initialState !== 'rested-equilibrium-at-ambient') {
+      errors.push(issue('$.binding.initialState', 'const', 'must equal rested-equilibrium-at-ambient; non-rested initial RC, hysteresis or thermal states are not supported'));
+    }
   }
 
   if (exactKeys(value.normalization, NORMALIZATION_KEYS, '$.normalization', errors)) {
@@ -358,9 +374,13 @@ export function validateCalibrationDataset(value) {
       if (temperatureUnit !== null && (typeof temperatureUnit !== 'string' || !temperatureUnit.trim() || temperatureUnit.length > 32)) errors.push(issue('$.normalization.sourceUnits.temperature', 'type', 'must be null or a non-empty unit string'));
     }
     if (!['charge', 'discharge'].includes(value.normalization.sourceCurrentPositive)) errors.push(issue('$.normalization.sourceCurrentPositive', 'enum', 'must be charge or discharge'));
+    if (!['cell', 'pack'].includes(value.normalization.sourceCurrentScope)) errors.push(issue('$.normalization.sourceCurrentScope', 'enum', 'must be cell or pack'));
     if (!['cell-terminal', 'pack-terminal'].includes(value.normalization.sourceVoltageLocation)) errors.push(issue('$.normalization.sourceVoltageLocation', 'enum', 'must be cell-terminal or pack-terminal'));
     const sourceTemperatureLocation = value.normalization.sourceTemperatureLocation;
     if (sourceTemperatureLocation !== null && !CALIBRATION_TEMPERATURE_LOCATIONS.includes(sourceTemperatureLocation)) errors.push(issue('$.normalization.sourceTemperatureLocation', 'enum', 'must identify the source temperature location'));
+    if (value.normalization.sourceSampleAlignment !== 'end-of-step') errors.push(issue('$.normalization.sourceSampleAlignment', 'const', 'must equal end-of-step; unknown or start-of-step source phase must be normalized explicitly before import'));
+    finiteInRange(value.normalization.sourceFirstSampleTimeS, -1_000_000_000_000, 1_000_000_000_000, '$.normalization.sourceFirstSampleTimeS', errors);
+    finiteInRange(value.normalization.sourceResetTimeS, -1_000_000_000_000, 1_000_000_000_000, '$.normalization.sourceResetTimeS', errors);
     if (value.normalization.timeHandling !== 'validated-uniform') errors.push(issue('$.normalization.timeHandling', 'const', 'must equal validated-uniform'));
     finiteInRange(value.normalization.originalSampleCount, 3, MAX_CALIBRATION_DATASET_SAMPLES, '$.normalization.originalSampleCount', errors, true);
   }
@@ -409,9 +429,12 @@ export function validateCalibrationDataset(value) {
 
   if (exactKeys(value.conventions, CONVENTION_KEYS, '$.conventions', errors)) {
     if (value.conventions.timeBasis !== 'uniform-sample-period') errors.push(issue('$.conventions.timeBasis', 'const', 'must equal uniform-sample-period'));
+    if (value.conventions.timeOrigin !== 'trial-reset') errors.push(issue('$.conventions.timeOrigin', 'const', 'must equal trial-reset'));
+    finiteInRange(value.conventions.firstSampleOffsetS, Number.MIN_VALUE, 3_600, '$.conventions.firstSampleOffsetS', errors);
     if (value.conventions.sampleAlignment !== 'end-of-step') errors.push(issue('$.conventions.sampleAlignment', 'const', 'must equal end-of-step'));
     if (value.conventions.currentHold !== 'zero-order-hold') errors.push(issue('$.conventions.currentHold', 'const', 'must equal zero-order-hold'));
     if (value.conventions.currentPositive !== 'discharge') errors.push(issue('$.conventions.currentPositive', 'const', 'must equal discharge'));
+    if (value.conventions.currentScope !== 'pack') errors.push(issue('$.conventions.currentScope', 'const', 'must equal pack'));
     if (value.conventions.voltageLocation !== 'pack-terminal') errors.push(issue('$.conventions.voltageLocation', 'const', 'must equal pack-terminal'));
     const location = value.conventions.temperatureLocation;
     if (location !== null && !CALIBRATION_TEMPERATURE_LOCATIONS.includes(location)) {
@@ -431,6 +454,20 @@ export function validateCalibrationDataset(value) {
     if (Array.isArray(value.signals?.temperatureC)
       && (sourceUnits?.temperature == null || sourceLocation !== location)) {
       errors.push(issue('$.normalization.sourceTemperatureLocation', 'pairing', 'source temperature unit/location must describe the canonical temperature channel without changing its physical location'));
+    }
+  }
+
+  if (Number.isFinite(value.samplePeriodS)) {
+    const offset = value.conventions?.firstSampleOffsetS;
+    const first = value.normalization?.sourceFirstSampleTimeS;
+    const reset = value.normalization?.sourceResetTimeS;
+    const tolerance = Math.max(1e-12, Math.abs(value.samplePeriodS) * 1e-12);
+    if (Number.isFinite(offset) && Math.abs(offset - value.samplePeriodS) > tolerance) {
+      errors.push(issue('$.conventions.firstSampleOffsetS', 'identity', 'must equal samplePeriodS so sample zero is the first end-of-step observation after trial reset'));
+    }
+    if (Number.isFinite(first) && Number.isFinite(reset)
+      && Math.abs((first - reset) - value.samplePeriodS) > tolerance) {
+      errors.push(issue('$.normalization.sourceResetTimeS', 'identity', 'must be exactly one sample period before sourceFirstSampleTimeS'));
     }
   }
 
