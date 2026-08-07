@@ -6,6 +6,7 @@
 
 pub mod equations;
 pub mod graph_transport;
+pub mod thermal;
 
 /// Stable ABI order returned by `profile_stats` and `bd_profile_stats`:
 /// duration_s, peak_w, mean_w, rms_w, discharge_wh, regen_wh, peak_charge_w.
@@ -98,6 +99,41 @@ pub unsafe extern "C" fn bd_profile_stats(
     let result = profile_stats(input, dt_s, scale_w);
     std::ptr::copy_nonoverlapping(result.as_ptr(), output, PROFILE_STATS_LEN);
     1
+}
+
+/// WebAssembly ABI for [`thermal::thermal_node_step`]. Returns 1 on success and
+/// writes the new temperature to `output`; returns 0 on validation failure
+/// without touching memory.
+///
+/// # Safety
+/// `output` must address 1 writable f64 value in this module's linear memory.
+#[no_mangle]
+pub unsafe extern "C" fn bd_thermal_node_step(
+    temperature_k: f64,
+    heat_capacity_j_per_k: f64,
+    thermal_resistance_k_per_w: f64,
+    power_input_w: f64,
+    ambient_temperature_k: f64,
+    dt_s: f64,
+    output: *mut f64,
+) -> u32 {
+    if output.is_null() {
+        return 0;
+    }
+    match thermal::thermal_node_step(
+        temperature_k,
+        heat_capacity_j_per_k,
+        thermal_resistance_k_per_w,
+        power_input_w,
+        ambient_temperature_k,
+        dt_s,
+    ) {
+        Ok(new_temp) => {
+            *output = new_temp;
+            1
+        }
+        Err(_) => 0,
+    }
 }
 
 #[cfg(test)]

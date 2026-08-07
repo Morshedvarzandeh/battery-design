@@ -21,6 +21,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::{Duration, Instant};
@@ -94,9 +95,39 @@ fn wait_for_server(port: u16, token: &str, timeout: Duration) -> bool {
     false
 }
 
+// ---------------------------------------------------------------------------
+// Profile import/export commands for the frontend.
+// The web page has no file-picker access, so it provides the path and we
+// handle the read/write. Validation here is minimal: we confirm the file
+// parses as a JSON object, which is enough to catch "that was a PNG" without
+// imposing a schema the web side already enforces.
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn export_profile(path: String, json: String) -> Result<(), String> {
+    let value: serde_json::Value =
+        serde_json::from_str(&json).map_err(|e| format!("Profile is not valid JSON: {e}"))?;
+    let pretty =
+        serde_json::to_string_pretty(&value).map_err(|e| format!("Could not format JSON: {e}"))?;
+    fs::write(&path, pretty).map_err(|e| format!("Could not write to {path}: {e}"))
+}
+
+#[tauri::command]
+fn import_profile(path: String) -> Result<String, String> {
+    let contents =
+        fs::read_to_string(&path).map_err(|e| format!("Could not read {path}: {e}"))?;
+    let value: serde_json::Value = serde_json::from_str(&contents)
+        .map_err(|e| format!("File is not valid JSON: {e}"))?;
+    if !value.is_object() {
+        return Err("File does not contain a JSON object (expected a profile).".to_string());
+    }
+    Ok(contents)
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![export_profile, import_profile])
         .setup(|app| {
             let port = free_port();
             let token = launch_token()?;
