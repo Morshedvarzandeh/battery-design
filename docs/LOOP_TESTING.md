@@ -70,10 +70,19 @@ Every HIL contract pins:
 - communication timeout, target overrun, power-cycle and emergency safe-state tests.
 
 `evaluateHilEvidence()` returns Unproven when evidence is absent. With
-evidence, it checks target/model identity, every measured cycle time, every
+evidence, it requires the evidence to echo the target ID, model ID, model
+version and graph checksum, then checks every measured cycle time, every
 I/O channel, each required fault, the observed safe state and recorded
 overruns. Passing a software simulation cannot satisfy any of those hardware
 checks.
+
+Every evaluation returns one deeply frozen
+`battery-design/hil-test-result@1` summary. It binds the verified `@2` contract
+checksum, repeats the governed target/model identity, uses the same exact shape
+for Unproven, pass and fail, and carries its own deterministic checksum. The
+result checksum identifies the bounded evaluation summary; it is not a
+signature, raw-measurement custody record or proof that independent hardware
+produced the supplied evidence.
 
 Timing evidence must cover at least
 `ceil(durationS × 1,000,000 / samplePeriodUs)` consecutive cycles. A lone fast

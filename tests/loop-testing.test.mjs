@@ -4,6 +4,7 @@ import {
   HIL_SCHEMA,
   LEGACY_HIL_SCHEMA,
   LEGACY_SIL_SCHEMA,
+  HIL_RESULT_SCHEMA,
   MAX_HIL_TIMING_SAMPLES,
   SIL_SCHEMA,
   SIL_RESULT_SCHEMA,
@@ -260,18 +261,41 @@ const contract = createHilTestContract({
 
 test('HIL stays unproven without hardware and passes only complete measured evidence', () => {
   const unproven = evaluateHilEvidence(contract);
+  assert.equal(unproven.schema, HIL_RESULT_SCHEMA);
   assert.equal(unproven.status, 'unproven');
+  assert.equal(unproven.contractSchema, HIL_SCHEMA);
+  assert.equal(unproven.contractChecksum, contract.checksum);
+  assert.equal(unproven.checks, null);
+  assert.equal(unproven.maxCycleTimeUs, null);
+  assert.match(unproven.checksum, /^[a-f0-9]{64}$/);
+  assertDeepFrozen(unproven);
+  assert.equal(evaluateHilEvidence(contract).checksum, unproven.checksum);
   assert.equal(unproven.requiredCycleCount, 3);
   assert.equal(unproven.observedCycleCount, 0);
   const evidence = {
-    targetId: contract.targetId, modelVersion: contract.modelVersion,
+    targetId: contract.targetId, modelId: contract.modelId, modelVersion: contract.modelVersion,
     graphChecksum: contract.graphChecksum, cycleTimesUs: [720, 840, 910],
     io: { 'pack-v': 'pass', contactor: 'pass' },
     faults: Object.fromEntries(contract.requiredFaults.map((fault) => [fault, 'pass'])),
     safeState: { contactor: 0 }, maxConsecutiveOverruns: 0,
   };
   const pass = evaluateHilEvidence(contract, evidence);
+  assert.equal(pass.schema, HIL_RESULT_SCHEMA);
   assert.equal(pass.status, 'pass');
+  assert.equal(pass.contractChecksum, contract.checksum);
+  assert.equal(pass.targetId, contract.targetId);
+  assert.match(pass.checksum, /^[a-f0-9]{64}$/);
+  assertDeepFrozen(pass);
+  assert.equal(evaluateHilEvidence(contract, structuredClone(evidence)).checksum, pass.checksum);
+  assert.deepEqual(Object.keys(pass).sort(), Object.keys(unproven).sort());
+  const sameSummaryDifferentTrace = evaluateHilEvidence(contract, {
+    ...evidence, cycleTimesUs: [700, 850, 910],
+  });
+  assert.equal(sameSummaryDifferentTrace.checksum, pass.checksum);
+  const missingModelId = structuredClone(evidence);
+  delete missingModelId.modelId;
+  assert.equal(evaluateHilEvidence(contract, missingModelId).checks.identity, false);
+  assert.equal(evaluateHilEvidence(contract, { ...evidence, modelId: 'other-model' }).checks.identity, false);
   assert.equal(pass.maxCycleTimeUs, 910);
   assert.equal(pass.requiredCycleCount, 3);
   assert.equal(pass.observedCycleCount, 3);
@@ -281,6 +305,8 @@ test('HIL stays unproven without hardware and passes only complete measured evid
   assert.equal(partial.requiredCycleCount, 3);
   assert.equal(partial.observedCycleCount, 1);
   assert.equal(partial.maxCycleTimeUs, 720);
+  assert.notEqual(partial.checksum, pass.checksum);
+  assert.deepEqual(Object.keys(partial).sort(), Object.keys(pass).sort());
   assert.equal(evaluateHilEvidence(contract, { ...evidence, cycleTimesUs: [1200] }).status, 'fail');
   const negativeOverrun = evaluateHilEvidence(contract, { ...evidence, maxConsecutiveOverruns: -1 });
   assert.equal(negativeOverrun.status, 'fail');
@@ -297,7 +323,7 @@ test('HIL timing scans large complete traces without spread overflow and caps im
     overrun: { maxConsecutive: 0, action: 'safe' }, requiredFaults: ['fault'],
   });
   const result = evaluateHilEvidence(largeContract, {
-    targetId: 'fast-target', modelVersion: '1', graphChecksum: 'sha256:model',
+    targetId: 'fast-target', modelId: 'controller', modelVersion: '1', graphChecksum: 'sha256:model',
     cycleTimesUs: Array(cycleCount).fill(0.5),
     io: { input: 'pass', safe: 'pass' }, faults: { fault: 'pass' },
     safeState: { safe: 0 }, maxConsecutiveOverruns: 0,
@@ -326,7 +352,7 @@ test('HIL cycle derivation uses exact decimal boundaries and never hides a parti
   });
   const exactBoundary = makeContract(0.000123);
   const exactResult = evaluateHilEvidence(exactBoundary, {
-    targetId: 'boundary-target', modelVersion: '1', graphChecksum: 'c',
+    targetId: 'boundary-target', modelId: 'controller', modelVersion: '1', graphChecksum: 'c',
     cycleTimesUs: Array(123).fill(0.5), io: { i: 'pass', o: 'pass' },
     faults: { fault: 'pass' }, safeState: { o: 0 }, maxConsecutiveOverruns: 0,
   });
@@ -408,6 +434,7 @@ test('HIL verification rejects nested mutation, forged status and schema-only ob
 test('HIL evidence requires own identity, I/O, fault and safe-state measurements', () => {
   const inheritedMaps = {
     targetId: contract.targetId,
+    modelId: contract.modelId,
     modelVersion: contract.modelVersion,
     graphChecksum: contract.graphChecksum,
     cycleTimesUs: [800],
