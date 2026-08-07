@@ -31,17 +31,26 @@
 
 import { defaultParams, validateParams } from './sim2.js';
 import { semanticDigest } from './ontology.js';
+import { cellById } from './cells.js';
 import {
   FMI_IO_CONTRACT, FMI_IO_CONTRACT_CHECKSUM, FMI_IO_CONTRACT_FORMAT,
   FMI_IO_CONTRACT_VERSION, FMI_UNIT_DEFINITIONS,
   FMU_PARAMETERS, FMU_VARIABLES, materializeFmiIoMap,
 } from './fmi-signal-map.js';
+import {
+  createFmiExportSnapshot, FMI_DESIGN_RESOURCE_FORMAT, FMI_EXPORT_SNAPSHOT_FORMAT,
+  materializeFmiDesignResource, verifyFmiDesignResource,
+} from './fmi-export-snapshot.js';
 
 export {
   FMI_IO_CONTRACT, FMI_IO_CONTRACT_CHECKSUM, FMI_IO_CONTRACT_FORMAT,
   FMI_IO_CONTRACT_VERSION, FMI_UNIT_DEFINITIONS,
   FMU_PARAMETERS, FMU_VARIABLES, materializeFmiIoMap,
 } from './fmi-signal-map.js';
+export {
+  createFmiExportSnapshot, FMI_DESIGN_RESOURCE_FORMAT, FMI_EXPORT_SNAPSHOT_FORMAT,
+  materializeFmiDesignResource, verifyFmiDesignResource,
+} from './fmi-export-snapshot.js';
 
 export const FMI_VERSION = '2.0';
 export const FMI_STANDARD_VERSION = '2.0.5';
@@ -79,18 +88,45 @@ const unitDefinitionsXml = () => FMI_UNIT_DEFINITIONS.map((unit) => {
   return `    <Unit name="${xmlEscape(unit.name)}">${base}${displays}</Unit>`;
 }).join('\n');
 
+// sim2.js has a wider parameter surface than this deliberately reduced
+// one-RC FMU. Accepting a valid sim2 parameter that the FMU does not use is
+// worse than rejecting it: the caller would receive an unchanged component
+// while believing their calibration had been embedded. Keep this allow-list
+// beside the projection below so every accepted override affects the FMU.
+const FMU_PARAMETER_OVERRIDE_KEYS = Object.freeze([
+  'r0Ref', 'rc1R', 'rc1TauS', 'r0EaJ',
+  'cpCellJkgK', 'hCoolWK', 'uaAmbWK', 'entropyVK',
+]);
+const FMU_PARAMETER_OVERRIDE_KEY_SET = new Set(FMU_PARAMETER_OVERRIDE_KEYS);
+
 /**
  * The one set of fixed starts shared by modelDescription.xml and the binary.
  * FMI importers are allowed to instantiate without writing parameter starts
  * back into the component, so duplicating these values in C is a correctness
  * bug rather than a harmless default.
  */
-export function fmuParameterValues({ cell, s, p, params = null }) {
+export function resolveFmuParameterValues({ cell, s, p, params = null, strict = false }) {
   if (!cell || typeof cell !== 'object') throw new TypeError('FMU export requires a cell record.');
   if (!Number.isInteger(s) || s < 1 || !Number.isInteger(p) || p < 1) {
     throw new RangeError('FMU series and parallel counts must be positive integers.');
   }
-  const P = validateParams({ ...defaultParams(cell), ...(params || {}) }).params;
+  if (params != null && (typeof params !== 'object' || Array.isArray(params))) {
+    throw new TypeError('FMU parameter overrides must be one JSON object.');
+  }
+  const unsupported = params == null ? [] : Object.keys(params)
+    .filter((name) => !FMU_PARAMETER_OVERRIDE_KEY_SET.has(name))
+    .sort();
+  if (strict && unsupported.length) {
+    throw new TypeError(`FMU parameter overrides are not represented by the reduced one-RC component: ${unsupported.join(', ')}.`);
+  }
+  const supportedOverrides = params == null ? {} : Object.fromEntries(
+    Object.entries(params).filter(([name]) => FMU_PARAMETER_OVERRIDE_KEY_SET.has(name)),
+  );
+  const validated = validateParams({ ...defaultParams(cell), ...supportedOverrides });
+  if (strict && validated.notes.length) {
+    throw new RangeError(`FMU parameter overrides require repair: ${validated.notes.join('; ')}`);
+  }
+  const P = validated.params;
   const values = {
     cells_series: s,
     cells_parallel: p,
@@ -114,11 +150,36 @@ export function fmuParameterValues({ cell, s, p, params = null }) {
       && values.rc1_tau_s > 0 && values.cp_cell > 0 && values.mass_cell_kg > 0)) {
     throw new RangeError('FMU fixed starts violate the battery model physical contract.');
   }
-  return Object.freeze(values);
+  return Object.freeze({
+    values: Object.freeze(values),
+    warnings: Object.freeze([
+      ...unsupported.map((name) => `${name}: ignored because it is not represented by the reduced one-RC FMU`),
+      ...validated.notes,
+    ]),
+  });
+}
+
+export function fmuParameterValues(options) {
+  return resolveFmuParameterValues(options).values;
 }
 
 /** A content identity that changes with every binary-affecting default. */
-export function fmuGuid({ cell, s, p, params = null, modelName = 'BatteryPack' }) {
+export function fmuGuid({
+  cell, s, p, params = null, defaults = null, modelName = 'BatteryPack',
+  designSnapshotChecksum = null,
+}) {
+  if (designSnapshotChecksum != null
+      && !/^[a-f0-9]{64}$/.test(designSnapshotChecksum)) {
+    throw new TypeError('FMU design snapshot checksum must be a lowercase SHA-256 digest.');
+  }
+  const resolvedDefaults = defaults || fmuParameterValues({ cell, s, p, params });
+  const snapshotChecksum = designSnapshotChecksum || createFmiExportSnapshot({
+    cell, s, p, modelName, defaults: resolvedDefaults,
+    ioContractChecksum: FMI_IO_CONTRACT_CHECKSUM,
+    modelRevision: FMU_MODEL_REVISION,
+    fmiVersion: FMI_VERSION,
+    fmiStandardVersion: FMI_STANDARD_VERSION,
+  }).snapshotChecksum;
   const digest = semanticDigest({
     format: 'battery-design/fmi-2.0-co-simulation@1',
     standardPatch: FMI_STANDARD_VERSION,
@@ -126,18 +187,22 @@ export function fmuGuid({ cell, s, p, params = null, modelName = 'BatteryPack' }
     modelName,
     cellId: cell?.id || null,
     ioContractChecksum: FMI_IO_CONTRACT_CHECKSUM,
-    defaults: fmuParameterValues({ cell, s, p, params }),
+    defaults: resolvedDefaults,
+    designSnapshotChecksum: snapshotChecksum,
   });
   return `{${digest.slice(0, 8)}-${digest.slice(8, 12)}-${digest.slice(12, 16)}-${digest.slice(16, 20)}-${digest.slice(20, 32)}}`;
 }
 
 /** The FMI 2.0 modelDescription.xml — the contract the host tool reads. */
-export function modelDescriptionXml({ cell, s, p, params = null, modelName = 'BatteryPack', guid = null, generatedOn = '1970-01-01T00:00:00Z' }) {
-  const paramValues = fmuParameterValues({ cell, s, p, params });
+export function modelDescriptionXml({
+  cell, s, p, params = null, defaults = null, modelName = 'BatteryPack',
+  guid = null, generatedOn = '1970-01-01T00:00:00Z',
+}) {
+  const paramValues = defaults || fmuParameterValues({ cell, s, p, params });
   // The GUID must match between the XML and the binary. It is derived from the
   // design so the same design always produces the same FMU — reproducible
   // builds matter when someone asks which pack a result came from.
-  const id = guid || fmuGuid({ cell, s, p, params, modelName });
+  const id = guid || fmuGuid({ cell, s, p, params, defaults: paramValues, modelName });
   const ioMap = materializeFmiIoMap({
     parameterValues: paramValues, modelName, modelRevision: FMU_MODEL_REVISION,
     guid: id, fmiStandardVersion: FMI_STANDARD_VERSION,
@@ -607,6 +672,13 @@ The machine-readable form of this exact mapping is
 so host caches cannot silently reuse a component after the interface contract
 changes.
 
+The physical topology, cell facts, module partition, dimensions, mass, layout
+and selected component ids that produced this component are bound separately
+in \`resources/battery-design-design.json\`. Its snapshot checksum is also part
+of the GUID. A governed DesignSpec export marks that resource complete; the
+legacy cell/S/P adapter remains visibly incomplete rather than inventing
+layout provenance it never received.
+
 ## Building it
 
 The C is complete and dependency-free. Compile it against the official FMI
@@ -658,26 +730,61 @@ them, at the cost of a bigger interface.
 }
 
 /** Everything needed to write an FMU to disk, as plain strings. */
-export function buildFmu({ cell, s, p, params = null, modelName = 'BatteryPack', generatedOn = '1970-01-01T00:00:00Z' }) {
+export function buildFmu({
+  design = null, cell = null, s = null, p = null, params = null,
+  modelName = 'BatteryPack', generatedOn = '1970-01-01T00:00:00Z',
+} = {}) {
   if (!validModelIdentifier(modelName)) {
     throw new TypeError('FMU modelName must start with a letter or underscore and contain only letters, numbers and underscores (64 characters maximum).');
   }
-  const defaults = fmuParameterValues({ cell, s, p, params });
-  const guid = fmuGuid({ cell, s, p, params, modelName });
+  const hasDesign = design != null;
+  const hasAnyLegacy = cell != null || s != null || p != null;
+  if (hasDesign && hasAnyLegacy) {
+    throw new TypeError('FMU export accepts either one complete design or legacy cell/s/p inputs, not both.');
+  }
+  const selectedCell = hasDesign ? cellById(design?.cell?.id) : cell;
+  const selectedS = hasDesign ? design?.pack?.s : s;
+  const selectedP = hasDesign ? design?.pack?.p : p;
+  const parameterResolution = resolveFmuParameterValues({
+    cell: selectedCell, s: selectedS, p: selectedP, params, strict: hasDesign,
+  });
+  const { values: defaults, warnings: parameterWarnings } = parameterResolution;
+  const exportSnapshot = createFmiExportSnapshot({
+    ...(hasDesign
+      ? { design }
+      : { cell: selectedCell, s: selectedS, p: selectedP }),
+    modelName,
+    defaults,
+    ioContractChecksum: FMI_IO_CONTRACT_CHECKSUM,
+    modelRevision: FMU_MODEL_REVISION,
+    fmiVersion: FMI_VERSION,
+    fmiStandardVersion: FMI_STANDARD_VERSION,
+  });
+  const guid = fmuGuid({
+    cell: selectedCell, s: selectedS, p: selectedP, defaults, modelName,
+    designSnapshotChecksum: exportSnapshot.snapshotChecksum,
+  });
+  const designResource = materializeFmiDesignResource({ ...exportSnapshot, guid });
   const ioMap = materializeFmiIoMap({
     parameterValues: defaults, modelName, modelRevision: FMU_MODEL_REVISION,
     guid, fmiStandardVersion: FMI_STANDARD_VERSION,
   });
   const files = Object.freeze({
-    'modelDescription.xml': modelDescriptionXml({ cell, s, p, params, modelName, guid, generatedOn }),
+    'modelDescription.xml': modelDescriptionXml({
+      cell: selectedCell, s: selectedS, p: selectedP, defaults, modelName, guid, generatedOn,
+    }),
     [`sources/${modelName}.c`]: fmuSourceC({ modelName, guid, defaults }),
     'resources/battery-design-io-map.json': `${JSON.stringify(ioMap, null, 2)}\n`,
-    'README.md': fmuReadme({ modelName, cell, s, p }),
+    'resources/battery-design-design.json': `${JSON.stringify(designResource, null, 2)}\n`,
+    'README.md': fmuReadme({ modelName, cell: selectedCell, s: selectedS, p: selectedP }),
   });
   return Object.freeze({
     guid, modelName, standardVersion: FMI_STANDARD_VERSION,
     modelRevision: FMU_MODEL_REVISION, ioContractChecksum: FMI_IO_CONTRACT_CHECKSUM,
-    defaults, ioMap, files,
+    designSnapshotChecksum: exportSnapshot.snapshotChecksum,
+    designComplete: designResource.snapshot.source.complete,
+    designBinding: designResource.snapshot.source.binding,
+    defaults, parameterWarnings, ioMap, designResource, files,
     note: 'A path-preserving source FMU build kit: complete, readable C that must be compiled and packaged for the target platform. It is not a loadable .fmu yet.',
   });
 }

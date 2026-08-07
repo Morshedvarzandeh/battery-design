@@ -57,7 +57,7 @@ test('native linux64 FMU builds reproducibly and passes a real consumer lifecycl
   assert.equal(treeSmoke.status, 0, `${treeSmoke.stdout}\n${treeSmoke.stderr}`);
   const lifecycle = JSON.parse(treeSmoke.stdout);
   assert.equal(lifecycle.guid, built.guid);
-  assert.equal(lifecycle.parameterStartsChecked, 17);
+  assert.equal(lifecycle.contractStartsChecked, 17);
   assert.ok(lifecycle.discharged.SoC < lifecycle.initial.SoC);
   assert.ok(lifecycle.discharged.V_pack < lifecycle.initial.V_pack);
 

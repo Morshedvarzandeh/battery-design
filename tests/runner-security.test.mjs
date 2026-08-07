@@ -11,6 +11,9 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 
+import { designFromSpec } from '../js/api.js';
+import { normalizeDesignSpec } from '../js/design-spec.js';
+
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const RUNNER = path.join(ROOT, 'desktop', 'bd.mjs');
 const TOKEN = '0123456789abcdef'.repeat(4);
@@ -163,6 +166,107 @@ test('runner rejects malformed paths and unbounded work without terminating', as
 
   const alive = await api(runner.base, '/api/capabilities');
   ok(alive.status === 200, 'runner remains healthy after rejected inputs');
+});
+
+test('runner FMU export binds one strict DesignSpec to the returned port and layout resources', async (t) => {
+  const runner = await startRunner(t);
+  const spec = JSON.parse(readFileSync(path.join(ROOT, 'fmi', 'battery-design-ev.design-spec.json'), 'utf8'));
+  const expected = designFromSpec(normalizeDesignSpec(spec, { strict: true, closed: true }));
+  const response = await api(runner.base, '/api/fmu', { method: 'POST', body: { spec } });
+  const built = await response.json();
+  ok(response.status === 200, `strict design export succeeds: ${built.error || ''}`);
+  ok(built.designComplete === true, 'the API does not downgrade a DesignSpec export to legacy cell/S/P provenance');
+  ok(built.designBinding?.designChecksum === expected.binding.designChecksum,
+    'the API response carries the exact immutable design-result binding');
+  const resource = JSON.parse(built.files['resources/battery-design-design.json']);
+  const ioMap = JSON.parse(built.files['resources/battery-design-io-map.json']);
+  ok(resource.guid === built.guid && resource.snapshotChecksum === built.designSnapshotChecksum,
+    'the machine-readable design resource is bound to the exported component identity');
+  ok(resource.snapshot.source.binding.specChecksum === expected.binding.specChecksum,
+    'the packaged resource refers to the same normalized DesignSpec snapshot');
+  ok(resource.snapshot.pack.cellCount === 4730 && resource.snapshot.layout.columns === 64,
+    'physical topology and layout facts reach the enterprise export');
+  ok(ioMap.guid === built.guid && ioMap.contractChecksum === built.ioContractChecksum,
+    'the independently readable port map belongs to the same component');
+
+  const missingSpec = await api(runner.base, '/api/fmu', {
+    method: 'POST', body: {},
+  });
+  const missingSpecBody = await missingSpec.json();
+  ok(missingSpec.status === 400 && /FMU request body must contain spec/.test(missingSpecBody.error)
+    && !Object.prototype.hasOwnProperty.call(missingSpecBody, 'designComplete'),
+    'the enterprise export requires an explicit DesignSpec instead of creating a default design');
+  const missingVersion = await api(runner.base, '/api/fmu', {
+    method: 'POST', body: { spec: { application: 'ev' } },
+  });
+  const missingVersionBody = await missingVersion.json();
+  ok(missingVersion.status === 400 && /must declare schemaVersion/.test(missingVersionBody.error)
+    && !Object.prototype.hasOwnProperty.call(missingVersionBody, 'designComplete'),
+    'the enterprise export requires the caller to declare the governed schema version');
+  for (const requestTypo of [
+    { key: 'param', body: { spec, param: { r0Ref: 20 } } },
+    { key: 'modelname', body: { spec, modelname: 'MisspelledModel' } },
+  ]) {
+    const typoResponse = await api(runner.base, '/api/fmu', {
+      method: 'POST', body: requestTypo.body,
+    });
+    const typoBody = await typoResponse.json();
+    ok(typoResponse.status === 400
+      && new RegExp(`unsupported field\\(s\\): ${requestTypo.key}`).test(typoBody.error)
+      && !Object.prototype.hasOwnProperty.call(typoBody, 'designComplete')
+      && !Object.prototype.hasOwnProperty.call(typoBody, 'files'),
+    `the enterprise export rejects misspelled request field ${requestTypo.key} without an artifact`);
+  }
+  const invalid = await api(runner.base, '/api/fmu', {
+    method: 'POST',
+    body: { spec: { schemaVersion: spec.schemaVersion, application: 'ev', s: '110' } },
+  });
+  ok(invalid.status === 400 && /DesignSpec is invalid/.test((await invalid.json()).error),
+    'the enterprise export rejects invalid DesignSpecs instead of silently repairing them');
+  const topLevelTypo = await api(runner.base, '/api/fmu', {
+    method: 'POST', body: { spec: { ...spec, enrgyWh: 60_000 } },
+  });
+  ok(topLevelTypo.status === 400
+    && /\$\.enrgyWh: Field is not declared/.test((await topLevelTypo.json()).error),
+    'the enterprise export rejects unknown top-level keys before a default can hide the typo');
+  const nestedTypo = await api(runner.base, '/api/fmu', {
+    method: 'POST',
+    body: { spec: { ...spec, layout: { ...spec.layout, arrangment: 'hex' } } },
+  });
+  ok(nestedTypo.status === 400
+    && /\$\.layout\.arrangment: Field is not declared/.test((await nestedTypo.json()).error),
+    'the enterprise export recursively closes governed nested records');
+  const unknownCell = await api(runner.base, '/api/fmu', {
+    method: 'POST', body: { spec: { ...spec, cell: 'misspelled-cell-id' } },
+  });
+  const unknownCellBody = await unknownCell.json();
+  ok(unknownCell.status === 400 && /did not resolve exactly:[\s\S]*Unknown cell/.test(unknownCellBody.error)
+    && !Object.prototype.hasOwnProperty.call(unknownCellBody, 'designComplete'),
+    'the enterprise export rejects an unknown catalog cell instead of binding its fallback');
+  const unknownComponent = await api(runner.base, '/api/fmu', {
+    method: 'POST',
+    body: { spec: { ...spec, components: { ...spec.components, cooling: 'misspelled-cooling-id' } } },
+  });
+  const unknownComponentBody = await unknownComponent.json();
+  ok(unknownComponent.status === 400
+    && /did not resolve exactly:[\s\S]*Unknown cooling/.test(unknownComponentBody.error)
+    && !Object.prototype.hasOwnProperty.call(unknownComponentBody, 'designComplete'),
+    'the enterprise export rejects an unknown component instead of binding its fallback');
+  const falseSpec = await api(runner.base, '/api/fmu', {
+    method: 'POST', body: { spec: false },
+  });
+  ok(falseSpec.status === 400 && /DesignSpec must be one JSON object/.test((await falseSpec.json()).error),
+    'a false DesignSpec is rejected instead of being replaced through truthy fallback');
+  const falseParams = await api(runner.base, '/api/fmu', {
+    method: 'POST', body: { spec, params: false },
+  });
+  ok(falseParams.status === 400 && /parameter overrides must be one JSON object/.test((await falseParams.json()).error),
+    'a false parameter record is rejected instead of being replaced through truthy fallback');
+  const repairedCalibration = await api(runner.base, '/api/fmu', {
+    method: 'POST', body: { spec, params: { r0Ref: -1 } },
+  });
+  ok(repairedCalibration.status === 400 && /parameter overrides require repair/.test((await repairedCalibration.json()).error),
+    'calibration overrides must already satisfy the governed parameter contract');
 });
 
 test('desktop bootstrap scrubs the URL token and attaches it to every API call', () => {

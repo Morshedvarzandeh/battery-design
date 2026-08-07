@@ -1,0 +1,115 @@
+{
+  "schemaVersion": "1.0.0",
+  "application": "ev",
+  "cell": "lg-inr18650-mj1",
+  "s": 110,
+  "p": 43,
+  "energyWh": 60000,
+  "deliveredWh": 48000,
+  "nominalV": 400,
+  "contPowerW": 50000,
+  "peakPowerW": 150000,
+  "chargeRateC": 0.48,
+  "maxMassKg": 450,
+  "maxDimsMm": {
+    "x": 1800,
+    "y": 1400,
+    "z": 150
+  },
+  "cyclesPerYear": 100,
+  "targetYears": 10,
+  "dod": 0.8,
+  "ambientC": [-20, 50],
+  "market": "eu",
+  "batteryCategory": "ev",
+  "evaluationDate": "2027-02-18",
+  "gridGPerKWh": 440,
+  "v2xPolicy": "off",
+  "isolationStandard": "un-r100-separate-dc",
+  "driveMode": "normal",
+  "gradePct": 0,
+  "profileId": "wltp-ev",
+  "profileScaleW": 150000,
+  "vehicle": {
+    "label": "Light electric vehicle",
+    "curbKg": 1250,
+    "payloadKg": 150,
+    "cd": 0.29,
+    "frontalAreaM2": 2.2,
+    "crr": 0.01,
+    "driveEff": 0.9,
+    "regenFrac": 0.6,
+    "auxW": 500,
+    "rotatingMass": 0.05,
+    "note": "C-segment class values. Auxiliaries are the 12 V loads plus mild climate use; winter HVAC can triple that."
+  },
+  "mission": {
+    "passes": 1,
+    "startSoC": 1,
+    "ambientC": 50,
+    "charge": {
+      "mode": "none",
+      "powerW": 0,
+      "minutes": 0
+    }
+  },
+  "architecture": {
+    "topology": "master-slave",
+    "isolationStandard": "un-r100-separate-dc",
+    "sModOverride": 11,
+    "channelsPerIc": 16,
+    "linkCapUF": 500,
+    "prechargeTimeS": 0.5,
+    "prechargesPerHour": 4,
+    "cellsPerTempSensor": 6,
+    "targetEnergyWh": 60000,
+    "racksOverride": 1,
+    "lvBusV": 12,
+    "interconnectMOhm": 20
+  },
+  "thermal": {
+    "loopOverride": "liquid-chiller"
+  },
+  "charging": {
+    "obcOverride": "obc-22k"
+  },
+  "efficiency": {
+    "chargeEff": 0.95,
+    "batteryEff": 0.98,
+    "dischargeEff": 0.95,
+    "auxiliaryW": 0,
+    "cycleHours": 2
+  },
+  "busbarMOhm": 0.5,
+  "contactorMOhm": 0.2,
+  "fuseRatingA": 860,
+  "fuseI2t": null,
+  "contactorBreakingA": null,
+  "busbarAreaMm2": 50,
+  "busbarKind": "xlpe-insulated",
+  "linkFuseA": 15,
+  "diagnostics": {},
+  "conditionMonitoring": {},
+  "compareCellIds": [],
+  "components": {
+    "busbar": "nickel-strip-0p15",
+    "spacer": "pp-honeycomb-holder",
+    "vent": "cell-score-vent-cid",
+    "cooling": "serpentine-ribbon",
+    "tim": "thermal-epoxy",
+    "housing": "folded-aluminum-sheet"
+  },
+  "layout": {
+    "arrangement": "hex",
+    "orientation": "upright",
+    "spacingMm": 1,
+    "layerGapMm": 2,
+    "wallMm": 2,
+    "headroomMm": 8,
+    "underMm": 0,
+    "rowExtraMm": 2,
+    "nx": 64,
+    "nz": 1,
+    "bay": null
+  }
+}

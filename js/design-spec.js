@@ -743,6 +743,45 @@ function schemaIssue(path, message) {
   return issue('SCHEMA_CONSTRAINT', path, message, null);
 }
 
+// Closed-key validation is intentionally separate from normalization. A
+// governed input must report the misspelled key the caller actually sent,
+// before grouped aliases/defaults are projected into the canonical shape.
+// Ordinary schema validation remains extension-tolerant.
+function closedKeyIssues(value, schema = DESIGN_SPEC_SCHEMA, path = '$') {
+  if (!schema || typeof schema !== 'object') return [];
+  if (schema.$ref) {
+    const target = schemaTarget(schema.$ref);
+    return target ? closedKeyIssues(value, target, path)
+      : [schemaIssue(path, `Unresolved schema reference ${schema.$ref}.`)];
+  }
+  if (schema.anyOf) {
+    const compatible = schema.anyOf.filter((branch) => schemaIssues(value, branch, path).length === 0);
+    return compatible.length ? closedKeyIssues(value, compatible[0], path) : [];
+  }
+
+  const errors = [];
+  for (const branch of schema.allOf || []) errors.push(...closedKeyIssues(value, branch, path));
+  if (Array.isArray(value) && schema.items) {
+    value.forEach((entry, index) => {
+      errors.push(...closedKeyIssues(entry, schema.items, `${path}[${index}]`));
+    });
+  }
+  if (isRecord(value) && schema.properties) {
+    for (const key of Object.keys(value)) {
+      if (!own(schema.properties, key)) {
+        errors.push(issue(
+          'SCHEMA_UNKNOWN_FIELD', `${path}.${key}`,
+          'Field is not declared by the governed DesignSpec schema.', null,
+        ));
+      }
+    }
+    for (const [key, childSchema] of Object.entries(schema.properties)) {
+      if (own(value, key)) errors.push(...closedKeyIssues(value[key], childSchema, `${path}.${key}`));
+    }
+  }
+  return errors;
+}
+
 // Small Draft 2020-12 evaluator for the vocabulary used by the exported
 // contract. Keeping it beside the schema means validation is available in a
 // browser, CLI or MCP process without a second dependency or a divergent
@@ -840,7 +879,7 @@ function schemaIssues(value, schema = DESIGN_SPEC_SCHEMA, path = '$') {
 // Return both the immutable canonical spec and any visible repairs.  The
 // public engine uses safe repair mode for backwards compatibility; clients
 // that author governed records can request strict mode and reject all repairs.
-export function canonicalizeDesignSpec(input = {}, { strict = false } = {}) {
+export function canonicalizeDesignSpec(input = {}, { strict = false, closed = false } = {}) {
   const issues = [];
   let source = input;
   if (!isRecord(source)) {
@@ -851,6 +890,7 @@ export function canonicalizeDesignSpec(input = {}, { strict = false } = {}) {
     source = {};
   }
   const spec = cloneData(source);
+  if (closed) issues.push(...closedKeyIssues(spec));
 
   if (spec.schemaVersion != null && spec.schemaVersion !== DESIGN_SPEC_SCHEMA_VERSION) {
     issues.push(issue(
@@ -979,8 +1019,8 @@ export function normalizeDesignSpec(input = {}, options = {}) {
   return canonicalizeDesignSpec(input, options).spec;
 }
 
-export function validateDesignSpec(input = {}) {
-  const { spec, issues } = canonicalizeDesignSpec(input);
+export function validateDesignSpec(input = {}, { closed = false } = {}) {
+  const { spec, issues } = canonicalizeDesignSpec(input, { closed });
   const errors = [...issues, ...schemaIssues(spec)];
   return deepFreeze({ valid: errors.length === 0, errors, normalized: spec });
 }

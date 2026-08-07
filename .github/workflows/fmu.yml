@@ -49,7 +49,7 @@ jobs:
       - name: Validate the FMI contract generator
         run: node --test tests/fmi-contract.test.mjs
       - name: Generate the canonical EV source-FMU tree once
-        run: node desktop/bd.mjs fmu --app ev --energy 60000 --out "$FMI_TREE"
+        run: node desktop/bd.mjs fmu --spec fmi/battery-design-ev.design-spec.json --out "$FMI_TREE"
       - name: Preserve the canonical source tree
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -199,7 +199,7 @@ jobs:
           @echo off
           call "$env:FMI_VCVARS64"
           if errorlevel 1 exit /b %errorlevel%
-          node tools\fmu-build.mjs package --tree "$env:FMI_TREE" --output "$winFmu" --require-platforms win64
+          node tools\fmu-build.mjs package --tree "$env:FMI_TREE" --output "$winFmu" --require-platforms win64 --require-complete-design --require-source-revision
           "@ | Set-Content -LiteralPath $script -Encoding ascii
           & $script
           if ($LASTEXITCODE -ne 0) { throw "Windows-only FMU packaging failed with exit code $LASTEXITCODE" }
@@ -323,8 +323,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           first="$RUNNER_TEMP/battery-design-ev.first.fmu"
-          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output "$first" --require-platforms linux64,win64 --max-glibc 2.17
-          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output dist/battery-design-ev.fmu --require-platforms linux64,win64 --max-glibc 2.17
+          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output "$first" --require-platforms linux64,win64 --max-glibc 2.17 --require-complete-design --require-source-revision
+          node tools/fmu-build.mjs package --tree "$FMI_TREE" --output dist/battery-design-ev.fmu --require-platforms linux64,win64 --max-glibc 2.17 --require-complete-design --require-source-revision
           cmp "$first" dist/battery-design-ev.fmu
           (cd dist && sha256sum battery-design-ev.fmu > battery-design-ev.fmu.sha256)
       - name: Verify the final archive's exact platform set

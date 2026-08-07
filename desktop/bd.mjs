@@ -36,6 +36,9 @@ import { simulate, calibrate, defaultParams, PARAM_SPEC, PARAM_BY_ID } from '../
 import { cellById } from '../js/cells.js';
 import { profileById } from '../js/loadprofiles.js';
 import { buildFmu } from '../js/fmi.js';
+import {
+  DESIGN_SPEC_SCHEMA_VERSION, DesignSpecValidationError, normalizeDesignSpec,
+} from '../js/design-spec.js';
 import { buildTopology, jointCompatibility, billOfMaterials, materialBreakdown } from '../js/topology.js';
 import { wiringStudy, INSTALLATIONS } from '../js/wiring.js';
 import { groundingStudy, faultFromShortCircuit } from '../js/grounding.js';
@@ -167,13 +170,22 @@ function safeTokenEqual(received, expected) {
 }
 
 // --- argument parsing, the smallest thing that works ------------------------
+const PARSED_FLAGS = Symbol('parsedFlags');
+const DUPLICATE_FLAGS = Symbol('duplicateFlags');
+
 function parseArgs(argv) {
   const out = { _: [] };
+  out[PARSED_FLAGS] = [];
+  out[DUPLICATE_FLAGS] = [];
+  const seenFlags = new Set();
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
       const key = a.slice(2);
       const next = argv[i + 1];
+      out[PARSED_FLAGS].push(key);
+      if (seenFlags.has(key)) out[DUPLICATE_FLAGS].push(key);
+      seenFlags.add(key);
       if (next == null || next.startsWith('--')) out[key] = true;
       else { out[key] = next; i++; }
     } else out._.push(a);
@@ -275,6 +287,43 @@ function specFrom(args) {
   }
   for (const k of Object.keys(spec)) if (spec[k] === undefined) delete spec[k];
   return spec;
+}
+
+// A persisted DesignSpec is the complete design input. Mixing it with legacy
+// design flags would create an order-dependent merge, so fail closed instead.
+// Export-only flags such as --out, --name and --params remain valid alongside
+// --spec.
+const FMU_SPEC_CONFLICT_FLAGS = Object.freeze([
+  'app', 'application', 'cell', 'market', 'battery-category', 'evaluation-date',
+  'v2x', 'mode', 'policy', 'energy', 's', 'p', 'dod', 'grade', 'profile',
+  'profile-trace', 'vessel', 'reference-mass', 'payload', 'design-kn',
+  'service-kn', 'current-kn', 'wind-kn', 'propulsion-w', 'hotel-w',
+  'duration-h', 'sea', 'twin-evidence', 'replay', 'shore-connection', 'mass',
+  'passes', 'charge', 'soc', 'chargeW', 'minutes',
+]);
+const FMU_EXPORT_FLAGS = Object.freeze(['spec', 'out', 'name', 'params']);
+const FMU_ALLOWED_FLAGS = new Set([...FMU_EXPORT_FLAGS, ...FMU_SPEC_CONFLICT_FLAGS]);
+
+function fmuSpecFrom(args) {
+  const unknown = args[PARSED_FLAGS].filter((key) => !FMU_ALLOWED_FLAGS.has(key));
+  if (unknown.length) {
+    throw new TypeError(`fmu does not accept option(s): ${[...new Set(unknown)]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  const unexpectedPositionals = args._.slice(1);
+  if (unexpectedPositionals.length) {
+    throw new TypeError(`fmu does not accept positional arguments: ${unexpectedPositionals.join(', ')}.`);
+  }
+  if (args[DUPLICATE_FLAGS].length) {
+    throw new TypeError(`fmu option(s) may be supplied only once: ${[...new Set(args[DUPLICATE_FLAGS])]
+      .map((key) => `--${key}`).join(', ')}.`);
+  }
+  if (args.spec == null) return specFrom(args);
+  const conflicts = FMU_SPEC_CONFLICT_FLAGS.filter((key) => args[key] != null);
+  if (conflicts.length) {
+    throw new TypeError(`--spec cannot be combined with design-shaping flags: ${conflicts.map((key) => `--${key}`).join(', ')}.`);
+  }
+  return loadDesignSpec(args.spec);
 }
 
 function emit(args, data, humanLines) {
@@ -634,15 +683,18 @@ const COMMANDS = {
   // Export the source-FMU build kit. It becomes a loadable FMI 2.0 component
   // only after the target-platform binary is compiled and the tree packaged.
   fmu(args) {
-    const spec = specFrom(args);
+    const spec = fmuSpecFrom(args);
     const d = designFromSpec(spec);
+    if (args.spec != null) assertGovernedDesignResolved(d, args.spec);
     const cell = cellById(d.cell.id);
     const dir = args.out === true || !args.out ? './fmu' : args.out;
-    const built = buildFmu({
-      cell, s: d.pack.s, p: d.pack.p,
+    const buildOptions = {
       params: args.params ? loadParams(args.params) : null,
       modelName: args.name || 'BatteryPack',
-    });
+    };
+    const built = args.spec != null
+      ? buildFmu({ ...buildOptions, design: d })
+      : buildFmu({ ...buildOptions, cell, s: d.pack.s, p: d.pack.p });
     for (const [rel, content] of Object.entries(built.files)) {
       const full = path.join(dir, rel);
       mkdirSync(path.dirname(full), { recursive: true });
@@ -653,6 +705,8 @@ const COMMANDS = {
       `  written to ${dir}/`,
       ...Object.keys(built.files).map((f) => `    ${f}`),
       `  model ${built.modelName}, guid ${built.guid}`,
+      `  design snapshot ${built.designSnapshotChecksum} (${built.designComplete ? 'complete design binding' : 'legacy incomplete provenance'})`,
+      ...built.parameterWarnings.map((warning) => `  warning: ${warning}`),
       '',
       built.note,
       `Compile and package it with the commands in ${dir}/README.md, then validate the resulting .fmu in your host tool.`,
@@ -1254,10 +1308,13 @@ const COMMANDS = {
       // Co-simulation source-kit export: path-preserving files the page serializes for download.
       if (url === '/api/fmu' && req.method === 'POST') {
         return withBody((body) => {
-          const d = designFromSpec(body.spec || {});
-          const cell = cellById(d.cell.id);
-          return buildFmu({ cell, s: d.pack.s, p: d.pack.p, params: body.params || null,
-            modelName: body.modelName || 'BatteryPack' });
+          const request = validateFmuRequestEnvelope(body);
+          const label = 'FMU request body.spec';
+          const spec = normalizeGovernedDesignSpec(request.spec, label);
+          const d = designFromSpec(spec);
+          assertGovernedDesignResolved(d, label);
+          return buildFmu({ design: d, params: request.params ?? null,
+            modelName: request.modelName ?? 'BatteryPack' });
         });
       }
       if (isApi) {
@@ -1358,6 +1415,62 @@ function loadParams(file) {
   }
 }
 
+const FMU_REQUEST_KEYS = new Set(['spec', 'params', 'modelName']);
+
+function validateFmuRequestEnvelope(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new TypeError('FMU request body must be one JSON object.');
+  }
+  const unsupported = Object.keys(body).filter((key) => !FMU_REQUEST_KEYS.has(key));
+  if (unsupported.length) {
+    throw new TypeError(`FMU request body contains unsupported field(s): ${unsupported.join(', ')}.`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(body, 'spec')) {
+    throw new TypeError('FMU request body must contain spec.');
+  }
+  return body;
+}
+
+function normalizeGovernedDesignSpec(input, label) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new TypeError(`${label}: DesignSpec must be one JSON object.`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(input, 'schemaVersion')) {
+    throw new TypeError(
+      `${label}: DesignSpec must declare schemaVersion ${DESIGN_SPEC_SCHEMA_VERSION}.`,
+    );
+  }
+  try {
+    return normalizeDesignSpec(input, { strict: true, closed: true });
+  } catch (error) {
+    if (error instanceof DesignSpecValidationError) {
+      throw new TypeError(`${label}: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+function assertGovernedDesignResolved(design, label) {
+  if (design.warnings.length) {
+    throw new TypeError(
+      `${label}: governed DesignSpec did not resolve exactly: ${design.warnings.join(' ')}`,
+    );
+  }
+}
+
+function loadDesignSpec(file) {
+  if (typeof file !== 'string' || !file) {
+    throw new TypeError('--spec requires a DesignSpec JSON file path.');
+  }
+  let input;
+  try {
+    input = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    throw new TypeError(`Could not read DesignSpec from ${file}: ${error.message}`);
+  }
+  return normalizeGovernedDesignSpec(input, file);
+}
+
 // Measured data: time_s, current_A, voltage_V and optionally temp_C. Header
 // optional, comma or semicolon or tab, because real exports vary.
 function readMeasuredCsv(file) {
@@ -1393,7 +1506,8 @@ const HELP = `battery-design — desktop runner (API v${API_VERSION})
   sweep     one variable across a range        --vary cell|mass|payload|energy [--from --to --step]
   search    the whole design space, ranked     --app ev --rank cost|range|mass|density|upfront [--top N]
   range     drive-cycle study, mass × mode     --app ev --energy 60000 [--from --to --step]
-  fmu       export an FMI 2.0 source-FMU kit   --app ev [--out ./fmu] [--params p.json]
+  fmu       export an FMI 2.0 source-FMU kit   --spec design-spec.json [--out ./fmu]
+                                                  (legacy --app/--energy flags remain supported)
   addons    what this tool can do, and cannot   [--app ev]
   bom       every conductor sized, every       --app ev [--install bundled] [--env harsh]
             joint checked, and the bill of     [--modrun 300 --packrun 400 --pitch 25]

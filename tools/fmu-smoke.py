@@ -486,7 +486,7 @@ def exercise(tree: Path, fmi_platform: str) -> dict[str, object]:
         "modelIdentifier": fmu.model_identifier,
         "guid": fmu.guid,
         "platform": fmi_platform,
-        "parameterStartsChecked": len(start_names),
+        "contractStartsChecked": len(start_names),
         "steps": 10,
         "initial": initial,
         "discharged": discharged,
