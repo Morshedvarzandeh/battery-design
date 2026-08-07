@@ -30,6 +30,7 @@ export const REQUIRED_RUNTIME_ENTRIES = Object.freeze([
   'cosim.html',
   'cosim.css',
   'js',
+  'knowledge',
   'wasm',
   'vendor',
   'assets',

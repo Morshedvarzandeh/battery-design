@@ -13,9 +13,16 @@ test('desktop exports the complete architecture graph independently of a design'
   assert.equal(graph.ontology.version, '1.0.0');
   assert.equal(graph.validation.conforms, true);
   const modules = graph.nodes.filter((node) => node.types.includes('bd:DomainModule'));
-  assert.equal(modules.length, 22);
-  assert.equal(new Set(modules.map((node) => node.id)).size, 22);
+  assert.equal(modules.length, 23);
+  assert.equal(new Set(modules.map((node) => node.id)).size, 23);
   assert.ok(modules.some((node) => node.label === 'Charging and bidirectional power'));
+  const qualityMemory = modules.find((node) => node.properties?.key === 'qualityMemory');
+  assert.equal(qualityMemory?.label, 'Root-cause quality memory');
+  assert.deepEqual(qualityMemory?.properties?.implementation, [
+    'js/root-cause-library.js',
+    'knowledge/root-causes/schema.v1.js',
+    'knowledge/root-causes/records.v1.js',
+  ]);
   assert.ok(graph.nodes.some((node) => node.types.includes('bd:EngineeringRule')));
 });
 

@@ -341,6 +341,62 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-packaged-dependency-omission',
+      title: 'Packaged runtime omits a newly imported dependency tree',
+      symptom: 'The source checkout runs correctly, but staged desktop bd and MCP entry points fail at startup because an imported top-level runtime tree is absent from the package.',
+      evidence: [
+        'The root-cause library imports schema and seed records from knowledge/root-causes while desktop staging previously copied js and desktop but not knowledge.',
+        'The isolated packaged-tree smoke reports an import failure only after source-level tests have already passed.',
+      ],
+      detection: [
+        {
+          method: 'isolated packaged-tree import and startup test',
+          signal: 'Stage the declared runtime entries into a temporary tree, import the staged bd command and start its local runner.',
+          failureCondition: 'A static runtime import resolves in the checkout but is missing from the staged tree or the staged entry point cannot start.',
+        },
+      ],
+      causalChain: [
+        'A runtime module adds a static import from a new top-level knowledge directory.',
+        'Desktop packaging copies a manually maintained allowlist of top-level runtime entries.',
+        'The allowlist is not updated with the new import, so source execution succeeds while the staged dependency closure is incomplete.',
+        'Packaged bd and MCP startup resolve the missing import and fail before command dispatch.',
+      ],
+      rootCause: 'The packaging manifest was a manual top-level allowlist with no automatic dependency-closure check tying a newly imported runtime tree to the staged artifact.',
+      resolution: [
+        'Add the knowledge tree to the required staged runtime entries and to the independent MUST_SHIP regression list.',
+        'Keep the isolated staged import/startup smoke as the acceptance test for the packaged dependency closure.',
+      ],
+      prevention: [
+        'Review desktop staging whenever a shipped entry point imports from a new top-level directory.',
+        'Require both manifest membership and an isolated staged entry-point import so copying a name without usable dependencies cannot pass.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/packaged-tree.test.mjs',
+          assertion: 'Desktop staging must ship knowledge and the isolated staged bd import/startup must succeed without reaching back into the checkout.',
+        },
+      ],
+      affectedSurfaces: ['cli', 'local-api', 'mcp', 'packaging'],
+      tags: ['dependency-closure', 'desktop', 'packaging', 'staging'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'desktop-app/prepare.mjs',
+          note: 'Explicit top-level runtime staging manifest.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/root-cause-library.js',
+          note: 'Runtime import of the versioned knowledge records.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/packaged-tree.test.mjs',
+          note: 'Isolated staged-tree dependency and startup regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-resource-self-checksum-trust',
       title: 'Duplicated resource and checksum are trusted together',
       symptom: 'A design or I/O resource is modified and its adjacent checksum is recomputed, allowing both altered values to appear mutually consistent.',
