@@ -28,6 +28,14 @@ import {
   generatedCompetencyQuestionsJson, generatedContextJson, generatedCoreTurtle,
 } from './generate-ontology.mjs';
 import { validateGraph as validateKnowledgeGraph } from '../js/knowledge.js';
+import {
+  ROOT_CAUSE_CATALOG,
+  ROOT_CAUSE_CATALOG_FORMAT,
+  ROOT_CAUSE_RECORD_FORMAT,
+  ROOT_CAUSE_RECORD_SCHEMA,
+  ROOT_CAUSE_SCHEMA_VERSION,
+  validateRootCauseCatalog,
+} from '../js/root-cause-library.js';
 
 let errors = 0;
 const err = (msg) => { console.error('  ✗', msg); errors++; };
@@ -156,6 +164,69 @@ console.log(`presets.js — ${PRESETS.length} presets`);
     }
     if (!Array.isArray(p.preferredChemistries) || p.preferredChemistries.some((c) => !CHEMISTRIES[c])) {
       w('preferredChemistries must name known chemistries');
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+console.log(`root-cause memory ${ROOT_CAUSE_SCHEMA_VERSION} — ${ROOT_CAUSE_CATALOG.records.length} records`);
+{
+  const expectedFields = [
+    'format', 'id', 'revision', 'title', 'status', 'symptom', 'evidence', 'detection',
+    'causalChain', 'rootCause', 'resolution', 'prevention', 'regressionTests',
+    'affectedSurfaces', 'tags', 'references',
+  ].sort();
+  if (ROOT_CAUSE_CATALOG.format !== ROOT_CAUSE_CATALOG_FORMAT) {
+    err(`root-cause catalog: format must be ${ROOT_CAUSE_CATALOG_FORMAT}`);
+  }
+  if (ROOT_CAUSE_CATALOG.version !== ROOT_CAUSE_SCHEMA_VERSION) {
+    err(`root-cause catalog: version must be ${ROOT_CAUSE_SCHEMA_VERSION}`);
+  }
+  if (ROOT_CAUSE_RECORD_SCHEMA.$schema !== 'https://json-schema.org/draft/2020-12/schema') {
+    err('root-cause schema: must declare JSON Schema Draft 2020-12');
+  }
+  if (typeof ROOT_CAUSE_RECORD_SCHEMA.$id !== 'string' || !ROOT_CAUSE_RECORD_SCHEMA.$id) {
+    err('root-cause schema: a stable non-empty $id is required');
+  }
+  if (ROOT_CAUSE_RECORD_SCHEMA.type !== 'object' || ROOT_CAUSE_RECORD_SCHEMA.additionalProperties !== false) {
+    err('root-cause schema: the record envelope must be a closed object');
+  }
+  const propertyFields = Object.keys(ROOT_CAUSE_RECORD_SCHEMA.properties || {}).sort();
+  const requiredFields = [...(ROOT_CAUSE_RECORD_SCHEMA.required || [])].sort();
+  if (JSON.stringify(propertyFields) !== JSON.stringify(expectedFields)) {
+    err('root-cause schema: properties must define the complete governed record contract');
+  }
+  if (JSON.stringify(requiredFields) !== JSON.stringify(expectedFields)) {
+    err('root-cause schema: every governed record field must be required');
+  }
+  if (ROOT_CAUSE_RECORD_SCHEMA.properties?.format?.const !== ROOT_CAUSE_RECORD_FORMAT) {
+    err(`root-cause schema: record format must be fixed to ${ROOT_CAUSE_RECORD_FORMAT}`);
+  }
+  const checkClosedObjects = (schema, path = '$') => {
+    if (!schema || typeof schema !== 'object') return;
+    if (schema.type === 'object' && schema.properties && schema.additionalProperties !== false) {
+      err(`root-cause schema ${path}: objects with declared properties must be closed`);
+    }
+    for (const [key, child] of Object.entries(schema.properties || {})) {
+      checkClosedObjects(child, `${path}/properties/${key}`);
+    }
+    if (schema.items) checkClosedObjects(schema.items, `${path}/items`);
+  };
+  checkClosedObjects(ROOT_CAUSE_RECORD_SCHEMA);
+  for (const problem of validateRootCauseCatalog(ROOT_CAUSE_CATALOG)) {
+    err(`root-cause catalog ${problem.path}: ${problem.message}`);
+  }
+  for (const record of ROOT_CAUSE_CATALOG.records) {
+    for (const regression of record.regressionTests || []) {
+      if (!existsSync(new URL(`../${regression.path}`, import.meta.url))) {
+        err(`root-cause ${record.id}: missing regression test ${regression.path}`);
+      }
+    }
+    for (const reference of record.references || []) {
+      if (/^(?:\.|[a-z0-9_-]+)\//i.test(reference.locator)
+        && !existsSync(new URL(`../${reference.locator}`, import.meta.url))) {
+        err(`root-cause ${record.id}: missing local reference ${reference.locator}`);
+      }
     }
   }
 }

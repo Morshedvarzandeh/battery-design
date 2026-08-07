@@ -7,6 +7,7 @@
     "test": "node --test tests/*.test.mjs",
     "test:fmu": "node --test tests/fmi-contract.test.mjs tests/fmu-native.test.mjs",
     "test:packaged": "node --test tests/packaged-tree.test.mjs",
+    "test:root-causes": "node --test tests/root-cause-library.test.mjs tests/root-cause-surfaces.test.mjs tests/root-cause-architecture.test.mjs",
     "test:e2e": "playwright test",
     "wasm:build": "node tools/build-wasm.mjs",
     "validate": "node tools/validate.mjs && npm run typecheck && npm test && node tools/validate-vs-market.mjs"
