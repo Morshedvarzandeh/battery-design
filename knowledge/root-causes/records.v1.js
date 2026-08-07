@@ -1076,6 +1076,130 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-hil-timing-coverage-gap',
+      title: 'Partial HIL timing trace is treated as complete-run evidence',
+      symptom: 'One fast cycle can satisfy the HIL timing check for a much longer declared run, while a large complete trace can overflow the evaluator before producing a verdict.',
+      evidence: [
+        'The evaluator required only a non-empty cycleTimesUs array and checked that each supplied value was below the sample period.',
+        'A 30-second contract at a one-millisecond period therefore accepted one measured cycle as timing evidence for all 30,000 required cycles.',
+        'Maximum cycle time was calculated with Math.max spread syntax, which can throw when a legitimate timing trace exceeds the JavaScript argument limit.',
+        'Direct floating-point ceil made 0.000123 seconds at a one-microsecond period appear as 123.00000000000001 cycles and incorrectly require cycle 124.',
+        'Gating the iterative scan on complete coverage suppressed the maximum measured time for a valid but partial trace, weakening failure diagnostics.',
+      ],
+      detection: [
+        {
+          method: 'duration-coverage and large-trace regression',
+          signal: 'Evaluate exact and just-over integer duration boundaries, a partial trace, the complete derived cycle count and a complete trace above typical function-argument limits.',
+          failureCondition: 'Partial coverage passes, required/observed counts are absent, or a bounded complete trace throws instead of returning a timing verdict.',
+        },
+      ],
+      causalChain: [
+        'The contract declares both a sample period and a total test duration.',
+        'Evidence validation checks only values present in the submitted timing array and never derives the number of cycles the duration requires.',
+        'A short prefix is indistinguishable from a complete run and can satisfy every timing predicate.',
+        'When complete evidence is eventually supplied, argument-spread reduction makes array size an unrelated runtime failure mode.',
+      ],
+      rootCause: 'Timing values were validated independently of declared run coverage, and their maximum was reduced through a call-stack-limited API instead of a bounded iterative scan.',
+      resolution: [
+        'Derive required cycles as ceil(durationS*1,000,000/samplePeriodUs) and reject contracts outside the governed one-million-sample evidence ceiling.',
+        'Require observed evidence to cover at least the derived cycle count while retaining the exact sample-period deadline for every value.',
+        'Convert the canonical decimal duration representation into an exact BigInt rational before ceiling, so decimal integer boundaries stay exact and every represented positive remainder requires the next cycle.',
+        'Compute maximum cycle time with an iterative dense-array scan independent of the coverage verdict and expose required and observed counts in every HIL evidence result.',
+      ],
+      prevention: [
+        'Tie every sampled-evidence acceptance rule to both value validity and declared coverage.',
+        'Use safe-integer time/count domains and exact decimal-rational duration arithmetic; pair every boundary test with just-over and near-cap counterexamples.',
+        'Cap external arrays before execution and avoid spread-based reductions on governed evidence.',
+        'Keep partial, exact-complete and large-complete trace cases together in the HIL regression matrix.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/loop-testing.test.mjs',
+          assertion: 'A partial HIL trace fails but retains its measured maximum; exact and just-over decimal boundaries derive 123 and 124 cycles; a represented near-cap remainder is not rounded down; a 200,000-cycle trace passes without spread overflow; and unsafe or over-cap contracts fail before evidence evaluation.',
+        },
+      ],
+      affectedSurfaces: ['browser'],
+      tags: ['array-bounds', 'coverage', 'hil', 'timing', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/loop-testing.js',
+          note: 'Derived timing coverage, evidence ceiling and iterative maximum scan.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/loop-testing.test.mjs',
+          note: 'Partial, complete, large and over-cap timing regressions.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/LOOP_TESTING.md',
+          note: 'Public timing-coverage and evidence-limit contract.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-loop-contract-identity-gap',
+      title: 'Loop-test execution trusts a mutable schema-labelled contract',
+      symptom: 'A SIL plan or HIL contract changes after review, or a schema-only object reaches execution without the required governed fields.',
+      evidence: [
+        'The original builders froze only the outer object and arrays, leaving nested cases, expected limits, channels and run options mutable.',
+        'The SIL runner and HIL evaluator checked only the schema string before consuming caller-owned nested content.',
+        'Neither contract had a canonical content digest that a retained review record could compare with the executed snapshot.',
+        'Sparse arrays were serialized like explicit nulls while map and every skipped their holes, allowing a one-hole SIL case list to pass without an adapter call and a one-hole HIL fault list to waive every fault check.',
+        'A negative measured overrun count was treated as an integer and compared numerically below the allowed maximum, so impossible evidence could pass the overrun check.',
+        'Requiring a checksum while retaining the original @1 schema would silently redefine already serialized documents instead of declaring a new wire contract.',
+      ],
+      detection: [
+        {
+          method: 'nested-mutation and forged-envelope regression',
+          signal: 'Change a nested oracle or safe value; submit sparse arrays or a negative measured overrun count; omit or add fields; or submit only the expected schema label.',
+          failureCondition: 'Execution or evidence evaluation starts without exact reconstruction, checksum verification and recursive immutability.',
+        },
+      ],
+      causalChain: [
+        'A version string is treated as sufficient proof that an object was created by the governed builder.',
+        'Only the outer container is frozen, so nested acceptance limits and I/O facts remain caller-mutable.',
+        'Array length is treated as evidence of content even though JavaScript iteration skips sparse slots and canonical JSON represents them as null.',
+        'The runner consumes those values without reconstructing the canonical contract.',
+        'The executed test can differ from the reviewed test while retaining the same visible schema label.',
+      ],
+      rootCause: 'Contract versioning, structural validation, immutable ownership and content identity were conflated; the execution boundary had no single verifier for untrusted serialized plans.',
+      resolution: [
+        'Create canonical deep-frozen SIL and HIL snapshots with deterministic content checksums.',
+        'Close every governed contract object, validate arbitrary input/run-option data as finite JSON, and reject missing, unknown or invalid fields.',
+        'Require dense arrays before every map/every operation so a declared case, channel or fault cannot be an absent slot.',
+        'Accept measured overrun counts only as non-negative safe integers before comparing them with the contract maximum.',
+        'Publish checksummed snapshots as @2 and rematerialize legacy @1 documents only through explicit migration helpers.',
+        'Reconstruct and verify each contract before execution, with an optional independently retained expected checksum for custody-sensitive use.',
+      ],
+      prevention: [
+        'Route every persisted loop-testing contract through one verifier at the execution boundary rather than checking its schema label directly.',
+        'Test nested mutation, schema-only forgery, sparse arrays, signed count boundaries, unknown fields and coordinated new identities separately.',
+        'Describe self-contained checksums as content identity, not producer authentication or hardware evidence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/loop-testing.test.mjs',
+          assertion: 'SIL and HIL snapshots are deterministic and deeply frozen; strict verification rejects nested mutation, sparse cases/faults, negative overrun evidence, unknown or missing fields and schema-only objects, while legacy @1 migration is explicit.',
+        },
+      ],
+      affectedSurfaces: ['browser'],
+      tags: ['checksum', 'contract', 'hil', 'immutability', 'sil', 'validation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/loop-testing.js',
+          note: 'Canonical snapshot builders and strict execution-boundary verifiers.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/loop-testing.test.mjs',
+          note: 'Contract identity, deep-freeze and forged-envelope regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-nelder-mead-bound-simplex-collapse',
       title: 'Bound clamping collapses the Nelder–Mead initial simplex',
       symptom: 'Calibration declares convergence immediately or cannot move a parameter when its starting value is already on a declared bound.',
@@ -1198,11 +1322,13 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'The allowlist was stored in a normal JavaScript object and membership was tested with a truthy property lookup.',
         'Names inherited from Object.prototype therefore appeared present even though they were not own entries in the parameter registry.',
         'Spreading the caller map retained the unexpected own property while later loops over declared parameter specifications never validated or used it.',
+        'A SIL output path such as constructor.length could traverse inherited properties and satisfy an oracle even when the adapter reported no own output value.',
+        'HIL identity, I/O, fault and safe-state evidence inherited from custom prototypes could satisfy pass checks without one own measured field.',
       ],
       detection: [
         {
           method: 'prototype-name boundary fuzzing',
-          signal: 'Submit constructor, toString, valueOf and __proto__-shaped keys anywhere an object-backed allowlist guards external names.',
+          signal: 'Submit constructor, toString, valueOf and __proto__-shaped keys anywhere an object-backed allowlist or dotted output path guards external names.',
           failureCondition: 'Any inherited name passes membership without an own registry entry or survives into the governed result.',
         },
       ],
@@ -1217,6 +1343,8 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Test registry membership with Object.hasOwn, a Set, a Map or an intentionally null-prototype dictionary.',
         'Apply the same own-key rule at both the automatic tuning planner and the core calibrateDatasets parameter-override boundary.',
         'Keep the subsequent value validation driven by the same canonical registry so accepted names and validated names cannot diverge.',
+        'Traverse SIL output paths only through own properties and reject prototype-control path segments before execution.',
+        'Require every HIL identity and measured-evidence lookup to be an own property of the supplied evidence maps.',
       ],
       prevention: [
         'Include common prototype member names in every exact-key and parameter-allowlist negative test matrix.',
@@ -1230,6 +1358,10 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           path: 'tests/sim2.test.mjs',
           assertion: 'The core governed-dataset calibrator rejects constructor and toString parameter overrides as unknown own-key violations.',
+        },
+        {
+          path: 'tests/loop-testing.test.mjs',
+          assertion: 'SIL rejects prototype-control output paths and inherited output/unit properties cannot satisfy an oracle; inherited HIL identity, I/O, fault and safe-state values cannot prove a pass.',
         },
       ],
       affectedSurfaces: ['browser', 'cli', 'local-api'],
@@ -1246,6 +1378,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           note: 'Core calibrateDatasets parameter override boundary using the same own-key registry rule.',
         },
         {
+          kind: 'implementation',
+          locator: 'js/loop-testing.js',
+          note: 'Own-property-only SIL output traversal, prototype-path rejection and HIL evidence lookups.',
+        },
+        {
           kind: 'test',
           locator: 'tests/ecm-tuning-plan.test.mjs',
           note: 'Inherited registry-name rejection regression.',
@@ -1254,6 +1391,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/sim2.test.mjs',
           note: 'Core constructor and toString override rejection regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/loop-testing.test.mjs',
+          note: 'Inherited SIL output/unit and HIL evidence rejection regressions.',
         },
       ],
     }),
@@ -1647,6 +1789,73 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/sim2.test.mjs',
           note: 'Negative lower, positive upper and signed interior bound regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-sil-result-representation-gap',
+      title: 'SIL execution evidence is mutable and compared by JSON key order',
+      symptom: 'A software-in-the-loop run can report a false repeatability failure when an adapter reorders equivalent object keys, while incomplete or mutable adapter evidence can enter an unchecksummed result.',
+      evidence: [
+        'The former repeatability check compared JSON.stringify output, so two semantically identical plain objects with different insertion order were treated as different executions.',
+        'The adapter echoed model version, graph checksum and solver but not model ID, leaving one plan identity field unproved at execution.',
+        'Adapter output accepted undeclared fields and non-JSON values, and the returned result was neither deeply frozen nor bound to the verified plan checksum by its own checksum.',
+        'Converting a thrown null-prototype object with String(error) raised a second exception, so adapter failure escaped instead of becoming checksummed fail evidence.',
+      ],
+      detection: [
+        {
+          method: 'SIL evidence representation regression',
+          signal: 'Run the same verified plan against adapters that reorder keys, change one value, omit or alter identity, add a private field, or return a non-JSON value.',
+          failureCondition: 'Key order changes repeatability, a value change does not, incomplete or open adapter evidence is accepted, or the result can be mutated without changing a bound checksum.',
+        },
+      ],
+      causalChain: [
+        'The adapter response is treated as an informal object rather than a closed execution-evidence contract.',
+        'Repeatability is evaluated on JavaScript serialization order instead of a canonical semantic representation.',
+        'The result projects mutable adapter data without a versioned result schema, verified-plan identity binding or content checksum.',
+        'Consumers cannot reliably distinguish equivalent representations, changed execution values or later evidence mutation.',
+      ],
+      rootCause: 'SIL execution evidence lacked one canonical closed representation spanning adapter identity, semantic comparison, immutable result materialization and plan-bound content identity.',
+      resolution: [
+        'Normalize the adapter response to exact model, graph and solver identity plus closed finite-JSON outputs and units.',
+        'Compare repeat executions with a canonical semantic digest so key order is irrelevant and value changes remain observable.',
+        'Normalize arbitrary thrown values through guarded message extraction with a fixed non-throwing fallback.',
+        'Materialize a deeply frozen battery-design/sil-test-result@1 carrying the verified @2 plan checksum and its own deterministic checksum.',
+      ],
+      prevention: [
+        'Give every persisted execution result a versioned closed schema, canonical content identity and explicit parent-contract checksum.',
+        'Test representation-only reordering separately from semantic mutation, identity mismatch, extra fields and non-JSON values.',
+        'Include hostile thrown primitives, null-prototype objects and conversion failures in adapter-boundary regressions.',
+        'Describe self-contained checksums as content identity, not producer authentication or proof of independent execution.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/loop-testing.test.mjs',
+          assertion: 'SIL evidence accepts semantic key reordering, detects value changes, requires complete closed adapter identity, rejects non-JSON data, contains unrepresentable thrown values, and returns a frozen deterministic result bound to the plan checksum.',
+        },
+      ],
+      affectedSurfaces: ['browser'],
+      tags: ['canonicalization', 'content-identity', 'repeatability', 'sil', 'test-evidence'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/loop-testing.js',
+          note: 'Closed adapter normalization, canonical repeat comparison and checksummed SIL result materialization.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/cosim-studio.js',
+          note: 'Reference adapter echoes the complete governed model identity.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/LOOP_TESTING.md',
+          note: 'SIL result representation, repeatability and checksum trust boundary.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/loop-testing.test.mjs',
+          note: 'Canonical-order, semantic-change, adapter-closure, identity and immutable-result regressions.',
         },
       ],
     }),

@@ -591,7 +591,7 @@ async function runSilCalculationTest() {
     const adapter = () => {
       const result = simulateEquationGraph(graph);
       return {
-        graphChecksum: graphChecksum(graph), modelVersion: graph.version,
+        modelId: graph.id, graphChecksum: graphChecksum(graph), modelVersion: graph.version,
         solver: result.solver.method,
         outputs: { finalValue: result.points.at(-1)?.values?.[node.id] },
         units: { finalValue: unit },
