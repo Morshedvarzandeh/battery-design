@@ -1076,6 +1076,65 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-hil-result-identity-gap',
+      title: 'HIL verdict reuses the contract schema and omits result identity',
+      symptom: 'A hardware-in-the-loop evaluation returns mutable pass, fail or unproven data under the contract schema, with no deterministic identity for the bounded verdict summary.',
+      evidence: [
+        'The evaluator returned schema battery-design/hil-test-contract@2 even though the object was an evaluation result with different fields and status semantics.',
+        'Returned checks and headlines were mutable and had no result checksum binding them to the verified contract checksum.',
+        'The pass identity check compared target ID, model version and graph checksum but never required evidence.modelId, while the returned pass result projected the contract model ID as if it had been proved.',
+      ],
+      detection: [
+        {
+          method: 'HIL result identity regression',
+          signal: 'Evaluate absent, complete, partial, missing-model and wrong-model evidence against one verified contract, then clone and repeat each input.',
+          failureCondition: 'A result uses the contract schema, remains mutable, lacks deterministic contract-bound identity, or missing/wrong model ID can retain identity pass.',
+        },
+      ],
+      causalChain: [
+        'The HIL contract is verified before evaluation, but the verdict is assembled as an informal return object.',
+        'That object inherits the contract schema label even though it is neither structurally nor semantically a contract.',
+        'One contract identity field is copied into the result without a corresponding evidence comparison.',
+        'Consumers cannot persist or compare a stable verdict and may overread a projected model ID as measured identity proof.',
+      ],
+      rootCause: 'Contract verification, evidence identity checks and result materialization were not closed as one versioned, immutable, content-addressed evaluation boundary.',
+      resolution: [
+        'Require own evidence target ID, model ID, model version and graph checksum before the identity check can pass.',
+        'Materialize every status through one deeply frozen battery-design/hil-test-result@1 shape bound to the verified @2 contract checksum.',
+        'Checksum only the bounded result summary and state explicitly that it does not authenticate raw measurements, hardware custody or independent execution.',
+      ],
+      prevention: [
+        'Use distinct versioned formats for input contracts and evaluation results.',
+        'Pair every identity field projected into a pass result with an own-property evidence comparison and missing/wrong-value regressions.',
+        'Name checksum scope precisely; add a separate bounded raw-evidence digest only if measurement custody becomes a governed requirement.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/loop-testing.test.mjs',
+          assertion: 'Unproven, pass and fail HIL summaries share one frozen checksummed result shape; complete identity includes model ID; missing or wrong model ID fails identity; and different traces with the same bounded summary intentionally share summary identity.',
+        },
+      ],
+      affectedSurfaces: ['browser'],
+      tags: ['content-identity', 'evidence', 'hil', 'result-schema', 'trust-boundary'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/loop-testing.js',
+          note: 'Complete HIL evidence identity check and canonical result materialization.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/loop-testing.test.mjs',
+          note: 'Result schema/freeze/checksum and missing/wrong model identity regressions.',
+        },
+        {
+          kind: 'documentation',
+          locator: 'docs/LOOP_TESTING.md',
+          note: 'Result format plus summary-checksum and hardware-evidence trust boundary.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-hil-timing-coverage-gap',
       title: 'Partial HIL timing trace is treated as complete-run evidence',
       symptom: 'One fast cycle can satisfy the HIL timing check for a much longer declared run, while a large complete trace can overflow the evaluator before producing a verdict.',

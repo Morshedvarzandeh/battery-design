@@ -15,6 +15,7 @@ export const LEGACY_HIL_SCHEMA = 'battery-design/hil-test-contract@1';
 export const SIL_SCHEMA = 'battery-design/sil-test-plan@2';
 export const HIL_SCHEMA = 'battery-design/hil-test-contract@2';
 export const SIL_RESULT_SCHEMA = 'battery-design/sil-test-result@1';
+export const HIL_RESULT_SCHEMA = 'battery-design/hil-test-result@1';
 export const MAX_HIL_TIMING_SAMPLES = 1_000_000;
 
 const REQUIRED_CALCULATION_TESTS = Object.freeze([
@@ -461,13 +462,22 @@ export function evaluateHilEvidence(contract, evidence = null) {
     verifiedContract.samplePeriodUs,
     verifiedContract.durationS,
   );
-  if (!evidence) return {
-    schema: HIL_SCHEMA, kind: 'hardware-in-the-loop', status: 'unproven',
+  if (!evidence) return checkedSnapshot({
+    schema: HIL_RESULT_SCHEMA, kind: 'hardware-in-the-loop', status: 'unproven',
+    contractSchema: HIL_SCHEMA,
     contractChecksum: verifiedContract.checksum,
+    targetId: verifiedContract.targetId,
+    modelId: verifiedContract.modelId,
+    modelVersion: verifiedContract.modelVersion,
+    graphChecksum: verifiedContract.graphChecksum,
+    checks: null,
+    maxCycleTimeUs: null,
     requiredCycleCount, observedCycleCount: 0,
+    samplePeriodUs: verifiedContract.samplePeriodUs,
     headline: 'HIL contract is ready; no target-hardware evidence has been supplied.',
-  };
+  });
   const identity = ownValue(evidence, 'targetId') === verifiedContract.targetId
+    && ownValue(evidence, 'modelId') === verifiedContract.modelId
     && ownValue(evidence, 'modelVersion') === verifiedContract.modelVersion
     && ownValue(evidence, 'graphChecksum') === verifiedContract.graphChecksum;
   const suppliedCycleTimes = ownValue(evidence, 'cycleTimesUs');
@@ -502,10 +512,15 @@ export function evaluateHilEvidence(contract, evidence = null) {
     ? suppliedOverruns : Infinity;
   const overrun = recordedOverruns <= verifiedContract.overrun.maxConsecutive;
   const checks = { identity, timing, io, faults, safeState, overrun };
-  return {
-    schema: HIL_SCHEMA, kind: 'hardware-in-the-loop',
+  return checkedSnapshot({
+    schema: HIL_RESULT_SCHEMA, kind: 'hardware-in-the-loop',
     status: Object.values(checks).every(Boolean) ? 'pass' : 'fail',
+    contractSchema: HIL_SCHEMA,
     contractChecksum: verifiedContract.checksum,
+    targetId: verifiedContract.targetId,
+    modelId: verifiedContract.modelId,
+    modelVersion: verifiedContract.modelVersion,
+    graphChecksum: verifiedContract.graphChecksum,
     checks, maxCycleTimeUs,
     requiredCycleCount,
     observedCycleCount: cycleTimesUs.length,
@@ -513,5 +528,5 @@ export function evaluateHilEvidence(contract, evidence = null) {
     headline: Object.values(checks).every(Boolean)
       ? 'Measured HIL evidence satisfies the declared contract.'
       : 'Measured HIL evidence does not satisfy the declared contract.',
-  };
+  });
 }

@@ -640,6 +640,34 @@ export interface HilTestContract {
   readonly checksum: string;
 }
 
+export interface HilTestChecks {
+  readonly identity: boolean;
+  readonly timing: boolean;
+  readonly io: boolean;
+  readonly faults: boolean;
+  readonly safeState: boolean;
+  readonly overrun: boolean;
+}
+
+export interface HilTestResult {
+  readonly schema: 'battery-design/hil-test-result@1';
+  readonly kind: 'hardware-in-the-loop';
+  readonly status: 'unproven' | 'pass' | 'fail';
+  readonly contractSchema: 'battery-design/hil-test-contract@2';
+  readonly contractChecksum: string;
+  readonly targetId: string;
+  readonly modelId: string;
+  readonly modelVersion: string;
+  readonly graphChecksum: string;
+  readonly checks: Readonly<HilTestChecks> | null;
+  readonly maxCycleTimeUs: number | null;
+  readonly requiredCycleCount: number;
+  readonly observedCycleCount: number;
+  readonly samplePeriodUs: number;
+  readonly headline: string;
+  readonly checksum: string;
+}
+
 export interface EquationGraphDocument {
   schema: 'battery-design/equation-graph@1';
   catalogVersion: string;

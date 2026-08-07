@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 32);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 33);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -75,6 +75,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-final-artifact-identity-gap',
     'rc-fmi-calibration-key-ignored',
     'rc-fmi-representation-drift',
+    'rc-hil-result-identity-gap',
     'rc-hil-timing-coverage-gap',
     'rc-loop-contract-identity-gap',
     'rc-nelder-mead-bound-simplex-collapse',
@@ -146,6 +147,18 @@ test('HIL timing memory keeps duration coverage separate from one fast sample', 
   assert.match(record.resolution.join(' '), /ceil\(durationS\*1,000,000\/samplePeriodUs\)[\s\S]*one-million[\s\S]*exact BigInt rational[\s\S]*independent of the coverage verdict[\s\S]*required and observed counts/i);
   assert.equal(
     searchRootCauses('one fast cycle partial HIL timing spread overflow', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('HIL result memory preserves complete identity and bounded summary semantics', () => {
+  const record = getRootCauseRecord('rc-hil-result-identity-gap');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /contract@2[\s\S]*mutable[\s\S]*modelId/i);
+  assert.match(record.rootCause, /versioned[\s\S]*immutable[\s\S]*content-addressed/i);
+  assert.match(record.resolution.join(' '), /model ID[\s\S]*deeply frozen[\s\S]*does not authenticate raw measurements/i);
+  assert.equal(
+    searchRootCauses('HIL mutable verdict wrong schema missing model identity', { limit: 1 })[0]?.id,
     record.id,
   );
 });
@@ -230,6 +243,7 @@ test('lexical search deterministically retrieves causes, fixes and containment p
   const cases = [
     ['unknown option defaults typo', 'rc-cli-typo-default-fallback'],
     ['XML I/O map C binary mismatch', 'rc-fmi-representation-drift'],
+    ['HIL verdict mutable result schema missing model identity', 'rc-hil-result-identity-gap'],
     ['trusted expected SHA provenance', 'rc-source-revision-self-claim'],
     ['symlink hardlink containment', 'rc-tree-link-containment'],
     ['allOf additional properties', 'rc-allof-closure-collision'],
