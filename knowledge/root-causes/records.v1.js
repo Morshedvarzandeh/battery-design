@@ -1130,6 +1130,72 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-eu-dependent-act-date-substitution',
+      title: 'EU nominal dates are reported as unconditional effective dates',
+      symptom: 'A design finding says an Article 7 carbon requirement is already mandatory even though required secondary acts have no verified entry-into-force dates.',
+      evidence: [
+        'The EV and industrial declaration rows previously presented 18 February 2025 and 18 February 2026 as unconditional mandatory dates.',
+        'Article 7 instead selects the latest of each nominal floor and a category-specific delay after every required delegated or implementing act enters into force.',
+        'The industrial maximum-threshold finding reused the EV 2028 date even though the industrial nominal floor is 18 February 2029.',
+        'The timeline omitted Regulation (EU) 2025/1561, which superseded the former 2025 battery due-diligence application date with 18 August 2027.',
+      ],
+      detection: [
+        {
+          method: 'primary-law date-derivation regression',
+          signal: 'Resolve each legal milestone with missing, early and late synthetic dependent-act entry dates and evaluate the amended fixed due-diligence boundary.',
+          failureCondition: 'A missing act falls back to the nominal date, the resolver does not select the latest delayed date, or the superseded 2025 due-diligence date is emitted as current.',
+        },
+      ],
+      causalChain: [
+        'A display-oriented timeline stores one date and one sentence per obligation.',
+        'Nominal floors and Commission adoption deadlines are treated as though they were effective dates.',
+        'Dependent-act status and entry-into-force dates have no structured representation, so the statutory latest-date rule cannot execute.',
+        'The same static prose then propagates the incorrect claim through browser, CLI, API and MCP findings.',
+      ],
+      rootCause: 'The regulatory model collapsed nominal dates, dependent-act entry into force, statutory lags, amendments and actual applicability into an unversioned static timeline.',
+      resolution: [
+        'Represent Article 7 milestones, dependent acts, source articles, nominal floors and calendar-month lags as immutable data.',
+        'Fail closed with dependent-act-pending and no effective date until every required act has a verified entry-into-force date.',
+        'Resolve fixed and latest-date gates deterministically against the caller-provided evaluation date, retaining superseded dates only as history.',
+        'Correct findings and the human timeline to distinguish nominal floors from effective dates and to expose the amended 2027 due-diligence gate.',
+      ],
+      prevention: [
+        'Require an exact Official Journal or consolidated EUR-Lex source and a distinct status for every regulatory date added to executable logic.',
+        'Never substitute an adoption deadline, draft initiative or nominal floor for a missing entry-into-force date.',
+        'Regression-test both sides of fixed dates and the maximum across every dependent-act lag before publishing mandatory-language findings.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/season.test.mjs',
+          assertion: 'Article 7 gates fail closed, calculate 12- and 18-month latest dates, retain the industrial 2029 floor and apply the amended due-diligence boundary exactly.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'documentation', 'local-api', 'mcp'],
+      tags: ['applicability', 'dependent-act', 'effective-date', 'eu-regulation'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/eurules.js',
+          note: 'Immutable act registry, legal milestones, date resolver and design findings.',
+        },
+        {
+          kind: 'standard',
+          locator: 'https://eur-lex.europa.eu/legal-content/EN/TXT/HTML/?uri=CELEX:02023R1542-20250731',
+          note: 'Consolidated Regulation (EU) 2023/1542, including the Article 7 latest-date rules.',
+        },
+        {
+          kind: 'standard',
+          locator: 'https://eur-lex.europa.eu/eli/reg/2025/1561/oj/eng',
+          note: 'Regulation (EU) 2025/1561 amending the Article 48 application date.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/season.test.mjs',
+          note: 'Missing-act, synthetic lag, nominal-floor and amended-date regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-final-artifact-identity-gap',
       title: 'A temporary build passes while the released artifact is different',
       symptom: 'Validation is green for an intermediate FMU, but the archive attached to the release was regenerated, repackaged or otherwise not the tested bytes.',

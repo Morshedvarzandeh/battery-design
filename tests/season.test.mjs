@@ -5,7 +5,13 @@ import { test } from 'node:test';
 import { ok } from './helpers.mjs';
 import { cellById } from '../js/cells.js';
 import { CLIMATES, SEASONS, climateById, climateSpan, seasonalOutlook } from '../js/seasons.js';
-import { EU_TIMELINE, euChecks } from '../js/eurules.js';
+import {
+  EU_DEPENDENT_ACTS,
+  EU_LEGAL_MILESTONES,
+  EU_TIMELINE,
+  euChecks,
+  resolveEuMilestone,
+} from '../js/eurules.js';
 import { costModel, TCO_DOD } from '../js/optimizer.js';
 
 test('climate data contract: bands ordered, spans cover, winter is coldest', () => {
@@ -77,6 +83,162 @@ test('EU rules: timeline sound, applicability answers per design', () => {
   const preGate = euChecks({ energyWh: 60_000, application: 'ev', chemistry: 'NMC', evaluationDate: '2026-08-06' });
   ok(preGate.some((f) => /date gate not yet active/i.test(f.title)),
     'ontology date condition can assess a pre-effective release without changing the rule');
+});
+
+test('EU Article 7 gates fail closed until every dependent act has an entry-into-force date', () => {
+  const cases = [
+    {
+      id: 'carbon-declaration-ev',
+      entries: [['art7-1-ev-methodology', '2024-01-18'], ['art7-1-ev-declaration-format', '2025-03-18']],
+      expected: '2026-03-18',
+    },
+    {
+      id: 'carbon-declaration-industrial',
+      entries: [['art7-1-industrial-methodology', '2025-01-18'], ['art7-1-industrial-declaration-format', '2025-03-18']],
+      expected: '2026-09-18',
+    },
+    {
+      id: 'carbon-performance-class-ev',
+      entries: [['art7-2-ev-performance-classes', '2025-01-18'], ['art7-2-ev-label-format', '2025-04-18']],
+      expected: '2026-10-18',
+    },
+    {
+      id: 'carbon-performance-class-industrial',
+      entries: [['art7-2-industrial-performance-classes', '2026-01-18'], ['art7-2-industrial-label-format', '2026-04-18']],
+      expected: '2027-10-18',
+    },
+    {
+      id: 'carbon-threshold-ev',
+      entries: [['art7-3-ev-threshold', '2026-10-18']],
+      expected: '2028-04-18',
+    },
+    {
+      id: 'carbon-threshold-industrial',
+      entries: [['art7-3-industrial-threshold', '2028-03-18']],
+      expected: '2029-09-18',
+    },
+  ];
+
+  for (const item of cases) {
+    const pending = resolveEuMilestone(item.id, EU_DEPENDENT_ACTS, '2040-01-01');
+    ok(pending.status === 'dependent-act-pending' && pending.effectiveDate === null,
+      `${item.id}: a passed nominal floor never replaces missing act evidence`);
+    ok(pending.pendingActIds.length === item.entries.length, `${item.id}: every missing act is named`);
+    ok(Object.isFrozen(pending) && Object.isFrozen(pending.pendingActIds), `${item.id}: evidence is immutable`);
+
+    const acts = Object.fromEntries(item.entries.map(([id, entryIntoForceDate]) => [
+      id, { actStatus: 'in-force', entryIntoForceDate },
+    ]));
+    const scheduled = resolveEuMilestone(item.id, acts, '2020-01-01');
+    ok(scheduled.effectiveDate === item.expected && scheduled.status === 'scheduled',
+      `${item.id}: latest nominal-or-lagged date resolves exactly`);
+    ok(resolveEuMilestone(item.id, acts, item.expected).status === 'effective',
+      `${item.id}: gate becomes effective on its resolved date`);
+
+    const earlyActs = Object.fromEntries(item.entries.map(([id]) => [
+      id, { actStatus: 'in-force', entryIntoForceDate: '2020-01-18' },
+    ]));
+    ok(resolveEuMilestone(item.id, earlyActs, '2040-01-01').effectiveDate
+      === EU_LEGAL_MILESTONES[item.id].nominalDate,
+    `${item.id}: nominal floor wins when every lagged date is earlier`);
+  }
+
+  const draftWithDate = {
+    ...EU_DEPENDENT_ACTS,
+    'art7-1-ev-methodology': { actStatus: 'not-adopted', entryIntoForceDate: '2024-01-18' },
+    'art7-1-ev-declaration-format': { actStatus: 'not-adopted', entryIntoForceDate: '2024-01-18' },
+  };
+  ok(resolveEuMilestone('carbon-declaration-ev', draftWithDate, '2030-01-01').effectiveDate === null,
+    'a draft carrying a date cannot masquerade as an adopted or in-force act');
+
+  for (const act of Object.values(EU_DEPENDENT_ACTS)) {
+    ok(act.legalBasisUrl.includes('02023R1542') && act.statusEvidenceUrl.includes('32023R1542')
+      && act.checkedAt === '2026-08-08',
+    `${act.id}: legal dependency and time-sensitive status evidence stay separate`);
+  }
+  ok(EU_LEGAL_MILESTONES['carbon-declaration-industrial'].adoptionDeadlineScope
+    === 'rechargeable industrial batteries except those with external storage',
+  'Article 7(1) adoption-deadline scope preserves “external storage” wording');
+  ok(EU_LEGAL_MILESTONES['carbon-performance-class-industrial'].adoptionDeadlineScope
+    === 'rechargeable industrial batteries except those with exclusively external storage',
+  'Article 7(2) adoption-deadline scope preserves “exclusively external storage” wording');
+});
+
+test('EU amended due-diligence date and carbon findings retain legal boundaries', () => {
+  const superseded = resolveEuMilestone('battery-due-diligence-2025', EU_DEPENDENT_ACTS, '2030-01-01');
+  ok(superseded.status === 'superseded' && superseded.effectiveDate === null
+    && superseded.supersededBy === 'battery-due-diligence',
+  'former 2025 due-diligence date cannot become current');
+  ok(resolveEuMilestone('battery-due-diligence', EU_DEPENDENT_ACTS, '2027-08-17').status === 'scheduled',
+    'amended due-diligence gate is inactive the day before');
+  ok(resolveEuMilestone('battery-due-diligence', EU_DEPENDENT_ACTS, '2027-08-18').status === 'effective',
+    'amended due-diligence gate is effective on 18 August 2027');
+  const oldGuidance = resolveEuMilestone(
+    'battery-due-diligence-guidance-2025', EU_DEPENDENT_ACTS, '2030-01-01',
+  );
+  ok(oldGuidance.status === 'superseded'
+    && oldGuidance.supersededBy === 'battery-due-diligence-guidance',
+  'former 2025 Commission-guidance deadline is retained only as superseded history');
+  ok(resolveEuMilestone('battery-due-diligence-guidance', EU_DEPENDENT_ACTS, '2026-07-26').status === 'effective',
+    'amended Commission-guidance deadline resolves separately from operator obligations');
+
+  const ev = euChecks({
+    energyWh: 60_000, application: 'ev', chemistry: 'NMC', evaluationDate: '2030-01-01',
+  });
+  ok(ev.some((finding) => /dependent acts pending/i.test(finding.title)
+    && /only the Article 7\(1\) nominal floor/.test(finding.detail)),
+  'EV finding does not turn the passed 2025 nominal floor into an effective date');
+  ok(!ev.some((finding) => /mandatory.*since.*2025/i.test(`${finding.title} ${finding.detail}`)),
+    'stale unconditional EV declaration wording is absent');
+
+  ok(EU_LEGAL_MILESTONES['carbon-threshold-industrial'].nominalDate === '2029-02-18',
+    'industrial threshold uses its own Article 7(3) nominal floor, not the EV date');
+  ok(EU_TIMELINE.some(({ what }) => /former 2025 date is superseded/i.test(what)),
+    'human timeline exposes the amended due-diligence date');
+  ok(EU_TIMELINE.some(({ date, what }) => date === '2027-08'
+    && /industrial-battery performance-class nominal floor/i.test(what)),
+  'human timeline includes the modeled industrial performance-class floor');
+  const dueFinding = ev.find((finding) => /due-diligence timing/i.test(finding.title));
+  ok(/preparation for re-use.*preparation for repurposing.*repurposing.*remanufacturing/.test(dueFinding.detail)
+    && /already been placed on the market or put into service before/.test(dueFinding.detail),
+  'Article 47 product-history review preserves all four operations and the prior-market condition');
+
+  const smallIndustrial = euChecks({
+    energyWh: 2_000, application: 'custom', batteryCategory: 'industrial',
+    chemistry: 'LFP', evaluationDate: '2030-01-01',
+  });
+  ok(smallIndustrial.some((finding) => /track needs review/i.test(finding.title)
+    && /2\.0 kWh/.test(finding.detail)),
+  'industrial batteries at 2 kWh are not forced into the >2 kWh Article 7 track');
+
+  const unknownStorage = euChecks({
+    energyWh: 10_000, application: 'custom', batteryCategory: 'industrial',
+    chemistry: 'LFP', evaluationDate: '2030-01-01',
+  });
+  ok(unknownStorage.some((finding) => /track needs review/i.test(finding.title)
+    && /does not state whether storage is exclusively external/i.test(finding.detail)),
+  'industrial >2 kWh remains review-only until storage mode is explicit');
+
+  const resolvedIndustrialActs = {
+    'art7-1-industrial-methodology': { actStatus: 'in-force', entryIntoForceDate: '2025-01-18' },
+    'art7-1-industrial-declaration-format': { actStatus: 'in-force', entryIntoForceDate: '2025-03-18' },
+    'art7-2-industrial-performance-classes': { actStatus: 'in-force', entryIntoForceDate: '2026-01-18' },
+    'art7-2-industrial-label-format': { actStatus: 'in-force', entryIntoForceDate: '2026-04-18' },
+    'art7-3-industrial-threshold': { actStatus: 'in-force', entryIntoForceDate: '2028-03-18' },
+  };
+  const resolvedIndustrial = euChecks({
+    energyWh: 10_000, application: 'custom', batteryCategory: 'industrial',
+    industrialStorageMode: 'not-exclusively-external',
+    chemistry: 'LFP', evaluationDate: '2035-01-01',
+  }, resolvedIndustrialActs);
+  for (const title of [
+    'Carbon footprint declaration applies',
+    'Carbon-footprint performance class applies',
+    'Maximum carbon-footprint threshold applies',
+  ]) {
+    ok(resolvedIndustrial.some((finding) => finding.title === title),
+      `resolved industrial output retains “${title}”`);
+  }
 });
 
 test('customer-set DoD drives the cost model', () => {
