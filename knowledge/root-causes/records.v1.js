@@ -2696,6 +2696,65 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-signed-zero-json-transport-loss',
+      title: 'JSON number transport erases signed-zero floating-point evidence',
+      symptom: 'A framed native-service request can appear to round-trip successfully while a caller-supplied -0.0 has silently become +0.0.',
+      evidence: [
+        'In JavaScript, JSON.stringify(-0) returns the text 0; parsing that text produces positive zero, so the original IEEE-754 sign bit is no longer recoverable.',
+        'Object.is distinguishes -0 from +0 even though ordinary numeric equality does not, and Rust f64::to_bits likewise exposes their distinct representations.',
+        'The Phase 1 canonical request round-trip therefore checks exact floating-point bits rather than accepting JSON numeric equality as transport fidelity.',
+      ],
+      detection: [
+        {
+          method: 'signed-zero canonical wire round-trip',
+          signal: 'Encode and decode a request containing -0.0, then compare every reconstructed f64 bit pattern with the caller input.',
+          failureCondition: 'The wire uses a JSON number for the value, the decoded bits equal positive zero, or a non-canonical byte encoding is accepted.',
+        },
+      ],
+      causalChain: [
+        'A convenient request representation emits floating-point values as JSON numbers.',
+        'JSON serialization canonicalizes negative zero to the number text 0.',
+        'The receiver reconstructs positive zero before validation, hashing or solver admission can observe the original bits.',
+        'Numeric equality lets the lossy round-trip look correct while exact request identity and replay evidence have changed.',
+      ],
+      rootCause: 'The transport treated JSON number equality as an exact representation of IEEE-754 inputs even though JSON has no lossless signed-zero number encoding.',
+      resolution: [
+        'Encode every request f64 from its exact little-endian bytes using canonical standard base64 rather than a JSON number.',
+        'Decode the one canonical base64 representation into exactly eight bytes per declared value and reconstruct each value with f64::from_le_bytes.',
+        'Compare signed-zero and other transport-sensitive values by to_bits across the canonical request round-trip.',
+      ],
+      prevention: [
+        'Define wire identity independently from host-language numeric equality and test every representation-sensitive IEEE-754 value explicitly.',
+        'Reject alternate alphabets, padding forms, lengths or trailing data when a byte encoding is declared canonical.',
+        'Keep request representation tests separate from solver-execution claims; bit-preserving framing does not prove native consumption.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Evidence demonstrates the actual JSON signed-zero loss and binds the Phase 1 canonical f64 little-endian base64 round-trip regression.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'local-api'],
+      tags: ['base64', 'canonical-encoding', 'floating-point', 'json', 'signed-zero', 'transport'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/protocol.rs',
+          note: 'Canonical request f64 byte/base64 representation and exact reconstruction.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_framing_campaign.rs',
+          note: 'Phase 1 canonical request and hostile framing campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Historical denominator, CI boundary, signed-zero incident and non-claim governance.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-sil-result-representation-gap',
       title: 'SIL execution evidence is mutable and compared by JSON key order',
       symptom: 'A software-in-the-loop run can report a false repeatability failure when an adapter reorders equivalent object keys, while incomplete or mutable adapter evidence can enter an unchecksummed result.',

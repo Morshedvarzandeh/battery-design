@@ -28,6 +28,46 @@ jobs:
       - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs
 
+  # Isolated source-only framing gate. It does not launch a service process,
+  # call a native solver, or place an executable in any product artifact.
+  dae-service-protocol:
+    name: DAE service protocol framing
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_TERM_COLOR: never
+      RUSTFLAGS: -Dwarnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.77.2
+      - name: Configure the isolated service-protocol target
+        run: echo "CARGO_TARGET_DIR=$RUNNER_TEMP/battery-design-dae-service-target" >> "$GITHUB_ENV"
+      - name: Record the exact service-protocol toolchain
+        run: |
+          rustc --version --verbose
+          cargo --version
+      - name: Exercise exactly 9 service framing cases in debug
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/dae-service-framing-debug.log"
+          cargo test --locked --manifest-path rust-dae-service/Cargo.toml \
+            --test service_framing_campaign 2>&1 | tee "$log"
+          test "$(grep -Ec '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$log")" -eq 1
+          test "$(grep -Ec '^test result:' "$log")" -eq 1
+      - name: Exercise exactly 9 service framing cases in release
+        run: |
+          set -euo pipefail
+          log="$RUNNER_TEMP/dae-service-framing-release.log"
+          cargo test --locked --release --manifest-path rust-dae-service/Cargo.toml \
+            --test service_framing_campaign 2>&1 | tee "$log"
+          test "$(grep -Ec '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$log")" -eq 1
+          test "$(grep -Ec '^test result:' "$log")" -eq 1
+
   # This is an independent native reference gate. It neither feeds the
   # browser/desktop packages nor advertises a shipped DAE capability.
   sundials-native-build:

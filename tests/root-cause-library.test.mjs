@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 57);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 58);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -99,6 +99,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-schema-envelope-permissive',
     'rc-shared-test-mutex-poison-cascade',
     'rc-signed-bound-evidence-miss',
+    'rc-signed-zero-json-transport-loss',
     'rc-sil-result-representation-gap',
     'rc-solver-event-boundary-side-confusion',
     'rc-solver-event-consistent-restart-gap',
@@ -532,6 +533,25 @@ test('loop-contract memory preserves the mutation, identity and trust-boundary f
   );
 });
 
+test('signed-zero transport memory preserves the actual JSON loss and byte-level fix', () => {
+  assert.equal(JSON.stringify(-0), '0');
+  const decodedJsonNumber = JSON.parse(JSON.stringify(-0));
+  assert.ok(Object.is(decodedJsonNumber, 0));
+  assert.ok(!Object.is(decodedJsonNumber, -0));
+
+  const record = getRootCauseRecord('rc-signed-zero-json-transport-loss');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /JSON\.stringify\(-0\)[\s\S]*positive zero[\s\S]*Object\.is[\s\S]*f64::to_bits/i);
+  assert.match(record.rootCause, /JSON number equality[\s\S]*IEEE-754[\s\S]*signed-zero/i);
+  assert.match(record.resolution.join(' '), /little-endian bytes[\s\S]*canonical standard base64[\s\S]*f64::from_le_bytes[\s\S]*to_bits/i);
+  assert.match(record.prevention.join(' '), /host-language numeric equality[\s\S]*alternate alphabets[\s\S]*solver-execution claims/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('native service JSON negative zero base64 float transport bits', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
 test('SIL result memory preserves canonical repeat and plan-bound evidence', () => {
   const record = getRootCauseRecord('rc-sil-result-representation-gap');
   assert.equal(record?.status, 'resolved');
@@ -699,6 +719,7 @@ test('lexical search deterministically retrieves causes, fixes and containment p
     ['Euler RC dt tau unstable nonfinite heat', 'rc-rc-euler-step-instability'],
     ['adaptive thermal microsteps module node work preflight', 'rc-adaptive-integration-work-undercount'],
     ['negative signed lower bound atBound evidence', 'rc-signed-bound-evidence-miss'],
+    ['native service JSON signed zero base64 float bits', 'rc-signed-zero-json-transport-loss'],
     ['SIL repeatability JSON key order mutable evidence checksum', 'rc-sil-result-representation-gap'],
     ['thermal Euler C G exponential decay coolant phase heat conservation', 'rc-thermal-explicit-step-instability'],
     ['holdout purpose relabel same observations raw source run leakage', 'rc-calibration-holdout-relabel-leakage'],

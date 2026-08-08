@@ -124,7 +124,7 @@ Linux dense and KLU references. It is not compiled into the browser
 WebAssembly module, exposed by a service or desktop integration, copied into
 an npm/installer/release artifact, qualified for arbitrary DAEs, or certified
 for product or safety decisions. KLU factor-fill isolation and the Iteration 4
-native service boundary remain separate work.
+native service process and solver bridge remain separate work.
 
 At this source checkpoint, the warning-denied dense matrix contains 85
 embedded unit cases and the KLU matrix contains 97. The 12-case difference is
@@ -165,6 +165,46 @@ dense-only checkpoint of 172 cases in nine Cargo result blocks to the current
 190 cases in ten blocks. The historical 154-case, eight-block incident remains
 separate evidence. Neither manifest target moves the 16-name denominator, the
 historical 48-case KLU campaign, or the frozen 81-name Iteration 3 population.
+
+### Iteration 4 native service Phase 1: framing only
+
+The source-only `rust-dae-service/` crate now defines the first bounded framing
+and canonical-request layer for a future native solver service. Phase 1 is a
+codec boundary, not a service runtime: it does not open a listener, spawn or
+supervise a solver process, call the dense or KLU backend, return a native solve
+result, connect the desktop application, or place an executable in a browser,
+desktop, npm, installer or release artifact. Its isolated Rust 1.77.2 CI job
+runs exactly nine framing cases with warnings denied in debug and release.
+
+The canonical request representation does not serialize floating-point values
+as JSON numbers. JavaScript `JSON.stringify(-0)` produces `0`, erasing the sign
+bit before a receiver can validate or replay the request. Phase 1 instead
+encodes each floating-point value from its exact little-endian bytes using
+canonical standard base64 and reconstructs it from those bytes, so `-0.0`
+retains its exact `f64` bits. This is representation fidelity, not evidence that
+a native solver has consumed the request.
+
+Phase 1 uses a separate process/protocol test-function-count proxy. At the
+post-KLU tree
+`789bfc8f560d4e090466f98a29c27d9e20ba3b31`, the 35 test names in
+`tests/api.test.mjs`, `tests/packaged-tree.test.mjs`,
+`tests/runner-security.test.mjs` and `tests/simulation-worker.test.mjs` form the
+frozen population. The exact case-sensitive word-boundary filter
+`\b(runner|worker|protocol|server|staging|package|bootstrap|ports?|fallback|malformed|unbounded|cancels?|isolated)\b`
+produces 17 matches. The newline-terminated sorted population and match-list
+SHA-256 receipts are respectively
+`d2746feb185d4b9819ea94c9314bb0a6e6d0138ef63930d2c128b37a4ca6dc9f`
+and
+`59d29f9629e3c8a14331206411f177b94970f01e3c33f0a625f7a493e1fbcbf0`;
+the complete lists are frozen in `tests/dae-service-evidence.test.mjs`.
+
+The current nine-case framing target is partial campaign evidence only:
+`9 / 17 = 0.53`, not a two-times claim. The standing five-target plan contains
+46 cases (`9 + 9 + 9 + 9 + 10`), which would be `46 / 17 = 2.71` on this frozen
+test-function-count proxy only after all five targets exist and pass. The
+remaining 37 planned cases, the service process, IPC lifecycle,
+request-to-solver mapping, cancellation, teardown and product integration are
+not implemented by Phase 1.
 
 ### Historical Iteration 2 native reference boundary (`@1`)
 
@@ -401,27 +441,28 @@ The campaign is split into independently reviewable gates:
    real numerical solves, failure evidence and scale-specific tests. The
    10,000-variable evidence is lowering/admission evidence, not a
    10,000-variable native convergence claim.
-4. **Native execution integration (event restart complete; service pending):**
-   the coordinated `@2` contracts add the governed opt-in event restart
-   described above. A bounded native service protocol and desktop integration
-   still must be added without routing untrusted requests directly into the
-   solver process.
+4. **Native execution integration (event restart and service framing Phase 1
+   complete; runtime pending):** the coordinated `@2` contracts add the
+   governed opt-in event restart described above, and the source-only framing
+   layer defines a bounded canonical request representation. Process isolation,
+   native request mapping, cancellation, teardown and desktop integration still
+   must be added without routing untrusted requests directly into a solver.
 5. **Package and release acceptance:** expose only backend/method combinations
    that passed native conformance, package the accepted binaries, prove their
    exact artifact lineage in CI and preserve the built-in fallback.
 
-Iterations 2 and 3 and the event-restart slice of Iteration 4 are implemented
-and tested only as source-only native Linux references; none is
-product-packaged or released. The Iteration 4 service/desktop slice and all of
-Iteration 5 remain unimplemented and unshipped. `rust-core/` itself remains
-dependency-free and does not compile or link SUNDIALS, IDA, SuiteSparse or
-KLU. The completed work does not provide index reduction, qualify general
-implicit DAEs, expose a native service or desktop integration, or change the
-current WebAssembly ABI. Neither native reference may appear in product
-capability metadata until the later integration, package and release gates
-exist. A SUNDIALS WebAssembly build is an optional later qualification track,
-not an implied outcome of native acceptance: Emscripten uses a distinct
-platform ABI, while the current standalone WebAssembly solver remains intact.
+Iterations 2 and 3, the event-restart slice of Iteration 4 and the Phase 1
+service framing source are not product-packaged or released. The service
+process/runtime, solver bridge and desktop integration, plus all of Iteration 5,
+remain unimplemented and unshipped. `rust-core/` itself remains dependency-free
+and does not compile or link SUNDIALS, IDA, SuiteSparse or KLU. The completed
+work does not provide index reduction, qualify general implicit DAEs, expose a
+native service or desktop integration, or change the current WebAssembly ABI.
+Neither native reference may appear in product capability metadata until the
+later integration, package and release gates exist. A SUNDIALS WebAssembly
+build is an optional later qualification track, not an implied outcome of
+native acceptance: Emscripten uses a distinct platform ABI, while the current
+standalone WebAssembly solver remains intact.
 
 Task 2A adds `native-backends/sundials/source-lock.json`, checked-in license
 notices and an offline byte verifier. The lock identifies the official
