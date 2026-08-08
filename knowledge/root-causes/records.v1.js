@@ -1798,6 +1798,64 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-native-test-runner-context-capture',
+      title: 'Nested Node test runner inherits its parent reporting context',
+      symptom: 'A wrapper that executes a focused Node test campaign sees a successful child exit but an empty captured stdout, so it cannot prove the expected test, pass and failure counts.',
+      evidence: [
+        'The first Iteration 3 evidence-accounting run spawned node --test from inside a node:test case; the subprocess exited with status 0 but the wrapper’s exact 80-case summary assertion received an empty string.',
+        'Running the same command directly produced the expected tests 80, pass 80 and fail 0 summary.',
+        'Deleting the inherited NODE_TEST_CONTEXT control variable only for the nested subprocess restored the standalone report and made the focused wrapper pass without changing either governed source/build suite.',
+      ],
+      detection: [
+        {
+          method: 'nested focused-runner summary regression',
+          signal: 'Spawn the governed source/build suites from a node:test case, require a normal exit, and parse exact tests, pass and fail totals from the independent child report.',
+          failureCondition: 'The child exits successfully without a standalone summary, reports a different total, or the wrapper accepts status alone as proof that all expected cases executed.',
+        },
+      ],
+      causalChain: [
+        'The evidence-accounting test needs to verify the runtime-expanded total of a separate focused Node campaign.',
+        'It launches node --test while already executing under Node’s test runner and passes the complete parent environment through unchanged.',
+        'The child inherits NODE_TEST_CONTEXT and participates in the parent-managed reporting context instead of emitting the standalone CLI summary expected on captured stdout.',
+        'A zero status remains visible, but the exact 80/80 accounting evidence disappears from the wrapper’s observation boundary.',
+      ],
+      rootCause: 'A nested Node test subprocess inherited its parent runner-control context even though the wrapper treated it as an independent CLI reporter.',
+      resolution: [
+        'Clone the subprocess environment and delete NODE_TEST_CONTEXT before launching the nested node --test command, without mutating the parent process environment.',
+        'Require a normal unsignalled zero exit and independently assert the exact tests 80, pass 80 and fail 0 summary fields.',
+        'Keep the exact 48-case Rust manifest accounting separate from this runtime-expanded 80-case Node source/build proof.',
+      ],
+      prevention: [
+        'When a test launches another instance of the same test runner, isolate runner-private control variables and make the intended reporting channel explicit.',
+        'Never treat a child status of zero as exact campaign-count evidence; assert the expected test, pass, fail, skip and filter boundary appropriate to that runner.',
+        'Exercise evidence wrappers from inside the real parent harness rather than validating only the nested command at a shell prompt.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-iteration3-evidence.test.mjs',
+          assertion: 'The nested source/build runner removes only NODE_TEST_CONTEXT, exits normally and emits the exact 80/80 standalone summary.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The nested-runner cause remains independently searchable and preserves the empty-output symptom, isolated environment fix and exact-count requirement.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['child-process', 'evidence', 'node', 'test-harness', 'test-runner'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'tests/dae-iteration3-evidence.test.mjs',
+          note: 'Focused accounting wrapper that executes and parses the 80-case source/build truth suite from inside node:test.',
+        },
+        {
+          kind: 'incident',
+          locator: 'DAE Iteration 3 documentation and evidence campaign',
+          note: 'Initial wrapper failure: child status 0 with empty captured stdout until the inherited runner context was removed.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-nelder-mead-bound-simplex-collapse',
       title: 'Bound clamping collapses the Nelder–Mead initial simplex',
       symptom: 'Calibration declares convergence immediately or cannot move a parameter when its starting value is already on a declared bound.',
@@ -2905,6 +2963,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
     }),
     record({
       id: 'rc-test-multiplier-denominator-drift',
+      revision: 2,
       title: 'Test-count delta is mistaken for a promised coverage multiplier',
       symptom: 'A delivery reports that testing doubled because 91 top-level tests were added after a convenient checkpoint, even though the promised two-times comparison was against Action 1 and no stable denominator or identical counting population was recorded.',
       evidence: [
@@ -2913,12 +2972,19 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Action-focused and repository-global totals answer different questions; presenting either as the other hides whether the requested action itself received the promised depth.',
         'Using one exact repository-global top-level declaration count, pre-Action 1 commit 66f7240 had 708 tests and post-Action 1 commit 4da8c03 had 758, making the Action 1 denominator increase exactly 50.',
         'The 6094b3b checkpoint had 824 tests; the 91-test checkpoint delta was substantial but still only 91/50, while the corrected Action 2 tree must reach at least 858 total declarations for an increase of at least 100 over 4da8c03.',
+        'For DAE Iteration 3, merged Iteration 2 SHA 9f4a43421de34efd067d38a070a0f2c4b9a859dc contains exactly 81 unique Cargo test function names across native.rs, feature_off.rs, backend_identity.rs and solve_reference.rs in a 67+1+2+11 population.',
+        'Sorting those 81 names and applying the case-sensitive (csc|jacobian|matrix|sparse|linear_solver|resource|construction|drop|backend) filter produces the exact frozen 21-name sparse-readiness denominator; 48 new manifest-listed KLU cases therefore clear the 42-case floor at 2.29 times the proxy.',
       ],
       detection: [
         {
           method: 'reproducible test-population audit',
           signal: 'At each pinned revision run `rg -n "^test\\(" tests --glob "*.test.mjs" | wc -l`, label the result repository-global top-level test declarations, and subtract the same 4da8c03 population.',
           failureCondition: 'A multiplier is claimed without the 50-test Action 1 denominator and pinned revisions/command, a different population is used on either side, or the corrected Action 2 tree contains fewer than 858 declarations.',
+        },
+        {
+          method: 'frozen DAE sparse-readiness name audit',
+          signal: 'At 9f4a43421de34efd067d38a070a0f2c4b9a859dc extract every Cargo #[test] function name from the four declared Rust sources, require the 67+1+2+11 population, sort it and apply the exact case-sensitive sparse-readiness regular expression.',
+          failureCondition: 'The population is not 81 unique names, the filter or case sensitivity changes, the frozen matching list is not exactly 21 names, or the 48-case numerator includes the six separately reported internal seam tests.',
         },
       ],
       causalChain: [
@@ -2933,16 +2999,24 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Use `rg -n "^test\\(" tests --glob "*.test.mjs" | wc -l` unchanged at every revision; this counts top-level test declarations, not runtime pass/skip events or action-only cases.',
         'Retain 6094b3b at 824 only as an intermediate Action 2 checkpoint, never as the Action 1 denominator.',
         'Label the comparison repository-global, state the 50-test denominator beside the multiplier, and require the current Action 2 tree to reach at least 858 declarations for a numerator increase of at least 100.',
+        'For DAE Iteration 3 pin merged Iteration 2 SHA 9f4a43421de34efd067d38a070a0f2c4b9a859dc and the exact four-file Cargo test population: 67 native.rs, one feature_off.rs, two backend_identity.rs and 11 solve_reference.rs names.',
+        'Freeze the sorted 81-name population, exact case-sensitive (csc|jacobian|matrix|sparse|linear_solver|resource|construction|drop|backend) filter and resulting 21 matching names in tests/dae-iteration3-evidence.test.mjs; compare only the 48 manifest-listed KLU cases against that denominator, yielding floor 42 and ratio 2.29.',
       ],
       prevention: [
         'Turn qualitative test multipliers into a predeclared measurement note before coding: both boundary commits, denominator, exact command and whether declarations or runtime results are counted.',
         'Report raw revision counts and their subtraction with the ratio so reviewers can reproduce the claim without inferring what was counted.',
         'Keep global regression health separate from action-specific adversarial depth; both are valuable and neither substitutes for the other.',
+        'For name-filtered focused proxies, freeze the complete source population and exact matching list beside the filter; a revision SHA or denominator alone is not reproducible when Git history is unavailable at runtime.',
+        'Keep manifest-listed integration cases, internal unit seams and retained prior campaigns as separately reported populations instead of moving cases between numerator and denominator.',
       ],
       regressionTests: [
         {
+          path: 'tests/dae-iteration3-evidence.test.mjs',
+          assertion: 'The DAE Iteration 3 multiplier pins the merged baseline SHA, four-file 81-name population, exact case-sensitive filter, sorted 21 matches, 42-case floor and 48-case 2.29-times numerator without runtime Git access.',
+        },
+        {
           path: 'tests/root-cause-library.test.mjs',
-          assertion: 'The denominator-drift record is resolved, retrievable by lookup/search, and pins 66f7240=708, 4da8c03=758, 6094b3b=824, the exact top-level command and the >=858 correction.',
+          assertion: 'The revision-2 denominator-drift record remains searchable and preserves both the repository-global Action 2 correction and the frozen DAE Iteration 3 focused comparison.',
         },
       ],
       affectedSurfaces: ['ci', 'documentation'],
@@ -2962,6 +3036,16 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'commit',
           locator: '6094b3bd5e5afbb3069fd9ba8a7c5d1558600d6f',
           note: 'Intermediate Action 2 checkpoint with 824 declarations; not the Action 1 denominator.',
+        },
+        {
+          kind: 'commit',
+          locator: '9f4a43421de34efd067d38a070a0f2c4b9a859dc',
+          note: 'Merged Iteration 2 baseline containing the frozen four-file population of 81 unique native Cargo test function names.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-iteration3-evidence.test.mjs',
+          note: 'Self-contained exact baseline population, case-sensitive proxy filter, 21 matching names and 48-case numerator accounting.',
         },
         {
           kind: 'test',
