@@ -183,11 +183,15 @@ project's provenance-first datasheet pipeline.
   urban-e-bus catalogue screen for ternary (NMC/NCA) chemistry. This is
   labelled as catalogue practice—not a universal statutory chemistry ban—and
   requires verification against the current MIIT catalogue.
-  Plus the Regulation (EU) 2023/1542 staged timeline (carbon declarations,
-  battery passport with accessible current SoH data through a documented
-  interface—UDS is one option, not a mandated protocol—recycled-content minimums,
-  recovery targets vs recycling efficiency kept strictly apart) and "what
-  applies to THIS design" checks. Guidance, not legal advice.
+  Plus the Regulation (EU) 2023/1542 staged timeline (act-aware Article 7
+  carbon dates that fail closed while required delegated/implementing acts
+  lack verified entry-into-force dates; the fixed battery-passport gate with
+  accessible current SoH data through a documented interface—UDS is one
+  option, not a mandated protocol; the amended 2027 due-diligence date;
+  recycled-content minimums; and recovery targets vs recycling efficiency
+  kept strictly apart) and "what applies to THIS design" checks. The
+  non-external industrial Article 7 track also stays review-only until the
+  exclusively-external-storage fact is explicit. Guidance, not legal advice.
 - **Application integration** — selecting an application shapes everything
   and omits what does not apply: the standards reference list filters to
   the application class (a vacuum robot never advertises ECE R100; UN 38.3
@@ -569,7 +573,7 @@ is copied into the repository.
 | `js/architecture.js` | Module partition, BMS topology, precharge/contactors/fuse/isolation, comms, welding |
 | `js/electrical-protection.js` | Sensata-grounded precharge time simulation, P-series catalogue screen, shunt loss/accuracy/thermal duty, and fast-interruption coordination |
 | `js/seasons.js` | Climate/season ambient bands + per-season system-temperature outlook |
-| `js/eurules.js` | EU Battery Regulation 2023/1542 timeline + applicability checks |
+| `js/eurules.js` | EU Battery Regulation 2023/1542 act-aware timeline + applicability checks, including the 2025/1561 due-diligence amendment |
 | `js/markets.js` | Release checklist per application class × market + chemistry-market gates |
 | `js/btms.js` | Thermal management system: loop selection, flow sizing, BTMS control |
 | `js/sensors.js` | Sensor plan by level (cell/module/system/cooling), omission-first |
