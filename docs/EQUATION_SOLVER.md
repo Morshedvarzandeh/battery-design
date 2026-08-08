@@ -131,8 +131,33 @@ embedded unit cases and the KLU matrix contains 97. The 12-case difference is
 the complete current KLU-gated internal set: the six historical Iteration 3
 callback/diagnostic seams plus six new event/restart seams. These embedded
 cases are reported separately from the historical 48 manifest-listed KLU
-campaign and from the separately planned Iteration 4 manifest campaigns; they
-do not change either frozen multiplier denominator.
+campaign. That historical campaign and its frozen 81-name Iteration 3
+population remain unchanged.
+
+The Iteration 4 event/restart campaign uses a new, scope-specific denominator.
+At merged Iteration 3 SHA
+`032638ba3ee2b7d6cd2ec730b529a63a96ca3ffb`, all Cargo test functions in the
+three residual sources, the native implementation and the six dense/KLU
+integration sources form a frozen population of 166 unique names. Applying the
+exact case-sensitive filter
+`(event|restart|reinit|stop_time|consistent|initial_condition|right_continu|correction)`
+produces the 16-name denominator. The newline-terminated sorted population and
+match-list SHA-256 receipts are respectively
+`a9382670c4667d1316f2fd5177c8cf522c697eaf70eab9fb16c7d29e5dddd894` and
+`6911df8109acfc06f2a8004d8f52b8468926229fc4f80f2f55bb758ffc501bbc`;
+the complete names are frozen in
+`tests/dae-iteration4-event-evidence.test.mjs` so the evidence does not require
+Git history at runtime.
+
+The current source adds one explicit 18-case dense event/restart manifest
+campaign. That dense campaign alone is partial multiplier evidence:
+`18 / 16 = 1.125`, not a two-times claim. A separately reviewed 18-case KLU
+manifest campaign would bring the scope-matched combined 36-case numerator
+and only then establish `36 / 16 = 2.25 times`. The dense target increases the
+current KLU-feature execution matrix from its historical Iteration 4 incident
+state of 154 cases in eight Cargo result blocks to 172 cases in nine blocks;
+it does not move the 16-name denominator, the historical 48-case KLU campaign,
+or the frozen 81-name Iteration 3 population.
 
 ### Historical Iteration 2 native reference boundary (`@1`)
 
