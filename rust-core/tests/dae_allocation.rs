@@ -115,6 +115,14 @@ fn caller_buffer_dae_success_paths_allocate_zero_times() {
                 .residual_into(0.0, system.initial_y(), system.initial_yp(), &mut residual)
                 .unwrap();
             system
+                .residual_event_left_limit_into(
+                    0,
+                    system.initial_y(),
+                    system.initial_yp(),
+                    &mut residual,
+                )
+                .unwrap();
+            system
                 .jacobian_values_into(
                     0.0,
                     10.0,

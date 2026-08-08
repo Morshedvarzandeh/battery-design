@@ -2692,6 +2692,77 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-solver-event-boundary-side-confusion',
+      title: 'Event-terminal residual reuses the observable right-continuous side',
+      symptom: 'A solver interval ending exactly at a step event can assemble its terminal residual with the post-event source value, while changing the ordinary residual to the pre-event value would break the caller-visible right-continuous convention.',
+      evidence: [
+        'The ordinary DAE residual is intentionally right-continuous: at exact event equality a StepSource uses its `after` value, matching the value callers observe at that time.',
+        'An interval that approaches the same event from the left needs a different terminal equation: every source at that exact event time must still use `before`, while earlier sources use `after` and later sources use `before`.',
+        'Two simultaneous sources share one event-table entry, but a source one representable floating-point value later is a separate entry and must not be swept into the selected left limit by an epsilon or tolerance.',
+        'An invalid event index is rejected with `dae.invalid_event_index` before input inspection and without modifying the caller-owned residual destination.',
+      ],
+      detection: [
+        {
+          method: 'dual-sided exact-event residual regression',
+          signal: 'At one selected event, compare the ordinary residual with the indexed left-limit residual for earlier, simultaneous, one-ULP-later and later StepSource values, then repeat with an invalid index and sentinel destination.',
+          failureCondition: 'The ordinary residual stops being right-continuous, the selected simultaneous group is not entirely left-sided, a distinct nearby event is merged by tolerance, or any rejected call changes the destination.',
+        },
+      ],
+      causalChain: [
+        'Caller-visible values at an exact scheduled time use the post-event side so time-series output is right-continuous.',
+        'A solver interval ending at that boundary still represents the trajectory approaching from smaller times and therefore needs the pre-event side for its terminal residual.',
+        'Reusing one time-only residual operation for both meanings either applies the post-event forcing too early or changes the established observable value at equality.',
+        'Approximating the left side by subtracting an epsilon then makes classification depend on scale and can cross a distinct nearby event.',
+      ],
+      rootCause: 'One residual entry point was being asked to represent two different sides of a discontinuity: right-continuous observable evaluation and the exact left-limit terminal equation.',
+      resolution: [
+        'Keep `DaeResidualSystem::residual_into` right-continuous at event equality so ordinary residual and caller-visible exact-time semantics continue to use each StepSource `after` value.',
+        'Add `DaeResidualSystem::residual_event_left_limit_into`, keyed by the stable compiled event index, to evaluate the terminal residual at that event time without changing the ordinary operation.',
+        'Select the left-sided group only when a StepSource `at_s` exactly equals the indexed event time: all exact simultaneous sources use `before`, earlier sources use `after`, later and representably distinct nearby sources use `before`; no event-time tolerance or nudged timestamp participates.',
+        'Validate the event index before all input and destination work, return the typed index/count error, then retain the existing exact-length, finite-input and two-pass residual checks so every failure leaves caller storage unchanged.',
+        'Keep the successful indexed event-left path inside the post-lowering zero-allocation callback contract and verify its Jacobian against finite differences at event equality.',
+      ],
+      prevention: [
+        'Name discontinuity-side operations explicitly; never silently change the side convention of a general residual or output API to satisfy a terminal-step need.',
+        'Address scheduled discontinuities through the compiled event table and exact equality rather than `t - epsilon`, an absolute tolerance or a relative tolerance.',
+        'Keep simultaneous, adjacent-representable, earlier/later, invalid-index and no-partial-write cases together whenever event lowering changes.',
+        'Treat this as a core residual-contract capability only; do not infer native restart or product-backend behavior until those separate executable paths consume and qualify it.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-core/tests/dae_contract.rs',
+          assertion: 'Executable contract cases preserve the ordinary right side, select the exact simultaneous left-limit group without merging a one-ULP-later event, and reject invalid indices, lengths and non-finite inputs atomically.',
+        },
+        {
+          path: 'rust-core/tests/dae_allocation.rs',
+          assertion: 'Allocator instrumentation includes the successful indexed event-left residual in the post-lowering zero-allocation callback set.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The event-side record remains independently searchable and preserves exact indexed classification, right-continuous ordinary evaluation, invalid-index atomicity and the non-native claim boundary.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['atomicity', 'continuity', 'dae', 'events', 'residual', 'solver'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/dae.rs',
+          note: 'Separate right-continuous and exact indexed event-left residual paths with typed, atomic validation.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_contract.rs',
+          note: 'Ordinary-side, exact/simultaneous/near-event, invalid-input destination-preservation and event-left Jacobian regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_allocation.rs',
+          note: 'Post-lowering zero-allocation regression for the successful event-left residual path.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-solver-evidence-acceptance-drift',
       title: 'Solver evidence summary silently weakens the planned acceptance gate',
       symptom: 'A native solver iteration is documented as complete even though its original acceptance plan required tolerance-convergence and independently identified cross-solver evidence that the test campaign does not yet contain.',

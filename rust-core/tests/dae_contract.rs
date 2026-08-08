@@ -167,6 +167,19 @@ fn lowering_classifies_state_first_without_changing_output_order() {
 }
 
 #[test]
+fn initialization_time_accessor_preserves_the_exact_finite_input() {
+    let (graph, _, _, _) = constant_integrator_gain_graph();
+    let negative_zero = DaeResidualSystem::lower(&graph, -0.0, &settings()).unwrap();
+    assert_eq!(
+        negative_zero.initialization_time_s().to_bits(),
+        (-0.0_f64).to_bits()
+    );
+
+    let nonzero = DaeResidualSystem::lower(&graph, 0.25, &settings()).unwrap();
+    assert_eq!(nonzero.initialization_time_s(), 0.25);
+}
+
+#[test]
 fn id_vector_is_explicit_and_copy_is_atomic_on_both_length_errors() {
     let (graph, _, _, _) = constant_integrator_gain_graph();
     let system = lower(&graph);
@@ -765,6 +778,11 @@ fn signed_zero_event_times_share_one_equivalent_restart() {
         .residual_into(-0.0, &[1.0, 1.0], &[0.0; 2], &mut residual)
         .unwrap();
     assert_eq!(residual, [0.0; 2]);
+
+    system
+        .residual_event_left_limit_into(0, &[1.0, 1.0], &[0.0; 2], &mut residual)
+        .unwrap();
+    assert_eq!(residual, [2.0; 2]);
 }
 
 #[test]
@@ -807,6 +825,215 @@ fn step_residual_is_right_continuous_at_its_event() {
         )
         .unwrap();
     assert_eq!(residual, [0.0]);
+}
+
+#[test]
+fn event_left_limit_selects_only_the_exact_simultaneous_step_group() {
+    let selected_time = 1.0_f64;
+    let near_later_time = f64::from_bits(selected_time.to_bits() + 1);
+    let mut graph = EquationGraph::new();
+    for (name, before, after, at_s) in [
+        ("earlier", 10.0, 11.0, 0.5),
+        ("selected a", 20.0, 21.0, selected_time),
+        ("selected b", 30.0, 31.0, selected_time),
+        ("near but distinct", 40.0, 41.0, near_later_time),
+        ("later", 50.0, 51.0, 2.0),
+    ] {
+        graph
+            .add_block(Block::new(
+                name,
+                Quantity::Dimensionless,
+                BlockKind::StepSource {
+                    before,
+                    after,
+                    at_s,
+                },
+            ))
+            .unwrap();
+    }
+    let graph = graph.compile().unwrap();
+    let system = lower(&graph);
+    assert_eq!(
+        system
+            .events()
+            .iter()
+            .map(|event| event.time_s)
+            .collect::<Vec<_>>(),
+        vec![0.5, selected_time, near_later_time, 2.0]
+    );
+
+    let y = [0.0; 5];
+    let yp = [0.0; 5];
+    let mut residual = [99.0; 5];
+    system
+        .residual_into(selected_time, &y, &yp, &mut residual)
+        .unwrap();
+    assert_eq!(residual, [-11.0, -21.0, -31.0, -40.0, -50.0]);
+
+    system
+        .residual_event_left_limit_into(1, &y, &yp, &mut residual)
+        .unwrap();
+    assert_eq!(residual, [-11.0, -20.0, -30.0, -40.0, -50.0]);
+
+    system
+        .residual_event_left_limit_into(2, &y, &yp, &mut residual)
+        .unwrap();
+    assert_eq!(residual, [-11.0, -21.0, -31.0, -40.0, -50.0]);
+}
+
+#[test]
+fn event_left_limit_rejects_invalid_index_and_inputs_without_writes() {
+    let mut graph = EquationGraph::new();
+    graph
+        .add_block(Block::new(
+            "step",
+            Quantity::Dimensionless,
+            BlockKind::StepSource {
+                before: 2.0,
+                after: 9.0,
+                at_s: 1.0,
+            },
+        ))
+        .unwrap();
+    let graph = graph.compile().unwrap();
+    let system = lower(&graph);
+
+    let mut residual = [77.0];
+    for event_index in [1, usize::MAX] {
+        let error = system
+            .residual_event_left_limit_into(
+                event_index,
+                &[f64::NAN],
+                &[f64::INFINITY],
+                &mut residual,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            DaeError::InvalidEventIndex {
+                event_index,
+                event_count: 1,
+            }
+        );
+        assert_eq!(error.code(), "dae.invalid_event_index");
+        assert_eq!(residual, [77.0]);
+    }
+
+    for y in [&[][..], &[1.0, 2.0][..]] {
+        let error = system
+            .residual_event_left_limit_into(0, y, &[0.0], &mut residual)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DaeError::BufferLength {
+                buffer: DaeBuffer::Y,
+                expected: 1,
+                actual,
+            } if actual == y.len()
+        ));
+        assert_eq!(residual, [77.0]);
+    }
+
+    for yp in [&[][..], &[0.0, 0.0][..]] {
+        let error = system
+            .residual_event_left_limit_into(0, &[1.0], yp, &mut residual)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DaeError::BufferLength {
+                buffer: DaeBuffer::Yp,
+                expected: 1,
+                actual,
+            } if actual == yp.len()
+        ));
+        assert_eq!(residual, [77.0]);
+    }
+
+    for actual in [0, 2] {
+        let mut wrong_residual = vec![66.0; actual];
+        let error = system
+            .residual_event_left_limit_into(0, &[1.0], &[0.0], &mut wrong_residual)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DaeError::BufferLength {
+                buffer: DaeBuffer::Residual,
+                expected: 1,
+                actual: reported,
+            } if reported == actual
+        ));
+        assert_eq!(wrong_residual, vec![66.0; actual]);
+    }
+
+    for (y, yp, expected_input) in [
+        ([f64::NAN], [0.0], DaeInput::Y),
+        ([1.0], [f64::NEG_INFINITY], DaeInput::Yp),
+    ] {
+        let error = system
+            .residual_event_left_limit_into(0, &y, &yp, &mut residual)
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            DaeError::NonFiniteInput {
+                input,
+                index: Some(0),
+            } if input == expected_input
+        ));
+        assert_eq!(residual, [77.0]);
+    }
+
+    let mut no_event_graph = EquationGraph::new();
+    no_event_graph
+        .add_block(Block::new(
+            "constant",
+            Quantity::Dimensionless,
+            BlockKind::Constant { value: 1.0 },
+        ))
+        .unwrap();
+    let no_event_graph = no_event_graph.compile().unwrap();
+    let no_event_system = lower(&no_event_graph);
+    let error = no_event_system
+        .residual_event_left_limit_into(0, &[1.0], &[0.0], &mut residual)
+        .unwrap_err();
+    assert_eq!(
+        error,
+        DaeError::InvalidEventIndex {
+            event_index: 0,
+            event_count: 0,
+        }
+    );
+    assert_eq!(residual, [77.0]);
+}
+
+#[test]
+fn event_left_limit_overflow_is_atomic() {
+    let mut graph = EquationGraph::new();
+    graph
+        .add_block(Block::new(
+            "overflowing left limit",
+            Quantity::Dimensionless,
+            BlockKind::StepSource {
+                before: -f64::MAX,
+                after: 0.0,
+                at_s: 1.0,
+            },
+        ))
+        .unwrap();
+    let graph = graph.compile().unwrap();
+    let system = lower(&graph);
+    let mut residual = [55.0];
+    let error = system
+        .residual_event_left_limit_into(0, &[f64::MAX], &[0.0], &mut residual)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        DaeError::NonFiniteResidual {
+            row: 0,
+            block_id: 0,
+            time_s: 1.0,
+        }
+    ));
+    assert_eq!(residual, [55.0]);
 }
 
 #[test]
@@ -1245,8 +1472,88 @@ fn analytic_csc_matches_combined_residual_directional_differences() {
 }
 
 #[test]
+fn analytic_csc_matches_event_left_residual_at_step_equality() {
+    let mut graph = EquationGraph::new();
+    let command = graph
+        .add_block(Block::new(
+            "command",
+            Quantity::Dimensionless,
+            BlockKind::StepSource {
+                before: 2.0,
+                after: 5.0,
+                at_s: 1.0,
+            },
+        ))
+        .unwrap();
+    let state = graph
+        .add_block(Block::new(
+            "state",
+            Quantity::Dimensionless,
+            BlockKind::FirstOrder {
+                tau_s: 0.5,
+                initial: 3.0,
+            },
+        ))
+        .unwrap();
+    let output = graph
+        .add_block(Block::new(
+            "output",
+            Quantity::Dimensionless,
+            BlockKind::Gain {
+                gain: 2.0,
+                input: Quantity::Dimensionless,
+            },
+        ))
+        .unwrap();
+    graph.connect(command, state, 0).unwrap();
+    graph.connect(state, output, 0).unwrap();
+    let graph = graph.compile().unwrap();
+    let system = lower(&graph);
+    let y = [3.0, 2.0, 6.0];
+    let yp = [0.5, 0.0, 0.0];
+    let cj = 4.0;
+    let mut values = vec![0.0; system.csc_pattern().nonzero_count()];
+    system
+        .jacobian_values_into(1.0, cj, &y, &yp, &mut values)
+        .unwrap();
+    let analytic = dense_jacobian(&system, &values);
+
+    let h = 1e-6;
+    for column in 0..y.len() {
+        let mut y_plus = y;
+        let mut y_minus = y;
+        let mut yp_plus = yp;
+        let mut yp_minus = yp;
+        y_plus[column] += h;
+        y_minus[column] -= h;
+        yp_plus[column] += cj * h;
+        yp_minus[column] -= cj * h;
+        let mut plus = [0.0; 3];
+        let mut minus = [0.0; 3];
+        system
+            .residual_event_left_limit_into(0, &y_plus, &yp_plus, &mut plus)
+            .unwrap();
+        system
+            .residual_event_left_limit_into(0, &y_minus, &yp_minus, &mut minus)
+            .unwrap();
+        for row in 0..y.len() {
+            let finite_difference = (plus[row] - minus[row]) / (2.0 * h);
+            assert!(
+                (finite_difference - analytic[row][column]).abs() < 2e-9,
+                "entry ({row}, {column}): finite difference {finite_difference}, analytic {}",
+                analytic[row][column]
+            );
+        }
+    }
+}
+
+#[test]
 fn diagnostic_codes_cover_all_public_error_categories() {
     let equation = DaeError::Initialization(EquationError::EmptyGraph);
+    let event_index = DaeError::InvalidEventIndex {
+        event_index: 2,
+        event_count: 1,
+    };
     let buffer = DaeError::BufferLength {
         buffer: DaeBuffer::Y,
         expected: 1,
@@ -1275,6 +1582,7 @@ fn diagnostic_codes_cover_all_public_error_categories() {
         boundary: 1.0,
     };
     assert_eq!(equation.code(), "dae.initialization");
+    assert_eq!(event_index.code(), "dae.invalid_event_index");
     assert_eq!(buffer.code(), "dae.buffer_length");
     assert_eq!(input.code(), "dae.non_finite_input");
     assert_eq!(residual.code(), "dae.non_finite_residual");

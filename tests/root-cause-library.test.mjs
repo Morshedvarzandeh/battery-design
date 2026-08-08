@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 47);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 48);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -99,6 +99,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-shared-test-mutex-poison-cascade',
     'rc-signed-bound-evidence-miss',
     'rc-sil-result-representation-gap',
+    'rc-solver-event-boundary-side-confusion',
     'rc-solver-evidence-acceptance-drift',
     'rc-solver-sparse-build-provenance-gap',
     'rc-solver-sparse-jacobian-pattern-erasure',
@@ -186,6 +187,29 @@ test('DAE lowering memory separates a residual contract from solver qualificatio
   ]);
   assert.equal(
     searchRootCauses('DAE residual CSC duplicate Jacobian event buffer lowering', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('event-side memory separates right-continuous observation from an exact left terminal residual', () => {
+  const record = getRootCauseRecord('rc-solver-event-boundary-side-confusion');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /ordinary DAE residual[\s\S]*right-continuous[\s\S]*after[\s\S]*simultaneous[\s\S]*one representable floating-point value later[\s\S]*separate[\s\S]*epsilon or tolerance/i);
+  assert.match(record.rootCause, /two different sides[\s\S]*right-continuous observable evaluation[\s\S]*exact left-limit terminal equation/i);
+  assert.match(record.resolution.join(' '), /residual_into[\s\S]*right-continuous[\s\S]*residual_event_left_limit_into[\s\S]*stable compiled event index[\s\S]*exactly equals[\s\S]*no event-time tolerance[\s\S]*event index before all input and destination work[\s\S]*unchanged[\s\S]*zero-allocation[\s\S]*finite differences/i);
+  assert.match(record.prevention.join(' '), /never silently change[\s\S]*compiled event table[\s\S]*exact equality[\s\S]*t - epsilon[\s\S]*native restart[\s\S]*separate executable paths/i);
+  assert.deepEqual(
+    record.regressionTests.map(({ path }) => path),
+    [
+      'rust-core/tests/dae_contract.rs',
+      'rust-core/tests/dae_allocation.rs',
+      'tests/root-cause-library.test.mjs',
+    ],
+  );
+  const source = readFileSync(resolve(ROOT, 'rust-core/src/dae.rs'), 'utf8');
+  assert.match(source, /residual_event_left_limit_into[\s\S]*InvalidEventIndex[\s\S]*LeftLimitAtEvent[\s\S]*at_s == event_time_s/);
+  assert.equal(
+    searchRootCauses('event terminal residual right continuous left limit simultaneous one ULP invalid index atomic', { limit: 1 })[0]?.id,
     record.id,
   );
 });
