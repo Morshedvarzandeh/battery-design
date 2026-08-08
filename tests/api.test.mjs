@@ -99,6 +99,26 @@ test('the headless engine agrees with the modules the UI uses', () => {
   near(d.cost.upfrontUSD, cost.upfrontUSD, 1e-9, 'and the same cost model, not a re-derivation');
 });
 
+test('the default pouch compression foam satisfies only the classification gate', () => {
+  const spec = {
+    application: 'ev', cell: 'generic-nmc-pouch-60ah-ev', s: 96, p: 2,
+  };
+  const compressed = designFromSpec(spec);
+  ok(compressed.spec.resolved.components.spacer === 'compression-foam-pad',
+    'the ordinary pouch path resolves the catalog compression foam');
+  ok(compressed.findings.filter(({ id }) => id === 'pouch-compression').length === 0,
+    'the mechanical audit does not reject its own default compression component');
+
+  const barrierOnly = designFromSpec({
+    ...spec, components: { spacer: 'aerogel-barrier-sheet' },
+  });
+  ok(barrierOnly.spec.resolved.components.spacer === 'aerogel-barrier-sheet',
+    'the negative control reaches the audit without default substitution');
+  const warnings = barrierOnly.findings.filter(({ id }) => id === 'pouch-compression');
+  ok(warnings.length === 1 && warnings[0].severity === 'warn',
+    'a non-compressive barrier still produces exactly one pouch compression warning');
+});
+
 test('the result is plain data — it survives JSON without loss', () => {
   const d = designFromSpec({ application: 'ev', energyWh: 60000, profileId: 'vehicle', v2xPolicy: 'v2g' });
   const round = JSON.parse(JSON.stringify(d));
