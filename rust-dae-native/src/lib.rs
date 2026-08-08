@@ -24,12 +24,32 @@ pub const NATIVE_IDA_BACKEND_ID: &str = "sundials-ida-dense";
 pub const PINNED_SUNDIALS_VERSION: &str = "7.8.0";
 pub const REQUIRED_FEATURE: &str = "sundials-ida";
 
+/// Versioned public contract for the sparse IDA/KLU backend. This identity is
+/// deliberately separate from the dense `@1` contract: selecting it never
+/// falls back to the dense linear solver.
+pub const NATIVE_IDA_KLU_BACKEND_CONTRACT: &str = "battery-design/native-ida-klu@1";
+pub const NATIVE_IDA_KLU_RESULT_CONTRACT: &str = "battery-design/native-ida-klu-result@1";
+pub const NATIVE_IDA_KLU_BACKEND_ID: &str = "sundials-ida-klu";
+pub const PINNED_SUITESPARSE_VERSION: &str = "7.7.0";
+pub const PINNED_KLU_VERSION: &str = "2.3.3";
+pub const REQUIRED_KLU_FEATURE: &str = "sundials-ida-klu";
+
 /// Backend-owned safety ceilings. A caller may request a smaller ceiling but
 /// cannot increase these values.
 pub const MAX_DENSE_DIMENSION: usize = 256;
 pub const MAX_OUTPUT_POINTS: usize = 100_000;
 pub const MAX_INTERNAL_STEPS: u64 = 10_000_000;
 pub const MAX_RESULT_VALUES: usize = MAX_OUTPUT_POINTS * MAX_DENSE_DIMENSION;
+
+/// Sparse-backend admission ceilings. These cover request-owned/native CSC
+/// storage and callback work only. KLU's symbolic/numeric factor fill is
+/// input-dependent and is intentionally not represented as bounded here.
+pub const MAX_KLU_DIMENSION: usize = 10_000;
+pub const MAX_KLU_NONZEROS: usize = 1_000_000;
+pub const MAX_KLU_KNOWN_CSC_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_KLU_JACOBIAN_EVALUATIONS: u64 = 1_000_000;
+pub const MAX_KLU_JACOBIAN_ENTRY_WORK: u64 = 10_000_000_000;
+pub const MAX_KLU_RESULT_VALUES: usize = 25_600_000;
 
 const IDA_INITIAL_STEP_DISTANCE_FACTOR: f64 = 0.001;
 const IDA_TIME_ROUNDOFF_FACTOR: f64 = 2.0;
@@ -64,6 +84,21 @@ const PINNED_BACKEND_IDENTITY: BackendIdentity = BackendIdentity {
     sparse: false,
 };
 
+#[cfg(feature = "sundials-ida-klu")]
+const PINNED_KLU_BACKEND_IDENTITY: BackendIdentity = BackendIdentity {
+    backend_id: NATIVE_IDA_KLU_BACKEND_ID,
+    contract: NATIVE_IDA_KLU_BACKEND_CONTRACT,
+    provider: "SUNDIALS + SuiteSparse",
+    solver: "IDA",
+    version: "SUNDIALS 7.8.0 + SuiteSparse 7.7.0 + KLU 2.3.3",
+    vector: "NVECTOR_SERIAL",
+    matrix: "SUNMATRIX_SPARSE_CSC",
+    linear_solver: "SUNLINSOL_KLU_COLAMD",
+    precision: "double",
+    index_bits: 64,
+    sparse: true,
+};
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum IdaAbsoluteTolerance {
     Scalar(f64),
@@ -93,6 +128,26 @@ pub struct IdaSettings {
     pub initial_conditions: IdaInitialConditionPolicy,
 }
 
+/// Complete sparse IDA/KLU request. Every work ceiling is caller-visible and
+/// may be reduced below, but never raised above, the backend-owned maximum.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IdaKluSettings {
+    pub initial_time_s: f64,
+    pub output_times_s: Vec<f64>,
+    pub relative_tolerance: f64,
+    pub absolute_tolerance: IdaAbsoluteTolerance,
+    pub max_order: u8,
+    pub max_steps: u64,
+    pub max_dimension: usize,
+    pub max_nonzeros: usize,
+    pub max_known_csc_bytes: usize,
+    pub max_jacobian_evaluations: u64,
+    pub max_jacobian_entry_work: u64,
+    pub max_result_values: usize,
+    pub suppress_algebraic_error: bool,
+    pub initial_conditions: IdaInitialConditionPolicy,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct IdaSolverStats {
     internal_steps: u64,
@@ -115,6 +170,7 @@ pub struct IdaSolverStats {
     one_step_calls: u64,
     interpolated_output_rows: u64,
     output_rows_at_step_limit: u64,
+    last_linear_solver_flag: i64,
 }
 
 impl IdaSolverStats {
@@ -196,6 +252,12 @@ impl IdaSolverStats {
 
     pub fn output_rows_at_step_limit(&self) -> u64 {
         self.output_rows_at_step_limit
+    }
+
+    /// Last SUNDIALS linear-solver flag, copied through IDA's stable public
+    /// getter. No SuiteSparse or KLU implementation struct is exposed.
+    pub fn last_linear_solver_flag(&self) -> i64 {
+        self.last_linear_solver_flag
     }
 }
 
@@ -408,6 +470,314 @@ impl IdaSettings {
     }
 }
 
+impl IdaKluSettings {
+    /// Exact known CSC allocation represented by the admission contract:
+    /// SUNDIALS values and row indices, SUNDIALS column pointers, and the
+    /// Rust callback's value scratch. This excludes KLU factor fill memory.
+    pub fn known_csc_bytes(dimension: usize, nonzeros: usize) -> Option<usize> {
+        let entry_bytes = nonzeros.checked_mul(3 * std::mem::size_of::<u64>())?;
+        let pointer_bytes = dimension
+            .checked_add(1)?
+            .checked_mul(std::mem::size_of::<u64>())?;
+        entry_bytes.checked_add(pointer_bytes)
+    }
+
+    /// Validate the complete sparse request before any native allocation or
+    /// callback. KLU ordering is fixed by the backend and is not configurable.
+    pub fn validate_for(&self, system: &DaeResidualSystem<'_>) -> Result<(), IdaError> {
+        let dimension = system.variables().len();
+        if dimension == 0 {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.dimension.empty",
+                field: "system",
+            });
+        }
+        if self.max_dimension == 0 || self.max_dimension > MAX_KLU_DIMENSION {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.klu.max_dimension.out_of_range",
+                field: "max_dimension",
+            });
+        }
+        if dimension > self.max_dimension {
+            return Err(IdaError::KluDimensionLimit {
+                actual: dimension,
+                applied_maximum: self.max_dimension,
+                backend_maximum: MAX_KLU_DIMENSION,
+            });
+        }
+
+        let pattern = system.csc_pattern();
+        validate_csc_pattern(dimension, pattern.column_pointers(), pattern.row_indices())?;
+        let nonzeros = pattern.nonzero_count();
+        if self.max_nonzeros == 0 || self.max_nonzeros > MAX_KLU_NONZEROS {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.klu.max_nonzeros.out_of_range",
+                field: "max_nonzeros",
+            });
+        }
+        if nonzeros > self.max_nonzeros {
+            return Err(IdaError::KluNonzeroLimit {
+                actual: nonzeros,
+                applied_maximum: self.max_nonzeros,
+                backend_maximum: MAX_KLU_NONZEROS,
+            });
+        }
+
+        if self.max_known_csc_bytes == 0 || self.max_known_csc_bytes > MAX_KLU_KNOWN_CSC_BYTES {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.klu.max_known_csc_bytes.out_of_range",
+                field: "max_known_csc_bytes",
+            });
+        }
+        let known_csc_bytes =
+            Self::known_csc_bytes(dimension, nonzeros).ok_or(IdaError::WorkOverflow)?;
+        if known_csc_bytes > self.max_known_csc_bytes {
+            return Err(IdaError::KluKnownCscByteLimit {
+                actual: known_csc_bytes,
+                applied_maximum: self.max_known_csc_bytes,
+                backend_maximum: MAX_KLU_KNOWN_CSC_BYTES,
+            });
+        }
+
+        if self.max_jacobian_evaluations == 0
+            || self.max_jacobian_evaluations > MAX_KLU_JACOBIAN_EVALUATIONS
+        {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.klu.max_jacobian_evaluations.out_of_range",
+                field: "max_jacobian_evaluations",
+            });
+        }
+        if self.max_jacobian_entry_work == 0
+            || self.max_jacobian_entry_work > MAX_KLU_JACOBIAN_ENTRY_WORK
+        {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.klu.max_jacobian_entry_work.out_of_range",
+                field: "max_jacobian_entry_work",
+            });
+        }
+        let configured_entry_work = self
+            .max_jacobian_evaluations
+            .checked_mul(u64::try_from(nonzeros).map_err(|_| IdaError::WorkOverflow)?)
+            .ok_or(IdaError::WorkOverflow)?;
+        if configured_entry_work > self.max_jacobian_entry_work {
+            return Err(IdaError::KluJacobianEntryWorkLimit {
+                attempted: configured_entry_work,
+                maximum: self.max_jacobian_entry_work,
+            });
+        }
+
+        if self.max_result_values == 0 || self.max_result_values > MAX_KLU_RESULT_VALUES {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.klu.max_result_values.out_of_range",
+                field: "max_result_values",
+            });
+        }
+        if !self.initial_time_s.is_finite() {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.initial_time.non_finite",
+                field: "initial_time_s",
+            });
+        }
+        if !self.relative_tolerance.is_finite() || self.relative_tolerance <= 0.0 {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.relative_tolerance.out_of_range",
+                field: "relative_tolerance",
+            });
+        }
+        match &self.absolute_tolerance {
+            IdaAbsoluteTolerance::Scalar(value) => {
+                if !value.is_finite() || *value <= 0.0 {
+                    return Err(IdaError::InvalidSetting {
+                        code: "ida.absolute_tolerance.out_of_range",
+                        field: "absolute_tolerance",
+                    });
+                }
+            }
+            IdaAbsoluteTolerance::Vector(values) => {
+                if values.len() != dimension {
+                    return Err(IdaError::VectorLength {
+                        field: "absolute_tolerance",
+                        expected: dimension,
+                        actual: values.len(),
+                    });
+                }
+                if values
+                    .iter()
+                    .any(|value| !value.is_finite() || *value <= 0.0)
+                {
+                    return Err(IdaError::InvalidSetting {
+                        code: "ida.absolute_tolerance.out_of_range",
+                        field: "absolute_tolerance",
+                    });
+                }
+            }
+        }
+        if !(1..=5).contains(&self.max_order) {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.max_order.out_of_range",
+                field: "max_order",
+            });
+        }
+        if self.max_steps == 0 || self.max_steps > MAX_INTERNAL_STEPS {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.max_steps.out_of_range",
+                field: "max_steps",
+            });
+        }
+        if self.output_times_s.is_empty() || self.output_times_s.len() > MAX_OUTPUT_POINTS {
+            return Err(IdaError::InvalidSetting {
+                code: "ida.output_times.count",
+                field: "output_times_s",
+            });
+        }
+        let result_values = self
+            .output_times_s
+            .len()
+            .checked_mul(system.outputs().len())
+            .ok_or(IdaError::WorkOverflow)?;
+        if result_values > self.max_result_values {
+            return Err(IdaError::ResultValueLimit {
+                actual: result_values,
+                maximum: self.max_result_values,
+            });
+        }
+        let mut previous = self.initial_time_s;
+        for value in &self.output_times_s {
+            if !value.is_finite() || *value <= previous {
+                return Err(IdaError::InvalidSetting {
+                    code: "ida.output_times.not_strictly_increasing",
+                    field: "output_times_s",
+                });
+            }
+            previous = *value;
+        }
+        validate_output_distance_from_initial(
+            self.initial_time_s,
+            *self
+                .output_times_s
+                .last()
+                .expect("the output grid was checked as nonempty"),
+        )?;
+        match &self.initial_conditions {
+            IdaInitialConditionPolicy::ContractConsistent => {}
+            IdaInitialConditionPolicy::CorrectAlgebraicAndDerivative { y, yp } => {
+                validate_output_distance_from_initial(self.initial_time_s, self.output_times_s[0])?;
+                for (field, values) in [("initial_conditions.y", y), ("initial_conditions.yp", yp)]
+                {
+                    if values.len() != dimension {
+                        return Err(IdaError::VectorLength {
+                            field,
+                            expected: dimension,
+                            actual: values.len(),
+                        });
+                    }
+                    if values.iter().any(|value| !value.is_finite()) {
+                        return Err(IdaError::InvalidSetting {
+                            code: "ida.initial_conditions.non_finite",
+                            field,
+                        });
+                    }
+                }
+            }
+        }
+        if !system.events().is_empty() {
+            return Err(IdaError::UnsupportedEvents {
+                count: system.events().len(),
+            });
+        }
+        Ok(())
+    }
+}
+
+fn validate_csc_pattern(
+    dimension: usize,
+    column_pointers: &[usize],
+    row_indices: &[usize],
+) -> Result<(), IdaError> {
+    if column_pointers.len() != dimension.checked_add(1).ok_or(IdaError::WorkOverflow)? {
+        return Err(IdaError::InvalidCscPattern {
+            code: "ida.klu.csc.column_pointer_length",
+        });
+    }
+    if column_pointers.first().copied() != Some(0)
+        || column_pointers.last().copied() != Some(row_indices.len())
+    {
+        return Err(IdaError::InvalidCscPattern {
+            code: "ida.klu.csc.boundaries",
+        });
+    }
+    for column in 0..dimension {
+        let start = column_pointers[column];
+        let end = column_pointers[column + 1];
+        if start > end || end > row_indices.len() {
+            return Err(IdaError::InvalidCscPattern {
+                code: "ida.klu.csc.pointer_order",
+            });
+        }
+        let mut previous = None;
+        let mut has_diagonal = false;
+        for &row in &row_indices[start..end] {
+            if row >= dimension || previous.is_some_and(|value| row <= value) {
+                return Err(IdaError::InvalidCscPattern {
+                    code: "ida.klu.csc.row_order",
+                });
+            }
+            has_diagonal |= row == column;
+            previous = Some(row);
+        }
+        if !has_diagonal {
+            return Err(IdaError::InvalidCscPattern {
+                code: "ida.klu.csc.missing_diagonal",
+            });
+        }
+    }
+    Ok(())
+}
+
+#[cfg(feature = "sundials-ida")]
+pub(crate) struct IdaSessionSettings<'a> {
+    pub(crate) initial_time_s: f64,
+    pub(crate) output_times_s: &'a [f64],
+    pub(crate) relative_tolerance: f64,
+    pub(crate) absolute_tolerance: &'a IdaAbsoluteTolerance,
+    pub(crate) max_order: u8,
+    pub(crate) max_steps: u64,
+    pub(crate) suppress_algebraic_error: bool,
+    pub(crate) initial_conditions: &'a IdaInitialConditionPolicy,
+}
+
+#[cfg(feature = "sundials-ida")]
+impl<'a> From<&'a IdaSettings> for IdaSessionSettings<'a> {
+    fn from(settings: &'a IdaSettings) -> Self {
+        Self {
+            initial_time_s: settings.initial_time_s,
+            output_times_s: &settings.output_times_s,
+            relative_tolerance: settings.relative_tolerance,
+            absolute_tolerance: &settings.absolute_tolerance,
+            max_order: settings.max_order,
+            max_steps: settings.max_steps,
+            suppress_algebraic_error: settings.suppress_algebraic_error,
+            initial_conditions: &settings.initial_conditions,
+        }
+    }
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+impl<'a> From<&'a IdaKluSettings> for IdaSessionSettings<'a> {
+    fn from(settings: &'a IdaKluSettings) -> Self {
+        Self {
+            initial_time_s: settings.initial_time_s,
+            output_times_s: &settings.output_times_s,
+            relative_tolerance: settings.relative_tolerance,
+            absolute_tolerance: &settings.absolute_tolerance,
+            max_order: settings.max_order,
+            max_steps: settings.max_steps,
+            suppress_algebraic_error: settings.suppress_algebraic_error,
+            initial_conditions: &settings.initial_conditions,
+        }
+    }
+}
+
 fn validate_output_distance_from_initial(
     initial_time_s: f64,
     output_time_s: f64,
@@ -457,6 +827,9 @@ pub enum NativeStage {
     AbsoluteToleranceVectorCreate,
     DenseMatrixCreate,
     DenseLinearSolverCreate,
+    SparseMatrixCreate,
+    KluLinearSolverCreate,
+    KluSetOrdering,
     IdaMemoryCreate,
     InitialYWrite,
     InitialYpWrite,
@@ -494,6 +867,7 @@ pub enum NativeStage {
     IdaGetLastStep,
     IdaGetCurrentStep,
     IdaGetCurrentTime,
+    IdaGetLastLinFlag,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -537,15 +911,40 @@ pub enum NativeView {
     Yp,
     Residual,
     DenseJacobian,
+    SparseJacobianData,
+    SparseJacobianRowIndices,
+    SparseJacobianColumnPointers,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeViewActual {
     Null,
     VectorLength(i64),
-    MatrixDimensions { rows: i64, columns: i64 },
-    Aliases { with: NativeView },
+    MatrixDimensions {
+        rows: i64,
+        columns: i64,
+    },
+    MatrixType(i32),
+    SparseMatrix {
+        rows: i64,
+        columns: i64,
+        nonzeros: i64,
+        index_pointers: i64,
+        sparse_type: i32,
+    },
+    Aliases {
+        with: NativeView,
+    },
     AddressOverflow,
+}
+
+/// Diagnostic copied through IDA's public linear-solver getter after a KLU
+/// setup/solve failure. Getter failure is evidence, never a replacement for
+/// the original IDA stage and flag.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdaLinearFlagEvidence {
+    Available(i64),
+    Unavailable { getter_flag: i32 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -568,6 +967,32 @@ pub enum IdaError {
         applied_maximum: usize,
         backend_maximum: usize,
     },
+    KluDimensionLimit {
+        actual: usize,
+        applied_maximum: usize,
+        backend_maximum: usize,
+    },
+    KluNonzeroLimit {
+        actual: usize,
+        applied_maximum: usize,
+        backend_maximum: usize,
+    },
+    KluKnownCscByteLimit {
+        actual: usize,
+        applied_maximum: usize,
+        backend_maximum: usize,
+    },
+    KluJacobianEvaluationLimit {
+        attempted: u64,
+        maximum: u64,
+    },
+    KluJacobianEntryWorkLimit {
+        attempted: u64,
+        maximum: u64,
+    },
+    InvalidCscPattern {
+        code: &'static str,
+    },
     WorkOverflow,
     UnsupportedEvents {
         count: usize,
@@ -575,6 +1000,11 @@ pub enum IdaError {
     NativeCall {
         stage: NativeStage,
         flag: i32,
+    },
+    KluLinearSolverFailure {
+        stage: NativeStage,
+        ida_flag: i32,
+        last_linear_flag: IdaLinearFlagEvidence,
     },
     NullNativeHandle {
         stage: NativeStage,
@@ -672,9 +1102,16 @@ impl IdaError {
             Self::InvalidSetting { code, .. } => code,
             Self::VectorLength { .. } => "ida.vector_length",
             Self::DenseDimensionLimit { .. } => "ida.dense_dimension_limit",
+            Self::KluDimensionLimit { .. } => "ida.klu.dimension_limit",
+            Self::KluNonzeroLimit { .. } => "ida.klu.nonzero_limit",
+            Self::KluKnownCscByteLimit { .. } => "ida.klu.known_csc_byte_limit",
+            Self::KluJacobianEvaluationLimit { .. } => "ida.klu.jacobian_evaluation_limit",
+            Self::KluJacobianEntryWorkLimit { .. } => "ida.klu.jacobian_entry_work_limit",
+            Self::InvalidCscPattern { code } => code,
             Self::WorkOverflow => "ida.work_overflow",
             Self::UnsupportedEvents { .. } => "ida.events.unsupported",
             Self::NativeCall { .. } => "ida.backend.native_call",
+            Self::KluLinearSolverFailure { .. } => "ida.klu.linear_solver_failure",
             Self::NullNativeHandle { .. } => "ida.backend.null_handle",
             Self::InvalidRuntimeVersionLabel { .. } => "ida.backend.version_label",
             Self::RuntimeVersionMismatch { .. } => "ida.backend.version_mismatch",
@@ -726,7 +1163,42 @@ impl fmt::Display for IdaError {
                 f,
                 "dense IDA dimension {actual} exceeds applied limit {applied_maximum} (backend maximum {backend_maximum})"
             ),
-            Self::WorkOverflow => f.write_str("dense IDA work estimate overflowed"),
+            Self::KluDimensionLimit {
+                actual,
+                applied_maximum,
+                backend_maximum,
+            } => write!(
+                f,
+                "sparse IDA/KLU dimension {actual} exceeds applied limit {applied_maximum} (backend maximum {backend_maximum})"
+            ),
+            Self::KluNonzeroLimit {
+                actual,
+                applied_maximum,
+                backend_maximum,
+            } => write!(
+                f,
+                "sparse IDA/KLU pattern has {actual} nonzeros, exceeding applied limit {applied_maximum} (backend maximum {backend_maximum})"
+            ),
+            Self::KluKnownCscByteLimit {
+                actual,
+                applied_maximum,
+                backend_maximum,
+            } => write!(
+                f,
+                "sparse IDA/KLU known CSC storage requires {actual} bytes, exceeding applied limit {applied_maximum} (backend maximum {backend_maximum}); KLU factor fill is not included"
+            ),
+            Self::KluJacobianEvaluationLimit { attempted, maximum } => write!(
+                f,
+                "sparse IDA/KLU Jacobian evaluation {attempted} exceeds callback limit {maximum}"
+            ),
+            Self::KluJacobianEntryWorkLimit { attempted, maximum } => write!(
+                f,
+                "sparse IDA/KLU Jacobian entry work {attempted} exceeds callback limit {maximum}"
+            ),
+            Self::InvalidCscPattern { code } => {
+                write!(f, "invalid sparse IDA/KLU CSC pattern ({code})")
+            }
+            Self::WorkOverflow => f.write_str("native IDA work estimate overflowed"),
             Self::UnsupportedEvents { count } => write!(
                 f,
                 "native IDA Iteration 2 does not support the {count} scheduled event(s) in this residual system"
@@ -734,6 +1206,14 @@ impl fmt::Display for IdaError {
             Self::NativeCall { stage, flag } => {
                 write!(f, "native IDA call failed at {stage:?} with flag {flag}")
             }
+            Self::KluLinearSolverFailure {
+                stage,
+                ida_flag,
+                last_linear_flag,
+            } => write!(
+                f,
+                "native IDA/KLU linear setup or solve failed at {stage:?} with IDA flag {ida_flag} and last-linear evidence {last_linear_flag:?}"
+            ),
             Self::NullNativeHandle { stage } => {
                 write!(f, "native IDA returned a null handle at {stage:?}")
             }
@@ -923,5 +1403,54 @@ impl IdaDenseBackend {
         dimension: usize,
     ) -> Result<native::NativeResources<'_>, IdaError> {
         native::prepare_resources(&self._context, dimension)
+    }
+}
+
+/// Sparse SUNDIALS/IDA backend using the pinned SuiteSparse KLU direct solver
+/// with fixed COLAMD ordering. Construction and session creation fail closed;
+/// there is no dense fallback path.
+#[derive(Debug)]
+pub struct IdaKluBackend {
+    identity: BackendIdentity,
+    #[cfg(feature = "sundials-ida-klu")]
+    _context: native::SunContext,
+}
+
+impl IdaKluBackend {
+    pub fn new() -> Result<Self, IdaError> {
+        #[cfg(not(feature = "sundials-ida-klu"))]
+        {
+            Err(IdaError::Unavailable {
+                backend: NATIVE_IDA_KLU_BACKEND_ID,
+                required_feature: REQUIRED_KLU_FEATURE,
+            })
+        }
+
+        #[cfg(feature = "sundials-ida-klu")]
+        {
+            match std::panic::catch_unwind(native::initialize_klu) {
+                Ok(Ok(context)) => Ok(Self {
+                    identity: PINNED_KLU_BACKEND_IDENTITY,
+                    _context: context,
+                }),
+                Ok(Err(error)) => Err(error),
+                Err(_) => Err(IdaError::NativePanic {
+                    stage: NativeStage::RuntimeInitialization,
+                }),
+            }
+        }
+    }
+
+    pub fn identity(&self) -> BackendIdentity {
+        self.identity
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    pub fn initialize_session<'backend, 'system, 'graph>(
+        &'backend self,
+        system: &'system DaeResidualSystem<'graph>,
+        settings: &IdaKluSettings,
+    ) -> Result<IdaSession<'backend, 'system, 'graph>, IdaError> {
+        native::initialize_klu_session(&self._context, system, settings)
     }
 }

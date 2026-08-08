@@ -8,8 +8,12 @@ const REQUIRED_MAJOR_DEFINE: &str = "#define SUNDIALS_VERSION_MAJOR 7";
 const REQUIRED_MINOR_DEFINE: &str = "#define SUNDIALS_VERSION_MINOR 8";
 const REQUIRED_PATCH_DEFINE: &str = "#define SUNDIALS_VERSION_PATCH 0";
 const EXPECTED_SOURCE_LOCK: &[u8] = include_bytes!("../native-backends/sundials/source-lock.json");
+const EXPECTED_SUITESPARSE_SOURCE_LOCK: &[u8] =
+    include_bytes!("../native-backends/suitesparse/source-lock.json");
 const INSTALLED_SOURCE_LOCK: &str = "battery-design-sundials-source-lock.json";
+const INSTALLED_SUITESPARSE_SOURCE_LOCK: &str = "battery-design-suitesparse-source-lock.json";
 const INSTALLED_BUILD_RECEIPT: &str = "battery-design-sundials-build.json";
+const INSTALLED_KLU_BUILD_RECEIPT: &str = "battery-design-native-dae-klu-build.json";
 const REQUIRED_SOURCE_SHA256: &str =
     "fceb9704259952d371877e8f9c2e2758c4a51751907ad5ab13e38c2bcf140c9d";
 const REQUIRED_TAG_OBJECT_SHA: &str = "ac6903fe8d21cad8ba51b61c81c31d230c353ddf";
@@ -18,7 +22,9 @@ const REQUIRED_COMMIT_SHA: &str = "aedc088437064dd55b35c000145f7f5db6ee49e3";
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=../native-backends/sundials/source-lock.json");
+    println!("cargo:rerun-if-changed=../native-backends/suitesparse/source-lock.json");
     println!("cargo:rerun-if-env-changed=DAE_SUNDIALS_ROOT");
+    println!("cargo:rerun-if-env-changed=SUNDIALS_IDA_KLU_ROOT");
 
     if env::var_os("CARGO_FEATURE_SUNDIALS_IDA").is_none() {
         return;
@@ -26,6 +32,11 @@ fn main() {
 
     require_linux_native_target();
     require_unwind_panics();
+
+    if env::var_os("CARGO_FEATURE_SUNDIALS_IDA_KLU").is_some() {
+        configure_klu_backend();
+        return;
+    }
 
     let root = env::var_os("DAE_SUNDIALS_ROOT")
         .map(PathBuf::from)
@@ -341,4 +352,371 @@ fn reject_klu_archive(root: &Path) {
             }
         }
     }
+}
+
+const KLU_ARCHIVES: [&str; 8] = [
+    "libamd.a",
+    "libbtf.a",
+    "libcolamd.a",
+    "libklu.a",
+    "libsuitesparseconfig.a",
+    "libsundials_core.a",
+    "libsundials_ida.a",
+    "libsundials_sunlinsolklu.a",
+];
+
+const KLU_HEADERS: [&str; 11] = [
+    "include/sundials/sundials_config.h",
+    "include/ida/ida.h",
+    "include/ida/ida_ls.h",
+    "include/nvector/nvector_serial.h",
+    "include/sunlinsol/sunlinsol_klu.h",
+    "include/sunmatrix/sunmatrix_sparse.h",
+    "include/suitesparse/SuiteSparse_config.h",
+    "include/suitesparse/amd.h",
+    "include/suitesparse/btf.h",
+    "include/suitesparse/colamd.h",
+    "include/suitesparse/klu.h",
+];
+
+const KLU_LICENSES: [&str; 9] = [
+    "share/licenses/sundials/LICENSE",
+    "share/licenses/sundials/NOTICE",
+    "share/licenses/suitesparse/AMD.txt",
+    "share/licenses/suitesparse/BTF.txt",
+    "share/licenses/suitesparse/BTF-LGPL-2.1.txt",
+    "share/licenses/suitesparse/COLAMD.txt",
+    "share/licenses/suitesparse/KLU.txt",
+    "share/licenses/suitesparse/KLU-LGPL-2.1.txt",
+    "share/licenses/suitesparse/SuiteSparse_config.txt",
+];
+
+fn configure_klu_backend() {
+    let root = env::var_os("SUNDIALS_IDA_KLU_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            panic!(
+                "feature `sundials-ida-klu` requires SUNDIALS_IDA_KLU_ROOT to name the exact closed @2 SUNDIALS 7.8.0 + SuiteSparse 7.7.0/KLU 2.3.3 static install"
+            )
+        });
+    let metadata = fs::symlink_metadata(&root)
+        .unwrap_or_else(|error| panic!("cannot inspect KLU root {}: {error}", root.display()));
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        panic!("KLU root {} must be a real directory", root.display());
+    }
+
+    require_installed_lock(
+        &root,
+        INSTALLED_SOURCE_LOCK,
+        EXPECTED_SOURCE_LOCK,
+        "SUNDIALS",
+    );
+    require_installed_lock(
+        &root,
+        INSTALLED_SUITESPARSE_SOURCE_LOCK,
+        EXPECTED_SUITESPARSE_SOURCE_LOCK,
+        "SuiteSparse",
+    );
+    for relative in KLU_HEADERS.into_iter().chain(KLU_LICENSES) {
+        require_regular_file(&root.join(relative), relative);
+    }
+
+    let library_dir = root.join("lib");
+    let mut entries = fs::read_dir(&library_dir)
+        .unwrap_or_else(|error| panic!("cannot inspect {}: {error}", library_dir.display()))
+        .map(|entry| {
+            entry.unwrap_or_else(|error| {
+                panic!(
+                    "cannot inspect an entry under {}: {error}",
+                    library_dir.display()
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| entry.file_name());
+    let actual = entries
+        .iter()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    if actual != KLU_ARCHIVES {
+        panic!(
+            "{} must contain the exact closed @2 archive surface {:?}; received {:?}",
+            library_dir.display(),
+            KLU_ARCHIVES,
+            actual
+        );
+    }
+    for entry in entries {
+        require_regular_file(&entry.path(), "curated static archive");
+        if entry
+            .metadata()
+            .unwrap_or_else(|error| panic!("cannot inspect {}: {error}", entry.path().display()))
+            .len()
+            == 0
+        {
+            panic!("curated archive {} is empty", entry.path().display());
+        }
+    }
+
+    require_klu_header_contract(&root);
+    require_klu_build_receipt(&root);
+
+    println!("cargo:rustc-link-search=native={}", library_dir.display());
+    println!("cargo:rustc-link-arg=-Wl,--start-group");
+    for library in [
+        "sundials_ida",
+        "sundials_sunlinsolklu",
+        "sundials_core",
+        "klu",
+        "amd",
+        "colamd",
+        "btf",
+        "suitesparseconfig",
+    ] {
+        println!("cargo:rustc-link-lib=static={library}");
+    }
+    println!("cargo:rustc-link-arg=-Wl,--end-group");
+    println!("cargo:rustc-link-lib=dylib=m");
+}
+
+fn require_regular_file(path: &Path, label: &str) {
+    println!("cargo:rerun-if-changed={}", path.display());
+    let metadata = fs::symlink_metadata(path)
+        .unwrap_or_else(|error| panic!("cannot inspect {label} {}: {error}", path.display()));
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        panic!(
+            "{label} {} must be a regular non-symlink file",
+            path.display()
+        );
+    }
+}
+
+fn require_installed_lock(root: &Path, name: &str, expected: &[u8], label: &str) {
+    let path = root.join(name);
+    require_regular_file(&path, "installed source lock");
+    let actual = fs::read(&path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read {} source lock {}: {error}",
+            label,
+            path.display()
+        )
+    });
+    if actual != expected {
+        panic!(
+            "{} source lock {} does not exactly match the repository lock",
+            label,
+            path.display()
+        );
+    }
+}
+
+fn require_klu_header_contract(root: &Path) {
+    let config_path = root.join("include/sundials/sundials_config.h");
+    let config = fs::read_to_string(&config_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", config_path.display()));
+    for (name, value) in [
+        ("SUNDIALS_VERSION", Some("\"7.8.0\"")),
+        ("SUNDIALS_VERSION_MAJOR", Some("7")),
+        ("SUNDIALS_VERSION_MINOR", Some("8")),
+        ("SUNDIALS_VERSION_PATCH", Some("0")),
+        ("SUNDIALS_DOUBLE_PRECISION", Some("1")),
+        ("SUNDIALS_INT64_T", Some("1")),
+        ("SUNDIALS_MPI_ENABLED", Some("0")),
+        ("SUNDIALS_ENABLE_ERROR_CHECKS", None),
+        ("SUNDIALS_KLU_ENABLED", None),
+    ] {
+        require_header_define(&config, &config_path, name, value);
+    }
+
+    for (relative, definitions) in [
+        (
+            "include/suitesparse/SuiteSparse_config.h",
+            &[
+                ("SUITESPARSE_MAIN_VERSION", "7"),
+                ("SUITESPARSE_SUB_VERSION", "7"),
+                ("SUITESPARSE_SUBSUB_VERSION", "0"),
+            ][..],
+        ),
+        (
+            "include/suitesparse/amd.h",
+            &[
+                ("AMD_MAIN_VERSION", "3"),
+                ("AMD_SUB_VERSION", "3"),
+                ("AMD_SUBSUB_VERSION", "2"),
+            ][..],
+        ),
+        (
+            "include/suitesparse/btf.h",
+            &[
+                ("BTF_MAIN_VERSION", "2"),
+                ("BTF_SUB_VERSION", "3"),
+                ("BTF_SUBSUB_VERSION", "2"),
+            ][..],
+        ),
+        (
+            "include/suitesparse/colamd.h",
+            &[
+                ("COLAMD_MAIN_VERSION", "3"),
+                ("COLAMD_SUB_VERSION", "3"),
+                ("COLAMD_SUBSUB_VERSION", "3"),
+            ][..],
+        ),
+        (
+            "include/suitesparse/klu.h",
+            &[
+                ("KLU_MAIN_VERSION", "2"),
+                ("KLU_SUB_VERSION", "3"),
+                ("KLU_SUBSUB_VERSION", "3"),
+            ][..],
+        ),
+    ] {
+        let path = root.join(relative);
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("cannot read {}: {error}", path.display()));
+        for (name, value) in definitions {
+            require_header_define(&text, &path, name, Some(value));
+        }
+    }
+}
+
+fn require_header_define(text: &str, path: &Path, name: &str, value: Option<&str>) {
+    let found = text.lines().any(|line| {
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some("#define") || fields.next() != Some(name) {
+            return false;
+        }
+        match value {
+            Some(expected) => fields.next() == Some(expected),
+            None => true,
+        }
+    });
+    if !found {
+        panic!(
+            "{} does not define {}{}",
+            path.display(),
+            name,
+            value
+                .map(|value| format!(" as {value}"))
+                .unwrap_or_default()
+        );
+    }
+}
+
+fn require_klu_build_receipt(root: &Path) {
+    let receipt_path = root.join(INSTALLED_KLU_BUILD_RECEIPT);
+    require_regular_file(&receipt_path, "closed @2 KLU build receipt");
+    let receipt = fs::read_to_string(&receipt_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", receipt_path.display()));
+    let toolchain = [
+        ("cmake", json_string(&receipt, "cmake", &receipt_path)),
+        (
+            "cCompiler",
+            json_string(&receipt, "cCompiler", &receipt_path),
+        ),
+        (
+            "cxxCompiler",
+            json_string(&receipt, "cxxCompiler", &receipt_path),
+        ),
+        ("archiver", json_string(&receipt, "archiver", &receipt_path)),
+        ("linker", json_string(&receipt, "linker", &receipt_path)),
+    ];
+    if toolchain.iter().any(|(_, value)| value.is_empty()) {
+        panic!(
+            "{} contains an empty toolchain identity",
+            receipt_path.display()
+        );
+    }
+
+    let artifact_entries = canonical_hash_entries(root, "lib", &KLU_ARCHIVES);
+    let header_entries = canonical_hash_entries(root, "", &KLU_HEADERS);
+    let license_entries = canonical_hash_entries(root, "", &KLU_LICENSES);
+    let sundials_lock_sha = sha256(&root.join(INSTALLED_SOURCE_LOCK));
+    let suitesparse_lock_sha = sha256(&root.join(INSTALLED_SUITESPARSE_SOURCE_LOCK));
+    let expected = format!(
+        concat!(
+            "{{\n",
+            "  \"format\": \"battery-design/native-dae-klu-build-receipt@2\",\n",
+            "  \"backend\": \"SUNDIALS/IDA+SuiteSparse/KLU\",\n",
+            "  \"sources\": {{\n",
+            "    \"sundials\": {{\n",
+            "      \"lockFormat\": \"battery-design/sundials-source-lock@1\",\n",
+            "      \"lockSha256\": \"{}\",\n",
+            "      \"version\": \"7.8.0\",\n",
+            "      \"commitSha\": \"{}\",\n",
+            "      \"archiveSha256\": \"{}\"\n",
+            "    }},\n",
+            "    \"suitesparse\": {{\n",
+            "      \"lockFormat\": \"battery-design/suitesparse-source-lock@1\",\n",
+            "      \"lockSha256\": \"{}\",\n",
+            "      \"version\": \"7.7.0\",\n",
+            "      \"commitSha\": \"13806726cbf470914d012d132a85aea1aff9ee77\",\n",
+            "      \"archiveSha256\": \"529b067f5d80981f45ddf6766627b8fc5af619822f068f342aab776e683df4f3\"\n",
+            "    }}\n",
+            "  }},\n",
+            "  \"build\": {{\n",
+            "    \"linkage\": \"static\",\n",
+            "    \"precision\": \"double\",\n",
+            "    \"indexBits\": 64,\n",
+            "    \"mpi\": false,\n",
+            "    \"openmp\": false,\n",
+            "    \"klu\": true,\n",
+            "    \"kluChecks\": true,\n",
+            "    \"cholmod\": false,\n",
+            "    \"blas\": false\n",
+            "  }},\n",
+            "  \"components\": {{\n",
+            "    \"SuiteSparse_config\": \"7.7.0\",\n",
+            "    \"AMD\": \"3.3.2\",\n",
+            "    \"BTF\": \"2.3.2\",\n",
+            "    \"COLAMD\": \"3.3.3\",\n",
+            "    \"KLU\": \"2.3.3\"\n",
+            "  }},\n",
+            "  \"artifacts\": {{\n{}\n  }},\n",
+            "  \"headers\": {{\n{}\n  }},\n",
+            "  \"licenses\": {{\n{}\n  }},\n",
+            "  \"toolchain\": {{\n",
+            "    \"cmake\": \"{}\",\n",
+            "    \"cCompiler\": \"{}\",\n",
+            "    \"cxxCompiler\": \"{}\",\n",
+            "    \"archiver\": \"{}\",\n",
+            "    \"linker\": \"{}\"\n",
+            "  }}\n",
+            "}}\n"
+        ),
+        sundials_lock_sha,
+        REQUIRED_COMMIT_SHA,
+        REQUIRED_SOURCE_SHA256,
+        suitesparse_lock_sha,
+        artifact_entries,
+        header_entries,
+        license_entries,
+        toolchain[0].1,
+        toolchain[1].1,
+        toolchain[2].1,
+        toolchain[3].1,
+        toolchain[4].1,
+    );
+    if receipt != expected {
+        panic!(
+            "{} is not the exact canonical closed @2 KLU receipt for this install",
+            receipt_path.display()
+        );
+    }
+}
+
+fn canonical_hash_entries(root: &Path, prefix: &str, names: &[&str]) -> String {
+    names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| {
+            let path = if prefix.is_empty() {
+                root.join(name)
+            } else {
+                root.join(prefix).join(name)
+            };
+            let comma = if index + 1 == names.len() { "" } else { "," };
+            format!("    \"{name}\": \"{}\"{comma}", sha256(&path))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 45);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 46);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -100,6 +100,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-sil-result-representation-gap',
     'rc-solver-evidence-acceptance-drift',
     'rc-solver-sparse-build-provenance-gap',
+    'rc-solver-sparse-jacobian-pattern-erasure',
     'rc-source-revision-self-claim',
     'rc-test-multiplier-denominator-drift',
     'rc-thermal-explicit-step-instability',
@@ -221,6 +222,27 @@ test('sparse native provenance binds both sources, real linkage and license limi
   );
   assert.equal(
     searchRootCauses('SuiteSparse KLU two source static link license archive spaces nvecserial', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('sparse Jacobian memory preserves full CSC restoration after native zeroing', () => {
+  const record = getRootCauseRecord('rc-solver-sparse-jacobian-pattern-erasure');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /SUNMatZero_Sparse[\s\S]*numeric data[\s\S]*row-index[\s\S]*column-pointer[\s\S]*repeated-callback/i);
+  assert.match(record.rootCause, /construction-time state[\s\S]*matrix-zero operation[\s\S]*structure and values/i);
+  assert.match(record.resolution.join(' '), /matrix type[\s\S]*checked byte ranges[\s\S]*disjointness[\s\S]*every successful sparse Jacobian callback[\s\S]*column-pointer[\s\S]*row-index[\s\S]*numeric values[\s\S]*structural diagonal[\s\S]*more than one real KLU Jacobian setup/i);
+  assert.deepEqual(
+    record.regressionTests.slice(0, 2).map(({ path }) => path),
+    [
+      'rust-dae-native/tests/klu_solve_reference.rs',
+      'rust-dae-native/tests/klu_backend_identity.rs',
+    ],
+  );
+  const source = readFileSync(resolve(ROOT, 'rust-dae-native/src/native.rs'), 'utf8');
+  assert.match(source, /sparse_callback_restores_columns_rows_and_values_after_every_zero[\s\S]*column_pointers[\s\S]*row_indices[\s\S]*jacobian_values_into/);
+  assert.equal(
+    searchRootCauses('SUNDIALS sparse matrix zero CSC row index column pointer callback restore', { limit: 1 })[0]?.id,
     record.id,
   );
 });

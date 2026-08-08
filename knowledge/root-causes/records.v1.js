@@ -2786,6 +2786,74 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-solver-sparse-jacobian-pattern-erasure',
+      title: 'Sparse Jacobian callback assumes its CSC pattern survives matrix zeroing',
+      symptom: 'IDA with KLU can receive an all-zero or malformed CSC structure on a later Jacobian evaluation even though the fixed sparsity pattern was installed when the matrix was created.',
+      evidence: [
+        'In SUNDIALS 7.8.0, SUNMatZero_Sparse clears the numeric data, row-index array and column-pointer array before IDA invokes the registered Jacobian callback.',
+        'Installing the structural pattern only during matrix construction therefore leaves subsequent callbacks without the governed column boundaries and row locations required by KLU.',
+        'A repeated-callback regression that deliberately zeros all three native arrays reproduces the boundary and requires every invocation to restore the exact compiled CSC columns, rows and values.',
+      ],
+      detection: [
+        {
+          method: 'repeated sparse Jacobian reconstruction test',
+          signal: 'Zero the native sparse data, row indices and column pointers before each of two or more callback invocations, then compare all three arrays with the compiled DAE pattern and analytic values.',
+          failureCondition: 'Any invocation preserves zeros, restores only numeric values, changes the sorted unique structure, or constructs Rust slices before validating native type, shape, pointers and alias boundaries.',
+        },
+      ],
+      causalChain: [
+        'The DAE lowering produces a deterministic fixed CSC sparsity pattern and the native KLU matrix is initialized with that pattern.',
+        'IDA clears the sparse matrix before a later Jacobian callback, including its structural index arrays.',
+        'A callback that writes only Jacobian values assumes the structure remains resident and hands KLU erased or invalid column and row metadata.',
+        'Sparse factorization can then fail or operate on a matrix different from the governed residual Jacobian.',
+      ],
+      rootCause: 'The sparse adapter treated CSC structure as construction-time state even though the native matrix-zero operation erases both structure and values at the callback boundary.',
+      resolution: [
+        'Validate the native matrix type, dimensions, nonzero capacity, pointers, checked byte ranges and disjointness from y, yp and residual before constructing any Rust slice.',
+        'On every successful sparse Jacobian callback, copy the complete compiled column-pointer and row-index arrays into the native matrix before copying freshly evaluated numeric values.',
+        'Require a structural diagonal in every column before native allocation and preserve callback-first typed errors when validation or Jacobian evaluation fails.',
+        'Exercise more than one real KLU Jacobian setup so the source-reference solve proves that repeated native zero-and-rebuild cycles remain executable.',
+      ],
+      prevention: [
+        'Audit destructive semantics of every third-party matrix lifecycle operation instead of assuming a fixed-pattern sparse container preserves indices.',
+        'Test callbacks against deliberately erased and malformed native views, including aliasing, wrong matrix type, null pointers and inconsistent CSC lengths.',
+        'Keep the compiled DAE pattern as the sole source of truth and never infer restored structure from mutable native storage.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-dae-native/tests/klu_solve_reference.rs',
+          assertion: 'A real KLU solve performs repeated Jacobian setups and remains accurate, proving that every native zero-and-rebuild cycle receives a complete CSC pattern and values.',
+        },
+        {
+          path: 'rust-dae-native/tests/klu_backend_identity.rs',
+          assertion: 'The KLU admission campaign preserves exact sorted unique CSC structure, structural diagonals and bounded known storage at 1,000 and 10,000 variables.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The sparse pattern-erasure cause remains searchable and bound to full per-callback structure restoration and pre-slice native-view validation.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['callback', 'csc', 'jacobian', 'klu', 'sparse', 'sundials'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Validated sparse callback that restores column pointers, row indices and values on every invocation.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/klu_solve_reference.rs',
+          note: 'Repeated sparse Jacobian setup, numerical reference, failure and lifecycle regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/klu_backend_identity.rs',
+          note: 'CSC identity, scale, structural and work-admission regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-source-revision-self-claim',
       title: 'Manifest Git SHA is accepted without a trusted expectation',
       symptom: 'A package reports a syntactically valid sourceRevision and is labeled verified even though no trusted checkout or caller supplied the expected commit.',

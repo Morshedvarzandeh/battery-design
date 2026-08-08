@@ -1,7 +1,7 @@
 [package]
 name = "battery-design-dae-native"
 version = "0.1.0"
-description = "Optional native dense SUNDIALS/IDA reference backend for battery-design DAE residuals"
+description = "Optional native dense and sparse KLU SUNDIALS/IDA reference backends for battery-design DAE residuals"
 authors = ["Morshed Varzandeh"]
 license = "AGPL-3.0-or-later"
 edition = "2021"
@@ -10,9 +10,24 @@ rust-version = "1.77"
 [features]
 default = []
 sundials-ida = []
+sundials-ida-klu = ["sundials-ida"]
 
 [dependencies]
 battery-design-core = { path = "../rust-core" }
 
 [profile.release]
 panic = "unwind"
+
+[[test]]
+name = "klu_feature_off"
+path = "tests/klu_feature_off.rs"
+
+[[test]]
+name = "klu_backend_identity"
+path = "tests/klu_backend_identity.rs"
+required-features = ["sundials-ida-klu"]
+
+[[test]]
+name = "klu_solve_reference"
+path = "tests/klu_solve_reference.rs"
+required-features = ["sundials-ida-klu"]
