@@ -258,6 +258,28 @@ const DENSE_EVENT_RESTART_CAMPAIGN = Object.freeze([
   'dense_repeated_restart_sessions_are_bitwise_deterministic_including_stats',
 ]);
 
+const KLU_EVENT_RESTART_CAMPAIGN = Object.freeze([
+  'klu_default_reject_preserves_fail_closed_scheduled_event_behavior',
+  'klu_restart_result_binds_v2_contracts_backend_and_requested_policy',
+  'klu_active_distinct_event_count_governs_restart_admission',
+  'klu_restart_maximum_above_backend_ceiling_is_rejected',
+  'klu_initial_time_mismatch_is_rejected_while_signed_zero_matches',
+  'klu_single_event_grid_matches_left_equality_and_right_analytic_values',
+  'klu_simultaneous_step_sources_share_one_restart_and_right_correction',
+  'klu_two_distinct_events_restart_in_order_and_match_piecewise_integral',
+  'klu_event_at_final_horizon_is_inclusive_and_publishes_terminal_equality',
+  'klu_event_at_initial_time_is_exclusive_and_needs_no_restart',
+  'klu_event_one_ulp_after_final_is_inactive_and_cannot_contaminate_output',
+  'klu_nonzero_initial_time_restart_matches_piecewise_integral',
+  'klu_signed_zero_event_and_output_share_numeric_equality',
+  'klu_corrected_initial_conditions_remain_consistent_across_restart',
+  'klu_event_segment_and_correction_targets_fail_preflight_when_unrepresentable',
+  'klu_output_row_and_endpoint_custody_counters_close_exactly',
+  'klu_global_step_budget_is_cumulative_across_event_segments',
+  'klu_repeated_restart_sessions_are_bitwise_deterministic_including_stats',
+]);
+const KLU_EVENT_RESTART_CAMPAIGN_SHA256 = 'eae4c45f238f748df95e49a0dc19645d588b2ac86c46f6c5eda0dfb08af8b175';
+
 const namesSha256 = (names) => createHash('sha256')
   .update(`${names.join('\n')}\n`, 'utf8')
   .digest('hex');
@@ -305,28 +327,39 @@ test('Iteration 4 freezes the full 166-name event-restart proxy at merged Iterat
   }
 });
 
-test('dense event-restart campaign owns exactly 18 manifest-listed cases', () => {
+test('dense and KLU event-restart campaigns own exactly 18 manifest-listed cases each', () => {
   const manifest = read('rust-dae-native/Cargo.toml');
   const denseCampaignNames = rustTestNames(read('rust-dae-native/tests/dense_event_restart_campaign.rs'));
+  const kluCampaignNames = rustTestNames(read('rust-dae-native/tests/klu_event_restart_campaign.rs'));
 
   assert.match(
     manifest,
     /\[\[test\]\]\s*name = "dense_event_restart_campaign"\s*path = "tests\/dense_event_restart_campaign\.rs"\s*required-features = \["sundials-ida"\]/u,
   );
+  assert.match(
+    manifest,
+    /\[\[test\]\]\s*name = "klu_event_restart_campaign"\s*path = "tests\/klu_event_restart_campaign\.rs"\s*required-features = \["sundials-ida-klu"\]/u,
+  );
   assert.equal(denseCampaignNames.length, 18);
   assert.equal(new Set(denseCampaignNames).size, 18);
   assert.deepEqual([...denseCampaignNames].sort(), [...DENSE_EVENT_RESTART_CAMPAIGN].sort());
+  assert.equal(kluCampaignNames.length, 18);
+  assert.equal(new Set(kluCampaignNames).size, 18);
+  assert.deepEqual([...kluCampaignNames].sort(), [...KLU_EVENT_RESTART_CAMPAIGN].sort());
+  assert.equal(
+    namesSha256([...kluCampaignNames].sort()),
+    KLU_EVENT_RESTART_CAMPAIGN_SHA256,
+  );
 
   const frozenEventRestartProxy = ITERATION_4_PROXY_MATCHES.length;
-  const plannedKluCampaignCases = 18;
-  const plannedCombinedCampaignCases = DENSE_EVENT_RESTART_CAMPAIGN.length
-    + plannedKluCampaignCases;
+  const combinedCampaignCases = denseCampaignNames.length + kluCampaignNames.length;
   assert.equal(frozenEventRestartProxy, 16);
   assert.equal(DENSE_EVENT_RESTART_CAMPAIGN.length, 18);
   assert.ok(DENSE_EVENT_RESTART_CAMPAIGN.length < 2 * frozenEventRestartProxy);
-  assert.equal(plannedCombinedCampaignCases, 36);
-  assert.ok(plannedCombinedCampaignCases >= 2 * frozenEventRestartProxy);
-  assert.equal((plannedCombinedCampaignCases / frozenEventRestartProxy).toFixed(2), '2.25');
+  assert.equal((DENSE_EVENT_RESTART_CAMPAIGN.length / frozenEventRestartProxy).toFixed(3), '1.125');
+  assert.equal(combinedCampaignCases, 36);
+  assert.ok(combinedCampaignCases >= 2 * frozenEventRestartProxy);
+  assert.equal((combinedCampaignCases / frozenEventRestartProxy).toFixed(2), '2.25');
 });
 
 test('current embedded event matrix separates dense and KLU-only seams exactly', () => {
@@ -344,27 +377,28 @@ test('current embedded event matrix separates dense and KLU-only seams exactly',
   );
 });
 
-test('current KLU workflow accounts for the dense manifest without moving embedded counts', () => {
+test('current KLU workflow accounts for both manifests without moving embedded counts', () => {
   const workflow = read('.github/workflows/ci.yml');
   assert.equal(
-    (workflow.match(/Exercise exactly 172 native dense and KLU cases in (?:debug|release)/gu) ?? []).length,
+    (workflow.match(/Exercise exactly 190 native dense and KLU cases in (?:debug|release)/gu) ?? []).length,
     2,
   );
   assert.equal((workflow.match(/'97 1'/gu) ?? []).length, 2);
-  assert.equal((workflow.match(/'18 1'/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/'18 2'/gu) ?? []).length, 2);
   assert.equal(
-    (workflow.match(/for expectation in '0 3' '2 1' '11 1' '18 1' '19 1' '25 1' '97 1'; do/gu) ?? []).length,
+    (workflow.match(/for expectation in '0 3' '2 1' '11 1' '18 2' '19 1' '25 1' '97 1'; do/gu) ?? []).length,
     2,
   );
-  assert.equal((workflow.match(/-eq 172/gu) ?? []).length, 2);
-  assert.equal((workflow.match(/-eq 9$/gmu) ?? []).length, 2);
-  assert.doesNotMatch(workflow, /Exercise exactly (?:130|154) native dense and KLU|'73 1'|-eq (?:130|154)$/mu);
+  assert.equal((workflow.match(/-eq 190/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/-eq 10$/gmu) ?? []).length, 2);
+  assert.doesNotMatch(workflow, /Exercise exactly (?:130|154|172) native dense and KLU|'73 1'|'18 1'|-eq (?:130|154|172)$/mu);
 });
 
 test('current guide reports live event evidence without moving historical campaigns', () => {
   const guide = read('docs/EQUATION_SOLVER.md').replace(/\s+/gu, ' ');
   assert.match(guide, /85 embedded unit cases[\s\S]*KLU matrix contains 97[\s\S]*12-case difference[\s\S]*six historical Iteration 3[\s\S]*six new event\/restart seams/i);
   assert.match(guide, /merged Iteration 3 SHA[\s\S]*032638ba3ee2b7d6cd2ec730b529a63a96ca3ffb[\s\S]*166 unique names[\s\S]*16-name denominator[\s\S]*a9382670c4667d1316f2fd5177c8cf522c697eaf70eab9fb16c7d29e5dddd894[\s\S]*6911df8109acfc06f2a8004d8f52b8468926229fc4f80f2f55bb758ffc501bbc/i);
-  assert.match(guide, /18-case dense event\/restart manifest campaign[\s\S]*partial[\s\S]*18 \/ 16 = 1\.125[\s\S]*combined 36-case[\s\S]*36 \/ 16 = 2\.25 times/i);
+  assert.match(guide, /18-case dense event\/restart manifest campaign[\s\S]*18-case KLU event\/restart manifest campaign[\s\S]*partial[\s\S]*18 \/ 16 = 1\.125[\s\S]*combined 36-case[\s\S]*36 \/ 16 = 2\.25 times[\s\S]*frozen test-function-count proxy[\s\S]*18 mirrored scenario pairs[\s\S]*not 36 unique behaviors[\s\S]*not evidence that the global test suite doubled/i);
+  assert.match(guide, /dense-only checkpoint[\s\S]*172 cases in nine[\s\S]*current 190 cases in ten[\s\S]*historical 154-case, eight-block incident/i);
   assert.match(guide, /historical 48 manifest-listed KLU campaign[\s\S]*frozen 81-name Iteration 3 population[\s\S]*remain unchanged/i);
 });

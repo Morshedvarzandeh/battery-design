@@ -149,15 +149,22 @@ the complete names are frozen in
 `tests/dae-iteration4-event-evidence.test.mjs` so the evidence does not require
 Git history at runtime.
 
-The current source adds one explicit 18-case dense event/restart manifest
-campaign. That dense campaign alone is partial multiplier evidence:
-`18 / 16 = 1.125`, not a two-times claim. A separately reviewed 18-case KLU
-manifest campaign would bring the scope-matched combined 36-case numerator
-and only then establish `36 / 16 = 2.25 times`. The dense target increases the
-current KLU-feature execution matrix from its historical Iteration 4 incident
-state of 154 cases in eight Cargo result blocks to 172 cases in nine blocks;
-it does not move the 16-name denominator, the historical 48-case KLU campaign,
-or the frozen 81-name Iteration 3 population.
+The current source contains one explicit 18-case dense event/restart manifest
+campaign and one explicit 18-case KLU event/restart manifest campaign. The
+dense campaign alone remains partial multiplier evidence:
+`18 / 16 = 1.125`, not a two-times claim. Together the two backend-specific
+campaigns form the scope-matched combined 36-case numerator and yield
+`36 / 16 = 2.25 times` on this frozen test-function-count proxy. They are 18
+mirrored scenario pairs executed through two solver backends, not 36 unique
+behaviors and not evidence that the global test suite doubled. The exact KLU
+roster is frozen beside the baseline and has newline-terminated sorted SHA-256
+`eae4c45f238f748df95e49a0dc19645d588b2ac86c46f6c5eda0dfb08af8b175`.
+
+The KLU target advances the current KLU-feature execution matrix from the
+dense-only checkpoint of 172 cases in nine Cargo result blocks to the current
+190 cases in ten blocks. The historical 154-case, eight-block incident remains
+separate evidence. Neither manifest target moves the 16-name denominator, the
+historical 48-case KLU campaign, or the frozen 81-name Iteration 3 population.
 
 ### Historical Iteration 2 native reference boundary (`@1`)
 

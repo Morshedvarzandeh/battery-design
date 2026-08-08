@@ -378,17 +378,17 @@ test('nested Node runner memory preserves independent exact-count reporting', ()
 test('native CI count memory keeps live execution separate from frozen campaigns', () => {
   const record = getRootCauseRecord('rc-ci-native-test-count-drift');
   assert.equal(record?.status, 'resolved');
-  assert.equal(record.revision, 2);
-  assert.match(record.evidence.join(' '), /73 unit cases[\s\S]*130 total[\s\S]*18 dense event\/restart unit cases[\s\S]*six KLU-gated[\s\S]*97 cases[\s\S]*154[\s\S]*18-case dense event\/restart manifest target[\s\S]*172-case[\s\S]*nine-block[\s\S]*historical 154-case[\s\S]*eight-block incident/i);
+  assert.equal(record.revision, 3);
+  assert.match(record.evidence.join(' '), /73 unit cases[\s\S]*130 total[\s\S]*18 dense event\/restart unit cases[\s\S]*six KLU-gated[\s\S]*97 cases[\s\S]*154[\s\S]*18-case dense event\/restart manifest target[\s\S]*172-case[\s\S]*nine-block[\s\S]*historical 154-case[\s\S]*eight-block incident[\s\S]*complementary 18-case KLU event\/restart manifest target[\s\S]*second 18-case result block[\s\S]*current 190-case[\s\S]*ten-block/i);
   assert.match(record.rootCause, /test inventory[\s\S]*CI accounting[\s\S]*separate literals[\s\S]*atomic review invariant/i);
-  assert.match(record.resolution.join(' '), /debug and release[\s\S]*73-case[\s\S]*130-case[\s\S]*97-case[\s\S]*154-case[\s\S]*eight result blocks[\s\S]*historical 48-case[\s\S]*81-case[\s\S]*separate current evidence[\s\S]*18-case dense event\/restart manifest[\s\S]*154 cases in eight blocks[\s\S]*172 cases in nine blocks[\s\S]*original incident evidence/i);
+  assert.match(record.resolution.join(' '), /debug and release[\s\S]*73-case[\s\S]*130-case[\s\S]*97-case[\s\S]*154-case[\s\S]*eight result blocks[\s\S]*historical 48-case[\s\S]*81-case[\s\S]*separate current evidence[\s\S]*18-case dense event\/restart manifest[\s\S]*154 cases in eight blocks[\s\S]*172 cases in nine blocks[\s\S]*original incident evidence[\s\S]*complementary 18-case KLU manifest[\s\S]*multiplicity from one to two[\s\S]*172 cases in nine blocks[\s\S]*190 cases in ten blocks[\s\S]*historical checkpoint/i);
   assert.equal(record.regressionTests[0].path, 'tests/dae-iteration4-event-evidence.test.mjs');
   const workflow = readFileSync(resolve(ROOT, '.github/workflows/ci.yml'), 'utf8');
-  assert.equal((workflow.match(/Exercise exactly 172 native dense and KLU cases/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/Exercise exactly 190 native dense and KLU cases/gu) ?? []).length, 2);
   assert.equal((workflow.match(/'97 1'/gu) ?? []).length, 2);
-  assert.equal((workflow.match(/'18 1'/gu) ?? []).length, 2);
-  assert.equal((workflow.match(/-eq 172/gu) ?? []).length, 2);
-  assert.equal((workflow.match(/-eq 9$/gmu) ?? []).length, 2);
+  assert.equal((workflow.match(/'18 2'/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/-eq 190/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/-eq 10$/gmu) ?? []).length, 2);
   assert.equal(
     searchRootCauses('native KLU CI stale unit aggregate result blocks test count drift', { limit: 1 })[0]?.id,
     record.id,

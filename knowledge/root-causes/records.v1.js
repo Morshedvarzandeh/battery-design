@@ -813,14 +813,15 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
     }),
     record({
       id: 'rc-ci-native-test-count-drift',
-      revision: 2,
+      revision: 3,
       title: 'Native CI exact-count gate remains pinned to an older test population',
       symptom: 'A larger native solver campaign compiles and passes, but its hosted gate fails afterward because the workflow still expects the previous unit-binary and aggregate test counts.',
       evidence: [
         'DAE Iteration 3 pinned the KLU feature matrix to 73 unit cases and 130 total cases across eight Cargo result blocks.',
         'Iteration 4 added 18 dense event/restart unit cases and six KLU-gated internal seams, making the feature-on unit binary 97 cases and the complete matrix 154 while retaining the same eight result blocks.',
         'The Commit 2 workflow still named and asserted 130 total and the 73-case unit block, so fixing the earlier Rust 1.77 compilation failure alone would only expose a second deterministic CI failure.',
-        'The later 18-case dense event/restart manifest target was accounted for atomically as its own result block, producing the current 172-case, nine-block matrix without rewriting the historical 154-case, eight-block incident.',
+        'The later 18-case dense event/restart manifest target was accounted for atomically as its own result block, producing the then-current 172-case, nine-block dense-only checkpoint without rewriting the historical 154-case, eight-block incident.',
+        'The complementary 18-case KLU event/restart manifest target was also accounted for atomically as a second 18-case result block, producing the current 190-case, ten-block matrix while retaining both earlier checkpoints.',
       ],
       detection: [
         {
@@ -841,6 +842,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Keep the historical 48-case manifest campaign and 81-case dense baseline frozen by names; report the later embedded event seams as separate current evidence rather than rewriting old denominators.',
         'Add a repository test that pins the current workflow names, per-block unit expectation, aggregate and absence of the stale values beside the current Rust source accounting.',
         'When the 18-case dense event/restart manifest target is registered, add its 18-case result block to both hosted matrices in the same change, advancing current execution from 154 cases in eight blocks to 172 cases in nine blocks while retaining the original incident evidence.',
+        'When the complementary 18-case KLU manifest target is registered, change the per-block multiplicity from one to two and advance both hosted matrices from 172 cases in nine blocks to 190 cases in ten blocks without rewriting either historical checkpoint.',
       ],
       prevention: [
         'Treat every added, removed, gated or moved Cargo test as a coordinated change to source inventory, documentation and exact hosted result-block assertions.',
@@ -850,11 +852,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       regressionTests: [
         {
           path: 'tests/dae-iteration4-event-evidence.test.mjs',
-          assertion: 'The historical Iteration 3 population and 154-case incident remain name-bound while current source and CI agree on the 97-case embedded unit binary, the separate 18-case dense manifest target, 172 total cases and nine Cargo result blocks in debug and release.',
+          assertion: 'The historical Iteration 3 population, 154-case incident and 172-case dense-only checkpoint remain name-bound while current source and CI agree on the 97-case embedded unit binary, two separate 18-case manifest targets, 190 total cases and ten Cargo result blocks in debug and release.',
         },
         {
           path: 'tests/root-cause-library.test.mjs',
-          assertion: 'The native CI count-drift cause remains independently searchable, preserves the historical 73/130 to 97/154 correction and records the later atomic 172-case, nine-block extension without moving frozen multiplier populations.',
+          assertion: 'The native CI count-drift cause remains independently searchable, preserves the historical 73/130 to 97/154 correction and records the later atomic 172-case/nine-block and 190-case/ten-block extensions without moving frozen multiplier populations.',
         },
       ],
       affectedSurfaces: ['ci'],
@@ -863,7 +865,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           kind: 'implementation',
           locator: '.github/workflows/ci.yml',
-          note: 'Warning-denied debug and release KLU matrices with exact current 97-case embedded, 18-case dense-manifest, 172-case aggregate and nine-block accounting.',
+          note: 'Warning-denied debug and release KLU matrices with exact current 97-case embedded, two 18-case manifest targets, 190-case aggregate and ten-block accounting.',
         },
         {
           kind: 'test',

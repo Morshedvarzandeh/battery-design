@@ -28,6 +28,11 @@ name = "klu_feature_off"
 path = "tests/klu_feature_off.rs"
 
 [[test]]
+name = "klu_event_restart_campaign"
+path = "tests/klu_event_restart_campaign.rs"
+required-features = ["sundials-ida-klu"]
+
+[[test]]
 name = "klu_backend_identity"
 path = "tests/klu_backend_identity.rs"
 required-features = ["sundials-ida-klu"]
