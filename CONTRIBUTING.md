@@ -1,5 +1,34 @@
 # Adding cells and components
 
+## Contribution rights and current license
+
+The current public tree is licensed under AGPL-3.0-or-later, except for
+material that carries its own license or notice. By submitting a pull request,
+you confirm that you created the contribution or have authority to submit it,
+and that you have disclosed any third-party code, data, media, model, standard,
+datasheet, or other material it contains.
+
+Unless a separate signed agreement expressly applies, submission does not
+transfer ownership. To the extent that you or an identified rightsholder
+controls the necessary rights, you represent that you are authorized to license
+the contribution to this public project under AGPL-3.0-or-later on the same
+inbound-and-outbound terms. Disclosed third-party material remains governed by
+its own terms. The public-project grant is not a separate proprietary or
+dual-license grant.
+
+No Contributor License Agreement is active for this repository yet. A pull
+request, checkbox, commit signature, or GitHub account does **not** transfer
+copyright ownership or grant a separate proprietary/dual-license right. Until
+a counsel-approved agreement and signer check are active, a copyrightable
+contribution from anyone whose proprietary-license authority is not documented
+must either remain unmerged or be recorded as public-license-only in the rights
+baseline (or its successor exact-path bill of materials) and excluded from any
+future proprietary baseline.
+
+See [the rights and provenance baseline](docs/RIGHTS_PROVENANCE_BASELINE.md)
+and [the governed compliance roadmap](docs/COMPLIANCE_COMMERCIAL_TRANSITION.md)
+before changing licensing, notices, release boundaries, or commercial code.
+
 The databases are plain JavaScript data files. Anything you add — a new cell
 you found on the market, a busbar, a cooling system, a supplier's spacer —
 integrates with the whole app **by construction**: the pickers, the usage
@@ -11,8 +40,7 @@ these files, and CI refuses the merge if a record breaks the contract.
 1. Add your record to the right file (see below).
 2. Run the gate locally:
    ```bash
-   node tools/validate.mjs        # data contracts
-   node tests/sanity.mjs          # engine + data plausibility
+   npm run validate               # contracts, types, tests and market checks
    ```
 3. Open a pull request. CI runs the same gate on every PR; a green check
    means the new entry is fully integrated.
@@ -60,8 +88,11 @@ Two honesty rules are load-bearing:
 
 If the cell exists in the companion
 [battery-data](https://github.com/morshedvarzandeh/battery-data) repo's
-`contrib/cells/` datasheet extractions, use those values verbatim and cite
-the YAML path in `sourceNote`.
+`contrib/cells/` datasheet extractions, record the exact source commit and YAML
+path, the repository license applicable at that commit, the original
+datasheet/source provenance, and the authority to reuse the values. Citation
+alone is not permission; do not copy values or expression verbatim unless the
+applicable license or permission allows it.
 
 ## Adding an application preset — `js/presets.js`
 
