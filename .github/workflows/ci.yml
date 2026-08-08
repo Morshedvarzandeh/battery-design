@@ -189,32 +189,32 @@ jobs:
           cargo test --locked --manifest-path rust-dae-native/Cargo.toml \
             --no-default-features --test klu_feature_off 2>&1 | tee "$log"
           test "$(grep -Ec '^test result: ok\. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$log")" -eq 1
-      - name: Exercise exactly 130 native dense and KLU cases in debug
+      - name: Exercise exactly 154 native dense and KLU cases in debug
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/rust-dae-native-klu-debug.log"
           cargo test --locked --manifest-path rust-dae-native/Cargo.toml \
             --no-default-features --features sundials-ida-klu 2>&1 | tee "$log"
-          for expectation in '0 3' '2 1' '11 1' '19 1' '25 1' '73 1'; do
+          for expectation in '0 3' '2 1' '11 1' '19 1' '25 1' '97 1'; do
             read -r passed occurrences <<< "$expectation"
             actual="$(grep -Ec "^test result: ok\\. ${passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" "$log")"
             test "$actual" -eq "$occurrences"
           done
           test "$(grep -Ec '^test result: ok\.' "$log")" -eq 8
-          test "$(awk '/^test result: ok\./ { total += $4 } END { print total + 0 }' "$log")" -eq 130
-      - name: Exercise exactly 130 native dense and KLU cases in release
+          test "$(awk '/^test result: ok\./ { total += $4 } END { print total + 0 }' "$log")" -eq 154
+      - name: Exercise exactly 154 native dense and KLU cases in release
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/rust-dae-native-klu-release.log"
           cargo test --locked --release --manifest-path rust-dae-native/Cargo.toml \
             --no-default-features --features sundials-ida-klu 2>&1 | tee "$log"
-          for expectation in '0 3' '2 1' '11 1' '19 1' '25 1' '73 1'; do
+          for expectation in '0 3' '2 1' '11 1' '19 1' '25 1' '97 1'; do
             read -r passed occurrences <<< "$expectation"
             actual="$(grep -Ec "^test result: ok\\. ${passed} passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;" "$log")"
             test "$actual" -eq "$occurrences"
           done
           test "$(grep -Ec '^test result: ok\.' "$log")" -eq 8
-          test "$(awk '/^test result: ok\./ { total += $4 } END { print total + 0 }' "$log")" -eq 130
+          test "$(awk '/^test result: ok\./ { total += $4 } END { print total + 0 }' "$log")" -eq 154
 
   fmu:
     name: FMI 2.0 compiled artifact

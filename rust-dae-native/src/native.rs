@@ -6919,10 +6919,10 @@ mod tests {
             discontinuous.solve_requested_grid().unwrap_err(),
             IdaError::EventDifferentialDiscontinuity {
                 event_index: 0,
-                event_time_s: 0.5,
+                event_time_s,
                 variable_index: 0,
                 ..
-            }
+            } if event_time_s == 0.5
         ));
 
         for (is_y, variable_index) in [(true, 1usize), (false, 0usize)] {
@@ -6938,18 +6938,19 @@ mod tests {
                 error,
                 IdaError::EventRestartFailure {
                     event_index: 0,
-                    event_time_s: 0.5,
+                    event_time_s,
                     phase: IdaEventPhase::GetConsistentInitialConditions,
                     source,
-                } if matches!(
-                    source.as_ref(),
-                    IdaError::InvalidNativeValue {
-                        stage: NativeStage::IdaGetConsistentIc,
-                        component_index: Some(index),
-                        value,
-                        ..
-                    } if *index == variable_index && !value.is_finite()
-                )
+                } if event_time_s == 0.5
+                    && matches!(
+                        source.as_ref(),
+                        IdaError::InvalidNativeValue {
+                            stage: NativeStage::IdaGetConsistentIc,
+                            component_index: Some(index),
+                            value,
+                            ..
+                        } if *index == variable_index && !value.is_finite()
+                    )
             ));
             let snapshot = allocation_audit::snapshot();
             assert_balanced(snapshot, "post-event IC validation failure");
@@ -6988,20 +6989,21 @@ mod tests {
                 error,
                 IdaError::EventRestartFailure {
                     event_index: 0,
-                    event_time_s: 0.5,
+                    event_time_s,
                     phase: IdaEventPhase::SolveLeftSegment,
                     source,
-                } if matches!(
-                    source.as_ref(),
-                    IdaError::InvalidNativeValue {
-                        stage: NativeStage::IdaSolveStep,
-                        field,
-                        component_index: Some(0),
-                        value,
-                        ..
-                    } if *field == if is_y { NativeValue::Y } else { NativeValue::Yp }
-                        && !value.is_finite()
-                )
+                } if event_time_s == 0.5
+                    && matches!(
+                        source.as_ref(),
+                        IdaError::InvalidNativeValue {
+                            stage: NativeStage::IdaSolveStep,
+                            field,
+                            component_index: Some(0),
+                            value,
+                            ..
+                        } if *field == if is_y { NativeValue::Y } else { NativeValue::Yp }
+                            && !value.is_finite()
+                    )
             ));
             assert_balanced(
                 allocation_audit::snapshot(),

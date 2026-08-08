@@ -126,6 +126,14 @@ an npm/installer/release artifact, qualified for arbitrary DAEs, or certified
 for product or safety decisions. KLU factor-fill isolation and the Iteration 4
 native service boundary remain separate work.
 
+At this source checkpoint, the warning-denied dense matrix contains 85
+embedded unit cases and the KLU matrix contains 97. The 12-case difference is
+the complete current KLU-gated internal set: the six historical Iteration 3
+callback/diagnostic seams plus six new event/restart seams. These embedded
+cases are reported separately from the historical 48 manifest-listed KLU
+campaign and from the separately planned Iteration 4 manifest campaigns; they
+do not change either frozen multiplier denominator.
+
 ### Historical Iteration 2 native reference boundary (`@1`)
 
 `rust-dae-native/` now implements a bounded native Linux reference backend in

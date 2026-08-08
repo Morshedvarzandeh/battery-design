@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 56);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 57);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -70,6 +70,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-calibration-trace-alignment-loss',
     'rc-calibration-work-undercount',
     'rc-capability-contract-mismatch',
+    'rc-ci-native-test-count-drift',
     'rc-cli-typo-default-fallback',
     'rc-dae-csc-quadratic-lowering',
     'rc-dae-lowering-contract-gap',
@@ -374,6 +375,24 @@ test('nested Node runner memory preserves independent exact-count reporting', ()
   );
 });
 
+test('native CI count memory keeps live execution separate from frozen campaigns', () => {
+  const record = getRootCauseRecord('rc-ci-native-test-count-drift');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /73 unit cases[\s\S]*130 total[\s\S]*18 dense event\/restart[\s\S]*six KLU-gated[\s\S]*97 cases[\s\S]*154/i);
+  assert.match(record.rootCause, /test inventory[\s\S]*CI accounting[\s\S]*separate literals[\s\S]*atomic review invariant/i);
+  assert.match(record.resolution.join(' '), /debug and release[\s\S]*73-case[\s\S]*130-case[\s\S]*97-case[\s\S]*154-case[\s\S]*eight result blocks[\s\S]*historical 48-case[\s\S]*81-case[\s\S]*separate current evidence/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-iteration4-event-evidence.test.mjs');
+  const workflow = readFileSync(resolve(ROOT, '.github/workflows/ci.yml'), 'utf8');
+  assert.equal((workflow.match(/Exercise exactly 154 native dense and KLU cases/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/'97 1'/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/-eq 154/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/-eq 8$/gmu) ?? []).length, 2);
+  assert.equal(
+    searchRootCauses('native KLU CI stale unit aggregate result blocks test count drift', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
 test('regression-path memory preserves cross-platform repository containment', () => {
   const record = getRootCauseRecord('rc-regression-path-containment-gap');
   assert.equal(record?.status, 'resolved');
@@ -429,12 +448,15 @@ test('native IDA memories keep seven causes separate, resolved and exactly searc
   assert.match(mutex.resolution.join(' '), /absolute and relative tolerances[\s\S]*poison-recovering test_lock[\s\S]*reset each test.s instrumentation state/i);
 
   const msrv = getRootCauseRecord('rc-rust-msrv-float-pattern-lint-gap');
-  assert.match(msrv.evidence.join(' '), /PR 75[\s\S]*illegal-floating-point-literal-pattern[\s\S]*Rust 1\.77\.2[\s\S]*Rust 1\.87\.0/i);
+  assert.equal(msrv.revision, 2);
+  assert.match(msrv.evidence.join(' '), /PR 75[\s\S]*illegal-floating-point-literal-pattern[\s\S]*Rust 1\.77\.2[\s\S]*Rust 1\.87\.0[\s\S]*PR 79[\s\S]*event_time_s: 0\.5[\s\S]*dense and KLU/i);
   assert.match(msrv.rootCause, /floating-point patterns[\s\S]*exact warning-denied minimum-supported Rust toolchain/i);
-  assert.match(msrv.resolution.join(' '), /full IdaError structural equality[\s\S]*Rust 1\.77\.2[\s\S]*RUSTFLAGS=-Dwarnings/i);
+  assert.match(msrv.resolution.join(' '), /full IdaError structural equality[\s\S]*bind the floating-point field as a variable[\s\S]*matches! guard[\s\S]*Rust 1\.77\.2[\s\S]*RUSTFLAGS=-Dwarnings/i);
   const nativeSource = readFileSync(resolve(ROOT, 'rust-dae-native/src/native.rs'), 'utf8');
   assert.match(nativeSource, /interpolation_guard_rejects_replaying_the_previous_step_endpoint[\s\S]*assert_eq![\s\S]*IdaError::InterpolationIntervalMiss/);
   assert.doesNotMatch(nativeSource, /matches!\([\s\S]{0,240}interval_start_s:\s*0\.5[\s\S]{0,120}interval_end_s:\s*0\.75/);
+  assert.match(nativeSource, /post_event_ic_validates_all_state[\s\S]*event_time_s,[\s\S]*if event_time_s == 0\.5/);
+  assert.match(nativeSource, /tstop_endpoint_custody_rejects_nonfinite[\s\S]*event_time_s,[\s\S]*if event_time_s == 0\.5/);
   const ci = readFileSync(resolve(ROOT, '.github/workflows/ci.yml'), 'utf8');
   assert.match(ci, /sundials-native-build:[\s\S]*RUSTFLAGS:\s*-Dwarnings[\s\S]*toolchain:\s*1\.77\.2/);
 
@@ -567,15 +589,17 @@ test('test-multiplier memory pins a reproducible denominator and local evidence'
   const id = 'rc-test-multiplier-denominator-drift';
   const multiplier = getRootCauseRecord(id);
   assert.equal(multiplier?.status, 'resolved');
-  assert.equal(multiplier.revision, 2);
+  assert.equal(multiplier.revision, 3);
   assert.match(multiplier.rootCause, /comparison population[\s\S]*base revision[\s\S]*counting procedure/i);
   assert.match(multiplier.evidence.join(' '), /9f4a43421de34efd067d38a070a0f2c4b9a859dc[\s\S]*81 unique Cargo test function names[\s\S]*67\+1\+2\+11[\s\S]*case-sensitive[\s\S]*21-name[\s\S]*48 new manifest-listed KLU cases[\s\S]*42-case floor[\s\S]*2\.29/i);
+  assert.match(multiplier.evidence.join(' '), /PR 79[\s\S]*six historical KLU internal seams[\s\S]*six later event\/restart seams[\s\S]*live total to 12/i);
   const resolution = multiplier.resolution.join(' ');
   assert.match(resolution, /66f7240 at 708[\s\S]*4da8c03 at 758[\s\S]*increase of 50/i);
   assert.match(resolution, /rg -n "\^test\\\(" tests --glob "\*\.test\.mjs" \| wc -l/);
   assert.match(resolution, /6094b3b at 824 only as an intermediate/i);
   assert.match(resolution, /at least 858 declarations[\s\S]*increase of at least 100/i);
   assert.match(resolution, /9f4a43421de34efd067d38a070a0f2c4b9a859dc[\s\S]*67 native\.rs[\s\S]*one feature_off\.rs[\s\S]*two backend_identity\.rs[\s\S]*11 solve_reference\.rs[\s\S]*sorted 81-name population[\s\S]*\(csc\|jacobian\|matrix\|sparse\|linear_solver\|resource\|construction\|drop\|backend\)[\s\S]*21 matching names[\s\S]*48 manifest-listed KLU cases[\s\S]*floor 42[\s\S]*ratio 2\.29/i);
+  assert.match(resolution, /historical retention by the frozen case names[\s\S]*later KLU-gated internal seams[\s\S]*separate current population[\s\S]*historical six/i);
   assert.match(multiplier.prevention.join(' '), /complete source population[\s\S]*exact matching list[\s\S]*Git history is unavailable at runtime[\s\S]*internal unit seams[\s\S]*separately reported populations/i);
 
   assert.deepEqual(

@@ -812,6 +812,64 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-ci-native-test-count-drift',
+      title: 'Native CI exact-count gate remains pinned to an older test population',
+      symptom: 'A larger native solver campaign compiles and passes, but its hosted gate fails afterward because the workflow still expects the previous unit-binary and aggregate test counts.',
+      evidence: [
+        'DAE Iteration 3 pinned the KLU feature matrix to 73 unit cases and 130 total cases across eight Cargo result blocks.',
+        'Iteration 4 added 18 dense event/restart unit cases and six KLU-gated internal seams, making the feature-on unit binary 97 cases and the complete matrix 154 while retaining the same eight result blocks.',
+        'The Commit 2 workflow still named and asserted 130 total and the 73-case unit block, so fixing the earlier Rust 1.77 compilation failure alone would only expose a second deterministic CI failure.',
+      ],
+      detection: [
+        {
+          method: 'source-to-workflow native result-block audit',
+          signal: 'Count every cfg-resolved Cargo test block for the exact feature matrix and compare its per-block distribution, result-line count and aggregate with each workflow assertion.',
+          failureCondition: 'A current source test population differs from the named workflow total, any expected per-block count, or the asserted number of Cargo result lines.',
+        },
+      ],
+      causalChain: [
+        'The workflow intentionally uses literal per-binary and aggregate counts so skipped or unregistered tests fail closed.',
+        'A later solver slice adds embedded tests without updating the separate workflow literals in the same change.',
+        'Local cargo test reports success because it does not apply the hosted log-count assertions.',
+        'Hosted CI reaches the exact-count step and rejects a healthy expanded campaign as if cases were missing.',
+      ],
+      rootCause: 'The executable test inventory and its fail-closed CI accounting were maintained as separate literals without one atomic review invariant tying every test-population change to the workflow distribution.',
+      resolution: [
+        'Update both debug and release KLU steps from the historical 73-case unit block and 130-case aggregate to the verified 97-case unit block and 154-case aggregate while preserving all eight result blocks.',
+        'Keep the historical 48-case manifest campaign and 81-case dense baseline frozen by names; report the later embedded event seams as separate current evidence rather than rewriting old denominators.',
+        'Add a repository test that pins the current workflow names, per-block unit expectation, aggregate and absence of the stale values beside the current Rust source accounting.',
+      ],
+      prevention: [
+        'Treat every added, removed, gated or moved Cargo test as a coordinated change to source inventory, documentation and exact hosted result-block assertions.',
+        'Keep per-binary counts, aggregate totals and result-line counts together; changing only the headline total is insufficient.',
+        'Separate frozen historical comparison populations from live CI execution counts so later coverage can grow without falsifying prior evidence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-iteration4-event-evidence.test.mjs',
+          assertion: 'The historical Iteration 3 population remains name-bound while current source and CI agree on 97 KLU-feature unit cases, 154 total cases and eight Cargo result blocks in debug and release.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The native CI count-drift cause remains independently searchable and preserves the 73/130 to 97/154 correction without moving historical multiplier populations.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['ci', 'evidence', 'rust', 'test-harness', 'testing'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: '.github/workflows/ci.yml',
+          note: 'Warning-denied debug and release KLU matrices with exact per-block and aggregate accounting.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-iteration4-event-evidence.test.mjs',
+          note: 'Historical-name retention and current workflow/source count-coherence regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-cli-typo-default-fallback',
       title: 'Unknown CLI option silently falls back to a default',
       symptom: 'A misspelled governed export option appears to succeed but the intended value is ignored and a default drives the artifact.',
@@ -2402,12 +2460,14 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
     }),
     record({
       id: 'rc-rust-msrv-float-pattern-lint-gap',
+      revision: 2,
       title: 'Float-pattern test passes locally but fails the pinned Rust toolchain',
       symptom: 'A native solver campaign is green on the developer toolchain but its hosted Rust 1.77.2 gate fails before running the tests because warning denial rejects floating-point literals in a matches! pattern.',
       evidence: [
         'PR 75 CI run 31223697624 failed in the pinned SUNDIALS job while compiling rust-dae-native/src/native.rs, before the debug native campaign could execute.',
         'The interpolation regression matched interval_start_s: 0.5 and interval_end_s: 0.75 directly inside matches!, triggering illegal-floating-point-literal-pattern under Rust 1.77.2 with RUSTFLAGS=-Dwarnings.',
         'The same source compiled without that diagnostic on the available Rust 1.87.0 development toolchain, so a latest-toolchain-only local run did not reproduce the minimum-supported-toolchain gate.',
+        'PR 79 CI run 31233721450 repeated the same failure class in three new event-restart assertions that matched event_time_s: 0.5 directly; both dense and KLU debug compilation stopped before their campaigns could run.',
       ],
       detection: [
         {
@@ -2425,6 +2485,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       rootCause: 'The regression encoded numerical values as floating-point patterns and prepublication verification did not compile that test with the exact warning-denied minimum-supported Rust toolchain used by CI.',
       resolution: [
         'Replace the matches! float pattern with full IdaError structural equality, carrying requested_time_s from the loop value and comparing the interval fields as ordinary values.',
+        'For assertions that need partial structural matching, bind the floating-point field as a variable and compare it in the matches! guard instead of placing a float literal in the pattern.',
         'Keep the native CI job pinned to Rust 1.77.2 with RUSTFLAGS=-Dwarnings and require that exact gate before merge.',
       ],
       prevention: [
@@ -2455,6 +2516,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'incident',
           locator: 'GitHub Actions run 31223697624 job 93013531192',
           note: 'Exact-head PR 75 failure at illegal-floating-point-literal-pattern before native test execution.',
+        },
+        {
+          kind: 'incident',
+          locator: 'GitHub Actions run 31233721450',
+          note: 'Exact-head PR 79 recurrence in event-time patterns across both dense and KLU native jobs.',
         },
       ],
     }),
@@ -3598,7 +3664,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
     }),
     record({
       id: 'rc-test-multiplier-denominator-drift',
-      revision: 2,
+      revision: 3,
       title: 'Test-count delta is mistaken for a promised coverage multiplier',
       symptom: 'A delivery reports that testing doubled because 91 top-level tests were added after a convenient checkpoint, even though the promised two-times comparison was against Action 1 and no stable denominator or identical counting population was recorded.',
       evidence: [
@@ -3609,6 +3675,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'The 6094b3b checkpoint had 824 tests; the 91-test checkpoint delta was substantial but still only 91/50, while the corrected Action 2 tree must reach at least 858 total declarations for an increase of at least 100 over 4da8c03.',
         'For DAE Iteration 3, merged Iteration 2 SHA 9f4a43421de34efd067d38a070a0f2c4b9a859dc contains exactly 81 unique Cargo test function names across native.rs, feature_off.rs, backend_identity.rs and solve_reference.rs in a 67+1+2+11 population.',
         'Sorting those 81 names and applying the case-sensitive (csc|jacobian|matrix|sparse|linear_solver|resource|construction|drop|backend) filter produces the exact frozen 21-name sparse-readiness denominator; 48 new manifest-listed KLU cases therefore clear the 42-case floor at 2.29 times the proxy.',
+        'PR 79 CI run 31233721450 exposed a different form of denominator drift: an Iteration 3 evidence test expected the current source to contain only its six historical KLU internal seams, so six later event/restart seams changed the live total to 12 and failed an otherwise preserved historical claim.',
       ],
       detection: [
         {
@@ -3636,6 +3703,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Label the comparison repository-global, state the 50-test denominator beside the multiplier, and require the current Action 2 tree to reach at least 858 declarations for a numerator increase of at least 100.',
         'For DAE Iteration 3 pin merged Iteration 2 SHA 9f4a43421de34efd067d38a070a0f2c4b9a859dc and the exact four-file Cargo test population: 67 native.rs, one feature_off.rs, two backend_identity.rs and 11 solve_reference.rs names.',
         'Freeze the sorted 81-name population, exact case-sensitive (csc|jacobian|matrix|sparse|linear_solver|resource|construction|drop|backend) filter and resulting 21 matching names in tests/dae-iteration3-evidence.test.mjs; compare only the 48 manifest-listed KLU cases against that denominator, yielding floor 42 and ratio 2.29.',
+        'Verify historical retention by the frozen case names themselves; report later KLU-gated internal seams as a separate current population instead of requiring the live feature-gated count to remain equal to the historical six.',
       ],
       prevention: [
         'Turn qualitative test multipliers into a predeclared measurement note before coding: both boundary commits, denominator, exact command and whether declarations or runtime results are counted.',
@@ -3651,7 +3719,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         },
         {
           path: 'tests/root-cause-library.test.mjs',
-          assertion: 'The revision-2 denominator-drift record remains searchable and preserves both the repository-global Action 2 correction and the frozen DAE Iteration 3 focused comparison.',
+          assertion: 'The revision-3 denominator-drift record remains searchable and preserves the repository-global correction, frozen DAE comparison and historical-name versus live-count distinction.',
         },
       ],
       affectedSurfaces: ['ci', 'documentation'],
@@ -3680,7 +3748,12 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           kind: 'test',
           locator: 'tests/dae-iteration3-evidence.test.mjs',
-          note: 'Self-contained exact baseline population, case-sensitive proxy filter, 21 matching names and 48-case numerator accounting.',
+          note: 'Self-contained exact baseline population, case-sensitive proxy filter, 21 matching names, 48-case numerator and name-based historical retention accounting.',
+        },
+        {
+          kind: 'incident',
+          locator: 'GitHub Actions run 31233721450 job 93042358098',
+          note: 'PR 79 exact-head Node gate where six later KLU event seams invalidated a live-count assertion for an otherwise frozen Iteration 3 population.',
         },
         {
           kind: 'test',
