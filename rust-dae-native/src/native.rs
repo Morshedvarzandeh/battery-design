@@ -1,7 +1,13 @@
 use crate::{
-    CallbackKind, IdaAbsoluteTolerance, IdaError, IdaInitialConditionPolicy, IdaSettings,
-    IdaSolveResult, IdaSolverStats, NativeStage, NativeStatistic, NativeValue, NativeView,
-    NativeViewActual, NATIVE_IDA_RESULT_CONTRACT, PINNED_BACKEND_IDENTITY, PINNED_SUNDIALS_VERSION,
+    BackendIdentity, CallbackKind, IdaAbsoluteTolerance, IdaError, IdaInitialConditionPolicy,
+    IdaSessionSettings, IdaSettings, IdaSolveResult, IdaSolverStats, NativeStage, NativeStatistic,
+    NativeValue, NativeView, NativeViewActual, NATIVE_IDA_RESULT_CONTRACT, PINNED_BACKEND_IDENTITY,
+    PINNED_SUNDIALS_VERSION,
+};
+#[cfg(feature = "sundials-ida-klu")]
+use crate::{
+    IdaKluSettings, IdaLinearFlagEvidence, NATIVE_IDA_KLU_RESULT_CONTRACT,
+    PINNED_KLU_BACKEND_IDENTITY,
 };
 use battery_design_core::dae::{DaeOutput, DaeResidualSystem};
 use std::ffi::{c_int, c_long, c_void};
@@ -72,6 +78,17 @@ pub(crate) fn initialize() -> Result<SunContext, IdaError> {
     // proves the linked IDA, serial NVector, dense matrix, and dense linear
     // solver symbols are usable.
     let identity_probe = prepare_resources(&context, 1)?;
+    drop(identity_probe);
+    Ok(context)
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+pub(crate) fn initialize_klu() -> Result<SunContext, IdaError> {
+    let context = SunContext::create()?;
+    require_exact_runtime_version()?;
+    // Prove the complete sparse symbol surface and fixed COLAMD ordering at
+    // construction time, independently of any user graph.
+    let identity_probe = prepare_sparse_resources(&context, 1, &[0, 1], &[0])?;
     drop(identity_probe);
     Ok(context)
 }
@@ -282,6 +299,125 @@ impl Drop for DenseMatrix<'_> {
     }
 }
 
+#[cfg(feature = "sundials-ida-klu")]
+const SUN_CSC_MATRIX: c_int = 0;
+#[cfg(feature = "sundials-ida-klu")]
+const SUNMATRIX_SPARSE_ID: c_int = 4;
+#[cfg(feature = "sundials-ida-klu")]
+const KLU_ORDERING_COLAMD: c_int = 1;
+
+#[cfg(feature = "sundials-ida-klu")]
+struct SparseMatrix<'context> {
+    raw: NonNull<crate::ffi::SUNMatrixOpaque>,
+    dimension: usize,
+    nonzeros: usize,
+    _context: std::marker::PhantomData<&'context SunContext>,
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+impl<'context> SparseMatrix<'context> {
+    fn create(
+        context: &'context SunContext,
+        dimension: crate::ffi::SunIndex,
+        nonzeros: crate::ffi::SunIndex,
+    ) -> Result<Self, IdaError> {
+        let raw = unsafe {
+            crate::ffi::SUNSparseMatrix(
+                dimension,
+                dimension,
+                nonzeros,
+                SUN_CSC_MATRIX,
+                context.as_raw(),
+            )
+        };
+        let raw = require_handle(raw, NativeStage::SparseMatrixCreate)?;
+        #[cfg(test)]
+        allocation_audit::record_allocation(allocation_audit::ResourceKind::Matrix);
+        Ok(Self {
+            raw,
+            dimension: usize::try_from(dimension).map_err(|_| IdaError::WorkOverflow)?,
+            nonzeros: usize::try_from(nonzeros).map_err(|_| IdaError::WorkOverflow)?,
+            _context: std::marker::PhantomData,
+        })
+    }
+
+    fn as_raw(&self) -> crate::ffi::SUNMatrix {
+        self.raw.as_ptr()
+    }
+
+    fn restore_pattern(
+        &self,
+        column_pointers: &[usize],
+        row_indices: &[usize],
+    ) -> Result<(), IdaError> {
+        crate::validate_csc_pattern(self.dimension, column_pointers, row_indices)?;
+        if row_indices.len() != self.nonzeros {
+            return Err(IdaError::InvalidCscPattern {
+                code: "ida.klu.csc.native_nonzero_mismatch",
+            });
+        }
+        let native_rows = unsafe { crate::ffi::SUNSparseMatrix_IndexValues(self.as_raw()) };
+        let native_columns = unsafe { crate::ffi::SUNSparseMatrix_IndexPointers(self.as_raw()) };
+        let native_rows = NonNull::new(native_rows).ok_or(IdaError::NullNativeHandle {
+            stage: NativeStage::SparseMatrixCreate,
+        })?;
+        let native_columns = NonNull::new(native_columns).ok_or(IdaError::NullNativeHandle {
+            stage: NativeStage::SparseMatrixCreate,
+        })?;
+        for (destination, &source) in
+            unsafe { slice::from_raw_parts_mut(native_rows.as_ptr(), self.nonzeros) }
+                .iter_mut()
+                .zip(row_indices)
+        {
+            *destination =
+                crate::ffi::SunIndex::try_from(source).map_err(|_| IdaError::WorkOverflow)?;
+        }
+        for (destination, &source) in
+            unsafe { slice::from_raw_parts_mut(native_columns.as_ptr(), self.dimension + 1) }
+                .iter_mut()
+                .zip(column_pointers)
+        {
+            *destination =
+                crate::ffi::SunIndex::try_from(source).map_err(|_| IdaError::WorkOverflow)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+impl Drop for SparseMatrix<'_> {
+    fn drop(&mut self) {
+        unsafe { crate::ffi::SUNMatDestroy(self.raw.as_ptr()) };
+        #[cfg(test)]
+        allocation_audit::record_free(allocation_audit::ResourceKind::Matrix);
+    }
+}
+
+enum Matrix<'context> {
+    Dense(DenseMatrix<'context>),
+    #[cfg(feature = "sundials-ida-klu")]
+    Sparse(SparseMatrix<'context>),
+}
+
+impl Matrix<'_> {
+    fn as_raw(&self) -> crate::ffi::SUNMatrix {
+        match self {
+            Self::Dense(matrix) => matrix.as_raw(),
+            #[cfg(feature = "sundials-ida-klu")]
+            Self::Sparse(matrix) => matrix.as_raw(),
+        }
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    fn is_sparse(&self) -> bool {
+        match self {
+            Self::Dense(_) => false,
+            #[cfg(feature = "sundials-ida-klu")]
+            Self::Sparse(_) => true,
+        }
+    }
+}
+
 struct DenseLinearSolver<'context> {
     raw: NonNull<crate::ffi::SUNLinearSolverOpaque>,
     _context: std::marker::PhantomData<&'context SunContext>,
@@ -315,6 +451,65 @@ impl Drop for DenseLinearSolver<'_> {
         let _ = unsafe { crate::ffi::SUNLinSolFree(self.raw.as_ptr()) };
         #[cfg(test)]
         allocation_audit::record_free(allocation_audit::ResourceKind::LinearSolver);
+    }
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+struct KluLinearSolver<'context> {
+    raw: NonNull<crate::ffi::SUNLinearSolverOpaque>,
+    _context: std::marker::PhantomData<&'context SunContext>,
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+impl<'context> KluLinearSolver<'context> {
+    fn create(
+        context: &'context SunContext,
+        template: &SerialVector<'context>,
+        matrix: &SparseMatrix<'context>,
+    ) -> Result<Self, IdaError> {
+        let raw = unsafe {
+            crate::ffi::SUNLinSol_KLU(template.as_raw(), matrix.as_raw(), context.as_raw())
+        };
+        let raw = require_handle(raw, NativeStage::KluLinearSolverCreate)?;
+        #[cfg(test)]
+        allocation_audit::record_allocation(allocation_audit::ResourceKind::LinearSolver);
+        let solver = Self {
+            raw,
+            _context: std::marker::PhantomData,
+        };
+        let flag =
+            unsafe { crate::ffi::SUNLinSol_KLUSetOrdering(solver.as_raw(), KLU_ORDERING_COLAMD) };
+        require_success(flag, NativeStage::KluSetOrdering)?;
+        Ok(solver)
+    }
+
+    fn as_raw(&self) -> crate::ffi::SUNLinearSolver {
+        self.raw.as_ptr()
+    }
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+impl Drop for KluLinearSolver<'_> {
+    fn drop(&mut self) {
+        let _ = unsafe { crate::ffi::SUNLinSolFree(self.raw.as_ptr()) };
+        #[cfg(test)]
+        allocation_audit::record_free(allocation_audit::ResourceKind::LinearSolver);
+    }
+}
+
+enum LinearSolver<'context> {
+    Dense(DenseLinearSolver<'context>),
+    #[cfg(feature = "sundials-ida-klu")]
+    Klu(KluLinearSolver<'context>),
+}
+
+impl LinearSolver<'_> {
+    fn as_raw(&self) -> crate::ffi::SUNLinearSolver {
+        match self {
+            Self::Dense(solver) => solver.as_raw(),
+            #[cfg(feature = "sundials-ida-klu")]
+            Self::Klu(solver) => solver.as_raw(),
+        }
     }
 }
 
@@ -353,8 +548,8 @@ impl Drop for IdaMemory<'_> {
 /// is also destruction order: IDA memory, linear solver, matrix, then vectors.
 pub(crate) struct NativeResources<'context> {
     _ida_memory: IdaMemory<'context>,
-    _linear_solver: DenseLinearSolver<'context>,
-    _matrix: DenseMatrix<'context>,
+    _linear_solver: LinearSolver<'context>,
+    _matrix: Matrix<'context>,
     _absolute_tolerance: SerialVector<'context>,
     _id: SerialVector<'context>,
     _yp: SerialVector<'context>,
@@ -391,6 +586,11 @@ impl NativeResources<'_> {
 
     fn matrix_raw(&self) -> crate::ffi::SUNMatrix {
         self._matrix.as_raw()
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    fn is_sparse(&self) -> bool {
+        self._matrix.is_sparse()
     }
 
     fn id_raw(&self) -> crate::ffi::NVector {
@@ -481,13 +681,65 @@ fn prepare_resources_with(
 
     Ok(NativeResources {
         _ida_memory: ida_memory,
-        _linear_solver: linear_solver,
-        _matrix: matrix,
+        _linear_solver: LinearSolver::Dense(linear_solver),
+        _matrix: Matrix::Dense(matrix),
         _absolute_tolerance: absolute_tolerance,
         _id: id,
         _yp: yp,
         _y: y,
         dimension: dimension as usize,
+    })
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+fn prepare_sparse_resources<'context>(
+    context: &'context SunContext,
+    dimension: usize,
+    column_pointers: &[usize],
+    row_indices: &[usize],
+) -> Result<NativeResources<'context>, IdaError> {
+    crate::validate_csc_pattern(dimension, column_pointers, row_indices)?;
+    if dimension > crate::MAX_KLU_DIMENSION {
+        return Err(IdaError::KluDimensionLimit {
+            actual: dimension,
+            applied_maximum: crate::MAX_KLU_DIMENSION,
+            backend_maximum: crate::MAX_KLU_DIMENSION,
+        });
+    }
+    if row_indices.len() > crate::MAX_KLU_NONZEROS {
+        return Err(IdaError::KluNonzeroLimit {
+            actual: row_indices.len(),
+            applied_maximum: crate::MAX_KLU_NONZEROS,
+            backend_maximum: crate::MAX_KLU_NONZEROS,
+        });
+    }
+    let native_dimension =
+        crate::ffi::SunIndex::try_from(dimension).map_err(|_| IdaError::WorkOverflow)?;
+    let native_nonzeros =
+        crate::ffi::SunIndex::try_from(row_indices.len()).map_err(|_| IdaError::WorkOverflow)?;
+
+    let y = SerialVector::create(context, native_dimension, NativeStage::YVectorCreate)?;
+    let yp = SerialVector::create(context, native_dimension, NativeStage::YpVectorCreate)?;
+    let id = SerialVector::create(context, native_dimension, NativeStage::IdVectorCreate)?;
+    let absolute_tolerance = SerialVector::create(
+        context,
+        native_dimension,
+        NativeStage::AbsoluteToleranceVectorCreate,
+    )?;
+    let matrix = SparseMatrix::create(context, native_dimension, native_nonzeros)?;
+    matrix.restore_pattern(column_pointers, row_indices)?;
+    let linear_solver = KluLinearSolver::create(context, &y, &matrix)?;
+    let ida_memory = IdaMemory::create(context)?;
+
+    Ok(NativeResources {
+        _ida_memory: ida_memory,
+        _linear_solver: LinearSolver::Klu(linear_solver),
+        _matrix: Matrix::Sparse(matrix),
+        _absolute_tolerance: absolute_tolerance,
+        _id: id,
+        _yp: yp,
+        _y: y,
+        dimension,
     })
 }
 
@@ -568,11 +820,22 @@ pub(crate) struct CallbackState<'system, 'graph> {
     system: &'system DaeResidualSystem<'graph>,
     jacobian_values: Vec<f64>,
     first_error: Option<IdaError>,
+    #[cfg(feature = "sundials-ida-klu")]
+    sparse_work: Option<SparseCallbackWork>,
     _pinned: PhantomPinned,
     #[cfg(test)]
     panic_residual: bool,
     #[cfg(test)]
     panic_jacobian: bool,
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+#[derive(Clone, Copy, Debug)]
+struct SparseCallbackWork {
+    evaluations: u64,
+    entry_work: u64,
+    maximum_evaluations: u64,
+    maximum_entry_work: u64,
 }
 
 #[allow(dead_code)]
@@ -586,6 +849,8 @@ impl<'system, 'graph> CallbackState<'system, 'graph> {
                 "callback Jacobian scratch",
             )?,
             first_error: None,
+            #[cfg(feature = "sundials-ida-klu")]
+            sparse_work: None,
             _pinned: PhantomPinned,
             #[cfg(test)]
             panic_residual: false,
@@ -595,6 +860,77 @@ impl<'system, 'graph> CallbackState<'system, 'graph> {
         #[cfg(test)]
         allocation_audit::record_allocation(allocation_audit::ResourceKind::CallbackState);
         Ok(state)
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    fn new_sparse(
+        system: &'system DaeResidualSystem<'graph>,
+        maximum_evaluations: u64,
+        maximum_entry_work: u64,
+    ) -> Result<Self, IdaError> {
+        let dimension = system.variables().len();
+        crate::validate_csc_pattern(
+            dimension,
+            system.csc_pattern().column_pointers(),
+            system.csc_pattern().row_indices(),
+        )?;
+        let state = Self {
+            system,
+            jacobian_values: try_zeroed_f64(
+                system.csc_pattern().nonzero_count(),
+                "callback Jacobian scratch",
+            )?,
+            first_error: None,
+            sparse_work: Some(SparseCallbackWork {
+                evaluations: 0,
+                entry_work: 0,
+                maximum_evaluations,
+                maximum_entry_work,
+            }),
+            _pinned: PhantomPinned,
+            #[cfg(test)]
+            panic_residual: false,
+            #[cfg(test)]
+            panic_jacobian: false,
+        };
+        #[cfg(test)]
+        allocation_audit::record_allocation(allocation_audit::ResourceKind::CallbackState);
+        Ok(state)
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    fn begin_sparse_jacobian(&mut self) -> Result<(), IdaError> {
+        let nonzeros =
+            u64::try_from(self.jacobian_values.len()).map_err(|_| IdaError::WorkOverflow)?;
+        let work = self
+            .sparse_work
+            .as_mut()
+            .ok_or(IdaError::InvalidCscPattern {
+                code: "ida.klu.callback.mode",
+            })?;
+        let attempted_evaluations = work
+            .evaluations
+            .checked_add(1)
+            .ok_or(IdaError::WorkOverflow)?;
+        if attempted_evaluations > work.maximum_evaluations {
+            return Err(IdaError::KluJacobianEvaluationLimit {
+                attempted: attempted_evaluations,
+                maximum: work.maximum_evaluations,
+            });
+        }
+        let attempted_entry_work = work
+            .entry_work
+            .checked_add(nonzeros)
+            .ok_or(IdaError::WorkOverflow)?;
+        if attempted_entry_work > work.maximum_entry_work {
+            return Err(IdaError::KluJacobianEntryWorkLimit {
+                attempted: attempted_entry_work,
+                maximum: work.maximum_entry_work,
+            });
+        }
+        work.evaluations = attempted_evaluations;
+        work.entry_work = attempted_entry_work;
+        Ok(())
     }
 
     pub(crate) fn first_error(&self) -> Option<&IdaError> {
@@ -639,6 +975,10 @@ impl Drop for CallbackState<'_, '_> {
 const IDA_YA_YDP_INIT: c_int = 1;
 const IDA_SUCCESS: c_int = 0;
 const IDA_TOO_MUCH_WORK: c_int = -1;
+#[cfg(feature = "sundials-ida-klu")]
+const IDA_LSETUP_FAIL: c_int = -6;
+#[cfg(feature = "sundials-ida-klu")]
+const IDA_LSOLVE_FAIL: c_int = -7;
 const IDA_ONE_STEP: c_int = 2;
 const INTERVAL_ROUNDOFF_MULTIPLIER: f64 = 64.0;
 type NativeLongGetter = unsafe extern "C" fn(crate::ffi::IdaMemory, *mut c_long) -> c_int;
@@ -765,6 +1105,8 @@ pub struct IdaSession<'context, 'system, 'graph> {
     corrected_initial_conditions: bool,
     configured_max_order: u8,
     configured_max_steps: u64,
+    result_contract: &'static str,
+    backend_identity: BackendIdentity,
     output_times_s: Vec<f64>,
     outputs: Vec<DaeOutput>,
     result_values: Vec<f64>,
@@ -773,6 +1115,8 @@ pub struct IdaSession<'context, 'system, 'graph> {
     output_scratch: Vec<f64>,
     #[cfg(test)]
     solve_injection: SolveInjection,
+    #[cfg(test)]
+    last_linear_flag_injection: Option<(c_int, c_long)>,
 }
 
 impl fmt::Debug for IdaSession<'_, '_, '_> {
@@ -816,10 +1160,16 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
         if let Some(error) = self.callback_state.as_ref().get_ref().first_error() {
             return Err(error.clone());
         }
+        if flag == IDA_SUCCESS {
+            return Ok(());
+        }
+        if stage == NativeStage::IdaCalcIc {
+            return Err(self.native_solve_failure(stage, flag));
+        }
         require_success(flag, stage)
     }
 
-    fn register(&mut self, settings: &IdaSettings) -> Result<(), IdaError> {
+    fn register(&mut self, settings: &IdaSessionSettings<'_>) -> Result<(), IdaError> {
         let memory = self.resources.ida_memory_raw();
         record_registration(NativeStage::IdaInit);
         let flag = unsafe {
@@ -896,7 +1246,21 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
         self.require_registered_call(flag, NativeStage::IdaSetLinearSolver)?;
 
         record_registration(NativeStage::IdaSetJacFn);
-        let flag = unsafe { crate::ffi::IDASetJacFn(memory, jacobian_callback) };
+        let jacobian = {
+            #[cfg(feature = "sundials-ida-klu")]
+            {
+                if self.resources.is_sparse() {
+                    sparse_jacobian_callback
+                } else {
+                    jacobian_callback
+                }
+            }
+            #[cfg(not(feature = "sundials-ida-klu"))]
+            {
+                jacobian_callback
+            }
+        };
+        let flag = unsafe { crate::ffi::IDASetJacFn(memory, jacobian) };
         self.require_registered_call(flag, NativeStage::IdaSetJacFn)?;
 
         if matches!(
@@ -977,6 +1341,44 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
         self.require_registered_call(flag, stage)?;
         require_finite_native(value, stage, field, None, None)?;
         Ok(value)
+    }
+
+    fn read_last_linear_solver_flag(&self) -> Result<i64, IdaError> {
+        let (flag, value) = self.query_last_linear_solver_flag();
+        self.require_registered_call(flag, NativeStage::IdaGetLastLinFlag)?;
+        Ok(value as i64)
+    }
+
+    fn query_last_linear_solver_flag(&self) -> (c_int, c_long) {
+        #[cfg(test)]
+        if let Some(injected) = self.last_linear_flag_injection {
+            return injected;
+        }
+        let mut value: c_long = 0;
+        let flag =
+            unsafe { crate::ffi::IDAGetLastLinFlag(self.resources.ida_memory_raw(), &mut value) };
+        (flag, value)
+    }
+
+    fn native_solve_failure(&self, stage: NativeStage, ida_flag: c_int) -> IdaError {
+        #[cfg(feature = "sundials-ida-klu")]
+        if self.resources.is_sparse() && matches!(ida_flag, IDA_LSETUP_FAIL | IDA_LSOLVE_FAIL) {
+            let (getter_flag, value) = self.query_last_linear_solver_flag();
+            let last_linear_flag = if getter_flag == 0 {
+                IdaLinearFlagEvidence::Available(value as i64)
+            } else {
+                IdaLinearFlagEvidence::Unavailable { getter_flag }
+            };
+            return IdaError::KluLinearSolverFailure {
+                stage,
+                ida_flag,
+                last_linear_flag,
+            };
+        }
+        IdaError::NativeCall {
+            stage,
+            flag: ida_flag,
+        }
     }
 
     fn counter_snapshot(&self) -> Result<CounterSnapshot, IdaError> {
@@ -1247,10 +1649,7 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
                         native_flag: Some(flag),
                     });
                 }
-                return Err(IdaError::NativeCall {
-                    stage: NativeStage::IdaSolveStep,
-                    flag,
-                });
+                return Err(self.native_solve_failure(NativeStage::IdaSolveStep, flag));
             }
             one_step_calls = one_step_calls
                 .checked_add(1)
@@ -1376,6 +1775,7 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
             NativeStage::IdaGetCurrentTime,
             NativeValue::CurrentTime,
         )?;
+        let last_linear_solver_flag = self.read_last_linear_solver_flag()?;
         for (stage, field, value) in [
             (
                 NativeStage::IdaGetActualInitStep,
@@ -1421,8 +1821,8 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
             .system
             .contract_version();
         Ok(IdaSolveResult {
-            result_contract: NATIVE_IDA_RESULT_CONTRACT,
-            backend_identity: PINNED_BACKEND_IDENTITY,
+            result_contract: self.result_contract,
+            backend_identity: self.backend_identity,
             residual_contract,
             configured_max_order: self.configured_max_order,
             configured_max_steps: self.configured_max_steps,
@@ -1451,6 +1851,7 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
                 interpolated_output_rows: u64::try_from(requested_index)
                     .map_err(|_| IdaError::WorkOverflow)?,
                 output_rows_at_step_limit,
+                last_linear_solver_flag,
             },
         })
     }
@@ -1514,6 +1915,11 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
     fn inject_native_solve_flag(&mut self, flag: c_int) {
         self.solve_injection = SolveInjection::NativeFlag(flag);
     }
+
+    #[cfg(all(test, feature = "sundials-ida-klu"))]
+    fn inject_last_linear_flag_getter(&mut self, getter_flag: c_int, value: c_long) {
+        self.last_linear_flag_injection = Some((getter_flag, value));
+    }
 }
 
 pub(crate) fn initialize_session<'context, 'system, 'graph>(
@@ -1522,6 +1928,16 @@ pub(crate) fn initialize_session<'context, 'system, 'graph>(
     settings: &IdaSettings,
 ) -> Result<IdaSession<'context, 'system, 'graph>, IdaError> {
     initialize_session_with_callback_panic(context, system, settings, None)
+}
+
+#[derive(Clone, Copy)]
+enum SessionBackend {
+    Dense,
+    #[cfg(feature = "sundials-ida-klu")]
+    Klu {
+        maximum_jacobian_evaluations: u64,
+        maximum_jacobian_entry_work: u64,
+    },
 }
 
 fn initialize_session_with_callback_panic<'context, 'system, 'graph>(
@@ -1534,8 +1950,45 @@ fn initialize_session_with_callback_panic<'context, 'system, 'graph>(
     // created until dimensions, tolerances, work, times, ICs, and events have
     // all passed the pure-Rust contract validation.
     settings.validate_for(system)?;
+    let settings_view = IdaSessionSettings::from(settings);
+    initialize_session_common(
+        context,
+        system,
+        settings_view,
+        SessionBackend::Dense,
+        _panic_callback,
+    )
+}
 
-    let output_times_s = try_clone_f64(&settings.output_times_s, "requested output times")?;
+#[cfg(feature = "sundials-ida-klu")]
+pub(crate) fn initialize_klu_session<'context, 'system, 'graph>(
+    context: &'context SunContext,
+    system: &'system DaeResidualSystem<'graph>,
+    settings: &IdaKluSettings,
+) -> Result<IdaSession<'context, 'system, 'graph>, IdaError> {
+    // The full sparse admission contract is pure Rust and precedes all
+    // request-specific SUNDIALS and KLU allocation.
+    settings.validate_for(system)?;
+    initialize_session_common(
+        context,
+        system,
+        IdaSessionSettings::from(settings),
+        SessionBackend::Klu {
+            maximum_jacobian_evaluations: settings.max_jacobian_evaluations,
+            maximum_jacobian_entry_work: settings.max_jacobian_entry_work,
+        },
+        None,
+    )
+}
+
+fn initialize_session_common<'context, 'system, 'graph>(
+    context: &'context SunContext,
+    system: &'system DaeResidualSystem<'graph>,
+    settings_view: IdaSessionSettings<'_>,
+    backend: SessionBackend,
+    _panic_callback: Option<CallbackKind>,
+) -> Result<IdaSession<'context, 'system, 'graph>, IdaError> {
+    let output_times_s = try_clone_f64(settings_view.output_times_s, "requested output times")?;
     let outputs = try_clone_outputs(system.outputs())?;
     let result_length = output_times_s
         .len()
@@ -1546,14 +1999,25 @@ fn initialize_session_with_callback_panic<'context, 'system, 'graph>(
     let yp_scratch = try_zeroed_f64(system.variables().len(), "result yp scratch")?;
     let output_scratch = try_zeroed_f64(outputs.len(), "result output scratch")?;
 
-    let (initial_y, initial_yp) = match &settings.initial_conditions {
+    let (initial_y, initial_yp) = match settings_view.initial_conditions {
         IdaInitialConditionPolicy::ContractConsistent => (system.initial_y(), system.initial_yp()),
         IdaInitialConditionPolicy::CorrectAlgebraicAndDerivative { y, yp } => {
             (y.as_slice(), yp.as_slice())
         }
     };
 
-    let callback_state = CallbackState::new(system)?;
+    let callback_state = match backend {
+        SessionBackend::Dense => CallbackState::new(system)?,
+        #[cfg(feature = "sundials-ida-klu")]
+        SessionBackend::Klu {
+            maximum_jacobian_evaluations,
+            maximum_jacobian_entry_work,
+        } => CallbackState::new_sparse(
+            system,
+            maximum_jacobian_evaluations,
+            maximum_jacobian_entry_work,
+        )?,
+    };
     #[cfg(test)]
     let callback_state = {
         let mut callback_state = callback_state;
@@ -1564,7 +2028,16 @@ fn initialize_session_with_callback_panic<'context, 'system, 'graph>(
     };
     let callback_state = Box::pin(callback_state);
 
-    let resources = prepare_resources(context, system.variables().len())?;
+    let resources = match backend {
+        SessionBackend::Dense => prepare_resources(context, system.variables().len())?,
+        #[cfg(feature = "sundials-ida-klu")]
+        SessionBackend::Klu { .. } => prepare_sparse_resources(
+            context,
+            system.variables().len(),
+            system.csc_pattern().column_pointers(),
+            system.csc_pattern().row_indices(),
+        )?,
+    };
     resources._y.copy_from_slice(
         initial_y,
         "initial_conditions.y",
@@ -1580,7 +2053,7 @@ fn initialize_session_with_callback_panic<'context, 'system, 'graph>(
         "system.id_vector",
         NativeStage::IdVectorWrite,
     )?;
-    match &settings.absolute_tolerance {
+    match settings_view.absolute_tolerance {
         IdaAbsoluteTolerance::Scalar(value) => resources
             ._absolute_tolerance
             .fill(*value, NativeStage::AbsoluteToleranceVectorWrite)?,
@@ -1594,10 +2067,20 @@ fn initialize_session_with_callback_panic<'context, 'system, 'graph>(
     let mut session = IdaSession {
         resources,
         callback_state,
-        initial_time_s: settings.initial_time_s,
+        initial_time_s: settings_view.initial_time_s,
         corrected_initial_conditions: false,
-        configured_max_order: settings.max_order,
-        configured_max_steps: settings.max_steps,
+        configured_max_order: settings_view.max_order,
+        configured_max_steps: settings_view.max_steps,
+        result_contract: match backend {
+            SessionBackend::Dense => NATIVE_IDA_RESULT_CONTRACT,
+            #[cfg(feature = "sundials-ida-klu")]
+            SessionBackend::Klu { .. } => NATIVE_IDA_KLU_RESULT_CONTRACT,
+        },
+        backend_identity: match backend {
+            SessionBackend::Dense => PINNED_BACKEND_IDENTITY,
+            #[cfg(feature = "sundials-ida-klu")]
+            SessionBackend::Klu { .. } => PINNED_KLU_BACKEND_IDENTITY,
+        },
         output_times_s,
         outputs,
         result_values,
@@ -1606,10 +2089,12 @@ fn initialize_session_with_callback_panic<'context, 'system, 'graph>(
         output_scratch,
         #[cfg(test)]
         solve_injection: SolveInjection::None,
+        #[cfg(test)]
+        last_linear_flag_injection: None,
     };
     // If any registration step fails, dropping this aggregate preserves the
     // field-order invariant: IDA memory is freed before its pinned user data.
-    session.register(settings)?;
+    session.register(&settings_view)?;
     Ok(session)
 }
 
@@ -1795,8 +2280,248 @@ pub(crate) unsafe extern "C" fn jacobian_callback(
     })
 }
 
+#[cfg(feature = "sundials-ida-klu")]
+#[allow(dead_code)]
+pub(crate) unsafe extern "C" fn sparse_jacobian_callback(
+    time: f64,
+    cj: f64,
+    y: crate::ffi::NVector,
+    yp: crate::ffi::NVector,
+    residual: crate::ffi::NVector,
+    jacobian: crate::ffi::SUNMatrix,
+    user_data: *mut c_void,
+    _temporary_1: crate::ffi::NVector,
+    _temporary_2: crate::ffi::NVector,
+    _temporary_3: crate::ffi::NVector,
+) -> c_int {
+    invoke_callback(user_data, CallbackKind::Jacobian, |state| {
+        let dimension = state.system.variables().len();
+        let nonzeros = state.system.csc_pattern().nonzero_count();
+        // Validate every shape, pointer, byte range, and alias boundary before
+        // constructing a single Rust slice from native storage.
+        let y_data =
+            unsafe { checked_vector_data(y, dimension, CallbackKind::Jacobian, NativeView::Y)? };
+        let yp_data =
+            unsafe { checked_vector_data(yp, dimension, CallbackKind::Jacobian, NativeView::Yp)? };
+        let residual_data = unsafe {
+            checked_vector_data(
+                residual,
+                dimension,
+                CallbackKind::Jacobian,
+                NativeView::Residual,
+            )?
+        };
+        let sparse = unsafe { checked_sparse_matrix_data(jacobian, dimension, nonzeros)? };
+
+        for (matrix_data, matrix_length, matrix_view) in [
+            (
+                sparse.data.cast::<u8>(),
+                nonzeros
+                    .checked_mul(std::mem::size_of::<f64>())
+                    .ok_or(IdaError::WorkOverflow)?,
+                NativeView::SparseJacobianData,
+            ),
+            (
+                sparse.row_indices.cast::<u8>(),
+                nonzeros
+                    .checked_mul(std::mem::size_of::<crate::ffi::SunIndex>())
+                    .ok_or(IdaError::WorkOverflow)?,
+                NativeView::SparseJacobianRowIndices,
+            ),
+            (
+                sparse.column_pointers.cast::<u8>(),
+                dimension
+                    .checked_add(1)
+                    .and_then(|length| {
+                        length.checked_mul(std::mem::size_of::<crate::ffi::SunIndex>())
+                    })
+                    .ok_or(IdaError::WorkOverflow)?,
+                NativeView::SparseJacobianColumnPointers,
+            ),
+        ] {
+            for (other_data, other_length, other_view) in [
+                (
+                    y_data.cast::<u8>(),
+                    dimension * std::mem::size_of::<f64>(),
+                    NativeView::Y,
+                ),
+                (
+                    yp_data.cast::<u8>(),
+                    dimension * std::mem::size_of::<f64>(),
+                    NativeView::Yp,
+                ),
+                (
+                    residual_data.cast::<u8>(),
+                    dimension * std::mem::size_of::<f64>(),
+                    NativeView::Residual,
+                ),
+            ] {
+                require_disjoint_bytes(
+                    matrix_data,
+                    matrix_length,
+                    matrix_view,
+                    other_data,
+                    other_length,
+                    other_view,
+                    CallbackKind::Jacobian,
+                    dimension,
+                )?;
+            }
+        }
+        for (left_data, left_length, left_view, right_data, right_length, right_view) in [
+            (
+                sparse.data.cast::<u8>(),
+                nonzeros * std::mem::size_of::<f64>(),
+                NativeView::SparseJacobianData,
+                sparse.row_indices.cast::<u8>(),
+                nonzeros * std::mem::size_of::<crate::ffi::SunIndex>(),
+                NativeView::SparseJacobianRowIndices,
+            ),
+            (
+                sparse.data.cast::<u8>(),
+                nonzeros * std::mem::size_of::<f64>(),
+                NativeView::SparseJacobianData,
+                sparse.column_pointers.cast::<u8>(),
+                (dimension + 1) * std::mem::size_of::<crate::ffi::SunIndex>(),
+                NativeView::SparseJacobianColumnPointers,
+            ),
+            (
+                sparse.row_indices.cast::<u8>(),
+                nonzeros * std::mem::size_of::<crate::ffi::SunIndex>(),
+                NativeView::SparseJacobianRowIndices,
+                sparse.column_pointers.cast::<u8>(),
+                (dimension + 1) * std::mem::size_of::<crate::ffi::SunIndex>(),
+                NativeView::SparseJacobianColumnPointers,
+            ),
+        ] {
+            require_disjoint_bytes(
+                left_data,
+                left_length,
+                left_view,
+                right_data,
+                right_length,
+                right_view,
+                CallbackKind::Jacobian,
+                dimension,
+            )?;
+        }
+
+        let y = unsafe { slice::from_raw_parts(y_data, dimension) };
+        let yp = unsafe { slice::from_raw_parts(yp_data, dimension) };
+        let _residual = unsafe { slice::from_raw_parts(residual_data, dimension) };
+        let data = unsafe { slice::from_raw_parts_mut(sparse.data, nonzeros) };
+        let row_indices = unsafe { slice::from_raw_parts_mut(sparse.row_indices, nonzeros) };
+        let column_pointers =
+            unsafe { slice::from_raw_parts_mut(sparse.column_pointers, dimension + 1) };
+
+        state.begin_sparse_jacobian()?;
+        let pattern = state.system.csc_pattern();
+        for (destination, &source) in column_pointers.iter_mut().zip(pattern.column_pointers()) {
+            *destination =
+                crate::ffi::SunIndex::try_from(source).map_err(|_| IdaError::WorkOverflow)?;
+        }
+        for (destination, &source) in row_indices.iter_mut().zip(pattern.row_indices()) {
+            *destination =
+                crate::ffi::SunIndex::try_from(source).map_err(|_| IdaError::WorkOverflow)?;
+        }
+        state
+            .system
+            .jacobian_values_into(time, cj, y, yp, &mut state.jacobian_values)
+            .map_err(|source| IdaError::Callback {
+                callback: CallbackKind::Jacobian,
+                source,
+            })?;
+        data.copy_from_slice(&state.jacobian_values);
+        Ok(())
+    })
+}
+
 const _: crate::ffi::IdaResidualFn = residual_callback;
 const _: crate::ffi::IdaJacobianFn = jacobian_callback;
+#[cfg(feature = "sundials-ida-klu")]
+const _: crate::ffi::IdaJacobianFn = sparse_jacobian_callback;
+
+#[cfg(feature = "sundials-ida-klu")]
+struct SparseMatrixData {
+    data: *mut f64,
+    row_indices: *mut crate::ffi::SunIndex,
+    column_pointers: *mut crate::ffi::SunIndex,
+}
+
+#[cfg(feature = "sundials-ida-klu")]
+unsafe fn checked_sparse_matrix_data(
+    matrix: crate::ffi::SUNMatrix,
+    expected_dimension: usize,
+    expected_nonzeros: usize,
+) -> Result<SparseMatrixData, IdaError> {
+    if matrix.is_null() {
+        return Err(invalid_view(
+            CallbackKind::Jacobian,
+            NativeView::SparseJacobianData,
+            expected_dimension,
+            NativeViewActual::Null,
+        ));
+    }
+    let matrix_type = unsafe { crate::ffi::SUNMatGetID(matrix) };
+    if matrix_type != SUNMATRIX_SPARSE_ID {
+        return Err(invalid_view(
+            CallbackKind::Jacobian,
+            NativeView::SparseJacobianData,
+            expected_dimension,
+            NativeViewActual::MatrixType(matrix_type),
+        ));
+    }
+    let rows = unsafe { crate::ffi::SUNSparseMatrix_Rows(matrix) };
+    let columns = unsafe { crate::ffi::SUNSparseMatrix_Columns(matrix) };
+    let nonzeros = unsafe { crate::ffi::SUNSparseMatrix_NNZ(matrix) };
+    let index_pointers = unsafe { crate::ffi::SUNSparseMatrix_NP(matrix) };
+    let sparse_type = unsafe { crate::ffi::SUNSparseMatrix_SparseType(matrix) };
+    if usize::try_from(rows).ok() != Some(expected_dimension)
+        || usize::try_from(columns).ok() != Some(expected_dimension)
+        || usize::try_from(nonzeros).ok() != Some(expected_nonzeros)
+        || usize::try_from(index_pointers).ok() != Some(expected_dimension)
+        || sparse_type != SUN_CSC_MATRIX
+    {
+        return Err(invalid_view(
+            CallbackKind::Jacobian,
+            NativeView::SparseJacobianData,
+            expected_dimension,
+            NativeViewActual::SparseMatrix {
+                rows,
+                columns,
+                nonzeros,
+                index_pointers,
+                sparse_type,
+            },
+        ));
+    }
+    let data = unsafe { crate::ffi::SUNSparseMatrix_Data(matrix) };
+    let row_indices = unsafe { crate::ffi::SUNSparseMatrix_IndexValues(matrix) };
+    let column_pointers = unsafe { crate::ffi::SUNSparseMatrix_IndexPointers(matrix) };
+    for (is_null, view) in [
+        (data.is_null(), NativeView::SparseJacobianData),
+        (row_indices.is_null(), NativeView::SparseJacobianRowIndices),
+        (
+            column_pointers.is_null(),
+            NativeView::SparseJacobianColumnPointers,
+        ),
+    ] {
+        if !is_null {
+            continue;
+        }
+        return Err(invalid_view(
+            CallbackKind::Jacobian,
+            view,
+            expected_dimension,
+            NativeViewActual::Null,
+        ));
+    }
+    Ok(SparseMatrixData {
+        data,
+        row_indices,
+        column_pointers,
+    })
+}
 
 #[allow(dead_code)]
 unsafe fn checked_vector_data(
@@ -1887,7 +2612,35 @@ fn require_disjoint_mutable(
     callback: CallbackKind,
     expected_dimension: usize,
 ) -> Result<(), IdaError> {
-    let mutable_range = address_range(mutable_data, mutable_length).ok_or_else(|| {
+    let mutable_bytes = mutable_length
+        .checked_mul(std::mem::size_of::<f64>())
+        .ok_or(IdaError::WorkOverflow)?;
+    let other_bytes = other_length
+        .checked_mul(std::mem::size_of::<f64>())
+        .ok_or(IdaError::WorkOverflow)?;
+    require_disjoint_bytes(
+        mutable_data.cast(),
+        mutable_bytes,
+        mutable_view,
+        other_data.cast(),
+        other_bytes,
+        other_view,
+        callback,
+        expected_dimension,
+    )
+}
+
+fn require_disjoint_bytes(
+    mutable_data: *mut u8,
+    mutable_bytes: usize,
+    mutable_view: NativeView,
+    other_data: *mut u8,
+    other_bytes: usize,
+    other_view: NativeView,
+    callback: CallbackKind,
+    expected_dimension: usize,
+) -> Result<(), IdaError> {
+    let mutable_range = address_range(mutable_data, mutable_bytes).ok_or_else(|| {
         invalid_view(
             callback,
             mutable_view,
@@ -1895,7 +2648,7 @@ fn require_disjoint_mutable(
             NativeViewActual::AddressOverflow,
         )
     })?;
-    let other_range = address_range(other_data, other_length).ok_or_else(|| {
+    let other_range = address_range(other_data, other_bytes).ok_or_else(|| {
         invalid_view(
             callback,
             other_view,
@@ -1914,8 +2667,7 @@ fn require_disjoint_mutable(
     Ok(())
 }
 
-fn address_range(data: *mut f64, length: usize) -> Option<(usize, usize)> {
-    let bytes = length.checked_mul(std::mem::size_of::<f64>())?;
+fn address_range(data: *mut u8, bytes: usize) -> Option<(usize, usize)> {
     let start = data as usize;
     let end = start.checked_add(bytes)?;
     Some((start, end))
@@ -2123,6 +2875,12 @@ mod tests {
         IdaAbsoluteTolerance, IdaDenseBackend, IdaError, IdaInitialConditionPolicy, IdaSettings,
         NativeStage, MAX_DENSE_DIMENSION, MAX_INTERNAL_STEPS,
     };
+    #[cfg(feature = "sundials-ida-klu")]
+    use crate::{
+        IdaKluBackend, IdaKluSettings, IdaLinearFlagEvidence, MAX_KLU_DIMENSION,
+        MAX_KLU_JACOBIAN_ENTRY_WORK, MAX_KLU_KNOWN_CSC_BYTES, MAX_KLU_NONZEROS,
+        MAX_KLU_RESULT_VALUES,
+    };
     use battery_design_core::dae::DaeError;
     use battery_design_core::equations::{
         Block, BlockKind, CompiledGraph, EquationGraph, Quantity, SolverSettings,
@@ -2302,6 +3060,26 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "sundials-ida-klu")]
+    fn klu_settings() -> IdaKluSettings {
+        IdaKluSettings {
+            initial_time_s: 0.0,
+            output_times_s: vec![0.25],
+            relative_tolerance: 1.0e-6,
+            absolute_tolerance: IdaAbsoluteTolerance::Scalar(1.0e-9),
+            max_order: 5,
+            max_steps: 10_000,
+            max_dimension: MAX_KLU_DIMENSION,
+            max_nonzeros: MAX_KLU_NONZEROS,
+            max_known_csc_bytes: MAX_KLU_KNOWN_CSC_BYTES,
+            max_jacobian_evaluations: 10_000,
+            max_jacobian_entry_work: MAX_KLU_JACOBIAN_ENTRY_WORK,
+            max_result_values: MAX_KLU_RESULT_VALUES,
+            suppress_algebraic_error: true,
+            initial_conditions: IdaInitialConditionPolicy::ContractConsistent,
+        }
+    }
+
     fn event_graph() -> CompiledGraph {
         let mut graph = EquationGraph::new();
         graph
@@ -2387,6 +3165,23 @@ mod tests {
         graph.compile().unwrap()
     }
 
+    #[cfg(feature = "sundials-ida-klu")]
+    fn structurally_present_but_numerically_singular_graph() -> CompiledGraph {
+        let mut graph = EquationGraph::new();
+        let identity = graph
+            .add_block(Block::new(
+                "singular self identity",
+                Quantity::Dimensionless,
+                BlockKind::Gain {
+                    gain: 1.0,
+                    input: Quantity::Dimensionless,
+                },
+            ))
+            .unwrap();
+        graph.connect(identity, identity, 0).unwrap();
+        graph.compile().unwrap()
+    }
+
     unsafe fn write_vector(vector: crate::ffi::NVector, values: &[f64]) {
         let length = unsafe { crate::ffi::N_VGetLength_Serial(vector) };
         assert_eq!(usize::try_from(length).unwrap(), values.len());
@@ -2446,6 +3241,30 @@ mod tests {
                 time,
                 cj,
                 resources.y_raw(),
+                resources.yp_raw(),
+                resources.residual_raw(),
+                resources.matrix_raw(),
+                user_data(state),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        }
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    unsafe fn call_sparse_jacobian(
+        resources: &NativeResources<'_>,
+        state: &mut CallbackState<'_, '_>,
+        time: f64,
+        cj: f64,
+        y: crate::ffi::NVector,
+    ) -> c_int {
+        unsafe {
+            sparse_jacobian_callback(
+                time,
+                cj,
+                y,
                 resources.yp_raw(),
                 resources.residual_raw(),
                 resources.matrix_raw(),
@@ -2542,6 +3361,169 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn sparse_pattern_requires_every_structural_diagonal_before_native_allocation() {
+        assert_eq!(
+            crate::validate_csc_pattern(2, &[0, 1, 2], &[0, 0]),
+            Err(IdaError::InvalidCscPattern {
+                code: "ida.klu.csc.missing_diagonal",
+            })
+        );
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn sparse_callback_restores_columns_rows_and_values_after_every_zero() {
+        let _guard = allocation_audit::test_lock();
+        let graph = exponential_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaKluBackend::new().unwrap();
+        let pattern = system.csc_pattern();
+        let resources = prepare_sparse_resources(
+            &backend._context,
+            system.variables().len(),
+            pattern.column_pointers(),
+            pattern.row_indices(),
+        )
+        .unwrap();
+        unsafe {
+            write_vector(resources.y_raw(), system.initial_y());
+            write_vector(resources.yp_raw(), system.initial_yp());
+        }
+        let nonzeros = pattern.nonzero_count();
+        let mut state =
+            CallbackState::new_sparse(&system, 2, 2 * u64::try_from(nonzeros).unwrap()).unwrap();
+        let mut expected_values = vec![0.0; nonzeros];
+        system
+            .jacobian_values_into(
+                0.0,
+                1.25,
+                system.initial_y(),
+                system.initial_yp(),
+                &mut expected_values,
+            )
+            .unwrap();
+
+        for _ in 0..2 {
+            let data = unsafe { crate::ffi::SUNSparseMatrix_Data(resources.matrix_raw()) };
+            let rows = unsafe { crate::ffi::SUNSparseMatrix_IndexValues(resources.matrix_raw()) };
+            let columns =
+                unsafe { crate::ffi::SUNSparseMatrix_IndexPointers(resources.matrix_raw()) };
+            unsafe { slice::from_raw_parts_mut(data, nonzeros) }.fill(0.0);
+            unsafe { slice::from_raw_parts_mut(rows, nonzeros) }.fill(0);
+            unsafe { slice::from_raw_parts_mut(columns, system.variables().len() + 1) }.fill(0);
+
+            assert_eq!(
+                unsafe {
+                    call_sparse_jacobian(&resources, &mut state, 0.0, 1.25, resources.y_raw())
+                },
+                CALLBACK_SUCCESS
+            );
+            assert_eq!(
+                unsafe { slice::from_raw_parts(data, nonzeros) },
+                expected_values
+            );
+            assert_eq!(
+                unsafe { slice::from_raw_parts(rows, nonzeros) },
+                pattern
+                    .row_indices()
+                    .iter()
+                    .map(|&value| value as i64)
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                unsafe { slice::from_raw_parts(columns, system.variables().len() + 1) },
+                pattern
+                    .column_pointers()
+                    .iter()
+                    .map(|&value| value as i64)
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert_eq!(state.first_error(), None);
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn sparse_callback_rejects_dense_matrix_type_before_any_slice() {
+        let _guard = allocation_audit::test_lock();
+        let graph = exponential_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let resources = backend.prepare_resources(2).unwrap();
+        unsafe {
+            write_vector(resources.y_raw(), system.initial_y());
+            write_vector(resources.yp_raw(), system.initial_yp());
+        }
+        let mut state = CallbackState::new_sparse(&system, 1, 16).unwrap();
+        let flag = unsafe {
+            sparse_jacobian_callback(
+                0.0,
+                1.0,
+                resources.y_raw(),
+                resources.yp_raw(),
+                resources.residual_raw(),
+                resources.matrix_raw(),
+                user_data(&mut state),
+                ptr::null_mut(),
+                ptr::null_mut(),
+                ptr::null_mut(),
+            )
+        };
+        assert_eq!(flag, CALLBACK_UNRECOVERABLE);
+        assert_eq!(
+            state.first_error(),
+            Some(&IdaError::InvalidNativeView {
+                callback: CallbackKind::Jacobian,
+                view: NativeView::SparseJacobianData,
+                expected: 2,
+                actual: NativeViewActual::MatrixType(0),
+            })
+        );
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn sparse_callback_rejects_matrix_vector_alias_before_any_slice() {
+        let _guard = allocation_audit::test_lock();
+        let graph = exponential_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaKluBackend::new().unwrap();
+        let pattern = system.csc_pattern();
+        let resources = prepare_sparse_resources(
+            &backend._context,
+            system.variables().len(),
+            pattern.column_pointers(),
+            pattern.row_indices(),
+        )
+        .unwrap();
+        let data = unsafe { crate::ffi::SUNSparseMatrix_Data(resources.matrix_raw()) };
+        let alias = unsafe {
+            crate::ffi::N_VMake_Serial(
+                system.variables().len() as i64,
+                data,
+                backend._context.as_raw(),
+            )
+        };
+        let alias = NativeVectorGuard(alias);
+        let mut state = CallbackState::new_sparse(&system, 1, 16).unwrap();
+
+        let flag = unsafe { call_sparse_jacobian(&resources, &mut state, 0.0, 1.0, alias.0) };
+        assert_eq!(flag, CALLBACK_UNRECOVERABLE);
+        assert_eq!(
+            state.first_error(),
+            Some(&IdaError::InvalidNativeView {
+                callback: CallbackKind::Jacobian,
+                view: NativeView::SparseJacobianData,
+                expected: 2,
+                actual: NativeViewActual::Aliases {
+                    with: NativeView::Y,
+                },
+            })
+        );
+    }
+
     #[test]
     fn analytic_dense_jacobian_matches_combined_finite_differences() {
         let _guard = allocation_audit::test_lock();
@@ -2607,7 +3589,10 @@ mod tests {
                 ),
                 NativeView::Yp => (resources.y_raw(), ptr::null_mut(), resources.residual_raw()),
                 NativeView::Residual => (resources.y_raw(), resources.yp_raw(), ptr::null_mut()),
-                NativeView::DenseJacobian => unreachable!(),
+                NativeView::DenseJacobian
+                | NativeView::SparseJacobianData
+                | NativeView::SparseJacobianRowIndices
+                | NativeView::SparseJacobianColumnPointers => unreachable!(),
             };
             let flag = unsafe { residual_callback(0.0, y, yp, residual, user_data(&mut state)) };
             assert_eq!(flag, CALLBACK_UNRECOVERABLE, "{view:?}");
@@ -4490,6 +5475,56 @@ mod tests {
             assert_eq!(error, IdaError::NullNativeHandle { stage }, "{stage:?}");
             assert_eq!(error.code(), "ida.backend.null_handle", "{stage:?}");
         }
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn singular_klu_solve_exposes_public_last_linear_flag_evidence() {
+        let _guard = allocation_audit::test_lock();
+        let graph = structurally_present_but_numerically_singular_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        assert_eq!(system.csc_pattern().column_pointers(), [0, 1]);
+        assert_eq!(system.csc_pattern().row_indices(), [0]);
+        let backend = IdaKluBackend::new().unwrap();
+        let error = backend
+            .initialize_session(&system, &klu_settings())
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                IdaError::KluLinearSolverFailure {
+                    stage: NativeStage::IdaSolveStep,
+                    ida_flag: IDA_LSETUP_FAIL | IDA_LSOLVE_FAIL,
+                    last_linear_flag: IdaLinearFlagEvidence::Available(_),
+                }
+            ),
+            "unexpected singular KLU error: {error:?}"
+        );
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn last_linear_getter_failure_never_masks_original_klu_stage_and_flag() {
+        let _guard = allocation_audit::test_lock();
+        let graph = exponential_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaKluBackend::new().unwrap();
+        let mut session = backend
+            .initialize_session(&system, &klu_settings())
+            .unwrap();
+        session.inject_native_solve_flag(IDA_LSOLVE_FAIL);
+        session.inject_last_linear_flag_getter(-901, 777);
+
+        assert_eq!(
+            session.solve_requested_grid().unwrap_err(),
+            IdaError::KluLinearSolverFailure {
+                stage: NativeStage::IdaSolveStep,
+                ida_flag: IDA_LSOLVE_FAIL,
+                last_linear_flag: IdaLinearFlagEvidence::Unavailable { getter_flag: -901 },
+            }
+        );
     }
 
     #[test]

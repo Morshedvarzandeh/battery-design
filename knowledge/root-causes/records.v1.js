@@ -862,6 +862,72 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-dae-csc-quadratic-lowering',
+      title: 'Sparse DAE lowering performs a dense quadratic dependency scan',
+      symptom: 'A structurally sparse 10,000-variable chain stores only 19,999 Jacobian entries but lowering still performs roughly one hundred million row-column dependency checks before a sparse backend can start.',
+      evidence: [
+        'The original CSC builder iterated every variable column and then every residual row, scanning that row’s inputs to decide whether one coordinate existed.',
+        'For an N-variable one-input chain, stored Jacobian structure is 2N-1 while the outer column-by-row traversal is N squared.',
+        'The mismatch is hidden on the dense backend’s 256-variable admission limit but becomes a dominant pre-solve cost for the planned 1,000- and 10,000-variable KLU evidence.',
+        'A sparse native matrix would therefore remove dense storage while retaining dense-time graph lowering unless the backend-neutral builder changed first.',
+      ],
+      detection: [
+        {
+          method: 'instrumented sparse-chain lowering regression',
+          signal: 'Lower exact 1,000- and 10,000-variable one-input chains, record dependency visits, allocation requests and resulting CSC coordinates, and compare them with their analytical linear counts.',
+          failureCondition: 'Traversal grows with variable_count squared, storage exceeds the exact 2N-1 nonzeros, columns are not sorted and unique, duplicate ports change structure, or the builder relies on a timing-only assertion.',
+        },
+      ],
+      causalChain: [
+        'The graph already stores each residual row’s small set of incoming dependencies.',
+        'CSC output is column-oriented, so the first implementation discovers each column by rescanning every row instead of transposing the known row dependencies.',
+        'Sparse storage remains linear while construction work becomes quadratic in variable count.',
+        'Large-model sparse qualification spends dense-scale work before SUNDIALS or KLU receives the matrix.',
+      ],
+      rootCause: 'CSC orientation was implemented as a column-by-row search over the whole graph instead of a bounded transpose of the compiled row dependencies.',
+      resolution: [
+        'Traverse rows twice: first count each unique structural column dependency, then prefix-sum column pointers and fill row indices through per-column cursors.',
+        'Use the row index as a generation marker so the diagonal, self-dependency and repeated source ports create one structural coordinate while numeric Jacobian evaluation still accumulates every derivative contribution.',
+        'Process rows in stable variable order so every CSC column is strictly row-sorted without an additional sort.',
+        'Instrument the builder itself and prove four bounded pattern-storage requests, exact linear row/input/nonzero work, deterministic 1,000- and 10,000-variable patterns, and unchanged existing Jacobian values.',
+      ],
+      prevention: [
+        'For every sparse representation, measure construction work as a function of vertices, compiled edges and nonzeros rather than inferring scalability from output size alone.',
+        'Use deterministic work counters and analytical structures for scale gates; wall-clock thresholds are environment-dependent and cannot prove complexity.',
+        'Retain self-edge, repeated-port, duplicate-derivative, sorted-column and replay tests whenever graph lowering changes.',
+        'Do not describe sparse adapter memory or runtime as globally bounded from this lowering result; KLU fill-in and process isolation remain separate gates.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-core/tests/dae_contract.rs',
+          assertion: 'Exact 1,000- and 10,000-variable chain tests preserve deterministic 2N-1 CSC structure while existing duplicate, self-coupled and numerical Jacobian cases remain green.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The quadratic-lowering record stays searchable and preserves the two-pass, generation-marker, exact-work and non-KLU-memory-claim boundaries.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['complexity', 'csc', 'dae', 'jacobian', 'lowering', 'sparse'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/dae.rs',
+          note: 'Two-pass deterministic CSC construction and test-only exact work observer.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_contract.rs',
+          note: 'Large-chain structure, replay and existing Jacobian regressions.',
+        },
+        {
+          kind: 'commit',
+          locator: '9f4a43421de34efd067d38a070a0f2c4b9a859dc',
+          note: 'Frozen pre-Iteration-3 main revision containing the quadratic CSC builder.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-dae-lowering-contract-gap',
       title: 'DAE adapters reconstruct residual structure ad hoc',
       symptom: 'Two implicit backends can assign different variables, residual rows, sparse entries or event values to the same validated equation graph while both appear to accept it.',
@@ -1728,6 +1794,64 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'rust-dae-native/tests/backend_identity.rs',
           note: 'Runtime version and dense serial backend identity regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-native-test-runner-context-capture',
+      title: 'Nested Node test runner inherits its parent reporting context',
+      symptom: 'A wrapper that executes a focused Node test campaign sees a successful child exit but an empty captured stdout, so it cannot prove the expected test, pass and failure counts.',
+      evidence: [
+        'The first Iteration 3 evidence-accounting run spawned node --test from inside a node:test case; the subprocess exited with status 0 but the wrapper’s exact 80-case summary assertion received an empty string.',
+        'Running the same command directly produced the expected tests 80, pass 80 and fail 0 summary.',
+        'Deleting the inherited NODE_TEST_CONTEXT control variable only for the nested subprocess restored the standalone report and made the focused wrapper pass without changing either governed source/build suite.',
+      ],
+      detection: [
+        {
+          method: 'nested focused-runner summary regression',
+          signal: 'Spawn the governed source/build suites from a node:test case, require a normal exit, and parse exact tests, pass and fail totals from the independent child report.',
+          failureCondition: 'The child exits successfully without a standalone summary, reports a different total, or the wrapper accepts status alone as proof that all expected cases executed.',
+        },
+      ],
+      causalChain: [
+        'The evidence-accounting test needs to verify the runtime-expanded total of a separate focused Node campaign.',
+        'It launches node --test while already executing under Node’s test runner and passes the complete parent environment through unchanged.',
+        'The child inherits NODE_TEST_CONTEXT and participates in the parent-managed reporting context instead of emitting the standalone CLI summary expected on captured stdout.',
+        'A zero status remains visible, but the exact 80/80 accounting evidence disappears from the wrapper’s observation boundary.',
+      ],
+      rootCause: 'A nested Node test subprocess inherited its parent runner-control context even though the wrapper treated it as an independent CLI reporter.',
+      resolution: [
+        'Clone the subprocess environment and delete NODE_TEST_CONTEXT before launching the nested node --test command, without mutating the parent process environment.',
+        'Require a normal unsignalled zero exit and independently assert the exact tests 80, pass 80 and fail 0 summary fields.',
+        'Keep the exact 48-case Rust manifest accounting separate from this runtime-expanded 80-case Node source/build proof.',
+      ],
+      prevention: [
+        'When a test launches another instance of the same test runner, isolate runner-private control variables and make the intended reporting channel explicit.',
+        'Never treat a child status of zero as exact campaign-count evidence; assert the expected test, pass, fail, skip and filter boundary appropriate to that runner.',
+        'Exercise evidence wrappers from inside the real parent harness rather than validating only the nested command at a shell prompt.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-iteration3-evidence.test.mjs',
+          assertion: 'The nested source/build runner removes only NODE_TEST_CONTEXT, exits normally and emits the exact 80/80 standalone summary.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The nested-runner cause remains independently searchable and preserves the empty-output symptom, isolated environment fix and exact-count requirement.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['child-process', 'evidence', 'node', 'test-harness', 'test-runner'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'tests/dae-iteration3-evidence.test.mjs',
+          note: 'Focused accounting wrapper that executes and parses the 80-case source/build truth suite from inside node:test.',
+        },
+        {
+          kind: 'incident',
+          locator: 'DAE Iteration 3 documentation and evidence campaign',
+          note: 'Initial wrapper failure: child status 0 with empty captured stdout until the inherited runner context was removed.',
         },
       ],
     }),
@@ -2628,6 +2752,166 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-solver-sparse-build-provenance-gap',
+      title: 'Sparse solver build inherits an ungoverned second source and link surface',
+      symptom: 'A build can advertise SUNDIALS IDA with KLU while using an unpinned SuiteSparse tree, system fallback libraries, an incomplete static link, or incomplete license evidence.',
+      evidence: [
+        'The governed dense IDA source lock covers SUNDIALS, but enabling KLU introduces a second independently versioned SuiteSparse source, five selected components and a different native link surface.',
+        'The official SuiteSparse 7.7.0 archive contains ordinary spaces in valid member names, so splitting verbose tar output on whitespace or banning spaces rejects the pinned upstream bytes even though traversal, control characters, links and device entries still must fail closed.',
+        'The first curated archive list added standalone nvecserial and sunmatrixsparse archives because the installed CMake package exposes those components, but omit-one direct links still passed: the pinned libsundials_ida.a already embeds the serial-vector and sparse-matrix symbols. Keeping either redundant archive would create a receipt identity that the executable probe could not prove semantically usable.',
+        'SUNDIALS derives SUNDIALS_ENABLE_SUNLINSOL_KLU from the requested KLU option and exposes many configure-check toggles, so accepting every enabled suffix or every *_CHECKS key silently broadens the audited configuration.',
+        'KLU and BTF are LGPL-2.1-or-later while AMD, COLAMD and SuiteSparse_config are BSD-3-Clause; carrying only the umbrella project label or short component notices omits the full LGPL texts and does not establish static-distribution compliance.',
+      ],
+      detection: [
+        {
+          method: 'two-source sparse build and link audit',
+          signal: 'Verify both source archives, parse their bounded inventories, configure only the selected components, inspect every generated cache option, publish an exact static surface, and run a real KLU factor and solve.',
+          failureCondition: 'The build accepts source or configuration drift, reaches a system KLU/BLAS/CHOLMOD/OpenMP dependency, omits a required static archive or license text, or passes without executing the linked sparse solver.',
+        },
+      ],
+      causalChain: [
+        'A previously governed dense native backend adds KLU as an optional linear solver.',
+        'The new option brings a separately released SuiteSparse source, generated SUNDIALS modules, transitive serial-vector symbols and component-specific licenses.',
+        'If the old one-source receipt or a guessed archive list is reused, the visible backend name no longer identifies what was compiled and linked.',
+        'Configuration-only tests can then pass while the actual sparse executable fails to link, falls back to host libraries or lacks the evidence required for distribution review.',
+      ],
+      rootCause: 'The sparse backend was treated as one more SUNDIALS flag instead of a separate governed two-source build, link, license and runtime-evidence boundary.',
+      resolution: [
+        'Pin SuiteSparse 7.7.0 and the exact selected SuiteSparse_config 7.7.0, AMD 3.3.2, BTF 2.3.2, COLAMD 3.3.3 and KLU 2.3.3 source and license identities in native-backends/suitesparse/source-lock.json.',
+        'Verify the exact 85,876,065-byte archive and its measured inventory while parsing the complete tar path remainder so ordinary spaces remain valid and traversal, absolute paths, controls, backslashes, duplicates, links, devices and expansion excess remain rejected.',
+        'Build only the five selected SuiteSparse components with CHOLMOD, BLAS, OpenMP, CUDA, Fortran and system fallbacks disabled; configure SUNDIALS 7.8.0 with KLU checks enabled and audit an exact allowlist of generated enabled options.',
+        'Publish a separate canonical battery-design/native-dae-klu-build-receipt@2 that binds both locks, component versions, critical headers, nine exact license/notice files and exactly eight semantically exercised static archives; omit the redundant standalone nvecserial and sunmatrixsparse archives because the pinned IDA archive supplies those symbols for this adapter.',
+        'Require the installed-prefix probe and the curated direct-link probe to create the serial vectors and sparse matrix, factor and solve a nonsymmetric system with KLU, construct IDA, verify runtime versions and reject governed dynamic dependencies.',
+        'Carry the complete upstream LGPL-2.1 texts for BTF and KLU, but keep the implementation CI-only: hashes and bundled texts do not complete legal review, relinkable-object obligations, source-offer requirements, artifact custody or product-release approval.',
+      ],
+      prevention: [
+        'Treat every optional native solver dependency as a new source, configuration, ABI, link and license boundary rather than extending an old receipt informally.',
+        'Derive the accepted archive surface from a successful real link, remove redundant archives that the probe cannot distinguish from empty replacements, and keep the real factor/solve probe mandatory on initial build, reuse and self-consistent archive-tamper tests.',
+        'Audit exact generated CMake keys instead of suffix classes, and add a rejection regression whenever a newly observed upstream-derived option is admitted.',
+        'Keep the dense build unchanged and keep KLU out of browser, desktop, installer and release surfaces until a separately reviewed LGPL distribution plan and exact artifact campaign exist.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/suitesparse-source-lock.test.mjs',
+          assertion: 'The closed SuiteSparse release, selected component versions, archive inventory and exact component license identities reject source, shape, digest, link and schema drift.',
+        },
+        {
+          path: 'tests/sundials-klu-native-build.test.mjs',
+          assertion: 'The KLU build contract accepts legitimate spaced archive names but rejects unsafe members, system fallbacks, unrelated enabled checks, receipt drift, missing archives and governed dynamic dependencies.',
+        },
+        {
+          path: 'tools/test-native-dae-klu-build.mjs',
+          assertion: 'The reuse campaign rejects lock, receipt, header, license and archive attacks, including self-consistent empty KLU and SUNLINSOL-KLU archives that only the real sparse link can expose.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The sparse two-source provenance cause remains independently searchable and preserves the CI-only and unresolved static-distribution boundary.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['klu', 'license', 'provenance', 'sparse', 'suitesparse', 'sundials'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'native-backends/suitesparse/source-lock.json',
+          note: 'Closed SuiteSparse release, selected-component and license identity.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'tools/verify-suitesparse-source.mjs',
+          note: 'Closed lock, archive and component-license verifier.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'tools/build-sundials-ida-klu.mjs',
+          note: 'Two-source bounded build, cache audit, curated @2 receipt and real installed/direct sparse probes.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/suitesparse-source-lock.test.mjs',
+          note: 'Official source, component, archive and license identity regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/sundials-klu-native-build.test.mjs',
+          note: 'Archive, CMake, receipt, static surface, dynamic dependency and real-link contract regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tools/test-native-dae-klu-build.mjs',
+          note: 'Derived root and executable-link tamper campaign.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-sparse-jacobian-pattern-erasure',
+      title: 'Sparse Jacobian callback assumes its CSC pattern survives matrix zeroing',
+      symptom: 'IDA with KLU can receive an all-zero or malformed CSC structure on a later Jacobian evaluation even though the fixed sparsity pattern was installed when the matrix was created.',
+      evidence: [
+        'In SUNDIALS 7.8.0, SUNMatZero_Sparse clears the numeric data, row-index array and column-pointer array before IDA invokes the registered Jacobian callback.',
+        'Installing the structural pattern only during matrix construction therefore leaves subsequent callbacks without the governed column boundaries and row locations required by KLU.',
+        'A repeated-callback regression that deliberately zeros all three native arrays reproduces the boundary and requires every invocation to restore the exact compiled CSC columns, rows and values.',
+      ],
+      detection: [
+        {
+          method: 'repeated sparse Jacobian reconstruction test',
+          signal: 'Zero the native sparse data, row indices and column pointers before each of two or more callback invocations, then compare all three arrays with the compiled DAE pattern and analytic values.',
+          failureCondition: 'Any invocation preserves zeros, restores only numeric values, changes the sorted unique structure, or constructs Rust slices before validating native type, shape, pointers and alias boundaries.',
+        },
+      ],
+      causalChain: [
+        'The DAE lowering produces a deterministic fixed CSC sparsity pattern and the native KLU matrix is initialized with that pattern.',
+        'IDA clears the sparse matrix before a later Jacobian callback, including its structural index arrays.',
+        'A callback that writes only Jacobian values assumes the structure remains resident and hands KLU erased or invalid column and row metadata.',
+        'Sparse factorization can then fail or operate on a matrix different from the governed residual Jacobian.',
+      ],
+      rootCause: 'The sparse adapter treated CSC structure as construction-time state even though the native matrix-zero operation erases both structure and values at the callback boundary.',
+      resolution: [
+        'Validate the native matrix type, dimensions, nonzero capacity, pointers, checked byte ranges and disjointness from y, yp and residual before constructing any Rust slice.',
+        'On every successful sparse Jacobian callback, copy the complete compiled column-pointer and row-index arrays into the native matrix before copying freshly evaluated numeric values.',
+        'Require a structural diagonal in every column before native allocation and preserve callback-first typed errors when validation or Jacobian evaluation fails.',
+        'Exercise more than one real KLU Jacobian setup so the source-reference solve proves that repeated native zero-and-rebuild cycles remain executable.',
+      ],
+      prevention: [
+        'Audit destructive semantics of every third-party matrix lifecycle operation instead of assuming a fixed-pattern sparse container preserves indices.',
+        'Test callbacks against deliberately erased and malformed native views, including aliasing, wrong matrix type, null pointers and inconsistent CSC lengths.',
+        'Keep the compiled DAE pattern as the sole source of truth and never infer restored structure from mutable native storage.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-dae-native/tests/klu_solve_reference.rs',
+          assertion: 'A real KLU solve performs repeated Jacobian setups and remains accurate, proving that every native zero-and-rebuild cycle receives a complete CSC pattern and values.',
+        },
+        {
+          path: 'rust-dae-native/tests/klu_backend_identity.rs',
+          assertion: 'The KLU admission campaign preserves exact sorted unique CSC structure, structural diagonals and bounded known storage at 1,000 and 10,000 variables.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The sparse pattern-erasure cause remains searchable and bound to full per-callback structure restoration and pre-slice native-view validation.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['callback', 'csc', 'jacobian', 'klu', 'sparse', 'sundials'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Validated sparse callback that restores column pointers, row indices and values on every invocation.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/klu_solve_reference.rs',
+          note: 'Repeated sparse Jacobian setup, numerical reference, failure and lifecycle regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/tests/klu_backend_identity.rs',
+          note: 'CSC identity, scale, structural and work-admission regressions.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-source-revision-self-claim',
       title: 'Manifest Git SHA is accepted without a trusted expectation',
       symptom: 'A package reports a syntactically valid sourceRevision and is labeled verified even though no trusted checkout or caller supplied the expected commit.',
@@ -2679,6 +2963,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
     }),
     record({
       id: 'rc-test-multiplier-denominator-drift',
+      revision: 2,
       title: 'Test-count delta is mistaken for a promised coverage multiplier',
       symptom: 'A delivery reports that testing doubled because 91 top-level tests were added after a convenient checkpoint, even though the promised two-times comparison was against Action 1 and no stable denominator or identical counting population was recorded.',
       evidence: [
@@ -2687,12 +2972,19 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Action-focused and repository-global totals answer different questions; presenting either as the other hides whether the requested action itself received the promised depth.',
         'Using one exact repository-global top-level declaration count, pre-Action 1 commit 66f7240 had 708 tests and post-Action 1 commit 4da8c03 had 758, making the Action 1 denominator increase exactly 50.',
         'The 6094b3b checkpoint had 824 tests; the 91-test checkpoint delta was substantial but still only 91/50, while the corrected Action 2 tree must reach at least 858 total declarations for an increase of at least 100 over 4da8c03.',
+        'For DAE Iteration 3, merged Iteration 2 SHA 9f4a43421de34efd067d38a070a0f2c4b9a859dc contains exactly 81 unique Cargo test function names across native.rs, feature_off.rs, backend_identity.rs and solve_reference.rs in a 67+1+2+11 population.',
+        'Sorting those 81 names and applying the case-sensitive (csc|jacobian|matrix|sparse|linear_solver|resource|construction|drop|backend) filter produces the exact frozen 21-name sparse-readiness denominator; 48 new manifest-listed KLU cases therefore clear the 42-case floor at 2.29 times the proxy.',
       ],
       detection: [
         {
           method: 'reproducible test-population audit',
           signal: 'At each pinned revision run `rg -n "^test\\(" tests --glob "*.test.mjs" | wc -l`, label the result repository-global top-level test declarations, and subtract the same 4da8c03 population.',
           failureCondition: 'A multiplier is claimed without the 50-test Action 1 denominator and pinned revisions/command, a different population is used on either side, or the corrected Action 2 tree contains fewer than 858 declarations.',
+        },
+        {
+          method: 'frozen DAE sparse-readiness name audit',
+          signal: 'At 9f4a43421de34efd067d38a070a0f2c4b9a859dc extract every Cargo #[test] function name from the four declared Rust sources, require the 67+1+2+11 population, sort it and apply the exact case-sensitive sparse-readiness regular expression.',
+          failureCondition: 'The population is not 81 unique names, the filter or case sensitivity changes, the frozen matching list is not exactly 21 names, or the 48-case numerator includes the six separately reported internal seam tests.',
         },
       ],
       causalChain: [
@@ -2707,16 +2999,24 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Use `rg -n "^test\\(" tests --glob "*.test.mjs" | wc -l` unchanged at every revision; this counts top-level test declarations, not runtime pass/skip events or action-only cases.',
         'Retain 6094b3b at 824 only as an intermediate Action 2 checkpoint, never as the Action 1 denominator.',
         'Label the comparison repository-global, state the 50-test denominator beside the multiplier, and require the current Action 2 tree to reach at least 858 declarations for a numerator increase of at least 100.',
+        'For DAE Iteration 3 pin merged Iteration 2 SHA 9f4a43421de34efd067d38a070a0f2c4b9a859dc and the exact four-file Cargo test population: 67 native.rs, one feature_off.rs, two backend_identity.rs and 11 solve_reference.rs names.',
+        'Freeze the sorted 81-name population, exact case-sensitive (csc|jacobian|matrix|sparse|linear_solver|resource|construction|drop|backend) filter and resulting 21 matching names in tests/dae-iteration3-evidence.test.mjs; compare only the 48 manifest-listed KLU cases against that denominator, yielding floor 42 and ratio 2.29.',
       ],
       prevention: [
         'Turn qualitative test multipliers into a predeclared measurement note before coding: both boundary commits, denominator, exact command and whether declarations or runtime results are counted.',
         'Report raw revision counts and their subtraction with the ratio so reviewers can reproduce the claim without inferring what was counted.',
         'Keep global regression health separate from action-specific adversarial depth; both are valuable and neither substitutes for the other.',
+        'For name-filtered focused proxies, freeze the complete source population and exact matching list beside the filter; a revision SHA or denominator alone is not reproducible when Git history is unavailable at runtime.',
+        'Keep manifest-listed integration cases, internal unit seams and retained prior campaigns as separately reported populations instead of moving cases between numerator and denominator.',
       ],
       regressionTests: [
         {
+          path: 'tests/dae-iteration3-evidence.test.mjs',
+          assertion: 'The DAE Iteration 3 multiplier pins the merged baseline SHA, four-file 81-name population, exact case-sensitive filter, sorted 21 matches, 42-case floor and 48-case 2.29-times numerator without runtime Git access.',
+        },
+        {
           path: 'tests/root-cause-library.test.mjs',
-          assertion: 'The denominator-drift record is resolved, retrievable by lookup/search, and pins 66f7240=708, 4da8c03=758, 6094b3b=824, the exact top-level command and the >=858 correction.',
+          assertion: 'The revision-2 denominator-drift record remains searchable and preserves both the repository-global Action 2 correction and the frozen DAE Iteration 3 focused comparison.',
         },
       ],
       affectedSurfaces: ['ci', 'documentation'],
@@ -2736,6 +3036,16 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'commit',
           locator: '6094b3bd5e5afbb3069fd9ba8a7c5d1558600d6f',
           note: 'Intermediate Action 2 checkpoint with 824 declarations; not the Action 1 denominator.',
+        },
+        {
+          kind: 'commit',
+          locator: '9f4a43421de34efd067d38a070a0f2c4b9a859dc',
+          note: 'Merged Iteration 2 baseline containing the frozen four-file population of 81 unique native Cargo test function names.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-iteration3-evidence.test.mjs',
+          note: 'Self-contained exact baseline population, case-sensitive proxy filter, 21 matching names and 48-case numerator accounting.',
         },
         {
           kind: 'test',

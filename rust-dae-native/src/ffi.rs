@@ -1,5 +1,5 @@
-//! Narrow raw declarations for the exact SUNDIALS 7.8.0 dense/serial IDA
-//! lifecycle, initialization, and requested-grid solve boundary.
+//! Narrow raw declarations for the exact SUNDIALS 7.8.0 serial IDA boundary.
+//! Sparse/KLU symbols are compiled only behind the closed KLU feature.
 
 #![allow(dead_code)]
 
@@ -58,15 +58,53 @@ extern "C" {
         context: SUNContext,
     ) -> SUNMatrix;
     pub(crate) fn SUNMatDestroy(matrix: SUNMatrix);
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNMatGetID(matrix: SUNMatrix) -> c_int;
     pub(crate) fn SUNDenseMatrix_Rows(matrix: SUNMatrix) -> SunIndex;
     pub(crate) fn SUNDenseMatrix_Columns(matrix: SUNMatrix) -> SunIndex;
     pub(crate) fn SUNDenseMatrix_Data(matrix: SUNMatrix) -> *mut f64;
+
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNSparseMatrix(
+        rows: SunIndex,
+        columns: SunIndex,
+        nonzeros: SunIndex,
+        sparse_type: c_int,
+        context: SUNContext,
+    ) -> SUNMatrix;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNSparseMatrix_Rows(matrix: SUNMatrix) -> SunIndex;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNSparseMatrix_Columns(matrix: SUNMatrix) -> SunIndex;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNSparseMatrix_NNZ(matrix: SUNMatrix) -> SunIndex;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNSparseMatrix_NP(matrix: SUNMatrix) -> SunIndex;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNSparseMatrix_SparseType(matrix: SUNMatrix) -> c_int;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNSparseMatrix_Data(matrix: SUNMatrix) -> *mut f64;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNSparseMatrix_IndexValues(matrix: SUNMatrix) -> *mut SunIndex;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNSparseMatrix_IndexPointers(matrix: SUNMatrix) -> *mut SunIndex;
 
     pub(crate) fn SUNLinSol_Dense(
         template_vector: NVector,
         matrix: SUNMatrix,
         context: SUNContext,
     ) -> SUNLinearSolver;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNLinSol_KLU(
+        template_vector: NVector,
+        matrix: SUNMatrix,
+        context: SUNContext,
+    ) -> SUNLinearSolver;
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(crate) fn SUNLinSol_KLUSetOrdering(
+        linear_solver: SUNLinearSolver,
+        ordering_choice: c_int,
+    ) -> c_int;
     pub(crate) fn SUNLinSolFree(linear_solver: SUNLinearSolver) -> c_int;
 
     pub(crate) fn IDACreate(context: SUNContext) -> IdaMemory;
@@ -140,4 +178,5 @@ extern "C" {
     pub(crate) fn IDAGetLastStep(memory: IdaMemory, step: *mut f64) -> c_int;
     pub(crate) fn IDAGetCurrentStep(memory: IdaMemory, step: *mut f64) -> c_int;
     pub(crate) fn IDAGetCurrentTime(memory: IdaMemory, time: *mut f64) -> c_int;
+    pub(crate) fn IDAGetLastLinFlag(memory: IdaMemory, flag: *mut c_long) -> c_int;
 }

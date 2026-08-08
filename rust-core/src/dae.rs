@@ -259,9 +259,11 @@ impl From<EquationError> for DaeError {
 
 /// A lowered residual contract over an immutable compiled graph.
 ///
-/// Lowering and consistent initialization may allocate. After lowering,
-/// `residual_into`, `jacobian_values_into`, `outputs_into`, and the buffer-copy
-/// methods allocate no heap memory on their success paths.
+/// Lowering and consistent initialization may allocate. CSC construction uses
+/// work and storage linear in the variable and compiled-input counts plus the
+/// resulting nonzeros. After lowering, `residual_into`,
+/// `jacobian_values_into`, `outputs_into`, and the buffer-copy methods allocate
+/// no heap memory on their success paths.
 #[derive(Clone, Debug)]
 pub struct DaeResidualSystem<'graph> {
     graph: &'graph CompiledGraph,
@@ -717,25 +719,129 @@ fn build_csc_pattern(
     variables: &[DaeVariable],
     block_to_variable: &[usize],
 ) -> DaeCscPattern {
-    let variable_count = variables.len();
-    let mut column_pointers = Vec::with_capacity(variable_count + 1);
-    let mut row_indices = Vec::new();
-    column_pointers.push(0);
-    for column in 0..variable_count {
-        for variable in variables {
-            let block_id = variable.block_id;
-            let inputs = &graph.dae_inputs()[block_id];
-            let depends_on_column = variable.index == column
-                || inputs
-                    .iter()
-                    .flatten()
-                    .any(|source| block_to_variable[*source] == column);
-            if depends_on_column {
-                row_indices.push(variable.index);
-            }
+    build_csc_pattern_with_observer(graph, variables, block_to_variable, &mut IgnoreCscBuildWork)
+}
+
+trait CscBuildWorkObserver {
+    #[inline]
+    fn allocation(&mut self, _requested_elements: usize) {}
+
+    #[inline]
+    fn row_visit(&mut self) {}
+
+    #[inline]
+    fn dependency_candidate(&mut self) {}
+
+    #[inline]
+    fn unique_dependency(&mut self) {}
+
+    #[inline]
+    fn fill_writes(&mut self, _count: usize) {}
+}
+
+struct IgnoreCscBuildWork;
+
+impl CscBuildWorkObserver for IgnoreCscBuildWork {}
+
+fn for_each_unique_row_dependency(
+    graph: &CompiledGraph,
+    variable: &DaeVariable,
+    block_to_variable: &[usize],
+    seen_in_row: &mut [usize],
+    observer: &mut impl CscBuildWorkObserver,
+    mut visit: impl FnMut(usize),
+) {
+    let row = variable.index;
+    observer.row_visit();
+    let mut consider = |column: usize| {
+        observer.dependency_candidate();
+        if seen_in_row[column] != row {
+            seen_in_row[column] = row;
+            observer.unique_dependency();
+            visit(column);
         }
-        column_pointers.push(row_indices.len());
+    };
+
+    // Every residual row has its own y/cj diagonal term. A source connected
+    // to several ports is deliberately considered several times but admitted
+    // once; jacobian_entry still accumulates every port's numeric derivative.
+    consider(row);
+    for source in graph.dae_inputs()[variable.block_id].iter().flatten() {
+        consider(block_to_variable[*source]);
     }
+}
+
+fn build_csc_pattern_with_observer(
+    graph: &CompiledGraph,
+    variables: &[DaeVariable],
+    block_to_variable: &[usize],
+    observer: &mut impl CscBuildWorkObserver,
+) -> DaeCscPattern {
+    let variable_count = variables.len();
+
+    // Pass one counts each structural (row, column) coordinate exactly once.
+    // The row number is a generation marker, avoiding a clear or allocation
+    // for every row even when several input ports share one source column.
+    observer.allocation(variable_count);
+    let mut column_counts = vec![0_usize; variable_count];
+    observer.allocation(variable_count);
+    let mut seen_in_row = vec![usize::MAX; variable_count];
+    for variable in variables {
+        for_each_unique_row_dependency(
+            graph,
+            variable,
+            block_to_variable,
+            &mut seen_in_row,
+            observer,
+            |column| column_counts[column] += 1,
+        );
+    }
+
+    observer.allocation(variable_count + 1);
+    let mut column_pointers = Vec::<usize>::with_capacity(variable_count + 1);
+    column_pointers.push(0);
+    for count in &column_counts {
+        let next = column_pointers
+            .last()
+            .copied()
+            .expect("CSC always has an initial pointer")
+            .checked_add(*count)
+            .expect("CSC nonzero count fits usize");
+        column_pointers.push(next);
+    }
+
+    let nonzero_count = *column_pointers
+        .last()
+        .expect("CSC always has a terminal pointer");
+    observer.allocation(nonzero_count);
+    let mut row_indices = vec![0_usize; nonzero_count];
+
+    // Reuse the count buffer as per-column write cursors. Processing rows in
+    // increasing variable order makes each column strictly row-sorted without
+    // a sort, and the same generation markers prevent duplicate coordinates.
+    column_counts.copy_from_slice(&column_pointers[..variable_count]);
+    seen_in_row.fill(usize::MAX);
+    for variable in variables {
+        for_each_unique_row_dependency(
+            graph,
+            variable,
+            block_to_variable,
+            &mut seen_in_row,
+            observer,
+            |column| {
+                let destination = column_counts[column];
+                row_indices[destination] = variable.index;
+                column_counts[column] += 1;
+            },
+        );
+    }
+    observer.fill_writes(nonzero_count);
+
+    debug_assert!(column_counts
+        .iter()
+        .zip(&column_pointers[1..])
+        .all(|(cursor, end)| cursor == end));
+
     DaeCscPattern {
         column_pointers,
         row_indices,
@@ -787,6 +893,106 @@ fn algebraic_rhs(kind: BlockKind, time_s: f64, input: &impl Fn(usize) -> f64) ->
         } => (input(0) - conductance_w_per_k * (input(1) - input(2))) / heat_capacity_j_per_k,
         BlockKind::Integrator { .. } | BlockKind::FirstOrder { .. } => {
             unreachable!("stateful blocks have differential residual rows")
+        }
+    }
+}
+
+#[cfg(test)]
+mod csc_build_tests {
+    use super::*;
+    use crate::equations::{Block, EquationGraph};
+
+    #[derive(Default)]
+    struct MeasuredCscBuildWork {
+        allocation_requests: usize,
+        requested_elements: usize,
+        row_visits: usize,
+        dependency_candidates: usize,
+        unique_dependencies: usize,
+        fill_writes: usize,
+    }
+
+    impl CscBuildWorkObserver for MeasuredCscBuildWork {
+        fn allocation(&mut self, requested_elements: usize) {
+            self.allocation_requests += 1;
+            self.requested_elements += requested_elements;
+        }
+
+        fn row_visit(&mut self) {
+            self.row_visits += 1;
+        }
+
+        fn dependency_candidate(&mut self) {
+            self.dependency_candidates += 1;
+        }
+
+        fn unique_dependency(&mut self) {
+            self.unique_dependencies += 1;
+        }
+
+        fn fill_writes(&mut self, count: usize) {
+            self.fill_writes += count;
+        }
+    }
+
+    fn algebraic_chain(variable_count: usize) -> CompiledGraph {
+        let mut graph = EquationGraph::new();
+        let mut previous = graph
+            .add_block(Block::new(
+                "chain 0",
+                Quantity::Dimensionless,
+                BlockKind::Constant { value: 1.0 },
+            ))
+            .unwrap();
+        for index in 1..variable_count {
+            let current = graph
+                .add_block(Block::new(
+                    format!("chain {index}"),
+                    Quantity::Dimensionless,
+                    BlockKind::Gain {
+                        gain: 1.0,
+                        input: Quantity::Dimensionless,
+                    },
+                ))
+                .unwrap();
+            graph.connect(previous, current, 0).unwrap();
+            previous = current;
+        }
+        graph.compile().unwrap()
+    }
+
+    #[test]
+    fn measured_csc_builder_has_exact_linear_work_and_four_bounded_allocations() {
+        for variable_count in [1_000, 10_000] {
+            let graph = algebraic_chain(variable_count);
+            let settings = SolverSettings {
+                end_s: 0.0,
+                ..SolverSettings::default()
+            };
+            let system = DaeResidualSystem::lower(&graph, 0.0, &settings).unwrap();
+            let edge_count = variable_count - 1;
+            let nonzero_count = 2 * variable_count - 1;
+            let mut work = MeasuredCscBuildWork::default();
+            let measured = build_csc_pattern_with_observer(
+                &graph,
+                &system.variables,
+                &system.block_to_variable,
+                &mut work,
+            );
+
+            assert_eq!(measured, system.pattern);
+            assert_eq!(work.allocation_requests, 4);
+            assert_eq!(
+                work.requested_elements,
+                3 * variable_count + 1 + nonzero_count
+            );
+            assert_eq!(work.row_visits, 2 * variable_count);
+            assert_eq!(
+                work.dependency_candidates,
+                2 * (variable_count + edge_count)
+            );
+            assert_eq!(work.unique_dependencies, 2 * nonzero_count);
+            assert_eq!(work.fill_writes, nonzero_count);
         }
     }
 }

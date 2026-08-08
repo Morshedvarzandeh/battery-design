@@ -4,6 +4,8 @@
   "scripts": {
     "dae:native:build": "node tools/build-sundials-ida.mjs",
     "dae:native:test": "node tools/test-native-dae-build.mjs",
+    "dae:native:klu:build": "node tools/build-sundials-ida-klu.mjs",
+    "dae:native:klu:test": "node tools/test-native-dae-klu-build.mjs",
     "rust:test": "cargo test --locked --manifest-path rust-core/Cargo.toml",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test tests/*.test.mjs",
@@ -12,6 +14,7 @@
     "test:root-causes": "node --test tests/root-cause-library.test.mjs tests/root-cause-surfaces.test.mjs tests/root-cause-architecture.test.mjs",
     "test:e2e": "playwright test",
     "sundials:verify-source": "node tools/verify-sundials-source.mjs --lock-only",
+    "suitesparse:verify-source": "node tools/verify-suitesparse-source.mjs --lock-only",
     "wasm:build": "node tools/build-wasm.mjs",
     "validate": "node tools/validate.mjs && npm run typecheck && npm test && node tools/validate-vs-market.mjs"
   },

@@ -109,6 +109,45 @@ possession. `tests/sundials-source-lock.test.mjs`,
 `tools/test-native-dae-build.mjs` preserve the source, build, derived-install
 and real-link regression boundaries.
 
+### Iteration 3 native sparse reference boundary
+
+`rust-dae-native/` also contains a bounded, source-only Linux sparse reference
+under `battery-design/native-ida-klu@1`. It is available only with the explicit
+`sundials-ida-klu` feature and an accepted `SUNDIALS_IDA_KLU_ROOT`; selecting
+that identity never falls back to the dense solver. The exact native identity
+is SUNDIALS/IDA 7.8.0, SuiteSparse 7.7.0 and KLU 2.3.3 with
+`NVECTOR_SERIAL`, `SUNMATRIX_SPARSE_CSC`, `SUNLINSOL_KLU_COLAMD`, static
+non-MPI linkage, double precision and 64-bit indices. It is not part of the
+browser, desktop, service, npm package, installer or any released artifact.
+
+Sparse requests are admitted before request-specific native allocation. The
+backend ceilings are 10,000 variables, 1,000,000 structural nonzeros, 64 MiB
+of known CSC storage, 1,000,000 Jacobian evaluations, 10,000,000,000 projected
+Jacobian-entry writes and 25,600,000 returned scalar values; callers may only
+reduce them. The known-storage figure covers the native CSC arrays and Rust
+callback scratch that the adapter can calculate exactly. It deliberately
+excludes input-dependent KLU symbolic and numeric factor fill, so it is not a
+bound on total process memory and does not justify an unqualified
+memory-bounded claim. Process isolation remains an Iteration 4 gate.
+
+The scaling evidence keeps two different statements separate. Deterministic
+lowering and complete sparse admission are exercised at 1,000 and 10,000
+variables, including exact sorted unique CSC structure and known-storage
+accounting. A real native KLU session is constructed and dropped at 1,000
+variables. The campaign does not claim that the 10,000-variable case performs
+a native factorization or numerical solve.
+
+The governed CI-only build combines the closed SUNDIALS source lock with the
+closed SuiteSparse source lock, builds only SuiteSparse_config, AMD, BTF,
+COLAMD and KLU, and publishes a private eight-archive static link root. Its
+installed-prefix and curated direct-link probes perform a real KLU factor and
+solve. The hosted Rust adapter gate pins Rust 1.77.2 with warnings denied and
+executes both debug and release configurations. BTF and KLU remain
+LGPL-2.1-or-later: checked-in license texts and hashes are evidence, not legal
+approval. Relinkable-object obligations, source-offer requirements, artifact
+custody and the product distribution plan remain unresolved, so this root is
+not copied into a product or release surface.
+
 `cosim.html`, `js/cosim-graph.js` and `js/cosim-studio.js` provide the first
 guided visual composition surface over the shipped `rust-core/` backend, not
 the source-only native reference. The graph document is canonical and
@@ -171,7 +210,8 @@ This is a real solver, but it is not yet a general industrial DAE platform.
 The following remain explicitly unshipped:
 
 - physical conserving ports and automatic index reduction;
-- large sparse Jacobians, SuiteSparse/KLU and other sparse linear algebra;
+- any product-shipped large-sparse, SuiteSparse/KLU or other sparse-linear-
+  algebra backend beyond the CI-only Linux source reference described above;
 - general-DAE qualification or product-facing high-order BDF/IDA integration;
 - any SUNDIALS or PETSc adapter in browser WebAssembly, a service, the desktop
   application or a product package;
@@ -228,8 +268,13 @@ The campaign is split into independently reviewable gates:
    `rust-dae-native/` crate under the `sundials-ida` feature. Completion of
    these subtasks creates a bounded native Linux reference backend, not a
    browser, desktop, service, package, release or general-DAE capability.
-3. **Sparse native path:** add an explicitly qualified sparse Jacobian and KLU
-   configuration, with sparsity, scaling and large-model convergence evidence.
+3. **Sparse native path (complete as a source-only Linux reference):** preserve
+   linear deterministic CSC lowering; govern the second SuiteSparse source,
+   build, license and exact static-link boundary; implement the separate
+   IDA/KLU/COLAMD identity and sparse callback; and exercise bounded admission,
+   real numerical solves, failure evidence and scale-specific tests. The
+   10,000-variable evidence is lowering/admission evidence, not a
+   10,000-variable native convergence claim.
 4. **Native execution integration:** add governed event restart plus a bounded
    native service protocol and desktop integration without routing untrusted
    requests directly into the solver process.
@@ -237,17 +282,17 @@ The campaign is split into independently reviewable gates:
    that passed native conformance, package the accepted binaries, prove their
    exact artifact lineage in CI and preserve the built-in fallback.
 
-Iteration 2 is implemented and tested only as the native Linux dense reference
-described above; it is not product-packaged or released. Iterations 3–5 remain
+Iterations 2 and 3 are implemented and tested only as source-only native Linux
+references; neither is product-packaged or released. Iterations 4 and 5 remain
 unimplemented and unshipped. `rust-core/` itself remains dependency-free and
-does not compile or link SUNDIALS, IDA, SuiteSparse or KLU. Neither completed
-iteration provides index reduction, qualifies general implicit DAEs, adds a
-KLU/sparse path, exposes a native service or desktop integration, or changes
-the current WebAssembly ABI. The native reference must not appear in product
-capability metadata until the later integration, package and release gates
-exist. A SUNDIALS WebAssembly build is an optional later qualification track,
-not an implied outcome of native acceptance: Emscripten uses a distinct
-platform ABI, while the current standalone WebAssembly solver remains intact.
+does not compile or link SUNDIALS, IDA, SuiteSparse or KLU. The completed
+iterations do not provide index reduction, qualify general implicit DAEs,
+expose a native service or desktop integration, or change the current
+WebAssembly ABI. Neither native reference may appear in product capability
+metadata until the later integration, package and release gates exist. A
+SUNDIALS WebAssembly build is an optional later qualification track, not an
+implied outcome of native acceptance: Emscripten uses a distinct platform ABI,
+while the current standalone WebAssembly solver remains intact.
 
 Task 2A adds `native-backends/sundials/source-lock.json`, checked-in license
 notices and an offline byte verifier. The lock identifies the official
@@ -282,6 +327,14 @@ into or selected by any product surface. The accepted evidence therefore says
 that this exact dense serial native reference configuration works on Linux; it
 does not say that every module in the upstream IDA distribution is dense, that
 an arbitrary DAE will converge or that a user can select IDA in the product.
+
+Iteration 3 adds a separate optional KLU identity instead of widening the dense
+contract. The sparse callback validates native type, shape, byte ranges and
+disjointness before making Rust slices, and restores column pointers, row
+indices and numeric values after every SUNDIALS sparse-matrix zero operation.
+The result retains the original IDA stage and flag if querying the last KLU
+flag also fails. These controls qualify the tested source reference; they do
+not establish isolation, arbitrary sparse convergence or product readiness.
 
 ## Numerical contract
 
@@ -337,6 +390,37 @@ fallback. This is more than twice the Iteration 1 focused count; it is a
 scope-for-scope campaign comparison, not a claim that the repository's global
 test suite doubled.
 
+The frozen pre-implementation Iteration 3 sparse-readiness proxy is derived
+from merged Iteration 2 SHA
+`9f4a43421de34efd067d38a070a0f2c4b9a859dc`. Its exact population is every
+Cargo `#[test]` function name in `rust-dae-native/src/native.rs` (67),
+`rust-dae-native/tests/feature_off.rs` (1),
+`rust-dae-native/tests/backend_identity.rs` (2) and
+`rust-dae-native/tests/solve_reference.rs` (11): 81 unique names in total.
+Sort those names and retain the ones matching the case-sensitive regular
+expression
+`(csc|jacobian|matrix|sparse|linear_solver|resource|construction|drop|backend)`.
+That unchanged procedure produces the 21-name denominator frozen verbatim in
+`tests/dae-iteration3-evidence.test.mjs`, so the acceptance floor is 42 without
+requiring Git history during a test run. Iteration 3 adds exactly 48
+manifest-listed KLU cases: four feature-off cases, 25
+identity/admission/scaling cases and 19 solve/failure/lifecycle cases. That is
+48 / 21 = 2.29 times the frozen scope-for-scope proxy and clears the floor.
+Six additional KLU-only internal callback and diagnostic seam tests execute
+inside the crate's unit-test binary but are reported separately and are not
+used to inflate the 48-case comparison. This is not a claim that the
+repository's global test suite doubled.
+
+The separate source/build campaign passes 80/80 focused source,
+configuration, receipt and link cases, followed by 28/28 mutation attacks.
+The prior 81-case dense native campaign is retained unchanged in its own
+feature configurations. Sparse numerical evidence covers closed-form
+exponential response, an affine index-one system, the same independently
+generated Robertson Radau fixture, repeated Jacobian reconstruction, typed
+failure propagation and deterministic fresh sessions. Scale claims remain
+literal: the 10,000-variable chain is lowered and admitted, while the largest
+real native session in this campaign is the 1,000-variable chain.
+
 The 80 feature-on cases cover exact runtime identity and context recreation;
 native resource construction and drop order; complete registration order;
 both initial-condition policies; scalar/vector tolerances; BDF order 1 and 5;
@@ -350,13 +434,14 @@ generated by SciPy 1.17.0 `solve_ivp(method='Radau')` at `rtol=1e-12` and
 `atol=1e-14`; the reproduction parameters and official SciPy solver-document
 URL are preserved beside the regression. The separate build-provenance harness
 attacks canonical lock and receipt bytes, install contents and archive
-identities. These tests establish this bounded reference configuration only;
-they do not qualify arbitrary DAEs, sparse KLU, event restarts, another
-operating system or a product package.
+identities. These Iteration 2 tests establish the bounded dense reference
+configuration only; the separate Iteration 3 campaign qualifies only its exact
+Linux KLU source reference. Neither campaign qualifies arbitrary DAEs, event
+restarts, another operating system or a product package.
 
 Before exposing the native reference through a product, the later campaign
 gates must keep these tests and add the platform, integration, packaging and
-release evidence for that exact surface. A sparse or materially broader DAE
+release evidence for that exact surface. Any materially broader sparse or DAE
 backend additionally needs its own benchmark, convergence and independent
 cross-validation campaign. The built-in backward-Euler path remains the
 shipped auditable fallback for small stiff ODE graphs; it is not presented as

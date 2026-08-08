@@ -656,11 +656,17 @@ IDA-only source asset and Linux lifecycle build are pinned, and a dense serial
 IDA reference backend is now implemented and tested in the source-only
 `rust-dae-native/` crate. IDA-only names the upstream solver-family asset, not
 a dense-only binary; the reference explicitly selects the serial vector, dense
-matrix and dense linear solver. It is not surfaced by the browser, service,
-desktop, package or release. Sparse SuiteSparse/KLU, index reduction,
-general-DAE qualification, browser WebAssembly integration and an FMI
-importing master remain separate until their own conformance and product gates
-exist.
+matrix and dense linear solver. The same crate now has a separately identified,
+CI-only Linux sparse reference for SUNDIALS/IDA 7.8.0, SuiteSparse 7.7.0 and
+KLU 2.3.3 using serial CSC storage and fixed COLAMD ordering. Its 10,000-
+variable evidence covers lowering and admission; the largest real native
+session in the campaign is 1,000 variables, and known CSC storage explicitly
+excludes input-dependent KLU factor fill. Neither native reference is surfaced
+by the browser, service, desktop, package, installer or release. The KLU build
+also remains blocked from product distribution pending LGPL legal/relink/source
+and artifact-custody review. Index reduction, general-DAE qualification,
+browser WebAssembly integration and an FMI importing master remain separate
+until their own conformance and product gates exist.
 
 ## Tests
 

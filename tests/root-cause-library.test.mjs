@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 43);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 47);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -71,6 +71,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-calibration-work-undercount',
     'rc-capability-contract-mismatch',
     'rc-cli-typo-default-fallback',
+    'rc-dae-csc-quadratic-lowering',
     'rc-dae-lowering-contract-gap',
     'rc-e2e-hidden-state-precondition',
     'rc-final-artifact-identity-gap',
@@ -84,6 +85,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-loop-contract-identity-gap',
     'rc-native-dae-callback-boundary-gap',
     'rc-native-solver-build-provenance-gap',
+    'rc-native-test-runner-context-capture',
     'rc-nelder-mead-bound-simplex-collapse',
     'rc-nullable-alias-projection',
     'rc-object-allowlist-prototype-bypass',
@@ -98,6 +100,8 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-signed-bound-evidence-miss',
     'rc-sil-result-representation-gap',
     'rc-solver-evidence-acceptance-drift',
+    'rc-solver-sparse-build-provenance-gap',
+    'rc-solver-sparse-jacobian-pattern-erasure',
     'rc-source-revision-self-claim',
     'rc-test-multiplier-denominator-drift',
     'rc-thermal-explicit-step-instability',
@@ -186,6 +190,78 @@ test('DAE lowering memory separates a residual contract from solver qualificatio
   );
 });
 
+test('DAE CSC memory preserves linear construction before sparse qualification', () => {
+  const record = getRootCauseRecord('rc-dae-csc-quadratic-lowering');
+  assert.equal(record?.status, 'resolved');
+  assert.match(`${record.symptom} ${record.evidence.join(' ')}`, /10,000-variable[\s\S]*19,999[\s\S]*one hundred million[\s\S]*N squared/i);
+  assert.match(record.rootCause, /column-by-row search[\s\S]*bounded transpose[\s\S]*row dependencies/i);
+  assert.match(record.resolution.join(' '), /Traverse rows twice[\s\S]*prefix-sum[\s\S]*generation marker[\s\S]*strictly row-sorted[\s\S]*four bounded[\s\S]*1,000-[\s\S]*10,000-variable/i);
+  assert.match(record.prevention.join(' '), /vertices[\s\S]*compiled edges[\s\S]*nonzeros[\s\S]*wall-clock thresholds[\s\S]*KLU fill-in/i);
+  const source = readFileSync(resolve(ROOT, 'rust-core/src/dae.rs'), 'utf8');
+  assert.match(source, /Pass one counts each structural[\s\S]*column_counts[\s\S]*Pass two|Pass one counts each structural[\s\S]*Reuse the count buffer as per-column write cursors/i);
+  assert.doesNotMatch(source, /for column in 0\.\.variable_count\s*\{\s*for variable in variables/);
+  assert.equal(
+    searchRootCauses('sparse CSC quadratic row column scan 10000 chain lowering', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('sparse native provenance binds both sources, real linkage and license limits', () => {
+  const record = getRootCauseRecord('rc-solver-sparse-build-provenance-gap');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /ordinary spaces[\s\S]*tar output[\s\S]*nvecserial[\s\S]*sunmatrixsparse[\s\S]*omit-one direct links still passed[\s\S]*redundant archive[\s\S]*every \*_CHECKS[\s\S]*LGPL-2\.1-or-later/i);
+  assert.match(record.rootCause, /separate governed two-source build[\s\S]*link[\s\S]*license[\s\S]*runtime-evidence boundary/i);
+  assert.match(record.resolution.join(' '), /SuiteSparse 7\.7\.0[\s\S]*KLU 2\.3\.3[\s\S]*85,876,065-byte[\s\S]*ordinary spaces[\s\S]*exact allowlist[\s\S]*receipt@2[\s\S]*exactly eight[\s\S]*omit the redundant standalone nvecserial and sunmatrixsparse[\s\S]*factor and solve[\s\S]*complete upstream LGPL-2\.1 texts[\s\S]*CI-only/i);
+  assert.match(record.prevention.join(' '), /successful real link[\s\S]*remove redundant archives[\s\S]*initial build, reuse[\s\S]*self-consistent archive-tamper[\s\S]*dense build unchanged[\s\S]*browser, desktop, installer and release/i);
+  assert.deepEqual(
+    record.regressionTests.slice(0, 3).map(({ path }) => path),
+    [
+      'tests/suitesparse-source-lock.test.mjs',
+      'tests/sundials-klu-native-build.test.mjs',
+      'tools/test-native-dae-klu-build.mjs',
+    ],
+  );
+  assert.equal(
+    searchRootCauses('SuiteSparse KLU two source static link license archive spaces nvecserial', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('sparse Jacobian memory preserves full CSC restoration after native zeroing', () => {
+  const record = getRootCauseRecord('rc-solver-sparse-jacobian-pattern-erasure');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /SUNMatZero_Sparse[\s\S]*numeric data[\s\S]*row-index[\s\S]*column-pointer[\s\S]*repeated-callback/i);
+  assert.match(record.rootCause, /construction-time state[\s\S]*matrix-zero operation[\s\S]*structure and values/i);
+  assert.match(record.resolution.join(' '), /matrix type[\s\S]*checked byte ranges[\s\S]*disjointness[\s\S]*every successful sparse Jacobian callback[\s\S]*column-pointer[\s\S]*row-index[\s\S]*numeric values[\s\S]*structural diagonal[\s\S]*more than one real KLU Jacobian setup/i);
+  assert.deepEqual(
+    record.regressionTests.slice(0, 2).map(({ path }) => path),
+    [
+      'rust-dae-native/tests/klu_solve_reference.rs',
+      'rust-dae-native/tests/klu_backend_identity.rs',
+    ],
+  );
+  const source = readFileSync(resolve(ROOT, 'rust-dae-native/src/native.rs'), 'utf8');
+  assert.match(source, /sparse_callback_restores_columns_rows_and_values_after_every_zero[\s\S]*column_pointers[\s\S]*row_indices[\s\S]*jacobian_values_into/);
+  assert.equal(
+    searchRootCauses('SUNDIALS sparse matrix zero CSC row index column pointer callback restore', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('nested Node runner memory preserves independent exact-count reporting', () => {
+  const record = getRootCauseRecord('rc-native-test-runner-context-capture');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /node --test[\s\S]*status 0[\s\S]*empty string[\s\S]*tests 80[\s\S]*pass 80[\s\S]*fail 0[\s\S]*NODE_TEST_CONTEXT/i);
+  assert.match(record.rootCause, /nested Node test subprocess[\s\S]*parent runner-control context[\s\S]*independent CLI reporter/i);
+  assert.match(record.resolution.join(' '), /Clone the subprocess environment[\s\S]*delete NODE_TEST_CONTEXT[\s\S]*without mutating the parent[\s\S]*unsignalled zero exit[\s\S]*tests 80[\s\S]*pass 80[\s\S]*fail 0/i);
+  const source = readFileSync(resolve(ROOT, 'tests/dae-iteration3-evidence.test.mjs'), 'utf8');
+  assert.match(source, /childEnvironment = \{ \.\.\.process\.env \}[\s\S]*delete childEnvironment\.NODE_TEST_CONTEXT[\s\S]*env: childEnvironment/);
+  assert.equal(
+    searchRootCauses('nested Node test child empty stdout exact 80 runner context', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
 test('regression-path memory preserves cross-platform repository containment', () => {
   const record = getRootCauseRecord('rc-regression-path-containment-gap');
   assert.equal(record?.status, 'resolved');
@@ -267,7 +343,7 @@ test('native IDA memories keep seven causes separate, resolved and exactly searc
   }
 });
 
-test('equation-solver guide reports the exact Iteration 2 reference and product boundary', () => {
+test('equation-solver guide reports the exact Iteration 2 and 3 references and product boundary', () => {
   const guide = readFileSync(resolve(ROOT, 'docs/EQUATION_SOLVER.md'), 'utf8');
   const prose = guide.replace(/\s+/gu, ' ');
   assert.match(prose, /implements a bounded native Linux reference backend in[\s\S]*battery-design\/native-ida-dense@1[\s\S]*not part of the[\s\S]*browser, desktop, service, npm package or any released product artifact/i);
@@ -280,6 +356,14 @@ test('equation-solver guide reports the exact Iteration 2 reference and product 
     assert.match(prose, new RegExp(`${task}[^;]*complete`, 'iu'), task);
   }
   assert.match(prose, /28 unique tests[\s\S]*81 unique native cases: 80 feature-on[\s\S]*one feature-off[\s\S]*more than twice[\s\S]*not a claim that the repository.s global test suite doubled/i);
+  assert.match(prose, /Iteration 3 native sparse reference boundary[\s\S]*battery-design\/native-ida-klu@1[\s\S]*SUNDIALS\/IDA 7\.8\.0[\s\S]*SuiteSparse 7\.7\.0[\s\S]*KLU 2\.3\.3[\s\S]*SUNMATRIX_SPARSE_CSC[\s\S]*SUNLINSOL_KLU_COLAMD/i);
+  assert.match(prose, /known-storage figure[\s\S]*excludes input-dependent KLU symbolic and numeric factor fill[\s\S]*not a bound on total process memory[\s\S]*process isolation remains an Iteration 4 gate/i);
+  assert.match(prose, /lowering and complete sparse admission[\s\S]*1,000 and 10,000 variables[\s\S]*real native KLU session[\s\S]*1,000 variables[\s\S]*does not claim[\s\S]*10,000-variable[\s\S]*factorization or numerical solve/i);
+  assert.match(prose, /hosted Rust adapter gate pins Rust 1\.77\.2[\s\S]*warnings denied[\s\S]*debug and release[\s\S]*LGPL-2\.1-or-later[\s\S]*not legal approval[\s\S]*product distribution plan remain unresolved/i);
+  assert.match(prose, /21-name denominator[\s\S]*acceptance floor is 42[\s\S]*exactly 48 manifest-listed KLU cases[\s\S]*four feature-off[\s\S]*25 identity\/admission\/scaling[\s\S]*19 solve\/failure\/lifecycle[\s\S]*2\.29 times[\s\S]*Six additional KLU-only internal[\s\S]*reported separately/i);
+  assert.match(prose, /9f4a43421de34efd067d38a070a0f2c4b9a859dc[\s\S]*native\.rs` \(67\)[\s\S]*feature_off\.rs` \(1\)[\s\S]*backend_identity\.rs` \(2\)[\s\S]*solve_reference\.rs` \(11\)[\s\S]*81 unique names[\s\S]*case-sensitive regular expression[\s\S]*\(csc\|jacobian\|matrix\|sparse\|linear_solver\|resource\|construction\|drop\|backend\)[\s\S]*21-name denominator frozen verbatim/i);
+  assert.match(prose, /80\/80[\s\S]*28\/28[\s\S]*81-case dense native campaign[\s\S]*retained unchanged/i);
+  assert.doesNotMatch(prose, /Iterations 3[–-]5 remain unimplemented/i);
   assert.match(prose, /three-level analytical[\s\S]*tolerance-convergence[\s\S]*Dormand–Prince[\s\S]*SciPy 1\.17\.0[\s\S]*solve_ivp[\s\S]*Radau[\s\S]*rtol=1e-12[\s\S]*atol=1e-14/i);
   assert.match(prose, /hashes[\s\S]*self-recomputed receipt do not[\s\S]*authenticate the publisher[\s\S]*reproducible-build equivalence[\s\S]*artifact custody[\s\S]*signed chain of possession/i);
   assert.match(prose, /tests\/sundials-source-lock\.test\.mjs[\s\S]*tests\/sundials-native-build\.test\.mjs[\s\S]*tools\/test-native-dae-build\.mjs[\s\S]*source, build, derived-install[\s\S]*real-link regression boundaries/i);
@@ -371,22 +455,32 @@ test('test-multiplier memory pins a reproducible denominator and local evidence'
   const id = 'rc-test-multiplier-denominator-drift';
   const multiplier = getRootCauseRecord(id);
   assert.equal(multiplier?.status, 'resolved');
+  assert.equal(multiplier.revision, 2);
   assert.match(multiplier.rootCause, /comparison population[\s\S]*base revision[\s\S]*counting procedure/i);
+  assert.match(multiplier.evidence.join(' '), /9f4a43421de34efd067d38a070a0f2c4b9a859dc[\s\S]*81 unique Cargo test function names[\s\S]*67\+1\+2\+11[\s\S]*case-sensitive[\s\S]*21-name[\s\S]*48 new manifest-listed KLU cases[\s\S]*42-case floor[\s\S]*2\.29/i);
   const resolution = multiplier.resolution.join(' ');
   assert.match(resolution, /66f7240 at 708[\s\S]*4da8c03 at 758[\s\S]*increase of 50/i);
   assert.match(resolution, /rg -n "\^test\\\(" tests --glob "\*\.test\.mjs" \| wc -l/);
   assert.match(resolution, /6094b3b at 824 only as an intermediate/i);
   assert.match(resolution, /at least 858 declarations[\s\S]*increase of at least 100/i);
+  assert.match(resolution, /9f4a43421de34efd067d38a070a0f2c4b9a859dc[\s\S]*67 native\.rs[\s\S]*one feature_off\.rs[\s\S]*two backend_identity\.rs[\s\S]*11 solve_reference\.rs[\s\S]*sorted 81-name population[\s\S]*\(csc\|jacobian\|matrix\|sparse\|linear_solver\|resource\|construction\|drop\|backend\)[\s\S]*21 matching names[\s\S]*48 manifest-listed KLU cases[\s\S]*floor 42[\s\S]*ratio 2\.29/i);
+  assert.match(multiplier.prevention.join(' '), /complete source population[\s\S]*exact matching list[\s\S]*Git history is unavailable at runtime[\s\S]*internal unit seams[\s\S]*separately reported populations/i);
 
   assert.deepEqual(
     multiplier.references.filter(({ kind }) => kind === 'commit').map(({ locator }) => locator),
-    ['66f7240', '4da8c03', '6094b3bd5e5afbb3069fd9ba8a7c5d1558600d6f'],
+    [
+      '66f7240',
+      '4da8c03',
+      '6094b3bd5e5afbb3069fd9ba8a7c5d1558600d6f',
+      '9f4a43421de34efd067d38a070a0f2c4b9a859dc',
+    ],
   );
 
   const localTests = multiplier.references
     .filter(({ kind }) => kind === 'test')
     .map(({ locator }) => locator);
   assert.deepEqual(localTests, [
+    'tests/dae-iteration3-evidence.test.mjs',
     'tests/ecm-tuning-plan.test.mjs',
     'tests/ecm-tuning.test.mjs',
     'tests/ecm-tuning-surfaces.test.mjs',
