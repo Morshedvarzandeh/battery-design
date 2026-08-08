@@ -13,7 +13,7 @@ use std::fmt;
 
 /// Version of the native DAE lowering contract. This is intentionally
 /// independent from graph transport and from any future backend version.
-pub const DAE_RESIDUAL_CONTRACT_VERSION: &str = "battery-design/dae-residual@1";
+pub const DAE_RESIDUAL_CONTRACT_VERSION: &str = "battery-design/dae-residual@2";
 
 /// Numeric identifiers used by IDA-style backends.
 pub const DAE_DIFFERENTIAL_ID: f64 = 1.0;
@@ -149,6 +149,10 @@ impl fmt::Display for DaeInput {
 #[derive(Clone, Debug, PartialEq)]
 pub enum DaeError {
     Initialization(EquationError),
+    InvalidEventIndex {
+        event_index: usize,
+        event_count: usize,
+    },
     BufferLength {
         buffer: DaeBuffer,
         expected: usize,
@@ -186,6 +190,7 @@ impl DaeError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Initialization(_) => "dae.initialization",
+            Self::InvalidEventIndex { .. } => "dae.invalid_event_index",
             Self::BufferLength { .. } => "dae.buffer_length",
             Self::NonFiniteInput { .. } => "dae.non_finite_input",
             Self::NonFiniteResidual { .. } => "dae.non_finite_residual",
@@ -199,6 +204,13 @@ impl fmt::Display for DaeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Initialization(error) => write!(f, "DAE initialization failed: {error}"),
+            Self::InvalidEventIndex {
+                event_index,
+                event_count,
+            } => write!(
+                f,
+                "DAE event index {event_index} is outside the event table containing {event_count} entries"
+            ),
             Self::BufferLength {
                 buffer,
                 expected,
@@ -262,11 +274,12 @@ impl From<EquationError> for DaeError {
 /// Lowering and consistent initialization may allocate. CSC construction uses
 /// work and storage linear in the variable and compiled-input counts plus the
 /// resulting nonzeros. After lowering, `residual_into`,
-/// `jacobian_values_into`, `outputs_into`, and the buffer-copy methods allocate
-/// no heap memory on their success paths.
+/// `residual_event_left_limit_into`, `jacobian_values_into`, `outputs_into`,
+/// and the buffer-copy methods allocate no heap memory on their success paths.
 #[derive(Clone, Debug)]
 pub struct DaeResidualSystem<'graph> {
     graph: &'graph CompiledGraph,
+    initialization_time_s: f64,
     variables: Vec<DaeVariable>,
     outputs: Vec<DaeOutput>,
     events: Vec<DaeEvent>,
@@ -379,6 +392,7 @@ impl<'graph> DaeResidualSystem<'graph> {
 
         Ok(Self {
             graph,
+            initialization_time_s,
             variables,
             outputs,
             events,
@@ -392,6 +406,12 @@ impl<'graph> DaeResidualSystem<'graph> {
 
     pub fn contract_version(&self) -> &'static str {
         DAE_RESIDUAL_CONTRACT_VERSION
+    }
+
+    /// Exact finite time used to calculate the stored consistent initial
+    /// conditions. IEEE-754 signed zero is preserved.
+    pub fn initialization_time_s(&self) -> f64 {
+        self.initialization_time_s
     }
 
     pub fn variables(&self) -> &[DaeVariable] {
@@ -471,11 +491,56 @@ impl<'graph> DaeResidualSystem<'graph> {
         yp: &[f64],
         residual: &mut [f64],
     ) -> Result<(), DaeError> {
+        self.residual_with_step_continuity_into(
+            time_s,
+            StepContinuity::RightContinuous,
+            y,
+            yp,
+            residual,
+        )
+    }
+
+    /// Evaluate the residual immediately to the left of one scheduled event.
+    /// At the selected event time, every simultaneous [`BlockKind::StepSource`]
+    /// uses its `before` value. Sources scheduled earlier use `after`, and
+    /// sources scheduled later use `before`. The ordinary [`Self::residual_into`]
+    /// method remains right-continuous at event equality.
+    pub fn residual_event_left_limit_into(
+        &self,
+        event_index: usize,
+        y: &[f64],
+        yp: &[f64],
+        residual: &mut [f64],
+    ) -> Result<(), DaeError> {
+        let event = self
+            .events
+            .get(event_index)
+            .ok_or(DaeError::InvalidEventIndex {
+                event_index,
+                event_count: self.events.len(),
+            })?;
+        self.residual_with_step_continuity_into(
+            event.time_s,
+            StepContinuity::LeftLimitAtEvent(event.time_s),
+            y,
+            yp,
+            residual,
+        )
+    }
+
+    fn residual_with_step_continuity_into(
+        &self,
+        time_s: f64,
+        step_continuity: StepContinuity,
+        y: &[f64],
+        yp: &[f64],
+        residual: &mut [f64],
+    ) -> Result<(), DaeError> {
         self.preflight_evaluation(time_s, y, yp)?;
         require_len(DaeBuffer::Residual, self.variables.len(), residual.len())?;
 
         for row in 0..self.variables.len() {
-            let value = self.residual_row(row, time_s, y, yp);
+            let value = self.residual_row(row, time_s, step_continuity, y, yp);
             if !value.is_finite() {
                 return Err(DaeError::NonFiniteResidual {
                     row,
@@ -485,7 +550,7 @@ impl<'graph> DaeResidualSystem<'graph> {
             }
         }
         for (row, destination) in residual.iter_mut().enumerate() {
-            *destination = self.residual_row(row, time_s, y, yp);
+            *destination = self.residual_row(row, time_s, step_continuity, y, yp);
         }
         Ok(())
     }
@@ -573,7 +638,14 @@ impl<'graph> DaeResidualSystem<'graph> {
         require_finite(DaeInput::Yp, yp)
     }
 
-    fn residual_row(&self, row: usize, time_s: f64, y: &[f64], yp: &[f64]) -> f64 {
+    fn residual_row(
+        &self,
+        row: usize,
+        time_s: f64,
+        step_continuity: StepContinuity,
+        y: &[f64],
+        yp: &[f64],
+    ) -> f64 {
         let variable = &self.variables[row];
         let block = &self.graph.dae_blocks()[variable.block_id];
         let input = |port: usize| {
@@ -584,7 +656,7 @@ impl<'graph> DaeResidualSystem<'graph> {
         match block.kind {
             BlockKind::Integrator { gain, .. } => yp[row] - gain * input(0),
             BlockKind::FirstOrder { tau_s, .. } => yp[row] - (input(0) - y[row]) / tau_s,
-            _ => y[row] - algebraic_rhs(block.kind, time_s, &input),
+            _ => y[row] - algebraic_rhs(block.kind, time_s, step_continuity, &input),
         }
     }
 
@@ -691,6 +763,12 @@ impl<'graph> DaeResidualSystem<'graph> {
         }
         value
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum StepContinuity {
+    RightContinuous,
+    LeftLimitAtEvent(f64),
 }
 
 fn require_len(buffer: DaeBuffer, expected: usize, actual: usize) -> Result<(), DaeError> {
@@ -869,7 +947,12 @@ fn state_derivative(
     }
 }
 
-fn algebraic_rhs(kind: BlockKind, time_s: f64, input: &impl Fn(usize) -> f64) -> f64 {
+fn algebraic_rhs(
+    kind: BlockKind,
+    time_s: f64,
+    step_continuity: StepContinuity,
+    input: &impl Fn(usize) -> f64,
+) -> f64 {
     match kind {
         BlockKind::Constant { value } => value,
         BlockKind::StepSource {
@@ -877,7 +960,11 @@ fn algebraic_rhs(kind: BlockKind, time_s: f64, input: &impl Fn(usize) -> f64) ->
             after,
             at_s,
         } => {
-            if time_s < at_s {
+            let selected_event_left_limit = matches!(
+                step_continuity,
+                StepContinuity::LeftLimitAtEvent(event_time_s) if at_s == event_time_s
+            );
+            if time_s < at_s || selected_event_left_limit {
                 before
             } else {
                 after

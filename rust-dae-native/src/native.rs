@@ -1,8 +1,8 @@
 use crate::{
-    BackendIdentity, CallbackKind, IdaAbsoluteTolerance, IdaError, IdaInitialConditionPolicy,
-    IdaSessionSettings, IdaSettings, IdaSolveResult, IdaSolverStats, NativeStage, NativeStatistic,
-    NativeValue, NativeView, NativeViewActual, NATIVE_IDA_RESULT_CONTRACT, PINNED_BACKEND_IDENTITY,
-    PINNED_SUNDIALS_VERSION,
+    BackendIdentity, CallbackKind, IdaAbsoluteTolerance, IdaError, IdaEventPhase, IdaEventPolicy,
+    IdaInitialConditionPolicy, IdaSessionSettings, IdaSettings, IdaSolveResult, IdaSolverStats,
+    NativeStage, NativeStatistic, NativeValue, NativeView, NativeViewActual,
+    NATIVE_IDA_RESULT_CONTRACT, PINNED_BACKEND_IDENTITY, PINNED_SUNDIALS_VERSION,
 };
 #[cfg(feature = "sundials-ida-klu")]
 use crate::{
@@ -812,6 +812,36 @@ fn try_clone_outputs(outputs: &[DaeOutput]) -> Result<Vec<DaeOutput>, IdaError> 
     Ok(copy)
 }
 
+fn try_active_events(
+    system: &DaeResidualSystem<'_>,
+    initial_time_s: f64,
+    final_time_s: f64,
+) -> Result<Vec<ActiveEvent>, IdaError> {
+    let active_count = system
+        .events()
+        .iter()
+        .filter(|event| event.time_s > initial_time_s && event.time_s <= final_time_s)
+        .count();
+    let mut active = Vec::new();
+    active
+        .try_reserve_exact(active_count)
+        .map_err(|_| IdaError::AllocationFailed {
+            field: "active event schedule",
+            requested: active_count,
+        })?;
+    active.extend(
+        system
+            .events()
+            .iter()
+            .filter(|event| event.time_s > initial_time_s && event.time_s <= final_time_s)
+            .map(|event| ActiveEvent {
+                index: event.index,
+                time_s: event.time_s,
+            }),
+    );
+    Ok(active)
+}
+
 /// Borrowed, preallocated state passed through IDA's opaque `user_data`
 /// pointer. The state and lowered graph must outlive every synchronous callback
 /// that receives the pointer.
@@ -820,6 +850,7 @@ pub(crate) struct CallbackState<'system, 'graph> {
     system: &'system DaeResidualSystem<'graph>,
     jacobian_values: Vec<f64>,
     first_error: Option<IdaError>,
+    stop_boundary: Option<CallbackStopBoundary>,
     #[cfg(feature = "sundials-ida-klu")]
     sparse_work: Option<SparseCallbackWork>,
     _pinned: PhantomPinned,
@@ -827,6 +858,12 @@ pub(crate) struct CallbackState<'system, 'graph> {
     panic_residual: bool,
     #[cfg(test)]
     panic_jacobian: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum CallbackStopBoundary {
+    Event { event_index: usize },
+    Terminal { final_time_s: f64 },
 }
 
 #[cfg(feature = "sundials-ida-klu")]
@@ -849,6 +886,7 @@ impl<'system, 'graph> CallbackState<'system, 'graph> {
                 "callback Jacobian scratch",
             )?,
             first_error: None,
+            stop_boundary: None,
             #[cfg(feature = "sundials-ida-klu")]
             sparse_work: None,
             _pinned: PhantomPinned,
@@ -881,6 +919,7 @@ impl<'system, 'graph> CallbackState<'system, 'graph> {
                 "callback Jacobian scratch",
             )?,
             first_error: None,
+            stop_boundary: None,
             sparse_work: Some(SparseCallbackWork {
                 evaluations: 0,
                 entry_work: 0,
@@ -933,6 +972,28 @@ impl<'system, 'graph> CallbackState<'system, 'graph> {
         Ok(())
     }
 
+    #[cfg(all(test, feature = "sundials-ida-klu"))]
+    fn cap_sparse_budget_at_consumed_work(&mut self) -> Result<(u64, u64), IdaError> {
+        let work = self
+            .sparse_work
+            .as_mut()
+            .ok_or(IdaError::InvalidCscPattern {
+                code: "ida.klu.callback.mode",
+            })?;
+        work.maximum_evaluations = work.evaluations;
+        work.maximum_entry_work = work.entry_work;
+        Ok((work.evaluations, work.entry_work))
+    }
+
+    #[cfg(all(test, feature = "sundials-ida-klu"))]
+    fn sparse_consumed_work(&self) -> Result<(u64, u64), IdaError> {
+        self.sparse_work
+            .map(|work| (work.evaluations, work.entry_work))
+            .ok_or(IdaError::InvalidCscPattern {
+                code: "ida.klu.callback.mode",
+            })
+    }
+
     pub(crate) fn first_error(&self) -> Option<&IdaError> {
         self.first_error.as_ref()
     }
@@ -940,6 +1001,55 @@ impl<'system, 'graph> CallbackState<'system, 'graph> {
     fn latch(&mut self, error: IdaError) {
         if self.first_error.is_none() {
             self.first_error = Some(error);
+        }
+    }
+
+    fn set_event_left_limit(&mut self, event_index: usize) {
+        self.stop_boundary = Some(CallbackStopBoundary::Event { event_index });
+    }
+
+    fn set_terminal_horizon(&mut self, final_time_s: f64) {
+        self.stop_boundary = Some(CallbackStopBoundary::Terminal { final_time_s });
+    }
+
+    fn clear_stop_boundary(&mut self) {
+        self.stop_boundary = None;
+    }
+
+    fn selected_event_at(
+        &self,
+        time_s: f64,
+        callback: CallbackKind,
+    ) -> Result<Option<usize>, IdaError> {
+        let Some(boundary) = self.stop_boundary else {
+            return Ok(None);
+        };
+        if !time_s.is_finite() {
+            return Ok(None);
+        }
+        match boundary {
+            CallbackStopBoundary::Event { event_index } => {
+                let event_time_s = self.system.events()[event_index].time_s;
+                if time_s > event_time_s {
+                    return Err(IdaError::CallbackEventBoundary {
+                        callback,
+                        event_index,
+                        event_time_s,
+                        callback_time_s: time_s,
+                    });
+                }
+                Ok((time_s == event_time_s).then_some(event_index))
+            }
+            CallbackStopBoundary::Terminal { final_time_s } => {
+                if time_s > final_time_s {
+                    return Err(IdaError::CallbackHorizonBoundary {
+                        callback,
+                        final_time_s,
+                        callback_time_s: time_s,
+                    });
+                }
+                Ok(None)
+            }
         }
     }
 
@@ -974,18 +1084,24 @@ impl Drop for CallbackState<'_, '_> {
 
 const IDA_YA_YDP_INIT: c_int = 1;
 const IDA_SUCCESS: c_int = 0;
+const IDA_TSTOP_RETURN: c_int = 1;
 const IDA_TOO_MUCH_WORK: c_int = -1;
 #[cfg(feature = "sundials-ida-klu")]
 const IDA_LSETUP_FAIL: c_int = -6;
 #[cfg(feature = "sundials-ida-klu")]
 const IDA_LSOLVE_FAIL: c_int = -7;
 const IDA_ONE_STEP: c_int = 2;
+const EVENT_IC_MAX_STEPS: c_int = 5;
+const EVENT_IC_MAX_JACOBIANS: c_int = 4;
+const EVENT_IC_MAX_ITERATIONS: c_int = 10;
+const EVENT_IC_MAX_BACKTRACKS: c_int = 100;
 const INTERVAL_ROUNDOFF_MULTIPLIER: f64 = 64.0;
 type NativeLongGetter = unsafe extern "C" fn(crate::ffi::IdaMemory, *mut c_long) -> c_int;
 type NativeIntGetter = unsafe extern "C" fn(crate::ffi::IdaMemory, *mut c_int) -> c_int;
 type NativeRealGetter = unsafe extern "C" fn(crate::ffi::IdaMemory, *mut f64) -> c_int;
 
 #[cfg(test)]
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum SolveInjection {
     #[default]
@@ -997,6 +1113,24 @@ enum SolveInjection {
         requested_index: usize,
     },
     NativeFlag(c_int),
+    PostIcDifferentialBit {
+        variable_index: usize,
+    },
+    PostIcNonFiniteY {
+        variable_index: usize,
+    },
+    PostIcNonFiniteYp {
+        variable_index: usize,
+    },
+    TstopNonFiniteY {
+        variable_index: usize,
+    },
+    TstopNonFiniteYp {
+        variable_index: usize,
+    },
+    ReinitInternalSteps(u64),
+    #[cfg(feature = "sundials-ida-klu")]
+    CapSparseBudgetAtRestart,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1013,7 +1147,7 @@ struct CounterSnapshot {
     linear_convergence_failures: u64,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct CounterDelta {
     internal_steps: u64,
     residual_evaluations: u64,
@@ -1027,7 +1161,75 @@ struct CounterDelta {
     linear_convergence_failures: u64,
 }
 
+impl CounterDelta {
+    fn checked_add(self, other: Self) -> Result<Self, IdaError> {
+        macro_rules! add {
+            ($field:ident) => {
+                self.$field
+                    .checked_add(other.$field)
+                    .ok_or(IdaError::WorkOverflow)?
+            };
+        }
+        Ok(Self {
+            internal_steps: add!(internal_steps),
+            residual_evaluations: add!(residual_evaluations),
+            linear_solver_setups: add!(linear_solver_setups),
+            error_test_failures: add!(error_test_failures),
+            nonlinear_iterations: add!(nonlinear_iterations),
+            nonlinear_convergence_failures: add!(nonlinear_convergence_failures),
+            jacobian_evaluations: add!(jacobian_evaluations),
+            linear_residual_evaluations: add!(linear_residual_evaluations),
+            linear_iterations: add!(linear_iterations),
+            linear_convergence_failures: add!(linear_convergence_failures),
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ActiveEvent {
+    index: usize,
+    time_s: f64,
+}
+
 impl CounterSnapshot {
+    fn first_nonzero(self) -> Option<(NativeStatistic, u64)> {
+        [
+            (NativeStatistic::InternalSteps, self.internal_steps),
+            (
+                NativeStatistic::ResidualEvaluations,
+                self.residual_evaluations,
+            ),
+            (
+                NativeStatistic::LinearSolverSetups,
+                self.linear_solver_setups,
+            ),
+            (NativeStatistic::ErrorTestFailures, self.error_test_failures),
+            (
+                NativeStatistic::NonlinearIterations,
+                self.nonlinear_iterations,
+            ),
+            (
+                NativeStatistic::NonlinearConvergenceFailures,
+                self.nonlinear_convergence_failures,
+            ),
+            (
+                NativeStatistic::JacobianEvaluations,
+                self.jacobian_evaluations,
+            ),
+            (
+                NativeStatistic::LinearResidualEvaluations,
+                self.linear_residual_evaluations,
+            ),
+            (NativeStatistic::LinearIterations, self.linear_iterations),
+            (
+                NativeStatistic::LinearConvergenceFailures,
+                self.linear_convergence_failures,
+            ),
+        ]
+        .into_iter()
+        .find(|(_, value)| *value != 0)
+    }
+
     fn checked_delta(self, baseline: Self) -> Result<CounterDelta, IdaError> {
         fn delta(statistic: NativeStatistic, before: u64, after: u64) -> Result<u64, IdaError> {
             after
@@ -1105,6 +1307,7 @@ pub struct IdaSession<'context, 'system, 'graph> {
     corrected_initial_conditions: bool,
     configured_max_order: u8,
     configured_max_steps: u64,
+    configured_event_policy: IdaEventPolicy,
     result_contract: &'static str,
     backend_identity: BackendIdentity,
     output_times_s: Vec<f64>,
@@ -1112,7 +1315,10 @@ pub struct IdaSession<'context, 'system, 'graph> {
     result_values: Vec<f64>,
     y_scratch: Vec<f64>,
     yp_scratch: Vec<f64>,
+    event_y_scratch: Vec<f64>,
+    event_yp_scratch: Vec<f64>,
     output_scratch: Vec<f64>,
+    active_events: Vec<ActiveEvent>,
     #[cfg(test)]
     solve_injection: SolveInjection,
     #[cfg(test)]
@@ -1131,7 +1337,9 @@ impl fmt::Debug for IdaSession<'_, '_, '_> {
             )
             .field("configured_max_order", &self.configured_max_order)
             .field("configured_max_steps", &self.configured_max_steps)
+            .field("configured_event_policy", &self.configured_event_policy)
             .field("requested_outputs", &self.output_times_s.len())
+            .field("active_events", &self.active_events.len())
             .finish_non_exhaustive()
     }
 }
@@ -1234,6 +1442,19 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
         record_registration(NativeStage::IdaSetMaxNumSteps);
         let flag = unsafe { crate::ffi::IDASetMaxNumSteps(memory, maximum_steps) };
         self.require_registered_call(flag, NativeStage::IdaSetMaxNumSteps)?;
+
+        record_registration(NativeStage::IdaSetMaxNumStepsIc);
+        let flag = unsafe { crate::ffi::IDASetMaxNumStepsIC(memory, EVENT_IC_MAX_STEPS) };
+        self.require_registered_call(flag, NativeStage::IdaSetMaxNumStepsIc)?;
+        record_registration(NativeStage::IdaSetMaxNumJacsIc);
+        let flag = unsafe { crate::ffi::IDASetMaxNumJacsIC(memory, EVENT_IC_MAX_JACOBIANS) };
+        self.require_registered_call(flag, NativeStage::IdaSetMaxNumJacsIc)?;
+        record_registration(NativeStage::IdaSetMaxNumItersIc);
+        let flag = unsafe { crate::ffi::IDASetMaxNumItersIC(memory, EVENT_IC_MAX_ITERATIONS) };
+        self.require_registered_call(flag, NativeStage::IdaSetMaxNumItersIc)?;
+        record_registration(NativeStage::IdaSetMaxBacksIc);
+        let flag = unsafe { crate::ffi::IDASetMaxBacksIC(memory, EVENT_IC_MAX_BACKTRACKS) };
+        self.require_registered_call(flag, NativeStage::IdaSetMaxBacksIc)?;
 
         record_registration(NativeStage::IdaSetLinearSolver);
         let flag = unsafe {
@@ -1436,6 +1657,390 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
         })
     }
 
+    fn event_failure(event: ActiveEvent, phase: IdaEventPhase, source: IdaError) -> IdaError {
+        IdaError::EventRestartFailure {
+            event_index: event.index,
+            event_time_s: event.time_s,
+            phase,
+            source: Box::new(source),
+        }
+    }
+
+    fn with_event_context<T>(
+        event: Option<ActiveEvent>,
+        phase: IdaEventPhase,
+        result: Result<T, IdaError>,
+    ) -> Result<T, IdaError> {
+        result.map_err(|source| match event {
+            Some(_event) if matches!(&source, IdaError::EventRestartFailure { .. }) => source,
+            Some(event) => Self::event_failure(event, phase, source),
+            None => source,
+        })
+    }
+
+    fn set_event_stop(&mut self, event: ActiveEvent) -> Result<(), IdaError> {
+        let state = unsafe { self.callback_state.as_mut().get_unchecked_mut() };
+        state.set_event_left_limit(event.index);
+        record_registration(NativeStage::IdaSetStopTime);
+        let flag =
+            unsafe { crate::ffi::IDASetStopTime(self.resources.ida_memory_raw(), event.time_s) };
+        if let Err(source) = self.require_registered_call(flag, NativeStage::IdaSetStopTime) {
+            let state = unsafe { self.callback_state.as_mut().get_unchecked_mut() };
+            state.clear_stop_boundary();
+            return Err(Self::event_failure(
+                event,
+                IdaEventPhase::SetStopTime,
+                source,
+            ));
+        }
+        Ok(())
+    }
+
+    fn set_terminal_stop(&mut self, final_time_s: f64) -> Result<(), IdaError> {
+        let state = unsafe { self.callback_state.as_mut().get_unchecked_mut() };
+        state.set_terminal_horizon(final_time_s);
+        record_registration(NativeStage::IdaSetStopTime);
+        let flag =
+            unsafe { crate::ffi::IDASetStopTime(self.resources.ida_memory_raw(), final_time_s) };
+        if let Err(source) = self.require_registered_call(flag, NativeStage::IdaSetStopTime) {
+            let state = unsafe { self.callback_state.as_mut().get_unchecked_mut() };
+            state.clear_stop_boundary();
+            return Err(source);
+        }
+        Ok(())
+    }
+
+    fn clear_event_stop(&mut self, event: ActiveEvent) -> Result<(), IdaError> {
+        record_registration(NativeStage::IdaClearStopTime);
+        let flag = unsafe { crate::ffi::IDAClearStopTime(self.resources.ida_memory_raw()) };
+        let result = self.require_registered_call(flag, NativeStage::IdaClearStopTime);
+        let state = unsafe { self.callback_state.as_mut().get_unchecked_mut() };
+        state.clear_stop_boundary();
+        result.map_err(|source| Self::event_failure(event, IdaEventPhase::ClearStopTime, source))
+    }
+
+    fn event_correction_target(&self, event_position: usize, previous_boundary_s: f64) -> f64 {
+        let event = self.active_events[event_position];
+        if let Some(next) = self.active_events.get(event_position + 1) {
+            next.time_s
+        } else {
+            let final_time_s = *self
+                .output_times_s
+                .last()
+                .expect("validated output grid is nonempty");
+            if event.time_s < final_time_s {
+                final_time_s
+            } else {
+                event.time_s + (event.time_s - previous_boundary_s)
+            }
+        }
+    }
+
+    fn capture_step_endpoint(&mut self) -> Result<(), IdaError> {
+        let result = self
+            .resources
+            ._y
+            .copy_to_slice(
+                &mut self.event_y_scratch,
+                "event endpoint y scratch",
+                NativeStage::IdaSolveStep,
+            )
+            .and_then(|()| {
+                self.resources._yp.copy_to_slice(
+                    &mut self.event_yp_scratch,
+                    "event endpoint yp scratch",
+                    NativeStage::IdaSolveStep,
+                )
+            })
+            .and_then(|()| {
+                for (field, values) in [
+                    (NativeValue::Y, self.event_y_scratch.as_slice()),
+                    (NativeValue::Yp, self.event_yp_scratch.as_slice()),
+                ] {
+                    for (component_index, value) in values.iter().copied().enumerate() {
+                        require_finite_native(
+                            value,
+                            NativeStage::IdaSolveStep,
+                            field,
+                            None,
+                            Some(component_index),
+                        )?;
+                    }
+                }
+                Ok(())
+            });
+        result
+    }
+
+    fn reinitialize_at_event(
+        &mut self,
+        event_position: usize,
+        previous_boundary_s: f64,
+    ) -> Result<CounterSnapshot, IdaError> {
+        let event = self.active_events[event_position];
+        #[cfg(all(test, feature = "sundials-ida-klu"))]
+        let sparse_work_before_reinit = if matches!(
+            self.solve_injection,
+            SolveInjection::CapSparseBudgetAtRestart
+        ) {
+            let state = unsafe { self.callback_state.as_mut().get_unchecked_mut() };
+            Some(
+                state
+                    .cap_sparse_budget_at_consumed_work()
+                    .map_err(|source| {
+                        Self::event_failure(event, IdaEventPhase::Reinitialize, source)
+                    })?,
+            )
+        } else {
+            None
+        };
+        self.resources
+            ._y
+            .copy_from_slice(
+                &self.event_y_scratch,
+                "event endpoint y restore",
+                NativeStage::IdaReInit,
+            )
+            .and_then(|()| {
+                self.resources._yp.copy_from_slice(
+                    &self.event_yp_scratch,
+                    "event endpoint yp restore",
+                    NativeStage::IdaReInit,
+                )
+            })
+            .map_err(|source| Self::event_failure(event, IdaEventPhase::Reinitialize, source))?;
+
+        record_registration(NativeStage::IdaReInit);
+        let flag = unsafe {
+            crate::ffi::IDAReInit(
+                self.resources.ida_memory_raw(),
+                event.time_s,
+                self.resources.y_raw(),
+                self.resources.yp_raw(),
+            )
+        };
+        self.require_registered_call(flag, NativeStage::IdaReInit)
+            .map_err(|source| Self::event_failure(event, IdaEventPhase::Reinitialize, source))?;
+
+        let reset = self
+            .counter_snapshot()
+            .map_err(|source| Self::event_failure(event, IdaEventPhase::Reinitialize, source))?;
+        #[cfg(test)]
+        let reset = {
+            let mut injected = reset;
+            if let SolveInjection::ReinitInternalSteps(value) = self.solve_injection {
+                injected.internal_steps = value;
+            }
+            injected
+        };
+        if let Some((statistic, value)) = reset.first_nonzero() {
+            return Err(IdaError::ReinitCounterInvariant {
+                event_index: event.index,
+                statistic,
+                value,
+            });
+        }
+
+        #[cfg(all(test, feature = "sundials-ida-klu"))]
+        if let Some(before_reinit) = sparse_work_before_reinit {
+            let before_calc_ic = self
+                .callback_state
+                .as_ref()
+                .get_ref()
+                .sparse_consumed_work()
+                .map_err(|source| {
+                    Self::event_failure(event, IdaEventPhase::Reinitialize, source)
+                })?;
+            allocation_audit::record_sparse_reinit_work(before_reinit, before_calc_ic);
+        }
+
+        let correction_target_s = self.event_correction_target(event_position, previous_boundary_s);
+        record_registration(NativeStage::IdaCalcIc);
+        let flag = unsafe {
+            crate::ffi::IDACalcIC(
+                self.resources.ida_memory_raw(),
+                IDA_YA_YDP_INIT,
+                correction_target_s,
+            )
+        };
+        self.require_registered_call(flag, NativeStage::IdaCalcIc)
+            .map_err(|source| {
+                Self::event_failure(event, IdaEventPhase::CorrectInitialConditions, source)
+            })?;
+        record_registration(NativeStage::IdaGetConsistentIc);
+        let flag = unsafe {
+            crate::ffi::IDAGetConsistentIC(
+                self.resources.ida_memory_raw(),
+                self.resources.y_raw(),
+                self.resources.yp_raw(),
+            )
+        };
+        self.require_registered_call(flag, NativeStage::IdaGetConsistentIc)
+            .map_err(|source| {
+                Self::event_failure(event, IdaEventPhase::GetConsistentInitialConditions, source)
+            })?;
+
+        self.resources
+            ._y
+            .copy_to_slice(
+                &mut self.y_scratch,
+                "event corrected y scratch",
+                NativeStage::IdaGetConsistentIc,
+            )
+            .map_err(|source| {
+                Self::event_failure(event, IdaEventPhase::GetConsistentInitialConditions, source)
+            })?;
+        self.resources
+            ._yp
+            .copy_to_slice(
+                &mut self.yp_scratch,
+                "event corrected yp scratch",
+                NativeStage::IdaGetConsistentIc,
+            )
+            .map_err(|source| {
+                Self::event_failure(event, IdaEventPhase::GetConsistentInitialConditions, source)
+            })?;
+        #[cfg(test)]
+        match self.solve_injection {
+            SolveInjection::PostIcDifferentialBit { variable_index } => {
+                self.y_scratch[variable_index] =
+                    f64::from_bits(self.y_scratch[variable_index].to_bits() + 1);
+            }
+            SolveInjection::PostIcNonFiniteY { variable_index } => {
+                self.y_scratch[variable_index] = f64::NAN;
+            }
+            SolveInjection::PostIcNonFiniteYp { variable_index } => {
+                self.yp_scratch[variable_index] = f64::INFINITY;
+            }
+            _ => {}
+        }
+        for (field, values) in [
+            (NativeValue::Y, self.y_scratch.as_slice()),
+            (NativeValue::Yp, self.yp_scratch.as_slice()),
+        ] {
+            for (component_index, value) in values.iter().copied().enumerate() {
+                require_finite_native(
+                    value,
+                    NativeStage::IdaGetConsistentIc,
+                    field,
+                    None,
+                    Some(component_index),
+                )
+                .map_err(|source| {
+                    Self::event_failure(
+                        event,
+                        IdaEventPhase::GetConsistentInitialConditions,
+                        source,
+                    )
+                })?;
+            }
+        }
+        let system = self.callback_state.as_ref().get_ref().system;
+        for (variable_index, (&id, (&before, &after))) in system
+            .id_vector()
+            .iter()
+            .zip(self.event_y_scratch.iter().zip(&self.y_scratch))
+            .enumerate()
+        {
+            if id == 1.0 && before.to_bits() != after.to_bits() {
+                return Err(IdaError::EventDifferentialDiscontinuity {
+                    event_index: event.index,
+                    event_time_s: event.time_s,
+                    variable_index,
+                    before,
+                    after,
+                });
+            }
+        }
+        Ok(reset)
+    }
+
+    fn commit_loaded_requested_row(
+        &mut self,
+        requested_index: usize,
+        y_stage: NativeStage,
+        yp_stage: NativeStage,
+    ) -> Result<(), IdaError> {
+        #[cfg(test)]
+        match self.solve_injection {
+            SolveInjection::NonFiniteY {
+                requested_index: injected,
+            } if injected == requested_index => self.y_scratch[0] = f64::NAN,
+            SolveInjection::NonFiniteYp {
+                requested_index: injected,
+            } if injected == requested_index => self.yp_scratch[0] = f64::INFINITY,
+            _ => {}
+        }
+
+        require_finite_slice(&self.y_scratch, y_stage, NativeValue::Y, requested_index)?;
+        require_finite_slice(&self.yp_scratch, yp_stage, NativeValue::Yp, requested_index)?;
+
+        let requested_time_s = self.output_times_s[requested_index];
+        let system = self.callback_state.as_ref().get_ref().system;
+        system
+            .outputs_into(&self.y_scratch, &mut self.output_scratch)
+            .map_err(|source| IdaError::ResultEvaluation {
+                requested_index,
+                requested_time_s,
+                source,
+            })?;
+        require_finite_slice(
+            &self.output_scratch,
+            y_stage,
+            NativeValue::Output,
+            requested_index,
+        )?;
+
+        let width = self.outputs.len();
+        let start = requested_index
+            .checked_mul(width)
+            .ok_or(IdaError::WorkOverflow)?;
+        let end = start.checked_add(width).ok_or(IdaError::WorkOverflow)?;
+        self.result_values[start..end].copy_from_slice(&self.output_scratch);
+        Ok(())
+    }
+
+    fn publish_event_equality_row(
+        &mut self,
+        requested_index: usize,
+        event: ActiveEvent,
+    ) -> Result<(), IdaError> {
+        self.resources
+            ._y
+            .copy_to_slice(
+                &mut self.y_scratch,
+                "event equality y scratch",
+                NativeStage::IdaGetConsistentIc,
+            )
+            .and_then(|()| {
+                self.resources._yp.copy_to_slice(
+                    &mut self.yp_scratch,
+                    "event equality yp scratch",
+                    NativeStage::IdaGetConsistentIc,
+                )
+            })
+            .and_then(|()| {
+                self.commit_loaded_requested_row(
+                    requested_index,
+                    NativeStage::IdaGetConsistentIc,
+                    NativeStage::IdaGetConsistentIc,
+                )
+            })
+            .map_err(|source| {
+                Self::event_failure(event, IdaEventPhase::PublishEqualityOutput, source)
+            })
+    }
+
+    fn publish_step_endpoint_row(&mut self, requested_index: usize) -> Result<(), IdaError> {
+        self.y_scratch.copy_from_slice(&self.event_y_scratch);
+        self.yp_scratch.copy_from_slice(&self.event_yp_scratch);
+        self.commit_loaded_requested_row(
+            requested_index,
+            NativeStage::IdaSolveStep,
+            NativeStage::IdaSolveStep,
+        )
+    }
+
     fn interpolate_requested_row(
         &mut self,
         requested_index: usize,
@@ -1447,6 +2052,7 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
         // Enforce both logical bounds before either IDAGetDky call.
         require_interpolation_bounds(requested_time_s, previous_time_s, current_time_s)?;
 
+        record_registration(NativeStage::IdaGetDkyY);
         let flag = unsafe {
             crate::ffi::IDAGetDky(
                 self.resources.ida_memory_raw(),
@@ -1456,6 +2062,7 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
             )
         };
         self.require_registered_call(flag, NativeStage::IdaGetDkyY)?;
+        record_registration(NativeStage::IdaGetDkyYp);
         let flag = unsafe {
             crate::ffi::IDAGetDky(
                 self.resources.ida_memory_raw(),
@@ -1477,68 +2084,28 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
             NativeStage::IdaGetDkyYp,
         )?;
 
-        #[cfg(test)]
-        match self.solve_injection {
-            SolveInjection::NonFiniteY {
-                requested_index: injected,
-            } if injected == requested_index => self.y_scratch[0] = f64::NAN,
-            SolveInjection::NonFiniteYp {
-                requested_index: injected,
-            } if injected == requested_index => self.yp_scratch[0] = f64::INFINITY,
-            _ => {}
-        }
-
-        require_finite_slice(
-            &self.y_scratch,
-            NativeStage::IdaGetDkyY,
-            NativeValue::Y,
+        self.commit_loaded_requested_row(
             requested_index,
-        )?;
-        require_finite_slice(
-            &self.yp_scratch,
+            NativeStage::IdaGetDkyY,
             NativeStage::IdaGetDkyYp,
-            NativeValue::Yp,
-            requested_index,
-        )?;
-
-        let system = self.callback_state.as_ref().get_ref().system;
-        system
-            .outputs_into(&self.y_scratch, &mut self.output_scratch)
-            .map_err(|source| IdaError::ResultEvaluation {
-                requested_index,
-                requested_time_s,
-                source,
-            })?;
-        require_finite_slice(
-            &self.output_scratch,
-            NativeStage::IdaGetDkyY,
-            NativeValue::Output,
-            requested_index,
-        )?;
-
-        let width = self.outputs.len();
-        let start = requested_index
-            .checked_mul(width)
-            .ok_or(IdaError::WorkOverflow)?;
-        let end = start.checked_add(width).ok_or(IdaError::WorkOverflow)?;
-        self.result_values[start..end].copy_from_slice(&self.output_scratch);
-        Ok(())
+        )
     }
 
     /// Consume this initialized session and execute its validated requested
     /// output grid exactly once. IDA advances only through `IDA_ONE_STEP`;
     /// internal step endpoints are never exposed as result rows.
     pub fn solve_requested_grid(mut self) -> Result<IdaSolveResult, IdaError> {
-        let baseline = self.counter_snapshot()?;
-        if baseline.internal_steps != 0 {
+        let mut segment_baseline = self.counter_snapshot()?;
+        if segment_baseline.internal_steps != 0 {
             return Err(IdaError::StepCounterInvariant {
                 before: 0,
-                after: baseline.internal_steps,
+                after: segment_baseline.internal_steps,
                 maximum: self.configured_max_steps,
             });
         }
 
-        let mut completed_steps = baseline.internal_steps;
+        let mut segment_steps = segment_baseline.internal_steps;
+        let mut total_steps = 0u64;
         let mut previous_time_s = self.read_real(
             crate::ffi::IDAGetCurrentTime,
             NativeStage::IdaGetCurrentTime,
@@ -1560,49 +2127,111 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
         let mut maximum_order_used = 0u8;
         let mut one_step_calls = 0u64;
         let mut output_rows_at_step_limit = 0u64;
+        let mut interpolated_output_rows = 0u64;
+        let mut step_endpoint_output_rows = 0u64;
+        let mut event_equality_output_rows = 0u64;
+        let mut endpoint_state_captures = 0u64;
+        let mut event_restarts = 0u64;
+        let mut event_position = 0usize;
+        let mut segment_boundary_s = self.initial_time_s;
+        let mut stop_is_set = false;
+        let mut accumulated = CounterDelta::default();
+        let mut last_order_evidence = None;
+        let mut current_order_evidence = None;
+        let mut actual_initial_step_evidence = None;
+        let mut last_step_evidence = None;
+        let mut current_step_evidence = None;
+        let mut finalize_event_context = None;
 
         while requested_index < self.output_times_s.len() {
-            let queried_steps = self.read_counter(
-                crate::ffi::IDAGetNumSteps,
-                NativeStage::IdaGetNumSteps,
-                NativeStatistic::InternalSteps,
-            )?;
-            if queried_steps != completed_steps || queried_steps > self.configured_max_steps {
-                return Err(IdaError::StepCounterInvariant {
-                    before: completed_steps,
-                    after: queried_steps,
-                    maximum: self.configured_max_steps,
-                });
+            let active_event = self.active_events.get(event_position).copied();
+            let terminal_stop_required =
+                matches!(self.configured_event_policy, IdaEventPolicy::Restart { .. });
+            macro_rules! left_segment {
+                ($result:expr) => {
+                    Self::with_event_context(active_event, IdaEventPhase::SolveLeftSegment, $result)
+                };
             }
-            let queried_time_s = self.read_real(
-                crate::ffi::IDAGetCurrentTime,
-                NativeStage::IdaGetCurrentTime,
-                NativeValue::CurrentTime,
-            )?;
-            if queried_time_s != previous_time_s {
-                return Err(IdaError::UnexpectedNativeTime {
-                    stage: NativeStage::IdaGetCurrentTime,
-                    expected: previous_time_s,
-                    actual: queried_time_s,
-                });
+            if !stop_is_set {
+                match active_event {
+                    Some(event) => {
+                        self.set_event_stop(event)?;
+                        stop_is_set = true;
+                    }
+                    None if terminal_stop_required => {
+                        self.set_terminal_stop(final_requested_time_s)?;
+                        stop_is_set = true;
+                    }
+                    None => {}
+                }
             }
 
-            if completed_steps == self.configured_max_steps {
-                return Err(IdaError::GlobalStepLimit {
-                    maximum: self.configured_max_steps,
-                    consumed: completed_steps,
-                    requested_time_s: self.output_times_s[requested_index],
-                    current_internal_time_s: previous_time_s,
-                    native_flag: None,
-                });
+            let queried_steps = Self::with_event_context(
+                active_event,
+                IdaEventPhase::SolveLeftSegment,
+                self.read_counter(
+                    crate::ffi::IDAGetNumSteps,
+                    NativeStage::IdaGetNumSteps,
+                    NativeStatistic::InternalSteps,
+                ),
+            )?;
+            if queried_steps != segment_steps || total_steps > self.configured_max_steps {
+                return Self::with_event_context(
+                    active_event,
+                    IdaEventPhase::SolveLeftSegment,
+                    Err(IdaError::StepCounterInvariant {
+                        before: segment_steps,
+                        after: queried_steps,
+                        maximum: self.configured_max_steps,
+                    }),
+                );
             }
-            let remaining = self.configured_max_steps - completed_steps;
-            let remaining = c_long::try_from(remaining).map_err(|_| IdaError::WorkOverflow)?;
+            let queried_time_s = Self::with_event_context(
+                active_event,
+                IdaEventPhase::SolveLeftSegment,
+                self.read_real(
+                    crate::ffi::IDAGetCurrentTime,
+                    NativeStage::IdaGetCurrentTime,
+                    NativeValue::CurrentTime,
+                ),
+            )?;
+            if queried_time_s != previous_time_s {
+                return Self::with_event_context(
+                    active_event,
+                    IdaEventPhase::SolveLeftSegment,
+                    Err(IdaError::UnexpectedNativeTime {
+                        stage: NativeStage::IdaGetCurrentTime,
+                        expected: previous_time_s,
+                        actual: queried_time_s,
+                    }),
+                );
+            }
+
+            if total_steps == self.configured_max_steps {
+                return Self::with_event_context(
+                    active_event,
+                    IdaEventPhase::SolveLeftSegment,
+                    Err(IdaError::GlobalStepLimit {
+                        maximum: self.configured_max_steps,
+                        consumed: total_steps,
+                        requested_time_s: self.output_times_s[requested_index],
+                        current_internal_time_s: previous_time_s,
+                        native_flag: None,
+                    }),
+                );
+            }
+            let remaining = self.configured_max_steps - total_steps;
+            let remaining =
+                left_segment!(c_long::try_from(remaining).map_err(|_| IdaError::WorkOverflow))?;
             record_registration(NativeStage::IdaSetMaxNumSteps);
             let flag = unsafe {
                 crate::ffi::IDASetMaxNumSteps(self.resources.ida_memory_raw(), remaining)
             };
-            self.require_registered_call(flag, NativeStage::IdaSetMaxNumSteps)?;
+            Self::with_event_context(
+                active_event,
+                IdaEventPhase::SolveLeftSegment,
+                self.require_registered_call(flag, NativeStage::IdaSetMaxNumSteps),
+            )?;
 
             let mut returned_time_s = f64::NAN;
             #[cfg(test)]
@@ -1618,7 +2247,9 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
                 unsafe {
                     crate::ffi::IDASolve(
                         self.resources.ida_memory_raw(),
-                        final_requested_time_s,
+                        active_event
+                            .map(|event| event.time_s)
+                            .unwrap_or(final_requested_time_s),
                         &mut returned_time_s,
                         self.resources.y_raw(),
                         self.resources.yp_raw(),
@@ -1627,155 +2258,356 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
                 }
             };
             if let Some(error) = self.first_callback_error() {
-                return Err(error);
+                return Err(match active_event {
+                    Some(event) => {
+                        Self::event_failure(event, IdaEventPhase::SolveLeftSegment, error)
+                    }
+                    None => error,
+                });
             }
-            if flag != IDA_SUCCESS {
+            let governed_stop_time_s = active_event
+                .map(|event| event.time_s)
+                .or(terminal_stop_required.then_some(final_requested_time_s));
+            let accepted_flag =
+                flag == IDA_SUCCESS || governed_stop_time_s.is_some() && flag == IDA_TSTOP_RETURN;
+            if !accepted_flag {
                 if flag == IDA_TOO_MUCH_WORK {
-                    let consumed = self.read_counter(
-                        crate::ffi::IDAGetNumSteps,
-                        NativeStage::IdaGetNumSteps,
-                        NativeStatistic::InternalSteps,
-                    )?;
-                    let current_internal_time_s = self.read_real(
+                    let current_snapshot = left_segment!(self.counter_snapshot())?;
+                    let current_delta =
+                        left_segment!(current_snapshot.checked_delta(segment_baseline))?;
+                    let consumed =
+                        left_segment!(accumulated.checked_add(current_delta))?.internal_steps;
+                    let current_internal_time_s = left_segment!(self.read_real(
                         crate::ffi::IDAGetCurrentTime,
                         NativeStage::IdaGetCurrentTime,
                         NativeValue::CurrentTime,
-                    )?;
-                    return Err(IdaError::GlobalStepLimit {
+                    ))?;
+                    let error = IdaError::GlobalStepLimit {
                         maximum: self.configured_max_steps,
                         consumed,
                         requested_time_s: self.output_times_s[requested_index],
                         current_internal_time_s,
                         native_flag: Some(flag),
+                    };
+                    return Err(match active_event {
+                        Some(event) => {
+                            Self::event_failure(event, IdaEventPhase::SolveLeftSegment, error)
+                        }
+                        None => error,
                     });
                 }
-                return Err(self.native_solve_failure(NativeStage::IdaSolveStep, flag));
+                let error = self.native_solve_failure(NativeStage::IdaSolveStep, flag);
+                return Err(match active_event {
+                    Some(event) => {
+                        Self::event_failure(event, IdaEventPhase::SolveLeftSegment, error)
+                    }
+                    None => error,
+                });
             }
-            one_step_calls = one_step_calls
-                .checked_add(1)
-                .ok_or(IdaError::WorkOverflow)?;
+            one_step_calls =
+                left_segment!(one_step_calls.checked_add(1).ok_or(IdaError::WorkOverflow))?;
+            total_steps = left_segment!(total_steps.checked_add(1).ok_or(IdaError::WorkOverflow))?;
 
-            require_finite_native(
+            left_segment!(require_finite_native(
                 returned_time_s,
                 NativeStage::IdaSolveStep,
                 NativeValue::ReturnedTime,
                 None,
                 None,
-            )?;
-            let steps_after = self.read_counter(
+            ))?;
+            let steps_after = left_segment!(self.read_counter(
                 crate::ffi::IDAGetNumSteps,
                 NativeStage::IdaGetNumSteps,
                 NativeStatistic::InternalSteps,
-            )?;
-            let current_time_s = self.read_real(
+            ))?;
+            let current_time_s = left_segment!(self.read_real(
                 crate::ffi::IDAGetCurrentTime,
                 NativeStage::IdaGetCurrentTime,
                 NativeValue::CurrentTime,
-            )?;
-            if returned_time_s.to_bits() != current_time_s.to_bits() {
-                return Err(IdaError::UnexpectedNativeTime {
+            ))?;
+            if returned_time_s != current_time_s {
+                return left_segment!(Err(IdaError::UnexpectedNativeTime {
                     stage: NativeStage::IdaSolveStep,
                     expected: current_time_s,
                     actual: returned_time_s,
-                });
+                }));
             }
-            let last_step_s = self.read_real(
+            let last_step_s = left_segment!(self.read_real(
                 crate::ffi::IDAGetLastStep,
                 NativeStage::IdaGetLastStep,
                 NativeValue::LastStep,
-            )?;
-            let last_order = self.read_order(
+            ))?;
+            let last_order = left_segment!(self.read_order(
                 crate::ffi::IDAGetLastOrder,
                 NativeStage::IdaGetLastOrder,
                 NativeStatistic::LastOrder,
-            )?;
+            ))?;
+            let current_order = left_segment!(self.read_order(
+                crate::ffi::IDAGetCurrentOrder,
+                NativeStage::IdaGetCurrentOrder,
+                NativeStatistic::CurrentOrder,
+            ))?;
+            let actual_initial_step_s = left_segment!(self.read_real(
+                crate::ffi::IDAGetActualInitStep,
+                NativeStage::IdaGetActualInitStep,
+                NativeValue::ActualInitialStep,
+            ))?;
+            let current_step_s = left_segment!(self.read_real(
+                crate::ffi::IDAGetCurrentStep,
+                NativeStage::IdaGetCurrentStep,
+                NativeValue::CurrentStep,
+            ))?;
             maximum_order_used = maximum_order_used.max(last_order);
+            last_order_evidence = Some(last_order);
+            current_order_evidence = Some(current_order);
+            actual_initial_step_evidence.get_or_insert(actual_initial_step_s);
+            last_step_evidence = Some(last_step_s);
+            current_step_evidence = Some(current_step_s);
 
             let computed_interval_start_s = current_time_s - last_step_s;
-            require_finite_native(
+            left_segment!(require_finite_native(
                 computed_interval_start_s,
                 NativeStage::IdaGetLastStep,
                 NativeValue::InterpolationIntervalStart,
                 None,
                 None,
-            )?;
+            ))?;
             let interval_tolerance = INTERVAL_ROUNDOFF_MULTIPLIER
                 * f64::EPSILON
                 * (1.0 + previous_time_s.abs() + current_time_s.abs());
-            if steps_after != completed_steps + 1
-                || steps_after > self.configured_max_steps
+            if steps_after != segment_steps + 1
+                || total_steps > self.configured_max_steps
                 || current_time_s <= previous_time_s
                 || last_step_s <= 0.0
+                || actual_initial_step_s <= 0.0
+                || current_step_s <= 0.0
                 || (computed_interval_start_s - previous_time_s).abs() > interval_tolerance
             {
-                return Err(IdaError::InvalidNativeProgress {
-                    steps_before: completed_steps,
+                return left_segment!(Err(IdaError::InvalidNativeProgress {
+                    steps_before: segment_steps,
                     steps_after,
                     previous_time_s,
                     current_time_s,
                     last_step_s,
                     computed_interval_start_s,
-                });
+                }));
+            }
+            // One accepted integration step after a restart makes the saved
+            // terminal-event context obsolete. A newly reached event installs
+            // its own context only after ReInit/CalcIC below.
+            finalize_event_context = None;
+
+            if let Some(governed_stop_time_s) = governed_stop_time_s {
+                if flag == IDA_TSTOP_RETURN {
+                    if current_time_s != governed_stop_time_s
+                        || returned_time_s != governed_stop_time_s
+                    {
+                        let error = IdaError::UnexpectedNativeTime {
+                            stage: NativeStage::IdaSolveStep,
+                            expected: governed_stop_time_s,
+                            actual: current_time_s,
+                        };
+                        return Err(match active_event {
+                            Some(event) => {
+                                Self::event_failure(event, IdaEventPhase::SolveLeftSegment, error)
+                            }
+                            None => error,
+                        });
+                    }
+                } else if current_time_s >= governed_stop_time_s {
+                    let error = IdaError::NativeCall {
+                        stage: NativeStage::IdaSolveStep,
+                        flag,
+                    };
+                    return Err(match active_event {
+                        Some(event) => {
+                            Self::event_failure(event, IdaEventPhase::SolveLeftSegment, error)
+                        }
+                        None => error,
+                    });
+                }
             }
 
-            while requested_index < self.output_times_s.len()
-                && self.output_times_s[requested_index] <= current_time_s
+            #[cfg(test)]
+            if flag == IDA_TSTOP_RETURN {
+                let injection = match self.solve_injection {
+                    SolveInjection::TstopNonFiniteY { variable_index } => {
+                        Some((self.resources.y_raw(), variable_index, f64::NAN))
+                    }
+                    SolveInjection::TstopNonFiniteYp { variable_index } => {
+                        Some((self.resources.yp_raw(), variable_index, f64::INFINITY))
+                    }
+                    _ => None,
+                };
+                if let Some((vector, variable_index, value)) = injection {
+                    let data = unsafe { crate::ffi::N_VGetArrayPointer(vector) };
+                    if !data.is_null() {
+                        unsafe { *data.add(variable_index) = value };
+                    }
+                }
+            }
+
+            let mut drain_end = requested_index;
+            while drain_end < self.output_times_s.len()
+                && self.output_times_s[drain_end] <= current_time_s
+                && active_event.map_or(true, |event| self.output_times_s[drain_end] < event.time_s)
             {
-                self.interpolate_requested_row(requested_index, previous_time_s, current_time_s)?;
-                if steps_after == self.configured_max_steps {
-                    output_rows_at_step_limit = output_rows_at_step_limit
+                drain_end += 1;
+            }
+            let has_step_endpoint_row =
+                drain_end > requested_index && self.output_times_s[drain_end - 1] == current_time_s;
+            if flag == IDA_TSTOP_RETURN || has_step_endpoint_row {
+                left_segment!(self.capture_step_endpoint())?;
+                endpoint_state_captures = left_segment!(endpoint_state_captures
+                    .checked_add(1)
+                    .ok_or(IdaError::WorkOverflow))?;
+            }
+
+            while requested_index < drain_end {
+                if self.output_times_s[requested_index] == current_time_s {
+                    left_segment!(self.publish_step_endpoint_row(requested_index))?;
+                    step_endpoint_output_rows = left_segment!(step_endpoint_output_rows
                         .checked_add(1)
-                        .ok_or(IdaError::WorkOverflow)?;
+                        .ok_or(IdaError::WorkOverflow))?;
+                } else {
+                    left_segment!(self.interpolate_requested_row(
+                        requested_index,
+                        previous_time_s,
+                        current_time_s,
+                    ))?;
+                    interpolated_output_rows = left_segment!(interpolated_output_rows
+                        .checked_add(1)
+                        .ok_or(IdaError::WorkOverflow))?;
+                }
+                if total_steps == self.configured_max_steps {
+                    output_rows_at_step_limit = left_segment!(output_rows_at_step_limit
+                        .checked_add(1)
+                        .ok_or(IdaError::WorkOverflow))?;
                 }
                 requested_index += 1;
             }
 
-            completed_steps = steps_after;
+            segment_steps = steps_after;
             previous_time_s = current_time_s;
+
+            if let Some(event) = active_event {
+                if flag == IDA_TSTOP_RETURN {
+                    let segment_final = self.counter_snapshot().map_err(|source| {
+                        Self::event_failure(event, IdaEventPhase::SolveLeftSegment, source)
+                    })?;
+                    let segment_delta =
+                        segment_final
+                            .checked_delta(segment_baseline)
+                            .map_err(|source| {
+                                Self::event_failure(event, IdaEventPhase::SolveLeftSegment, source)
+                            })?;
+                    accumulated = left_segment!(accumulated.checked_add(segment_delta))?;
+                    if accumulated.internal_steps != total_steps {
+                        return left_segment!(Err(IdaError::StepCounterInvariant {
+                            before: total_steps,
+                            after: accumulated.internal_steps,
+                            maximum: self.configured_max_steps,
+                        }));
+                    }
+
+                    self.clear_event_stop(event)?;
+                    stop_is_set = false;
+                    segment_baseline =
+                        self.reinitialize_at_event(event_position, segment_boundary_s)?;
+                    finalize_event_context = Some(event);
+                    segment_steps = 0;
+                    previous_time_s = event.time_s;
+                    event_restarts = event_restarts
+                        .checked_add(1)
+                        .ok_or(IdaError::WorkOverflow)?;
+
+                    if requested_index < self.output_times_s.len()
+                        && self.output_times_s[requested_index] == event.time_s
+                    {
+                        self.publish_event_equality_row(requested_index, event)?;
+                        if total_steps == self.configured_max_steps {
+                            output_rows_at_step_limit = output_rows_at_step_limit
+                                .checked_add(1)
+                                .ok_or(IdaError::WorkOverflow)?;
+                        }
+                        event_equality_output_rows = event_equality_output_rows
+                            .checked_add(1)
+                            .ok_or(IdaError::WorkOverflow)?;
+                        requested_index += 1;
+                    }
+                    segment_boundary_s = event.time_s;
+                    event_position += 1;
+                    continue;
+                }
+            }
         }
 
-        let final_snapshot = self.counter_snapshot()?;
-        let delta = final_snapshot.checked_delta(baseline)?;
-        if delta.internal_steps != one_step_calls
-            || final_snapshot.internal_steps > self.configured_max_steps
-        {
-            return Err(IdaError::StepCounterInvariant {
-                before: one_step_calls,
-                after: delta.internal_steps,
-                maximum: self.configured_max_steps,
-            });
+        macro_rules! finalize_evidence {
+            ($result:expr) => {
+                Self::with_event_context(
+                    finalize_event_context,
+                    IdaEventPhase::FinalizeEvidence,
+                    $result,
+                )
+            };
         }
-        let last_order = self.read_order(
-            crate::ffi::IDAGetLastOrder,
-            NativeStage::IdaGetLastOrder,
-            NativeStatistic::LastOrder,
-        )?;
-        let current_order = self.read_order(
-            crate::ffi::IDAGetCurrentOrder,
-            NativeStage::IdaGetCurrentOrder,
-            NativeStatistic::CurrentOrder,
-        )?;
-        let actual_initial_step_s = self.read_real(
-            crate::ffi::IDAGetActualInitStep,
-            NativeStage::IdaGetActualInitStep,
-            NativeValue::ActualInitialStep,
-        )?;
-        let last_step_s = self.read_real(
-            crate::ffi::IDAGetLastStep,
-            NativeStage::IdaGetLastStep,
-            NativeValue::LastStep,
-        )?;
-        let current_step_s = self.read_real(
-            crate::ffi::IDAGetCurrentStep,
-            NativeStage::IdaGetCurrentStep,
-            NativeValue::CurrentStep,
-        )?;
-        let current_internal_time_s = self.read_real(
+        let final_snapshot = finalize_evidence!(self.counter_snapshot())?;
+        let final_segment_delta =
+            finalize_evidence!(final_snapshot.checked_delta(segment_baseline))?;
+        accumulated = finalize_evidence!(accumulated.checked_add(final_segment_delta))?;
+        if accumulated.internal_steps != one_step_calls
+            || accumulated.internal_steps > self.configured_max_steps
+        {
+            return finalize_evidence!(Err(IdaError::StepCounterInvariant {
+                before: one_step_calls,
+                after: accumulated.internal_steps,
+                maximum: self.configured_max_steps,
+            }));
+        }
+        let last_order =
+            finalize_evidence!(last_order_evidence.ok_or(IdaError::InvalidNativeStatistic {
+                stage: NativeStage::IdaGetLastOrder,
+                statistic: NativeStatistic::LastOrder,
+                value: 0,
+            }))?;
+        let current_order = finalize_evidence!(current_order_evidence.ok_or(
+            IdaError::InvalidNativeStatistic {
+                stage: NativeStage::IdaGetCurrentOrder,
+                statistic: NativeStatistic::CurrentOrder,
+                value: 0,
+            }
+        ))?;
+        let actual_initial_step_s = finalize_evidence!(actual_initial_step_evidence.ok_or(
+            IdaError::InvalidNativeValue {
+                stage: NativeStage::IdaGetActualInitStep,
+                field: NativeValue::ActualInitialStep,
+                requested_index: None,
+                component_index: None,
+                value: 0.0,
+            }
+        ))?;
+        let last_step_s =
+            finalize_evidence!(last_step_evidence.ok_or(IdaError::InvalidNativeValue {
+                stage: NativeStage::IdaGetLastStep,
+                field: NativeValue::LastStep,
+                requested_index: None,
+                component_index: None,
+                value: 0.0,
+            }))?;
+        let current_step_s =
+            finalize_evidence!(current_step_evidence.ok_or(IdaError::InvalidNativeValue {
+                stage: NativeStage::IdaGetCurrentStep,
+                field: NativeValue::CurrentStep,
+                requested_index: None,
+                component_index: None,
+                value: 0.0,
+            }))?;
+        let current_internal_time_s = finalize_evidence!(self.read_real(
             crate::ffi::IDAGetCurrentTime,
             NativeStage::IdaGetCurrentTime,
             NativeValue::CurrentTime,
-        )?;
-        let last_linear_solver_flag = self.read_last_linear_solver_flag()?;
+        ))?;
+        let last_linear_solver_flag = finalize_evidence!(self.read_last_linear_solver_flag())?;
         for (stage, field, value) in [
             (
                 NativeStage::IdaGetActualInitStep,
@@ -1794,21 +2626,46 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
             ),
         ] {
             if value <= 0.0 {
-                return Err(IdaError::InvalidNativeValue {
+                return finalize_evidence!(Err(IdaError::InvalidNativeValue {
                     stage,
                     field,
                     requested_index: None,
                     component_index: None,
                     value,
-                });
+                }));
             }
         }
         if current_internal_time_s != previous_time_s {
-            return Err(IdaError::UnexpectedNativeTime {
+            return finalize_evidence!(Err(IdaError::UnexpectedNativeTime {
                 stage: NativeStage::IdaGetCurrentTime,
                 expected: previous_time_s,
                 actual: current_internal_time_s,
-            });
+            }));
+        }
+
+        let accounted_output_rows = finalize_evidence!(interpolated_output_rows
+            .checked_add(step_endpoint_output_rows)
+            .and_then(|value| value.checked_add(event_equality_output_rows))
+            .ok_or(IdaError::WorkOverflow))?;
+        let requested_rows =
+            finalize_evidence!(u64::try_from(requested_index).map_err(|_| IdaError::WorkOverflow))?;
+        if accounted_output_rows != requested_rows {
+            return finalize_evidence!(Err(IdaError::OutputRowCounterInvariant {
+                requested: requested_index,
+                interpolated: interpolated_output_rows,
+                step_endpoint: step_endpoint_output_rows,
+                event_equality: event_equality_output_rows,
+            }));
+        }
+        let expected_endpoint_captures = finalize_evidence!(event_restarts
+            .checked_add(step_endpoint_output_rows)
+            .ok_or(IdaError::WorkOverflow))?;
+        if endpoint_state_captures != expected_endpoint_captures {
+            return finalize_evidence!(Err(IdaError::EndpointCaptureInvariant {
+                captures: endpoint_state_captures,
+                event_restarts,
+                step_endpoint_rows: step_endpoint_output_rows,
+            }));
         }
 
         let output_times_s = std::mem::take(&mut self.output_times_s);
@@ -1826,20 +2683,21 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
             residual_contract,
             configured_max_order: self.configured_max_order,
             configured_max_steps: self.configured_max_steps,
+            configured_event_policy: self.configured_event_policy,
             output_times_s,
             outputs,
             values_time_major,
             stats: IdaSolverStats {
-                internal_steps: delta.internal_steps,
-                residual_evaluations: delta.residual_evaluations,
-                linear_solver_setups: delta.linear_solver_setups,
-                error_test_failures: delta.error_test_failures,
-                nonlinear_iterations: delta.nonlinear_iterations,
-                nonlinear_convergence_failures: delta.nonlinear_convergence_failures,
-                jacobian_evaluations: delta.jacobian_evaluations,
-                linear_residual_evaluations: delta.linear_residual_evaluations,
-                linear_iterations: delta.linear_iterations,
-                linear_convergence_failures: delta.linear_convergence_failures,
+                internal_steps: accumulated.internal_steps,
+                residual_evaluations: accumulated.residual_evaluations,
+                linear_solver_setups: accumulated.linear_solver_setups,
+                error_test_failures: accumulated.error_test_failures,
+                nonlinear_iterations: accumulated.nonlinear_iterations,
+                nonlinear_convergence_failures: accumulated.nonlinear_convergence_failures,
+                jacobian_evaluations: accumulated.jacobian_evaluations,
+                linear_residual_evaluations: accumulated.linear_residual_evaluations,
+                linear_iterations: accumulated.linear_iterations,
+                linear_convergence_failures: accumulated.linear_convergence_failures,
                 last_order,
                 current_order,
                 maximum_order_used,
@@ -1848,9 +2706,12 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
                 current_step_s,
                 current_internal_time_s,
                 one_step_calls,
-                interpolated_output_rows: u64::try_from(requested_index)
-                    .map_err(|_| IdaError::WorkOverflow)?,
+                interpolated_output_rows,
+                step_endpoint_output_rows,
                 output_rows_at_step_limit,
+                event_restarts,
+                event_equality_output_rows,
+                endpoint_state_captures,
                 last_linear_solver_flag,
             },
         })
@@ -1916,7 +2777,48 @@ impl<'context, 'system, 'graph> IdaSession<'context, 'system, 'graph> {
         self.solve_injection = SolveInjection::NativeFlag(flag);
     }
 
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn inject_post_ic_differential_bit(&mut self, variable_index: usize) {
+        self.solve_injection = SolveInjection::PostIcDifferentialBit { variable_index };
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn inject_post_ic_nonfinite_y(&mut self, variable_index: usize) {
+        self.solve_injection = SolveInjection::PostIcNonFiniteY { variable_index };
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn inject_post_ic_nonfinite_yp(&mut self, variable_index: usize) {
+        self.solve_injection = SolveInjection::PostIcNonFiniteYp { variable_index };
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn inject_tstop_nonfinite_y(&mut self, variable_index: usize) {
+        self.solve_injection = SolveInjection::TstopNonFiniteY { variable_index };
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn inject_tstop_nonfinite_yp(&mut self, variable_index: usize) {
+        self.solve_injection = SolveInjection::TstopNonFiniteYp { variable_index };
+    }
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    fn inject_reinit_internal_steps(&mut self, value: u64) {
+        self.solve_injection = SolveInjection::ReinitInternalSteps(value);
+    }
+
     #[cfg(all(test, feature = "sundials-ida-klu"))]
+    fn inject_cap_sparse_budget_at_restart(&mut self) {
+        self.solve_injection = SolveInjection::CapSparseBudgetAtRestart;
+    }
+
+    #[cfg(test)]
     fn inject_last_linear_flag_getter(&mut self, getter_flag: c_int, value: c_long) {
         self.last_linear_flag_injection = Some((getter_flag, value));
     }
@@ -1989,6 +2891,10 @@ fn initialize_session_common<'context, 'system, 'graph>(
     _panic_callback: Option<CallbackKind>,
 ) -> Result<IdaSession<'context, 'system, 'graph>, IdaError> {
     let output_times_s = try_clone_f64(settings_view.output_times_s, "requested output times")?;
+    let final_time_s = *output_times_s
+        .last()
+        .expect("validated output grid is nonempty");
+    let active_events = try_active_events(system, settings_view.initial_time_s, final_time_s)?;
     let outputs = try_clone_outputs(system.outputs())?;
     let result_length = output_times_s
         .len()
@@ -1997,6 +2903,8 @@ fn initialize_session_common<'context, 'system, 'graph>(
     let result_values = try_zeroed_f64(result_length, "result values")?;
     let y_scratch = try_zeroed_f64(system.variables().len(), "result y scratch")?;
     let yp_scratch = try_zeroed_f64(system.variables().len(), "result yp scratch")?;
+    let event_y_scratch = try_zeroed_f64(system.variables().len(), "event y scratch")?;
+    let event_yp_scratch = try_zeroed_f64(system.variables().len(), "event yp scratch")?;
     let output_scratch = try_zeroed_f64(outputs.len(), "result output scratch")?;
 
     let (initial_y, initial_yp) = match settings_view.initial_conditions {
@@ -2071,6 +2979,7 @@ fn initialize_session_common<'context, 'system, 'graph>(
         corrected_initial_conditions: false,
         configured_max_order: settings_view.max_order,
         configured_max_steps: settings_view.max_steps,
+        configured_event_policy: settings_view.event_policy,
         result_contract: match backend {
             SessionBackend::Dense => NATIVE_IDA_RESULT_CONTRACT,
             #[cfg(feature = "sundials-ida-klu")]
@@ -2086,7 +2995,10 @@ fn initialize_session_common<'context, 'system, 'graph>(
         result_values,
         y_scratch,
         yp_scratch,
+        event_y_scratch,
+        event_yp_scratch,
         output_scratch,
+        active_events,
         #[cfg(test)]
         solve_injection: SolveInjection::None,
         #[cfg(test)]
@@ -2158,6 +3070,7 @@ pub(crate) unsafe extern "C" fn residual_callback(
     user_data: *mut c_void,
 ) -> c_int {
     invoke_callback(user_data, CallbackKind::Residual, |state| {
+        let selected_event = state.selected_event_at(time, CallbackKind::Residual)?;
         let dimension = state.system.variables().len();
         // Validate every raw view and all mutable alias boundaries before
         // constructing any Rust references.
@@ -2196,13 +3109,18 @@ pub(crate) unsafe extern "C" fn residual_callback(
         let y = unsafe { slice::from_raw_parts(y_data, dimension) };
         let yp = unsafe { slice::from_raw_parts(yp_data, dimension) };
         let residual = unsafe { slice::from_raw_parts_mut(residual_data, dimension) };
-        state
-            .system
-            .residual_into(time, y, yp, residual)
-            .map_err(|source| IdaError::Callback {
-                callback: CallbackKind::Residual,
-                source,
-            })
+        let result = match selected_event {
+            Some(event_index) => {
+                state
+                    .system
+                    .residual_event_left_limit_into(event_index, y, yp, residual)
+            }
+            _ => state.system.residual_into(time, y, yp, residual),
+        };
+        result.map_err(|source| IdaError::Callback {
+            callback: CallbackKind::Residual,
+            source,
+        })
     })
 }
 
@@ -2220,6 +3138,7 @@ pub(crate) unsafe extern "C" fn jacobian_callback(
     _temporary_3: crate::ffi::NVector,
 ) -> c_int {
     invoke_callback(user_data, CallbackKind::Jacobian, |state| {
+        state.selected_event_at(time, CallbackKind::Jacobian)?;
         let dimension = state.system.variables().len();
         let y_data =
             unsafe { checked_vector_data(y, dimension, CallbackKind::Jacobian, NativeView::Y)? };
@@ -2295,6 +3214,7 @@ pub(crate) unsafe extern "C" fn sparse_jacobian_callback(
     _temporary_3: crate::ffi::NVector,
 ) -> c_int {
     invoke_callback(user_data, CallbackKind::Jacobian, |state| {
+        state.selected_event_at(time, CallbackKind::Jacobian)?;
         let dimension = state.system.variables().len();
         let nonzeros = state.system.csc_pattern().nonzero_count();
         // Validate every shape, pointer, byte range, and alias boundary before
@@ -2722,7 +3642,7 @@ fn require_interpolation_bounds(
     previous_time_s: f64,
     current_time_s: f64,
 ) -> Result<(), IdaError> {
-    if requested_time_s <= previous_time_s || requested_time_s > current_time_s {
+    if requested_time_s <= previous_time_s || requested_time_s >= current_time_s {
         Err(IdaError::InterpolationIntervalMiss {
             requested_time_s,
             interval_start_s: previous_time_s,
@@ -2786,6 +3706,18 @@ mod allocation_audit {
     static IDA_MEMORIES_FREED: AtomicUsize = AtomicUsize::new(0);
     static CALLBACK_STATES_ALLOCATED: AtomicUsize = AtomicUsize::new(0);
     static CALLBACK_STATES_FREED: AtomicUsize = AtomicUsize::new(0);
+    #[cfg(feature = "sundials-ida-klu")]
+    static SPARSE_EVALUATIONS_BEFORE_REINIT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    #[cfg(feature = "sundials-ida-klu")]
+    static SPARSE_ENTRY_WORK_BEFORE_REINIT: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    #[cfg(feature = "sundials-ida-klu")]
+    static SPARSE_EVALUATIONS_BEFORE_CALC_IC: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
+    #[cfg(feature = "sundials-ida-klu")]
+    static SPARSE_ENTRY_WORK_BEFORE_CALC_IC: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(0);
     static DROP_EVENTS: std::sync::Mutex<Vec<ResourceKind>> = std::sync::Mutex::new(Vec::new());
     static REGISTRATION_EVENTS: std::sync::Mutex<Vec<NativeStage>> =
         std::sync::Mutex::new(Vec::new());
@@ -2842,6 +3774,15 @@ mod allocation_audit {
         }
         DROP_EVENTS.lock().unwrap().clear();
         REGISTRATION_EVENTS.lock().unwrap().clear();
+        #[cfg(feature = "sundials-ida-klu")]
+        for counter in [
+            &SPARSE_EVALUATIONS_BEFORE_REINIT,
+            &SPARSE_ENTRY_WORK_BEFORE_REINIT,
+            &SPARSE_EVALUATIONS_BEFORE_CALC_IC,
+            &SPARSE_ENTRY_WORK_BEFORE_CALC_IC,
+        ] {
+            counter.store(0, Ordering::SeqCst);
+        }
     }
 
     pub(super) fn snapshot() -> Snapshot {
@@ -2866,14 +3807,36 @@ mod allocation_audit {
     pub(super) fn registration_events() -> Vec<NativeStage> {
         REGISTRATION_EVENTS.lock().unwrap().clone()
     }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(super) fn record_sparse_reinit_work(before_reinit: (u64, u64), before_calc_ic: (u64, u64)) {
+        SPARSE_EVALUATIONS_BEFORE_REINIT.store(before_reinit.0, Ordering::SeqCst);
+        SPARSE_ENTRY_WORK_BEFORE_REINIT.store(before_reinit.1, Ordering::SeqCst);
+        SPARSE_EVALUATIONS_BEFORE_CALC_IC.store(before_calc_ic.0, Ordering::SeqCst);
+        SPARSE_ENTRY_WORK_BEFORE_CALC_IC.store(before_calc_ic.1, Ordering::SeqCst);
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    pub(super) fn sparse_reinit_work() -> ((u64, u64), (u64, u64)) {
+        (
+            (
+                SPARSE_EVALUATIONS_BEFORE_REINIT.load(Ordering::SeqCst),
+                SPARSE_ENTRY_WORK_BEFORE_REINIT.load(Ordering::SeqCst),
+            ),
+            (
+                SPARSE_EVALUATIONS_BEFORE_CALC_IC.load(Ordering::SeqCst),
+                SPARSE_ENTRY_WORK_BEFORE_CALC_IC.load(Ordering::SeqCst),
+            ),
+        )
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        IdaAbsoluteTolerance, IdaDenseBackend, IdaError, IdaInitialConditionPolicy, IdaSettings,
-        NativeStage, MAX_DENSE_DIMENSION, MAX_INTERNAL_STEPS,
+        IdaAbsoluteTolerance, IdaDenseBackend, IdaError, IdaEventPolicy, IdaInitialConditionPolicy,
+        IdaSettings, NativeStage, MAX_DENSE_DIMENSION, MAX_EVENT_RESTARTS, MAX_INTERNAL_STEPS,
     };
     #[cfg(feature = "sundials-ida-klu")]
     use crate::{
@@ -3057,6 +4020,7 @@ mod tests {
             max_dense_dimension: MAX_DENSE_DIMENSION,
             suppress_algebraic_error: true,
             initial_conditions: IdaInitialConditionPolicy::ContractConsistent,
+            event_policy: IdaEventPolicy::Reject,
         }
     }
 
@@ -3077,6 +4041,7 @@ mod tests {
             max_result_values: MAX_KLU_RESULT_VALUES,
             suppress_algebraic_error: true,
             initial_conditions: IdaInitialConditionPolicy::ContractConsistent,
+            event_policy: IdaEventPolicy::Reject,
         }
     }
 
@@ -3093,6 +4058,107 @@ mod tests {
                 },
             ))
             .unwrap();
+        graph.compile().unwrap()
+    }
+
+    fn event_integrator_graph(event_time_s: f64) -> CompiledGraph {
+        let mut graph = EquationGraph::new();
+        let source = graph
+            .add_block(Block::new(
+                "scheduled rate",
+                Quantity::Dimensionless,
+                BlockKind::StepSource {
+                    before: 1.0,
+                    after: 2.0,
+                    at_s: event_time_s,
+                },
+            ))
+            .unwrap();
+        let state = graph
+            .add_block(Block::new(
+                "continuous state",
+                Quantity::Dimensionless,
+                BlockKind::Integrator {
+                    initial: 0.0,
+                    rate: Quantity::Dimensionless,
+                    gain: 1.0,
+                },
+            ))
+            .unwrap();
+        graph.connect(source, state, 0).unwrap();
+        graph.compile().unwrap()
+    }
+
+    fn step_events_graph(event_times_s: &[f64]) -> CompiledGraph {
+        let mut graph = EquationGraph::new();
+        for (index, &at_s) in event_times_s.iter().enumerate() {
+            graph
+                .add_block(Block::new(
+                    format!("scheduled source {index}"),
+                    Quantity::Dimensionless,
+                    BlockKind::StepSource {
+                        before: 1.0,
+                        after: 2.0,
+                        at_s,
+                    },
+                ))
+                .unwrap();
+        }
+        graph.compile().unwrap()
+    }
+
+    fn two_event_integrator_graph() -> CompiledGraph {
+        two_event_integrator_graph_at(0.3, 0.6)
+    }
+
+    fn two_event_integrator_graph_at(
+        first_event_time_s: f64,
+        second_event_time_s: f64,
+    ) -> CompiledGraph {
+        let mut graph = EquationGraph::new();
+        let first = graph
+            .add_block(Block::new(
+                "first scheduled rate",
+                Quantity::Dimensionless,
+                BlockKind::StepSource {
+                    before: 1.0,
+                    after: 2.0,
+                    at_s: first_event_time_s,
+                },
+            ))
+            .unwrap();
+        let second = graph
+            .add_block(Block::new(
+                "second scheduled rate",
+                Quantity::Dimensionless,
+                BlockKind::StepSource {
+                    before: 0.0,
+                    after: 1.0,
+                    at_s: second_event_time_s,
+                },
+            ))
+            .unwrap();
+        let sum = graph
+            .add_block(Block::new(
+                "combined rate",
+                Quantity::Dimensionless,
+                BlockKind::Sum { inputs: 2 },
+            ))
+            .unwrap();
+        let state = graph
+            .add_block(Block::new(
+                "continuous state",
+                Quantity::Dimensionless,
+                BlockKind::Integrator {
+                    initial: 0.0,
+                    rate: Quantity::Dimensionless,
+                    gain: 1.0,
+                },
+            ))
+            .unwrap();
+        graph.connect(first, sum, 0).unwrap();
+        graph.connect(second, sum, 1).unwrap();
+        graph.connect(sum, state, 0).unwrap();
         graph.compile().unwrap()
     }
 
@@ -3298,6 +4364,188 @@ mod tests {
     }
 
     #[test]
+    fn event_marker_selects_exact_left_residual_and_rejects_one_ulp_overshoot() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let event = system.events()[0];
+        let below = f64::from_bits(event.time_s.to_bits() - 1);
+        let above = f64::from_bits(event.time_s.to_bits() + 1);
+        let backend = IdaDenseBackend::new().unwrap();
+        let resources = backend.prepare_resources(1).unwrap();
+        unsafe {
+            write_vector(resources.y_raw(), &[1.0]);
+            write_vector(resources.yp_raw(), &[0.0]);
+        }
+
+        let mut accepted = CallbackState::new(&system).unwrap();
+        accepted.set_event_left_limit(event.index);
+        assert_eq!(
+            unsafe { call_residual(&resources, &mut accepted, below) },
+            0
+        );
+        assert_eq!(unsafe { read_vector(resources.residual_raw(), 1) }, [0.0]);
+        assert_eq!(
+            unsafe { call_residual(&resources, &mut accepted, event.time_s) },
+            0
+        );
+        assert_eq!(unsafe { read_vector(resources.residual_raw(), 1) }, [0.0]);
+
+        unsafe { write_vector(resources.residual_raw(), &[77.0]) };
+        let mut overshoot = CallbackState::new(&system).unwrap();
+        overshoot.set_event_left_limit(event.index);
+        assert_eq!(
+            unsafe { call_residual(&resources, &mut overshoot, above) },
+            CALLBACK_UNRECOVERABLE
+        );
+        assert_eq!(unsafe { read_vector(resources.residual_raw(), 1) }, [77.0]);
+        assert_eq!(
+            overshoot.first_error(),
+            Some(&IdaError::CallbackEventBoundary {
+                callback: CallbackKind::Residual,
+                event_index: event.index,
+                event_time_s: event.time_s,
+                callback_time_s: above,
+            })
+        );
+
+        let mut nonfinite = CallbackState::new(&system).unwrap();
+        nonfinite.set_event_left_limit(event.index);
+        assert_eq!(
+            unsafe { call_residual(&resources, &mut nonfinite, f64::INFINITY) },
+            CALLBACK_UNRECOVERABLE
+        );
+        assert!(matches!(
+            nonfinite.first_error(),
+            Some(IdaError::Callback {
+                callback: CallbackKind::Residual,
+                source: DaeError::NonFiniteInput { .. },
+            })
+        ));
+    }
+
+    #[test]
+    fn event_marker_bounds_dense_jacobian_below_exact_and_one_ulp_above() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let event = system.events()[0];
+        let below = f64::from_bits(event.time_s.to_bits() - 1);
+        let above = f64::from_bits(event.time_s.to_bits() + 1);
+        let backend = IdaDenseBackend::new().unwrap();
+        let resources = backend.prepare_resources(1).unwrap();
+        unsafe {
+            write_vector(resources.y_raw(), &[1.0]);
+            write_vector(resources.yp_raw(), &[0.0]);
+        }
+
+        let mut accepted = CallbackState::new(&system).unwrap();
+        accepted.set_event_left_limit(event.index);
+        assert_eq!(
+            unsafe { call_jacobian(&resources, &mut accepted, below, 1.0) },
+            CALLBACK_SUCCESS
+        );
+        assert_eq!(
+            unsafe { call_jacobian(&resources, &mut accepted, event.time_s, 1.0) },
+            CALLBACK_SUCCESS
+        );
+
+        let mut overshoot = CallbackState::new(&system).unwrap();
+        overshoot.set_event_left_limit(event.index);
+        assert_eq!(
+            unsafe { call_jacobian(&resources, &mut overshoot, above, 1.0) },
+            CALLBACK_UNRECOVERABLE
+        );
+        assert_eq!(
+            overshoot.first_error(),
+            Some(&IdaError::CallbackEventBoundary {
+                callback: CallbackKind::Jacobian,
+                event_index: event.index,
+                event_time_s: event.time_s,
+                callback_time_s: above,
+            })
+        );
+
+        for time_s in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut nonfinite = CallbackState::new(&system).unwrap();
+            nonfinite.set_event_left_limit(event.index);
+            assert_eq!(
+                unsafe { call_jacobian(&resources, &mut nonfinite, time_s, 1.0) },
+                CALLBACK_UNRECOVERABLE
+            );
+            assert!(matches!(
+                nonfinite.first_error(),
+                Some(IdaError::Callback {
+                    callback: CallbackKind::Jacobian,
+                    source: DaeError::NonFiniteInput { .. },
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn terminal_horizon_uses_ordinary_callbacks_through_equality_and_rejects_overshoot() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let final_time_s = 0.1_f64;
+        let above = f64::from_bits(final_time_s.to_bits() + 1);
+        let backend = IdaDenseBackend::new().unwrap();
+        let resources = backend.prepare_resources(1).unwrap();
+        unsafe {
+            write_vector(resources.y_raw(), &[1.0]);
+            write_vector(resources.yp_raw(), &[0.0]);
+        }
+
+        let mut residual_at_equality = CallbackState::new(&system).unwrap();
+        residual_at_equality.set_terminal_horizon(final_time_s);
+        assert_eq!(
+            unsafe { call_residual(&resources, &mut residual_at_equality, final_time_s) },
+            CALLBACK_SUCCESS
+        );
+        assert_eq!(unsafe { read_vector(resources.residual_raw(), 1) }, [0.0]);
+        assert_eq!(residual_at_equality.first_error(), None);
+
+        unsafe { write_vector(resources.residual_raw(), &[77.0]) };
+        let mut residual_overshoot = CallbackState::new(&system).unwrap();
+        residual_overshoot.set_terminal_horizon(final_time_s);
+        assert_eq!(
+            unsafe { call_residual(&resources, &mut residual_overshoot, above) },
+            CALLBACK_UNRECOVERABLE
+        );
+        assert_eq!(unsafe { read_vector(resources.residual_raw(), 1) }, [77.0]);
+        assert_eq!(
+            residual_overshoot.first_error(),
+            Some(&IdaError::CallbackHorizonBoundary {
+                callback: CallbackKind::Residual,
+                final_time_s,
+                callback_time_s: above,
+            })
+        );
+
+        let mut jacobian_at_equality = CallbackState::new(&system).unwrap();
+        jacobian_at_equality.set_terminal_horizon(final_time_s);
+        assert_eq!(
+            unsafe { call_jacobian(&resources, &mut jacobian_at_equality, final_time_s, 1.0,) },
+            CALLBACK_SUCCESS
+        );
+        let mut jacobian_overshoot = CallbackState::new(&system).unwrap();
+        jacobian_overshoot.set_terminal_horizon(final_time_s);
+        assert_eq!(
+            unsafe { call_jacobian(&resources, &mut jacobian_overshoot, above, 1.0) },
+            CALLBACK_UNRECOVERABLE
+        );
+        assert_eq!(
+            jacobian_overshoot.first_error(),
+            Some(&IdaError::CallbackHorizonBoundary {
+                callback: CallbackKind::Jacobian,
+                final_time_s,
+                callback_time_s: above,
+            })
+        );
+    }
+
+    #[test]
     fn dense_jacobian_scatter_is_column_major_for_a_nonsymmetric_system() {
         let _guard = allocation_audit::test_lock();
         let graph = integrator_graph();
@@ -3442,6 +4690,97 @@ mod tests {
             );
         }
         assert_eq!(state.first_error(), None);
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn sparse_event_marker_bounds_work_and_writes_at_exact_and_overshoot_times() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let event = system.events()[0];
+        let below = f64::from_bits(event.time_s.to_bits() - 1);
+        let above = f64::from_bits(event.time_s.to_bits() + 1);
+        let backend = IdaKluBackend::new().unwrap();
+        let pattern = system.csc_pattern();
+        let resources = prepare_sparse_resources(
+            &backend._context,
+            1,
+            pattern.column_pointers(),
+            pattern.row_indices(),
+        )
+        .unwrap();
+        unsafe {
+            write_vector(resources.y_raw(), &[1.0]);
+            write_vector(resources.yp_raw(), &[0.0]);
+        }
+
+        let mut accepted = CallbackState::new_sparse(&system, 4, 4).unwrap();
+        accepted.set_event_left_limit(event.index);
+        assert_eq!(
+            unsafe {
+                call_sparse_jacobian(&resources, &mut accepted, below, 1.0, resources.y_raw())
+            },
+            CALLBACK_SUCCESS
+        );
+        assert_eq!(
+            unsafe {
+                call_sparse_jacobian(
+                    &resources,
+                    &mut accepted,
+                    event.time_s,
+                    1.0,
+                    resources.y_raw(),
+                )
+            },
+            CALLBACK_SUCCESS
+        );
+        assert_eq!(accepted.sparse_work.unwrap().evaluations, 2);
+
+        let data = unsafe { crate::ffi::SUNSparseMatrix_Data(resources.matrix_raw()) };
+        assert!(!data.is_null());
+        unsafe { *data = 77.0 };
+        let mut overshoot = CallbackState::new_sparse(&system, 4, 4).unwrap();
+        overshoot.set_event_left_limit(event.index);
+        assert_eq!(
+            unsafe {
+                call_sparse_jacobian(&resources, &mut overshoot, above, 1.0, resources.y_raw())
+            },
+            CALLBACK_UNRECOVERABLE
+        );
+        assert_eq!(unsafe { *data }, 77.0);
+        assert_eq!(overshoot.sparse_work.unwrap().evaluations, 0);
+        assert!(matches!(
+            overshoot.first_error(),
+            Some(IdaError::CallbackEventBoundary {
+                callback: CallbackKind::Jacobian,
+                ..
+            })
+        ));
+
+        unsafe { *data = 88.0 };
+        let mut nonfinite = CallbackState::new_sparse(&system, 4, 4).unwrap();
+        nonfinite.set_event_left_limit(event.index);
+        assert_eq!(
+            unsafe {
+                call_sparse_jacobian(
+                    &resources,
+                    &mut nonfinite,
+                    f64::INFINITY,
+                    1.0,
+                    resources.y_raw(),
+                )
+            },
+            CALLBACK_UNRECOVERABLE
+        );
+        assert_eq!(unsafe { *data }, 88.0);
+        assert!(matches!(
+            nonfinite.first_error(),
+            Some(IdaError::Callback {
+                callback: CallbackKind::Jacobian,
+                source: DaeError::NonFiniteInput { .. },
+            })
+        ));
     }
 
     #[cfg(feature = "sundials-ida-klu")]
@@ -4016,6 +5355,25 @@ mod tests {
     }
 
     #[test]
+    fn interpolation_only_multistep_run_performs_zero_endpoint_custody_copies() {
+        let _guard = allocation_audit::test_lock();
+        let graph = exponential_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![0.123_456_789, 0.987_654_321];
+        let result = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        assert!(result.stats().internal_steps() > 1);
+        assert_eq!(result.stats().interpolated_output_rows(), 2);
+        assert_eq!(result.stats().step_endpoint_output_rows(), 0);
+        assert_eq!(result.stats().endpoint_state_captures(), 0);
+    }
+
+    #[test]
     fn exact_global_step_budget_passes_without_an_off_by_one_step() {
         let _guard = allocation_audit::test_lock();
         let graph = exponential_graph();
@@ -4184,7 +5542,14 @@ mod tests {
                 interval_end_s: 1.0,
             }
         );
-        assert_eq!(require_interpolation_bounds(1.0, 0.75, 1.0), Ok(()));
+        assert_eq!(
+            require_interpolation_bounds(1.0, 0.75, 1.0).unwrap_err(),
+            IdaError::InterpolationIntervalMiss {
+                requested_time_s: 1.0,
+                interval_start_s: 0.75,
+                interval_end_s: 1.0,
+            }
+        );
     }
 
     #[test]
@@ -4490,6 +5855,42 @@ mod tests {
     }
 
     #[test]
+    fn active_event_callback_panics_keep_one_left_segment_context_and_balanced_teardown() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![0.75];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+
+        for callback in [CallbackKind::Residual, CallbackKind::Jacobian] {
+            allocation_audit::reset();
+            let mut session = backend.initialize_session(&system, &settings).unwrap();
+            session.inject_solve_callback_panic(callback);
+            assert_eq!(
+                session.solve_requested_grid().unwrap_err(),
+                IdaError::EventRestartFailure {
+                    event_index: 0,
+                    event_time_s: 0.5,
+                    phase: IdaEventPhase::SolveLeftSegment,
+                    source: Box::new(IdaError::CallbackPanic { callback }),
+                }
+            );
+            assert_balanced(allocation_audit::snapshot(), "event-scoped callback panic");
+            let drops = allocation_audit::drop_events();
+            assert_eq!(
+                drops.first(),
+                Some(&allocation_audit::ResourceKind::IdaMemory)
+            );
+            assert_eq!(
+                drops.last(),
+                Some(&allocation_audit::ResourceKind::CallbackState)
+            );
+        }
+    }
+
+    #[test]
     fn every_non_success_solve_flag_preserves_exact_stage_and_flag() {
         let _guard = allocation_audit::test_lock();
         let graph = exponential_graph();
@@ -4594,6 +5995,57 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn counter_delta_checked_add_covers_all_fields_and_rejects_overflow() {
+        let left = CounterDelta {
+            internal_steps: 1,
+            residual_evaluations: 2,
+            linear_solver_setups: 3,
+            error_test_failures: 4,
+            nonlinear_iterations: 5,
+            nonlinear_convergence_failures: 6,
+            jacobian_evaluations: 7,
+            linear_residual_evaluations: 8,
+            linear_iterations: 9,
+            linear_convergence_failures: 10,
+        };
+        let right = CounterDelta {
+            internal_steps: 10,
+            residual_evaluations: 20,
+            linear_solver_setups: 30,
+            error_test_failures: 40,
+            nonlinear_iterations: 50,
+            nonlinear_convergence_failures: 60,
+            jacobian_evaluations: 70,
+            linear_residual_evaluations: 80,
+            linear_iterations: 90,
+            linear_convergence_failures: 100,
+        };
+        let sum = left.checked_add(right).unwrap();
+        assert_eq!(sum.internal_steps, 11);
+        assert_eq!(sum.residual_evaluations, 22);
+        assert_eq!(sum.linear_solver_setups, 33);
+        assert_eq!(sum.error_test_failures, 44);
+        assert_eq!(sum.nonlinear_iterations, 55);
+        assert_eq!(sum.nonlinear_convergence_failures, 66);
+        assert_eq!(sum.jacobian_evaluations, 77);
+        assert_eq!(sum.linear_residual_evaluations, 88);
+        assert_eq!(sum.linear_iterations, 99);
+        assert_eq!(sum.linear_convergence_failures, 110);
+
+        assert!(matches!(
+            CounterDelta {
+                internal_steps: u64::MAX,
+                ..CounterDelta::default()
+            }
+            .checked_add(CounterDelta {
+                internal_steps: 1,
+                ..CounterDelta::default()
+            }),
+            Err(IdaError::WorkOverflow)
+        ));
     }
 
     #[test]
@@ -5016,6 +6468,10 @@ mod tests {
                 NativeStage::IdaSetSuppressAlg,
                 NativeStage::IdaSetMaxOrd,
                 NativeStage::IdaSetMaxNumSteps,
+                NativeStage::IdaSetMaxNumStepsIc,
+                NativeStage::IdaSetMaxNumJacsIc,
+                NativeStage::IdaSetMaxNumItersIc,
+                NativeStage::IdaSetMaxBacksIc,
                 NativeStage::IdaSetLinearSolver,
                 NativeStage::IdaSetJacFn,
             ]
@@ -5044,6 +6500,10 @@ mod tests {
                 NativeStage::IdaSetSuppressAlg,
                 NativeStage::IdaSetMaxOrd,
                 NativeStage::IdaSetMaxNumSteps,
+                NativeStage::IdaSetMaxNumStepsIc,
+                NativeStage::IdaSetMaxNumJacsIc,
+                NativeStage::IdaSetMaxNumItersIc,
+                NativeStage::IdaSetMaxBacksIc,
                 NativeStage::IdaSetLinearSolver,
                 NativeStage::IdaSetJacFn,
                 NativeStage::IdaCalcIc,
@@ -5271,6 +6731,546 @@ mod tests {
 
         assert_eq!(error, IdaError::UnsupportedEvents { count: 1 });
         assert_eq!(allocation_audit::snapshot(), Default::default());
+    }
+
+    #[test]
+    fn restart_policy_solves_left_segment_corrects_equality_and_continues() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        let immediately_before_event = f64::from_bits(0.5_f64.to_bits() - 1);
+        settings.output_times_s = vec![immediately_before_event, 0.5, 0.75];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+
+        let result = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+
+        for (row, expected) in [
+            ([1.0, immediately_before_event], 0),
+            ([2.0, 0.5], 1),
+            ([2.0, 1.0], 2),
+        ] {
+            let actual = result.row(expected).unwrap();
+            assert!((actual[0] - row[0]).abs() <= 1.0e-10, "{actual:?}");
+            assert!((actual[1] - row[1]).abs() <= 2.0e-6, "{actual:?}");
+        }
+        assert_eq!(result.configured_event_policy(), settings.event_policy);
+        assert_eq!(result.stats().event_restarts(), 1);
+        assert_eq!(result.stats().event_equality_output_rows(), 1);
+        assert!(result.stats().interpolated_output_rows() >= 1);
+        assert_eq!(
+            result.stats().endpoint_state_captures(),
+            result.stats().event_restarts() + result.stats().step_endpoint_output_rows()
+        );
+        assert_eq!(
+            result.stats().interpolated_output_rows()
+                + result.stats().step_endpoint_output_rows()
+                + result.stats().event_equality_output_rows(),
+            3
+        );
+        assert_eq!(
+            result.stats().one_step_calls(),
+            result.stats().internal_steps()
+        );
+    }
+
+    #[test]
+    fn final_event_equality_uses_saved_last_step_evidence_after_reinit() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![0.25, 0.5];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+
+        let reference = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        let required_steps = reference.stats().internal_steps();
+        assert!(required_steps > 0);
+        assert_eq!(reference.row(1).unwrap()[0], 2.0);
+        assert!((reference.row(1).unwrap()[1] - 0.5).abs() <= 1.0e-12);
+
+        settings.max_steps = required_steps;
+        let exact = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        assert_eq!(exact.stats().internal_steps(), required_steps);
+        assert_eq!(exact.stats().event_restarts(), 1);
+        assert_eq!(exact.stats().event_equality_output_rows(), 1);
+        assert_eq!(exact.stats().output_rows_at_step_limit(), 1);
+        assert!(exact.stats().last_order() > 0);
+        assert!(exact.stats().last_step_s() > 0.0);
+        assert!(exact.stats().current_step_s() > 0.0);
+        assert_eq!(exact.stats().current_internal_time_s(), 0.5);
+        assert_eq!(
+            exact.stats().current_order(),
+            exact.stats().last_accepted_step_current_order()
+        );
+        assert_eq!(
+            exact.stats().current_step_s(),
+            exact.stats().last_accepted_step_next_step_s()
+        );
+        assert_eq!(exact.stats().terminal_state_time_s(), 0.5);
+    }
+
+    #[test]
+    fn terminal_event_final_getter_failure_keeps_one_finalize_context_layer() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![0.5];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        let mut session = backend.initialize_session(&system, &settings).unwrap();
+        session.inject_last_linear_flag_getter(-901, 77);
+
+        assert_eq!(
+            session.solve_requested_grid().unwrap_err(),
+            IdaError::EventRestartFailure {
+                event_index: 0,
+                event_time_s: 0.5,
+                phase: IdaEventPhase::FinalizeEvidence,
+                source: Box::new(IdaError::NativeCall {
+                    stage: NativeStage::IdaGetLastLinFlag,
+                    flag: -901,
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn event_restart_caps_and_initial_time_mismatch_fail_before_allocation() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+
+        let mut capped = ida_settings();
+        capped.event_policy = IdaEventPolicy::Restart { max_restarts: 0 };
+        allocation_audit::reset();
+        assert_eq!(
+            backend.initialize_session(&system, &capped).unwrap_err(),
+            IdaError::EventRestartLimit {
+                active: 1,
+                maximum: 0,
+            }
+        );
+        assert_eq!(allocation_audit::snapshot(), Default::default());
+
+        capped.event_policy = IdaEventPolicy::Restart {
+            max_restarts: MAX_EVENT_RESTARTS + 1,
+        };
+        assert_eq!(
+            backend.initialize_session(&system, &capped).unwrap_err(),
+            IdaError::InvalidSetting {
+                code: "ida.events.max_restarts.out_of_range",
+                field: "event_policy.max_restarts",
+            }
+        );
+
+        let mut mismatched = ida_settings();
+        mismatched.initial_time_s = 0.125;
+        allocation_audit::reset();
+        assert_eq!(
+            backend
+                .initialize_session(&system, &mismatched)
+                .unwrap_err(),
+            IdaError::InitializationTimeMismatch {
+                system_time_s: 0.0,
+                requested_time_s: 0.125,
+            }
+        );
+        assert_eq!(allocation_audit::snapshot(), Default::default());
+
+        let signed_zero_system =
+            DaeResidualSystem::lower(&graph, -0.0, &solver_settings()).unwrap();
+        let mut signed_zero = ida_settings();
+        signed_zero.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        assert!(backend
+            .initialize_session(&signed_zero_system, &signed_zero)
+            .is_ok());
+    }
+
+    #[test]
+    fn post_event_ic_validates_all_state_and_enforces_bit_exact_differential_continuity() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![0.25, 0.75];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+
+        let mut discontinuous = backend.initialize_session(&system, &settings).unwrap();
+        discontinuous.inject_post_ic_differential_bit(0);
+        assert!(matches!(
+            discontinuous.solve_requested_grid().unwrap_err(),
+            IdaError::EventDifferentialDiscontinuity {
+                event_index: 0,
+                event_time_s,
+                variable_index: 0,
+                ..
+            } if event_time_s == 0.5
+        ));
+
+        for (is_y, variable_index) in [(true, 1usize), (false, 0usize)] {
+            allocation_audit::reset();
+            let mut session = backend.initialize_session(&system, &settings).unwrap();
+            if is_y {
+                session.inject_post_ic_nonfinite_y(variable_index);
+            } else {
+                session.inject_post_ic_nonfinite_yp(variable_index);
+            }
+            let error = session.solve_requested_grid().unwrap_err();
+            assert!(matches!(
+                error,
+                IdaError::EventRestartFailure {
+                    event_index: 0,
+                    event_time_s,
+                    phase: IdaEventPhase::GetConsistentInitialConditions,
+                    source,
+                } if event_time_s == 0.5
+                    && matches!(
+                        source.as_ref(),
+                        IdaError::InvalidNativeValue {
+                            stage: NativeStage::IdaGetConsistentIc,
+                            component_index: Some(index),
+                            value,
+                            ..
+                        } if *index == variable_index && !value.is_finite()
+                    )
+            ));
+            let snapshot = allocation_audit::snapshot();
+            assert_balanced(snapshot, "post-event IC validation failure");
+            let drops = allocation_audit::drop_events();
+            assert_eq!(
+                drops.first(),
+                Some(&allocation_audit::ResourceKind::IdaMemory)
+            );
+            assert_eq!(
+                drops.last(),
+                Some(&allocation_audit::ResourceKind::CallbackState)
+            );
+        }
+    }
+
+    #[test]
+    fn tstop_endpoint_custody_rejects_nonfinite_y_and_yp_before_restart() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![0.5];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+
+        for is_y in [true, false] {
+            allocation_audit::reset();
+            let mut session = backend.initialize_session(&system, &settings).unwrap();
+            if is_y {
+                session.inject_tstop_nonfinite_y(0);
+            } else {
+                session.inject_tstop_nonfinite_yp(0);
+            }
+            let error = session.solve_requested_grid().unwrap_err();
+            assert!(matches!(
+                error,
+                IdaError::EventRestartFailure {
+                    event_index: 0,
+                    event_time_s,
+                    phase: IdaEventPhase::SolveLeftSegment,
+                    source,
+                } if event_time_s == 0.5
+                    && matches!(
+                        source.as_ref(),
+                        IdaError::InvalidNativeValue {
+                            stage: NativeStage::IdaSolveStep,
+                            field,
+                            component_index: Some(0),
+                            value,
+                            ..
+                        } if *field == if is_y { NativeValue::Y } else { NativeValue::Yp }
+                            && !value.is_finite()
+                    )
+            ));
+            assert_balanced(
+                allocation_audit::snapshot(),
+                "nonfinite exact-tstop endpoint",
+            );
+            let calls = allocation_audit::registration_events();
+            assert!(!calls.contains(&NativeStage::IdaReInit));
+            assert!(!calls.contains(&NativeStage::IdaCalcIc));
+            assert!(!calls.contains(&NativeStage::IdaGetConsistentIc));
+            let drops = allocation_audit::drop_events();
+            assert_eq!(
+                drops.first(),
+                Some(&allocation_audit::ResourceKind::IdaMemory)
+            );
+            assert_eq!(
+                drops.last(),
+                Some(&allocation_audit::ResourceKind::CallbackState)
+            );
+        }
+    }
+
+    #[test]
+    fn signed_zero_event_and_output_share_one_numeric_restart_equality() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(-0.0);
+        let system = DaeResidualSystem::lower(&graph, -1.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        settings.initial_time_s = -1.0;
+        settings.output_times_s = vec![0.0];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+
+        let result = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        assert_eq!(result.stats().event_restarts(), 1);
+        assert_eq!(result.stats().event_equality_output_rows(), 1);
+        assert_eq!(result.row(0).unwrap()[0], 2.0);
+        assert!((result.row(0).unwrap()[1] - 1.0).abs() <= 2.0e-6);
+        assert_eq!(result.stats().terminal_state_time_s(), 0.0);
+    }
+
+    #[test]
+    fn active_event_filter_is_exactly_initial_exclusive_and_final_inclusive() {
+        let _guard = allocation_audit::test_lock();
+        let graph = step_events_graph(&[-1.0, 0.0, 0.5, 2.0]);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![1.0];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        assert_eq!(settings.validate_for(&system), Ok(()));
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 0 };
+        assert_eq!(
+            settings.validate_for(&system),
+            Err(IdaError::EventRestartLimit {
+                active: 1,
+                maximum: 0,
+            })
+        );
+
+        let inactive_graph = step_events_graph(&[-1.0, 0.0, 2.0]);
+        let inactive = DaeResidualSystem::lower(&inactive_graph, 0.0, &solver_settings()).unwrap();
+        assert_eq!(settings.validate_for(&inactive), Ok(()));
+
+        let final_graph = step_events_graph(&[0.5]);
+        let final_system = DaeResidualSystem::lower(&final_graph, 0.0, &solver_settings()).unwrap();
+        settings.output_times_s = vec![0.5];
+        assert_eq!(
+            settings.validate_for(&final_system),
+            Err(IdaError::EventRestartLimit {
+                active: 1,
+                maximum: 0,
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_stop_blocks_inactive_post_horizon_events_before_and_after_a_restart() {
+        let _guard = allocation_audit::test_lock();
+        let backend = IdaDenseBackend::new().unwrap();
+        let final_time_s = 0.5_f64;
+        let inactive_event_time_s = f64::from_bits(final_time_s.to_bits() + 1);
+
+        let graph = event_integrator_graph(inactive_event_time_s);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![final_time_s];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 0 };
+        allocation_audit::reset();
+        let result = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        assert_eq!(result.row(0).unwrap()[0], 1.0);
+        assert!((result.row(0).unwrap()[1] - 0.5).abs() <= 2.0e-6);
+        assert_eq!(result.stats().terminal_state_time_s(), final_time_s);
+        assert_eq!(result.stats().event_restarts(), 0);
+        assert_eq!(result.stats().event_equality_output_rows(), 0);
+        assert_eq!(result.stats().interpolated_output_rows(), 0);
+        assert_eq!(result.stats().step_endpoint_output_rows(), 1);
+        assert_eq!(result.stats().endpoint_state_captures(), 1);
+        let calls = allocation_audit::registration_events();
+        assert!(calls.contains(&NativeStage::IdaSetStopTime));
+        assert!(!calls.contains(&NativeStage::IdaReInit));
+        assert!(!calls.contains(&NativeStage::IdaGetDkyY));
+        assert!(!calls.contains(&NativeStage::IdaGetDkyYp));
+
+        let graph = two_event_integrator_graph_at(0.25, inactive_event_time_s);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        allocation_audit::reset();
+        let result = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        let final_row = result.row(0).unwrap();
+        assert_eq!(&final_row[..3], &[2.0, 0.0, 2.0]);
+        assert!((final_row[3] - 0.75).abs() <= 3.0e-6, "{final_row:?}");
+        assert_eq!(result.stats().terminal_state_time_s(), final_time_s);
+        assert_eq!(result.stats().event_restarts(), 1);
+        assert_eq!(result.stats().event_equality_output_rows(), 0);
+        assert_eq!(result.stats().interpolated_output_rows(), 0);
+        assert_eq!(result.stats().step_endpoint_output_rows(), 1);
+        assert_eq!(result.stats().endpoint_state_captures(), 2);
+        let calls = allocation_audit::registration_events();
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|&&stage| stage == NativeStage::IdaSetStopTime)
+                .count(),
+            2
+        );
+        assert_eq!(
+            calls
+                .iter()
+                .filter(|&&stage| stage == NativeStage::IdaReInit)
+                .count(),
+            1
+        );
+        assert!(!calls.contains(&NativeStage::IdaGetDkyY));
+        assert!(!calls.contains(&NativeStage::IdaGetDkyYp));
+    }
+
+    #[test]
+    fn event_segment_and_correction_targets_are_preflighted_before_allocation() {
+        let _guard = allocation_audit::test_lock();
+        let backend = IdaDenseBackend::new().unwrap();
+
+        let initial_time_s: f64 = 1.0;
+        let too_close_event = f64::from_bits(initial_time_s.to_bits() + 1);
+        let graph = step_events_graph(&[too_close_event]);
+        let system = DaeResidualSystem::lower(&graph, initial_time_s, &solver_settings()).unwrap();
+        let mut settings = ida_settings();
+        settings.initial_time_s = initial_time_s;
+        settings.output_times_s = vec![2.0];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        allocation_audit::reset();
+        assert_eq!(
+            backend.initialize_session(&system, &settings).unwrap_err(),
+            IdaError::InvalidEventSchedule {
+                code: "ida.events.segment_too_close",
+                event_index: 0,
+                event_time_s: too_close_event,
+            }
+        );
+        assert_eq!(allocation_audit::snapshot(), Default::default());
+
+        let event: f64 = 1.0;
+        let adjacent = f64::from_bits(event.to_bits() + 1);
+        let graph = step_events_graph(&[event, adjacent]);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        settings.initial_time_s = 0.0;
+        settings.output_times_s = vec![2.0];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 2 };
+        assert_eq!(
+            settings.validate_for(&system),
+            Err(IdaError::InvalidEventSchedule {
+                code: "ida.events.correction_target_invalid",
+                event_index: 0,
+                event_time_s: event,
+            })
+        );
+
+        let graph = step_events_graph(&[f64::MAX]);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        settings.initial_time_s = 0.0;
+        settings.output_times_s = vec![f64::MAX];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        assert_eq!(
+            settings.validate_for(&system),
+            Err(IdaError::InvalidEventSchedule {
+                code: "ida.events.correction_target_invalid",
+                event_index: 0,
+                event_time_s: f64::MAX,
+            })
+        );
+
+        let usable_event = f64::from_bits(initial_time_s.to_bits() + 501);
+        let graph = step_events_graph(&[usable_event]);
+        let system = DaeResidualSystem::lower(&graph, initial_time_s, &solver_settings()).unwrap();
+        settings.initial_time_s = initial_time_s;
+        settings.output_times_s = vec![2.0];
+        assert_eq!(settings.validate_for(&system), Ok(()));
+    }
+
+    #[test]
+    fn two_event_restart_aggregates_counters_and_preserves_one_global_step_cap() {
+        let _guard = allocation_audit::test_lock();
+        let graph = two_event_integrator_graph();
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![0.3, 0.6, 0.9];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 2 };
+
+        let reference = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        assert_eq!(reference.stats().event_restarts(), 2);
+        assert_eq!(reference.stats().event_equality_output_rows(), 2);
+        assert_eq!(
+            reference.stats().one_step_calls(),
+            reference.stats().internal_steps()
+        );
+        assert!(reference.stats().residual_evaluations() > 0);
+        assert!(reference.stats().nonlinear_iterations() > 0);
+        assert!((reference.row(0).unwrap()[3] - 0.3).abs() <= 3.0e-6);
+        assert!((reference.row(1).unwrap()[3] - 0.9).abs() <= 3.0e-6);
+        assert!((reference.row(2).unwrap()[3] - 1.8).abs() <= 5.0e-6);
+
+        settings.max_steps = reference.stats().internal_steps();
+        let exact = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        assert_eq!(exact.stats().internal_steps(), settings.max_steps);
+        assert_eq!(exact.stats().event_restarts(), 2);
+        assert!(exact.stats().output_rows_at_step_limit() >= 1);
+    }
+
+    #[test]
+    fn reinit_counter_reset_is_checked_before_event_correction() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaDenseBackend::new().unwrap();
+        let mut settings = ida_settings();
+        settings.output_times_s = vec![0.75];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        let mut session = backend.initialize_session(&system, &settings).unwrap();
+        session.inject_reinit_internal_steps(1);
+
+        assert_eq!(
+            session.solve_requested_grid().unwrap_err(),
+            IdaError::ReinitCounterInvariant {
+                event_index: 0,
+                statistic: NativeStatistic::InternalSteps,
+                value: 1,
+            }
+        );
     }
 
     #[test]
@@ -5502,6 +7502,239 @@ mod tests {
             ),
             "unexpected singular KLU error: {error:?}"
         );
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn klu_restart_solves_multiple_segments_without_dense_fallback() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaKluBackend::new().unwrap();
+        let mut settings = klu_settings();
+        settings.output_times_s = vec![0.25, 0.5, 0.75];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+
+        let result = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        assert_eq!(result.backend_identity(), backend.identity());
+        assert_eq!(
+            result.result_contract(),
+            crate::NATIVE_IDA_KLU_RESULT_CONTRACT
+        );
+        assert_eq!(result.stats().event_restarts(), 1);
+        assert_eq!(result.stats().event_equality_output_rows(), 1);
+        assert_eq!(result.row(1).unwrap()[0], 2.0);
+        assert!((result.row(1).unwrap()[1] - 0.5).abs() <= 2.0e-6);
+        assert!((result.row(2).unwrap()[1] - 1.0).abs() <= 3.0e-6);
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn klu_terminal_stop_blocks_an_inactive_event_one_ulp_after_final() {
+        let _guard = allocation_audit::test_lock();
+        let final_time_s = 0.5_f64;
+        let inactive_event_time_s = f64::from_bits(final_time_s.to_bits() + 1);
+        let graph = event_integrator_graph(inactive_event_time_s);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaKluBackend::new().unwrap();
+        let mut settings = klu_settings();
+        settings.output_times_s = vec![final_time_s];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 0 };
+        allocation_audit::reset();
+
+        let result = backend
+            .initialize_session(&system, &settings)
+            .unwrap()
+            .solve_requested_grid()
+            .unwrap();
+        assert_eq!(result.row(0).unwrap()[0], 1.0);
+        assert!((result.row(0).unwrap()[1] - 0.5).abs() <= 2.0e-6);
+        assert_eq!(result.stats().terminal_state_time_s(), final_time_s);
+        assert_eq!(result.stats().event_restarts(), 0);
+        assert_eq!(result.stats().event_equality_output_rows(), 0);
+        assert_eq!(result.stats().interpolated_output_rows(), 0);
+        assert_eq!(result.stats().step_endpoint_output_rows(), 1);
+        assert_eq!(result.stats().endpoint_state_captures(), 1);
+        let calls = allocation_audit::registration_events();
+        assert!(calls.contains(&NativeStage::IdaSetStopTime));
+        assert!(!calls.contains(&NativeStage::IdaReInit));
+        assert!(!calls.contains(&NativeStage::IdaGetDkyY));
+        assert!(!calls.contains(&NativeStage::IdaGetDkyYp));
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn active_event_klu_failure_preserves_one_context_and_last_flag_evidence() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let backend = IdaKluBackend::new().unwrap();
+        let mut settings = klu_settings();
+        settings.output_times_s = vec![0.75];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        for (label, getter_flag, expected) in [
+            ("available", 0, IdaLinearFlagEvidence::Available(777)),
+            (
+                "unavailable",
+                -901,
+                IdaLinearFlagEvidence::Unavailable { getter_flag: -901 },
+            ),
+        ] {
+            allocation_audit::reset();
+            let mut session = backend.initialize_session(&system, &settings).unwrap();
+            session.inject_native_solve_flag(IDA_LSOLVE_FAIL);
+            session.inject_last_linear_flag_getter(getter_flag, 777);
+
+            assert_eq!(
+                session.solve_requested_grid().unwrap_err(),
+                IdaError::EventRestartFailure {
+                    event_index: 0,
+                    event_time_s: 0.5,
+                    phase: IdaEventPhase::SolveLeftSegment,
+                    source: Box::new(IdaError::KluLinearSolverFailure {
+                        stage: NativeStage::IdaSolveStep,
+                        ida_flag: IDA_LSOLVE_FAIL,
+                        last_linear_flag: expected,
+                    }),
+                },
+                "{label}"
+            );
+            assert_balanced(
+                allocation_audit::snapshot(),
+                &format!("event-scoped KLU failure ({label})"),
+            );
+            let drops = allocation_audit::drop_events();
+            assert_eq!(
+                drops.first(),
+                Some(&allocation_audit::ResourceKind::IdaMemory)
+            );
+            assert_eq!(
+                drops.last(),
+                Some(&allocation_audit::ResourceKind::CallbackState)
+            );
+        }
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn klu_callback_budget_persists_across_event_reinit_and_right_side_calc_ic() {
+        let _guard = allocation_audit::test_lock();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let nonzeros = u64::try_from(system.csc_pattern().nonzero_count()).unwrap();
+        let backend = IdaKluBackend::new().unwrap();
+        let mut settings = klu_settings();
+        settings.output_times_s = vec![0.75];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        allocation_audit::reset();
+        let mut session = backend.initialize_session(&system, &settings).unwrap();
+        session.inject_cap_sparse_budget_at_restart();
+        let error = session.solve_requested_grid().unwrap_err();
+        let (before_reinit, before_calc_ic) = allocation_audit::sparse_reinit_work();
+        assert_eq!(before_calc_ic, before_reinit);
+        assert!(before_reinit.0 > 0);
+        assert_eq!(before_reinit.1, before_reinit.0 * nonzeros);
+        assert_eq!(
+            error,
+            IdaError::EventRestartFailure {
+                event_index: 0,
+                event_time_s: 0.5,
+                phase: IdaEventPhase::CorrectInitialConditions,
+                source: Box::new(IdaError::KluJacobianEvaluationLimit {
+                    attempted: before_reinit.0 + 1,
+                    maximum: before_reinit.0,
+                }),
+            }
+        );
+        assert_balanced(
+            allocation_audit::snapshot(),
+            "persistent KLU event callback budget failure",
+        );
+    }
+
+    #[cfg(feature = "sundials-ida-klu")]
+    #[test]
+    fn klu_validation_applies_initial_time_and_event_preflight_before_allocation() {
+        let _guard = allocation_audit::test_lock();
+        let backend = IdaKluBackend::new().unwrap();
+        let graph = event_integrator_graph(0.5);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        let mut settings = klu_settings();
+        settings.initial_time_s = 0.25;
+        allocation_audit::reset();
+        assert_eq!(
+            backend.initialize_session(&system, &settings).unwrap_err(),
+            IdaError::InitializationTimeMismatch {
+                system_time_s: 0.0,
+                requested_time_s: 0.25,
+            }
+        );
+        assert_eq!(allocation_audit::snapshot(), Default::default());
+
+        settings.initial_time_s = 0.0;
+        settings.output_times_s = vec![0.5];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 0 };
+        allocation_audit::reset();
+        assert_eq!(
+            backend.initialize_session(&system, &settings).unwrap_err(),
+            IdaError::EventRestartLimit {
+                active: 1,
+                maximum: 0,
+            }
+        );
+        assert_eq!(allocation_audit::snapshot(), Default::default());
+
+        let inactive_graph = two_event_integrator_graph_at(-1.0, 2.0);
+        let inactive_system =
+            DaeResidualSystem::lower(&inactive_graph, 0.0, &solver_settings()).unwrap();
+        settings.output_times_s = vec![1.0];
+        allocation_audit::reset();
+        let inactive_session = backend
+            .initialize_session(&inactive_system, &settings)
+            .unwrap();
+        drop(inactive_session);
+        let inactive_snapshot = allocation_audit::snapshot();
+        assert!(inactive_snapshot.ida_memories_allocated > 0);
+        assert_balanced(inactive_snapshot, "KLU inactive-event filtering");
+
+        let too_close = f64::from_bits(1.0_f64.to_bits() + 1);
+        let graph = step_events_graph(&[too_close]);
+        let system = DaeResidualSystem::lower(&graph, 1.0, &solver_settings()).unwrap();
+        settings.initial_time_s = 1.0;
+        settings.output_times_s = vec![2.0];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 1 };
+        allocation_audit::reset();
+        assert_eq!(
+            backend.initialize_session(&system, &settings).unwrap_err(),
+            IdaError::InvalidEventSchedule {
+                code: "ida.events.segment_too_close",
+                event_index: 0,
+                event_time_s: too_close,
+            }
+        );
+        assert_eq!(allocation_audit::snapshot(), Default::default());
+
+        let event = 1.0_f64;
+        let adjacent = f64::from_bits(event.to_bits() + 1);
+        let graph = step_events_graph(&[event, adjacent]);
+        let system = DaeResidualSystem::lower(&graph, 0.0, &solver_settings()).unwrap();
+        settings.initial_time_s = 0.0;
+        settings.output_times_s = vec![2.0];
+        settings.event_policy = IdaEventPolicy::Restart { max_restarts: 2 };
+        allocation_audit::reset();
+        assert_eq!(
+            backend.initialize_session(&system, &settings).unwrap_err(),
+            IdaError::InvalidEventSchedule {
+                code: "ida.events.correction_target_invalid",
+                event_index: 0,
+                event_time_s: event,
+            }
+        );
+        assert_eq!(allocation_audit::snapshot(), Default::default());
     }
 
     #[cfg(feature = "sundials-ida-klu")]

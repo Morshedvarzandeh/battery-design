@@ -1,0 +1,32 @@
+[package]
+name = "battery-design-dae-service"
+version = "0.1.0"
+description = "Source-only bounded protocol for isolated battery-design native DAE workers"
+authors = ["Morshed Varzandeh"]
+license = "AGPL-3.0-or-later"
+edition = "2021"
+rust-version = "1.77"
+
+[dependencies]
+battery-design-core = { path = "../rust-core" }
+battery-design-dae-native = { path = "../rust-dae-native", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+
+[[test]]
+name = "service_framing_campaign"
+path = "tests/service_framing_campaign.rs"
+
+[[test]]
+name = "service_admission_campaign"
+path = "tests/service_admission_campaign.rs"
+
+[[test]]
+name = "service_supervision_campaign"
+path = "tests/service_supervision_campaign.rs"
+
+[profile.release]
+panic = "unwind"

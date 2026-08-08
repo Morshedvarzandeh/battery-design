@@ -19,8 +19,18 @@ battery-design-core = { path = "../rust-core" }
 panic = "unwind"
 
 [[test]]
+name = "dense_event_restart_campaign"
+path = "tests/dense_event_restart_campaign.rs"
+required-features = ["sundials-ida"]
+
+[[test]]
 name = "klu_feature_off"
 path = "tests/klu_feature_off.rs"
+
+[[test]]
+name = "klu_event_restart_campaign"
+path = "tests/klu_event_restart_campaign.rs"
+required-features = ["sundials-ida-klu"]
 
 [[test]]
 name = "klu_backend_identity"

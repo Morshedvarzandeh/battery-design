@@ -812,6 +812,69 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-ci-native-test-count-drift',
+      revision: 3,
+      title: 'Native CI exact-count gate remains pinned to an older test population',
+      symptom: 'A larger native solver campaign compiles and passes, but its hosted gate fails afterward because the workflow still expects the previous unit-binary and aggregate test counts.',
+      evidence: [
+        'DAE Iteration 3 pinned the KLU feature matrix to 73 unit cases and 130 total cases across eight Cargo result blocks.',
+        'Iteration 4 added 18 dense event/restart unit cases and six KLU-gated internal seams, making the feature-on unit binary 97 cases and the complete matrix 154 while retaining the same eight result blocks.',
+        'The Commit 2 workflow still named and asserted 130 total and the 73-case unit block, so fixing the earlier Rust 1.77 compilation failure alone would only expose a second deterministic CI failure.',
+        'The later 18-case dense event/restart manifest target was accounted for atomically as its own result block, producing the then-current 172-case, nine-block dense-only checkpoint without rewriting the historical 154-case, eight-block incident.',
+        'The complementary 18-case KLU event/restart manifest target was also accounted for atomically as a second 18-case result block, producing the current 190-case, ten-block matrix while retaining both earlier checkpoints.',
+      ],
+      detection: [
+        {
+          method: 'source-to-workflow native result-block audit',
+          signal: 'Count every cfg-resolved Cargo test block for the exact feature matrix and compare its per-block distribution, result-line count and aggregate with each workflow assertion.',
+          failureCondition: 'A current source test population differs from the named workflow total, any expected per-block count, or the asserted number of Cargo result lines.',
+        },
+      ],
+      causalChain: [
+        'The workflow intentionally uses literal per-binary and aggregate counts so skipped or unregistered tests fail closed.',
+        'A later solver slice adds embedded tests without updating the separate workflow literals in the same change.',
+        'Local cargo test reports success because it does not apply the hosted log-count assertions.',
+        'Hosted CI reaches the exact-count step and rejects a healthy expanded campaign as if cases were missing.',
+      ],
+      rootCause: 'The executable test inventory and its fail-closed CI accounting were maintained as separate literals without one atomic review invariant tying every test-population change to the workflow distribution.',
+      resolution: [
+        'Update both debug and release KLU steps from the historical 73-case unit block and 130-case aggregate to the verified 97-case unit block and 154-case aggregate while preserving all eight result blocks.',
+        'Keep the historical 48-case manifest campaign and 81-case dense baseline frozen by names; report the later embedded event seams as separate current evidence rather than rewriting old denominators.',
+        'Add a repository test that pins the current workflow names, per-block unit expectation, aggregate and absence of the stale values beside the current Rust source accounting.',
+        'When the 18-case dense event/restart manifest target is registered, add its 18-case result block to both hosted matrices in the same change, advancing current execution from 154 cases in eight blocks to 172 cases in nine blocks while retaining the original incident evidence.',
+        'When the complementary 18-case KLU manifest target is registered, change the per-block multiplicity from one to two and advance both hosted matrices from 172 cases in nine blocks to 190 cases in ten blocks without rewriting either historical checkpoint.',
+      ],
+      prevention: [
+        'Treat every added, removed, gated or moved Cargo test as a coordinated change to source inventory, documentation and exact hosted result-block assertions.',
+        'Keep per-binary counts, aggregate totals and result-line counts together; changing only the headline total is insufficient.',
+        'Separate frozen historical comparison populations from live CI execution counts so later coverage can grow without falsifying prior evidence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-iteration4-event-evidence.test.mjs',
+          assertion: 'The historical Iteration 3 population, 154-case incident and 172-case dense-only checkpoint remain name-bound while current source and CI agree on the 97-case embedded unit binary, two separate 18-case manifest targets, 190 total cases and ten Cargo result blocks in debug and release.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The native CI count-drift cause remains independently searchable, preserves the historical 73/130 to 97/154 correction and records the later atomic 172-case/nine-block and 190-case/ten-block extensions without moving frozen multiplier populations.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['ci', 'evidence', 'rust', 'test-harness', 'testing'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: '.github/workflows/ci.yml',
+          note: 'Warning-denied debug and release KLU matrices with exact current 97-case embedded, two 18-case manifest targets, 190-case aggregate and ten-block accounting.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-iteration4-event-evidence.test.mjs',
+          note: 'Historical-name retention and current workflow/source count-coherence regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-cli-typo-default-fallback',
       title: 'Unknown CLI option silently falls back to a default',
       symptom: 'A misspelled governed export option appears to succeed but the intended value is ignored and a default drives the artifact.',
@@ -2402,12 +2465,14 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
     }),
     record({
       id: 'rc-rust-msrv-float-pattern-lint-gap',
+      revision: 2,
       title: 'Float-pattern test passes locally but fails the pinned Rust toolchain',
       symptom: 'A native solver campaign is green on the developer toolchain but its hosted Rust 1.77.2 gate fails before running the tests because warning denial rejects floating-point literals in a matches! pattern.',
       evidence: [
         'PR 75 CI run 31223697624 failed in the pinned SUNDIALS job while compiling rust-dae-native/src/native.rs, before the debug native campaign could execute.',
         'The interpolation regression matched interval_start_s: 0.5 and interval_end_s: 0.75 directly inside matches!, triggering illegal-floating-point-literal-pattern under Rust 1.77.2 with RUSTFLAGS=-Dwarnings.',
         'The same source compiled without that diagnostic on the available Rust 1.87.0 development toolchain, so a latest-toolchain-only local run did not reproduce the minimum-supported-toolchain gate.',
+        'PR 79 CI run 31233721450 repeated the same failure class in three new event-restart assertions that matched event_time_s: 0.5 directly; both dense and KLU debug compilation stopped before their campaigns could run.',
       ],
       detection: [
         {
@@ -2425,6 +2490,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       rootCause: 'The regression encoded numerical values as floating-point patterns and prepublication verification did not compile that test with the exact warning-denied minimum-supported Rust toolchain used by CI.',
       resolution: [
         'Replace the matches! float pattern with full IdaError structural equality, carrying requested_time_s from the loop value and comparing the interval fields as ordinary values.',
+        'For assertions that need partial structural matching, bind the floating-point field as a variable and compare it in the matches! guard instead of placing a float literal in the pattern.',
         'Keep the native CI job pinned to Rust 1.77.2 with RUSTFLAGS=-Dwarnings and require that exact gate before merge.',
       ],
       prevention: [
@@ -2455,6 +2521,11 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'incident',
           locator: 'GitHub Actions run 31223697624 job 93013531192',
           note: 'Exact-head PR 75 failure at illegal-floating-point-literal-pattern before native test execution.',
+        },
+        {
+          kind: 'incident',
+          locator: 'GitHub Actions run 31233721450',
+          note: 'Exact-head PR 79 recurrence in event-time patterns across both dense and KLU native jobs.',
         },
       ],
     }),
@@ -2510,6 +2581,842 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'tests/runner-security.test.mjs',
           note: 'Outer-envelope and nested-spec negative tests.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-admission-cyclic-algebraic-preflight',
+      title: 'Cyclic algebraic initialization allocates dense Newton work before KLU',
+      symptom: 'A request aimed at the sparse KLU backend can pass its 10,000-variable ceiling yet make DAE lowering allocate a caller-sized dense Newton Jacobian while calculating consistent initial values, before any native backend is called.',
+      evidence: [
+        'DaeResidualSystem::lower calls the compiled graph evaluator to calculate consistent initial y and yp before it constructs or invokes a native IDA session.',
+        'When the algebraic graph is cyclic, the evaluator creates vec![vec![0.0; n]; n] and finite-differences every algebraic coordinate during Newton iteration; this is dense n-squared storage and work even if the eventual requested backend is KLU.',
+        'Core SolverSettings validation requires algebraic_max_iterations and implicit_max_iterations to be nonzero but does not impose a service ceiling. Algebraic iterations directly bound this consistent-initial Newton path; the implicit setting belongs to the separate built-in backward-Euler path and is not executed by Phase 2.',
+        'The Phase 2 admission campaign rejects cyclic algebraic dimension 257 and either iteration ceiling 101 before DAE lowering, accepts their exact 256/100 boundaries, and keeps an acyclic 10,000-variable KLU graph admissible.',
+      ],
+      detection: [
+        {
+          method: 'pre-native cyclic-initialization boundary regression',
+          signal: 'Submit exact-limit and plus-one cyclic algebraic graphs and iteration settings alongside an acyclic KLU graph at its separate dimension ceiling, observing whether DAE lowering begins.',
+          failureCondition: 'A 257-variable cyclic algebraic system or an iteration value of 101 reaches DAE lowering, a legal 256/100 boundary is refused, or the acyclic KLU 10,000-variable boundary is incorrectly reduced.',
+        },
+      ],
+      causalChain: [
+        'The request selects the sparse native backend and satisfies its public variable and known-CSC ceilings.',
+        'Service admission treats those later sparse ceilings as though they also bounded graph lowering and consistent-initial evaluation.',
+        'DAE lowering evaluates a cyclic algebraic subsystem with the core dense Newton path before native resource construction.',
+        'The dense n-squared allocation and caller-controlled algebraic iteration work occur before KLU budgets, factorization evidence or process isolation can apply.',
+      ],
+      rootCause: 'The admission boundary conflated eventual sparse-backend limits with the distinct dense cyclic-algebraic initialization and algebraic iteration work performed during pre-native DAE lowering.',
+      resolution: [
+        'When any algebraic loop exists, reject a graph with more than 256 total algebraic variables before DAE lowering.',
+        'Reject caller-supplied algebraic_max_iterations above the fixed service ceiling of 100 before lowering; separately cap implicit_max_iterations at 100 as policy even though Phase 2 does not execute the built-in backward-Euler path.',
+        'Preserve the independent 10,000-variable KLU ceiling for acyclic graphs and state explicitly that these checks do not bound KLU symbolic/numeric factor fill or total process resources.',
+      ],
+      prevention: [
+        'Budget every preprocessing and initialization algorithm by its actual dense or sparse implementation rather than by the backend selected for a later stage.',
+        'Exercise exact-limit, plus-one and topology-changing cases so a cycle cannot inherit an unrelated acyclic sparse claim.',
+        'Keep native factor-fill, CPU, memory and lifetime nonclaims until process isolation measures and enforces them directly.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 2 evidence binds the 256-total-algebraic loop and 100-algebraic-iteration ceilings before DAE lowering, keeps the unused implicit cap distinct, and preserves the acyclic KLU 10,000-variable and factor-fill nonclaims.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['algebraic-cycle', 'dae', 'dense-newton', 'preflight', 'resource-bounds', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/dae.rs',
+          note: 'Unchanged consistent-initial lowering call into the compiled graph evaluator.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/equations.rs',
+          note: 'Unchanged cyclic algebraic dense Newton allocation and caller-controlled iteration loops.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/admission.rs',
+          note: 'Phase 2 topology and fixed-iteration admission checks before DAE lowering.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_admission_campaign.rs',
+          note: 'Exact cyclic, iteration and acyclic KLU boundary campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact admission source binding plus factor-fill and runtime nonclaims.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-admission-f64-block-allocation-order',
+      title: 'Float-block decoder allocates from encoded length before count validation',
+      symptom: 'A request entering the future native-service admission boundary can declare one floating-point value but attach a near-frame-limit base64 string, causing the decoder to reserve roughly three megabytes before it reports that the declared count and payload length disagree.',
+      evidence: [
+        'F64BlockWire::decode_values originally called decode_base64 before multiplying the declared count by eight and comparing the decoded byte length.',
+        'decode_base64 reserves (data.len() / 4) * 3 bytes from the caller string length, so the later count mismatch cannot prevent that allocation.',
+        'A maximum frame-size check and a small declared count are insufficient when admission does not first bind the count to the exact canonical encoded length.',
+        'Phase 2 derives 4 * ceil((count * 8) / 3) with checked arithmetic and rejects a mismatched string length before invoking the allocating float decoder.',
+        'The older public Phase 1 decode_request_frame codec helper is unchanged and still performs its own block decode; callers do not gain the Phase 2 allocation-order guarantee unless they enter through admit_request_frame.',
+      ],
+      detection: [
+        {
+          method: 'encoded-length error-precedence and source-order regression',
+          signal: 'Pair a tiny declared float count with a canonical-shape near-frame-limit base64 string, require the typed encoded-length mismatch, and bind the admission call order ahead of decode_values.',
+          failureCondition: 'The request reaches float decoding instead of the encoded-length error, the source orders decode_values first, checked arithmetic wraps, or a matching exact-length block is refused.',
+        },
+      ],
+      causalChain: [
+        'The external request provides both a declared float count and a base64 data string.',
+        'Validation decodes and reserves storage from the string before deriving the byte length authorized by the count.',
+        'Only after allocation does it compare decoded bytes with count multiplied by eight.',
+        'A hostile mismatch consumes memory even though its final typed result is a validation error.',
+      ],
+      rootCause: 'The service admission design originally checked the relationship between two caller-controlled size fields only after the larger field had already driven decoded-byte allocation.',
+      resolution: [
+        'Checked-multiply the declared count by eight and derive the exact canonical standard-base64 length as four times the ceiling of decoded bytes divided by three.',
+        'In admit_request_frame, require the supplied string length to equal that derived length before calling F64BlockWire::decode_values or any decoded-byte allocator.',
+        'Retain canonical-base64 and finite-value validation after the preallocation length gate; this service-admission ordering fix does not change the standalone Phase 1 codec helper or claim process memory containment.',
+      ],
+      prevention: [
+        'When a wire carries both a count and encoded data, validate their exact checked size relation before decoded-byte reservation or copy.',
+        'Test tiny-count/large-data, exact-boundary, plus-one, multiplication-overflow and noncanonical encodings with typed error precedence and explicit admission source-order evidence.',
+        'Route untrusted service requests through admit_request_frame rather than treating the Phase 1 codec helper as complete admission, and review every validation failure for work already performed before the error.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 2 evidence binds checked count-to-canonical-base64 length validation ahead of float decoding and preserves the distinct process-memory nonclaim.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['allocation', 'base64', 'dae', 'preflight', 'resource-bounds', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/protocol.rs',
+          note: 'Unchanged float block decoder and Phase 1 codec helper; the Phase 2 guarantee depends on calling admission first.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/admission.rs',
+          note: 'Checked declared-count to canonical-base64 length preflight.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_admission_campaign.rs',
+          note: 'Hostile count/data mismatch and exact request-limit admission campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact-source allocation-order and admission-scope evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-admission-input-slot-preallocation',
+      title: 'Caller-controlled Sum arity reaches core allocation before backend caps',
+      symptom: 'A source-only native-service request can satisfy its byte and variable ceilings while one Sum block declares enough inputs to trigger a very large core graph allocation before any native solver is called.',
+      evidence: [
+        'The core graph compiler constructs one Vec<Option<BlockId>> with vec![None; block.kind.input_count()] for every block, so a caller-controlled Sum input count is an allocation dimension independent of DAE variable count.',
+        'The numeric graph transport accepts a positive integer Sum input count but does not itself impose a service resource policy on that count.',
+        'Dense/KLU variable, CSC and native-work ceilings apply too late to contain an allocation already requested while decoding and compiling the caller graph.',
+        'The Phase 2 admission campaign exercises the exact 4,096-input per-Sum and 100,000-slot aggregate boundaries and rejects each plus-one request before core graph decode.',
+      ],
+      detection: [
+        {
+          method: 'preallocation graph-shape boundary regression',
+          signal: 'Admit requests at and one above the fixed per-Sum arity and checked aggregate input-slot ceilings while observing whether core graph decoding is entered.',
+          failureCondition: 'A 4,097-input Sum or 100,001 aggregate input slots reaches core graph decode, arithmetic wraps, or either exact legal boundary is rejected by the shape gate.',
+        },
+      ],
+      causalChain: [
+        'The request carries each Sum block input count as a caller-controlled integer.',
+        'Admission checks payload bytes and later solver dimensions but omits this separate allocation dimension.',
+        'Core graph compilation sizes a per-block input-slot vector directly from the declared count.',
+        'An oversized declaration can consume memory or fail allocation before sparse/native work budgets or process isolation can contain it.',
+      ],
+      rootCause: 'The service trust boundary bounded solver dimensions but did not bound caller-controlled block arity and its checked graph-wide sum before invoking a core decoder that allocates from those values.',
+      resolution: [
+        'Scan the decoded request wire before core graph decode and reject any Sum fan-in above the fixed 4,096-input service ceiling.',
+        'Checked-add every block input count and reject an aggregate above 100,000 slots before calling the core graph decoder or lowerer.',
+        'Keep these ceilings fixed in service admission and return typed preallocation evidence; this Phase 2 fix does not modify rust-core or claim process-level resource containment.',
+      ],
+      prevention: [
+        'Inventory every caller-controlled value that becomes a length, capacity or work-loop bound and gate it before the first dependent allocation.',
+        'Test exact-limit, plus-one and checked-overflow cases for both each-item and aggregate multiplicities.',
+        'Keep service admission, core model validity, native backend budgets and process isolation as separate reviewed boundaries.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 2 source evidence binds the fixed Sum fan-in and checked total-input-slot caps to rejection before core graph decode and preserves the no-core-change boundary.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['allocation', 'dae', 'denial-of-service', 'preflight', 'resource-bounds', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/equations.rs',
+          note: 'Unchanged core graph compilation allocation that makes input-slot arity a separate service admission dimension.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/admission.rs',
+          note: 'Phase 2 bounded request admission and pre-core graph-shape checks.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_admission_campaign.rs',
+          note: 'Exact per-Sum and aggregate input-slot boundary campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact admission/core source binding and service-runtime nonclaims.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-deadline-observation-race',
+      title: 'Incomplete wall-time custody can accept work after the configured deadline',
+      symptom: 'A worker can consume uncharged startup/setup time or be accepted as a normal exit after the configured wall interval when custody begins late or exit arbitration reuses a stale elapsed-time sample.',
+      evidence: [
+        'The earlier lifecycle started its wall timer after spawn, request copying and pipe/thread setup, so those operations were excluded from the configured worker interval.',
+        'The final source completes the fallible admitted-request copy before custody, starts Instant immediately before Command::spawn, and reaches the monitor only after pipe and thread setup so spawn and post-spawn setup are charged to the interval.',
+        'The first WNOWAIT repair checked started.elapsed only at the top of the monitor loop and then called the non-reaping waitid observer.',
+        'Scheduler preemption or waitid latency can carry execution across the wall boundary between that first check and an Ok(true) exit observation.',
+        'The original Ok(true) branch proceeded directly to group cleanup and Child::wait, classifying the outcome as Exited even when the wall interval had expired before that arbitration.',
+        'The final source rechecks started.elapsed immediately after WNOWAIT reports the leader exited while the leader remains unreaped, and chooses timeout cleanup at or beyond the boundary.',
+      ],
+      detection: [
+        {
+          method: 'post-observation deadline-precedence review',
+          signal: 'Bind the fallible pre-custody request copy, Instant immediately before spawn, post-spawn setup, the pre-observation elapsed check, non-reaping exit observation and second elapsed check before normal-exit group signal and reap.',
+          failureCondition: 'Spawn or post-spawn setup is outside custody, a success path follows a blocking or preemptible exit observation without rechecking the wall clock, or equality at the deadline is accepted as normal exit.',
+        },
+      ],
+      causalChain: [
+        'Starting custody after spawn and setup omits worker-controlled or OS-delayed startup time from the configured interval.',
+        'The monitor confirms that elapsed time is still below the configured wall interval.',
+        'Execution is delayed before or during the non-reaping leader-exit observation.',
+        'The leader exits and the observation returns true after the wall boundary.',
+        'Without a second clock comparison, the supervisor gives exit success precedence over the already-expired timeout policy.',
+      ],
+      rootCause: 'Wall policy was sampled at incomplete lifecycle boundaries: custody began after startup work, and the normal-exit branch treated an earlier time sample as valid after a preemptible system call.',
+      resolution: [
+        'Complete the admitted-request copy with checked fallible allocation before custody, then start Instant immediately before Command::spawn so spawn and every later setup step consume the configured interval.',
+        'Keep the initial elapsed-time check before WNOWAIT so already-expired work enters timeout cleanup directly.',
+        'When WNOWAIT reports an exited leader, compare elapsed time with the wall interval again before normal-exit group cleanup or Child::wait.',
+        'At or beyond the deadline, take the timeout cleanup path while the leader remains unreaped; only a still-before-deadline observation may proceed to group signal, reap and exit classification.',
+      ],
+      prevention: [
+        'Define exactly which host-only preparation precedes custody and start the worker deadline before the first spawn or post-spawn operation.',
+        'Revalidate deadlines after every blocking or preemptible operation whose result competes with timeout outcome precedence.',
+        'Specify equality semantics explicitly; Phase 3 uses elapsed greater than or equal to the wall interval as timeout.',
+        'Preserve source-order evidence around boundary arbitration even when an exact scheduler-preemption timing hook would make the test harness distort production code.',
+        'Keep wall-policy arbitration distinct from process-group identity ownership and I/O backpressure causes.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds elapsed-time checks both before WNOWAIT and immediately after an exited observation, ahead of group signal and Child::wait.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['concurrency', 'dae', 'deadline', 'lifecycle', 'service', 'time-of-check'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Wall-deadline arbitration before and after non-reaping exit observation.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Fixed wall-policy boundary and bounded timeout lifecycle case.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact post-WNOWAIT time-check source ordering.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-descendant-pipe-liveness',
+      title: 'Descendant-held capture pipes outlive the supervised worker leader',
+      symptom: 'A nominally bounded one-shot worker call can reap its direct child and then wait indefinitely for standard-output or standard-error EOF because a descendant still owns an inherited pipe write end.',
+      evidence: [
+        'The Phase 3 lifecycle review found that direct-child exit and pipe-reader completion have different ownership boundaries: reaping the leader does not close write ends inherited by a descendant.',
+        'An EOF-driven reader cannot finish while any process retains the corresponding write end, so joining or waiting for that reader after leader exit can bypass the nominal worker wall deadline.',
+        'The regression fixture starts a same-process-group descendant that inherits standard output and error, then exercises both a hanging leader at the wall deadline and a leader that emits a valid response and exits first.',
+        'The timeout path proves bounded return, explicit direct-leader reaping and observed descendant termination; the normal leader-exit path proves a bounded valid response and observed descendant termination, while the source-order binding confirms Child::wait after the group signal.',
+        'After cleanup, the final source unconditionally attempts writer, stdout and stderr receives under one shared absolute deadline before returning any retained cleanup error.',
+      ],
+      detection: [
+        {
+          method: 'descendant-held pipe liveness regression',
+          signal: 'Have a worker leader spawn a same-process-group sleeper that inherits both capture pipes, record both immutable PID-plus-start-time process identities, and cover deadline cleanup plus normal leader exit.',
+          failureCondition: 'Supervision waits past its bounded deadline, returns before reaping the leader, leaves the recorded descendant running, or cannot accept the leader response because the descendant retains a pipe write end.',
+        },
+      ],
+      causalChain: [
+        'The supervisor gives the direct worker piped standard output and error.',
+        'The worker spawns a descendant without closing those inherited write ends.',
+        'The direct worker exits and is reaped, but the descendant keeps each pipe live.',
+        'A supervisor that now waits for EOF-driven readers has transferred liveness to an unowned descendant and can exceed its wall policy indefinitely.',
+      ],
+      rootCause: 'The initial supervision lifecycle treated direct-child exit as the complete worker lifetime while its EOF-driven capture threads were actually coupled to every descendant retaining an inherited pipe write end.',
+      resolution: [
+        'Start the Linux worker in a distinct process group and retain its process-group identifier as part of the one-shot lifecycle.',
+        'On the wall deadline, post-spawn failure and direct-leader exit, signal the whole owned process group before waiting for pipe completion, and explicitly reap the direct child.',
+        'Use one shared fixed two-second receive deadline across the writer and both readers, attempt all three receives, and only then return a retained cleanup error so a missed EOF or early channel error cannot skip later bounded drains.',
+        'Keep the guarantee scoped to the tested same-process-group lifecycle: a descendant moved or created outside the original group or session can escape this signal, so Phase 3 does not claim universal descendant containment or a process sandbox.',
+        'Treat that receive deadline as a bound on channel waiting only: an escaped pipe holder can leave detached I/O threads blocked, and repeated calls can accumulate escaped processes and threads.',
+      ],
+      prevention: [
+        'Model child processes, descendants and every inherited pipe endpoint as one lifecycle graph rather than equating leader exit with resource completion.',
+        'Terminate the owned process group before an EOF-dependent drain and retain a separate finite drain deadline even when group signaling succeeds.',
+        'Test both timeout and successful-leader-exit paths with a real pipe-holding descendant, and preserve explicit escape, cancellation and sandbox nonclaims.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds process-group cleanup and the finite drain deadline to the same-process-group descendant fixture while preserving escape and sandbox nonclaims.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['dae', 'lifecycle', 'pipes', 'process-group', 'resource-bounds', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'One-shot Linux process-group ownership, group termination, direct-child reaping and finite capture-drain deadline.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Test-only worker modes whose same-process-group descendants inherit and hold the capture pipes.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Deadline and leader-exit regressions that observe bounded return and descendant termination.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact lifecycle source/test binding plus process-containment nonclaims.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-direct-leader-group-escape',
+      title: 'Group-only cleanup loses the owned worker after a process-group change',
+      symptom: 'A timed-out direct worker can remain alive and make cleanup block in Child::wait after it joins another existing process group, because a signal sent only to the original negative PGID no longer addresses that leader.',
+      evidence: [
+        'Lifecycle review found that the initial cleanup treated the process_group(0) identifier as durable direct-child control and followed the original-group signal with a blocking wait.',
+        'A direct leader can use setpgid to join another existing group in the same session, so kill(-original_pgid, SIGKILL) can miss the still-live owned child even though the Child handle remains valid.',
+        'The frozen deadline case now runs escape-group-hang: the fixture records its original group, joins its parent existing group, proves the group changed, hangs, and under a 400 ms policy returns the typed timeout in under two seconds with its PID-plus-start-time identity reaped.',
+        'Final cleanup first signals the original group for same-group descendants, independently calls Child::kill on the owned direct worker, calls Child::wait, and retains the first group/direct/wait error.',
+      ],
+      detection: [
+        {
+          method: 'direct-leader process-group escape regression',
+          signal: 'Have the direct fixture join a different existing same-session group with setpgid, record both group identifiers and immutable process identity, then require bounded typed timeout and direct-child reaping.',
+          failureCondition: 'The fixture group does not change, group-only cleanup misses the leader and blocks, timeout is not typed and bounded, or the original direct-worker identity remains after return.',
+        },
+      ],
+      causalChain: [
+        'The supervisor starts the worker in a new process group and remembers that original PGID.',
+        'The direct worker joins another existing process group with setpgid before cleanup.',
+        'A negative-PGID signal addresses the original group but no longer addresses the direct worker.',
+        'A following blocking Child::wait has no remaining action that terminates the still-live owned leader and can hang indefinitely.',
+      ],
+      rootCause: 'Cleanup conflated original process-group membership with durable ownership of the direct Child, even though group membership can change while the retained Child handle still identifies the process that must be killed and reaped.',
+      resolution: [
+        'Retain the Child handle and original PGID as separate controls with separate purposes.',
+        'Signal the original negative PGID for descendants that remain there, then independently call Child::kill so a moved direct leader is addressed by its owned process handle.',
+        'Always call Child::wait to reap the direct worker and retain the first group-kill, direct-kill or wait error for later precedence.',
+      ],
+      prevention: [
+        'Do not treat a process group as a durable substitute for the direct child handle.',
+        'Exercise cleanup after a real setpgid transition and verify both group transition and immutable leader identity rather than only successful signaling.',
+        'Keep this direct-leader fallback distinct from same-group descendant cleanup, escaped-descendant noncontainment and stale-PGID reuse ordering.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds group-first plus Child::kill/Child::wait source ordering to the executable 400 ms setpgid escape and identity-reap subcase.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['cleanup', 'dae', 'lifecycle', 'process-group', 'service', 'setpgid'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Original-group signal plus independent direct Child kill, wait and first-error retention.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Test-only escape-group-hang mode that joins the parent existing process group and publishes the transition.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Frozen deadline case proving changed PGID, bounded typed timeout and direct-leader identity reaping.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact source/fixture/campaign binding and descendant-scope nonclaims.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-fixture-msrv-syntax-drift',
+      title: 'Test-fixture FFI syntax exceeds the pinned Rust toolchain',
+      symptom: 'A source-only supervision campaign can fail before lifecycle assertions run when its directly compiled fixture uses newer Rust FFI syntax that the repository-pinned compiler cannot parse.',
+      evidence: [
+        'The first test-only worker fixture used unsafe extern syntax that is newer than the pinned Rust 1.77.2 toolchain used by the isolated service job.',
+        'Compatibility review caught the mismatch proactively before a hosted CI execution; no hosted failure is claimed.',
+        'The fixture now uses an edition-2021 plain extern "C" block, with unsafe kept at each FFI call site rather than on the block syntax.',
+        'The campaign resolves the active RUSTC and directly compiles the fixture with --edition=2021 and -Dwarnings, so the same compiler running the Cargo campaign validates the auxiliary source.',
+      ],
+      detection: [
+        {
+          method: 'active-toolchain auxiliary-source compilation',
+          signal: 'Compile every test-only executable source with the active pinned rustc, explicit edition and warnings denied before executing the fixture.',
+          failureCondition: 'An auxiliary fixture is accepted only by a newer developer compiler, bypasses the pinned compiler, uses unsafe extern under the Rust 1.77 contract, or is not compiled with warnings denied.',
+        },
+      ],
+      causalChain: [
+        'The repository pins Rust 1.77.2 for the isolated service campaign.',
+        'A test-only executable is compiled outside Cargo target discovery and can silently follow the author machine compiler syntax.',
+        'The fixture uses newer unsafe extern grammar even though its surrounding campaign is edition 2021 and MSRV-bound.',
+        'The pinned compiler rejects the fixture before any supervision behavior can be exercised.',
+      ],
+      rootCause: 'The auxiliary fixture source was not initially authored against the same explicit MSRV grammar as the Cargo campaign that compiles and launches it.',
+      resolution: [
+        'Use the Rust-1.77-compatible plain extern "C" declaration and retain explicit unsafe blocks at the foreign-function call sites.',
+        'Compile the fixture with the active RUSTC, --edition=2021 and -Dwarnings from inside the campaign rather than relying on a prebuilt or host-default binary.',
+        'Keep the fixture test-only and out of Cargo product binaries and release artifacts.',
+      ],
+      prevention: [
+        'Apply the repository MSRV to dynamically compiled fixtures, build scripts and code generators as well as ordinary crate targets.',
+        'Bind syntax evidence to the exact active-rustc command and preserve the no-hosted-failure distinction when review catches drift proactively.',
+        'Avoid interpreting successful fixture compilation as native-worker implementation or shipped-product evidence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence requires plain extern "C", excludes unsafe extern and binds direct fixture compilation to active rustc edition 2021 with warnings denied.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['ci', 'dae', 'ffi', 'fixture', 'msrv', 'rust', 'service'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Rust-1.77-compatible test-only FFI declaration and call-site unsafe blocks.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Active-rustc edition-2021 warnings-denied fixture compilation.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact fixture syntax, compiler invocation and hosted-failure nonclaim.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-pgid-reuse-cleanup-race',
+      title: 'Reaping a worker leader releases its process-group identifier before cleanup',
+      symptom: 'Normal-exit cleanup can send SIGKILL to an unrelated concurrently spawned process group after the worker leader is reaped and its numeric PID/PGID is immediately reused.',
+      evidence: [
+        'The initial normal-exit loop used Child::try_wait, which both observed and reaped the leader before calling kill on the negative process-group identifier.',
+        'The Linux worker starts with process_group(0), so its initial PGID equals the leader PID and that numeric identifier can be reused after the leader is reaped.',
+        'Adversarial source review found a concrete reuse window between the reap and stale negative-PGID signal. A concurrent campaign produced Code(101)/ENOENT symptoms consistent with cross-worker interference, but that run lacked PID/PGID/start-time or signal telemetry and the same symptom was later independently explained by the procfs namespace mismatch, so it is not causal proof that the stale signal killed another group.',
+        'The repaired source uses waitid with P_PID, WEXITED, WNOHANG and WNOWAIT to observe the exact leader exit without reaping, signals the still-owned group, and calls Child::wait only afterward.',
+        'The final cleanup flow retains its first error, attempts writer, stdout and stderr receives under one shared absolute deadline, and returns the cleanup error only after all three receive attempts.',
+      ],
+      detection: [
+        {
+          method: 'parallel process-group identity-reuse stress',
+          signal: 'Run many one-shot worker exits concurrently while descendants publish identity artifacts, and inspect whether normal-exit cleanup can affect any group other than the unreaped leader-owned PGID.',
+          failureCondition: 'The leader is reaped before its negative-PGID signal, an unrelated fixture loses its descendant or exits from cleanup interference, or exit observation consumes the child before group cleanup.',
+        },
+      ],
+      causalChain: [
+        'The supervisor creates a distinct process group whose numeric PGID equals the worker leader PID.',
+        'Normal-exit polling calls a reaping API before group cleanup.',
+        'Reaping releases the numeric identifier and a concurrent spawn may reuse it as a new PID and PGID.',
+        'The delayed negative-PGID SIGKILL now addresses the unrelated new process group rather than the original worker descendants.',
+      ],
+      rootCause: 'The cleanup sequence discarded kernel ownership of the PID/PGID by reaping the leader before issuing a group-directed signal that still relied on that recyclable numeric identifier.',
+      resolution: [
+        'Observe Linux leader exit with waitid(P_PID, ..., WEXITED | WNOHANG | WNOWAIT), which leaves the exited child waitable and keeps its PID unavailable for reuse.',
+        'While the leader remains unreaped, signal the negative PGID so the numeric group identifier still belongs to the supervised worker lifecycle.',
+        'Call Child::wait only after the group signal attempt, then preserve any cleanup error independently from the worker exit status and bounded pipe drains.',
+        'Attempt all three I/O result receives under one shared deadline before giving the retained cleanup error precedence.',
+      ],
+      prevention: [
+        'Treat PID and PGID reuse as part of the concurrency model whenever cleanup spans more than one system call.',
+        'Use non-reaping exit observation when later cleanup operations still address the child by a recyclable numeric identifier.',
+        'Stress lifecycle ordering with parallel spawns and identity-publishing descendants, not only sequential single-worker fixtures.',
+        'Keep group-ownership sequencing distinct from test-side PID-plus-start-time evidence and from universal descendant-containment claims.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds waitid WNOWAIT observation, group signaling and final Child::wait in identity-preserving source order.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['concurrency', 'dae', 'lifecycle', 'pgid', 'pid-reuse', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Non-reaping Linux leader observation followed by group signaling and direct-child wait.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Identity-publishing worker and descendant behavior used by concurrent process lifecycle stress.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Parallel-by-default supervision cases and leader/descendant lifecycle assertions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact waitid flags and cleanup-order evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-pid-reuse-liveness-evidence',
+      title: 'PID-only liveness evidence misattributes a reused process identifier',
+      symptom: 'A worker-reaping regression can report that the supervised leader is still present even though it was reaped, because an unrelated process acquired the same numeric PID before the test inspected /proc.',
+      evidence: [
+        'An independent combined debug campaign passed 26 service cases but failed the supervision deadline case after its raw /proc/$pid existence assertion found the recorded leader PID still present.',
+        'Inspection showed that the reaped worker PID had already been reused by an unrelated codex-main process; the test had observed a different process rather than a surviving worker.',
+        'The exact deadline case passed when rerun alone, consistent with a timing-dependent evidence identity flaw rather than deterministic worker cleanup failure.',
+        'The repaired fixture records both numeric PID and Linux /proc/$pid/stat field 22 start time, and the test treats an absent entry, a changed start time, or Z/X state according to the original process identity instead of the PID alone.',
+      ],
+      detection: [
+        {
+          method: 'PID-reuse process-identity regression',
+          signal: 'Capture PID plus /proc start time in the observed process itself, then compare both fields while checking leader reaping and descendant termination under concurrently spawning tests.',
+          failureCondition: 'Liveness is inferred from a bare /proc/$pid path, a changed start time is treated as the original process, or a zombie/dead original descendant is reported as running.',
+        },
+      ],
+      causalChain: [
+        'The fixture writes only its numeric PID to the test artifact.',
+        'The supervised worker exits and its parent reaps it, releasing that number for kernel reuse.',
+        'Another concurrently created process receives the same PID before the assertion reads /proc.',
+        'A path-existence or PID-only state check attributes the unrelated process to the worker and creates a false cleanup failure.',
+      ],
+      rootCause: 'The regression treated a recyclable numeric PID as immutable process identity and omitted the kernel start-time discriminator needed to distinguish the original worker from later PID reuse.',
+      resolution: [
+        'Have the fixture record each process as PID plus Linux /proc/$pid/stat field 22 start time while that exact process is known to exist.',
+        'When observing the process later, return absent if /proc is gone or its start time differs; for direct-child reaping require the original identity to be absent.',
+        'For descendants owned only through process-group signaling, accept the same identity only in Z/X terminal state and reject it while running; do not mistake a reused PID for either outcome.',
+      ],
+      prevention: [
+        'Never use a numeric PID or /proc path existence alone as durable process identity in lifecycle tests or monitoring.',
+        'Bind observations to an immutable creation discriminator such as Linux process start time or a pidfd where the platform and interface permit it.',
+        'Run process-lifecycle campaigns concurrently as well as in isolation so rapid PID reuse and evidence races remain visible.',
+        'Keep evidence-identity failures distinct from the worker cleanup algorithm they are intended to measure.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds leader and descendant observations to PID-plus-start-time identity and terminal-state semantics rather than bare /proc path existence.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['ci', 'dae', 'lifecycle', 'pid-reuse', 'process-identity', 'service'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Fixture-side capture of PID plus Linux proc-stat start time before the identity can disappear or be reused.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Identity-aware leader reaping and descendant terminal-state observation.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact source binding for proc-stat field 22, changed-start-time and Z/X handling.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-pre-exec-error-allocation',
+      title: 'Formatting-capable error construction runs in the post-fork pre-exec child',
+      symptom: 'A rare resource-limit conversion failure can allocate or acquire allocator-related state after fork and before exec, where a multithreaded parent may have left those locks in an unusable inherited state.',
+      evidence: [
+        'The earlier set_linux_limit conversion-error branch used io::Error::new with a custom static message from inside the Command pre_exec call path.',
+        'io::Error::new boxes its custom error payload, so the branch was allocation-capable in the post-fork child; review identified the hazard without reproducing a deadlock.',
+        'All four fixed values—768 MiB, 20 seconds, zero and 16—are now checked against libc::rlim_t::MAX at compile time and directly cast before the fixed setrlimit calls, removing the runtime conversion-error branch.',
+        'The bounded policy helpers use fixed scalar setrlimit/prctl operations, read errno through libc::__errno_location and construct failures with io::Error::from_raw_os_error; exact evidence excludes io::Error::new, formatting and last_os_error from that slice.',
+      ],
+      detection: [
+        {
+          method: 'bounded post-fork source audit',
+          signal: 'Slice apply_linux_worker_policy, set_linux_limit and linux_errno_error through the pre_exec transitive path; require compile-time fit checks, direct casts, fixed libc calls and raw-OS-error construction while rejecting formatting, io::Error::new and last_os_error.',
+          failureCondition: 'Any reachable conversion, formatting, heap-backed custom error, lock-taking helper or unbounded Rust operation remains between fork and exec, or fixed values are cast without a compile-time fit proof.',
+        },
+      ],
+      causalChain: [
+        'Command::spawn forks a multithreaded parent and invokes the configured pre_exec closure in the child before exec.',
+        'Only the calling thread survives fork, while allocator or library locks held by other threads may remain locked in the child.',
+        'A rare rlim_t conversion failure enters io::Error::new and boxes a custom error payload.',
+        'That allocation can depend on inherited allocator state and hang or fail before exec, preventing the parent from obtaining a normal worker result.',
+      ],
+      rootCause: 'The pre_exec transitive call path used a general Rust custom-error constructor instead of limiting the post-fork child to fixed scalar libc operations and allocation-free raw OS error representation.',
+      resolution: [
+        'Prove each fixed policy constant fits libc::rlim_t with compile-time assertions and use direct scalar casts in the policy call path.',
+        'Restrict the runtime policy operations to the four fixed setrlimit calls and PR_SET_NO_NEW_PRIVS prctl call.',
+        'Read errno immediately through libc::__errno_location and use io::Error::from_raw_os_error for typed propagation without the custom-error boxing path.',
+      ],
+      prevention: [
+        'Audit every pre_exec closure transitively rather than reviewing only the closure body; helpers can hide allocation, formatting and locks.',
+        'Move validation and fallible preparation before spawn whenever values are not fixed compile-time policy constants.',
+        'Keep the claim narrow: this fixes the identified custom-error allocation path and does not qualify arbitrary Rust code as safe after fork or establish a process sandbox.',
+        'Do not describe the source review as an executable deadlock reproduction; the fixed-resource campaign exercises the successful post-exec values and no_new_privs state.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence bounds the policy-helper slice, requires compile-time rlim_t fits plus __errno_location/from_raw_os_error, and excludes io::Error::new, formatting and last_os_error.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['allocation', 'dae', 'fork', 'linux', 'pre-exec', 'resource-limits', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Compile-time rlim_t fit proofs and bounded libc/raw-errno pre-exec helpers.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Successful post-exec observation of all fixed limits and no_new_privs; not an error-branch deadlock reproduction.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact bounded policy-source assertions and prohibited-constructor regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-procfs-pid-namespace-evidence',
+      title: 'Process API PID and mounted procfs use different numeric namespaces',
+      symptom: 'A lifecycle fixture cannot publish or inspect the intended worker identity through /proc when it constructs the proc path from process::id or Child::id in an environment whose mounted procfs represents a different PID namespace.',
+      evidence: [
+        'The first identity repair used Rust process::id and Child::id values to open /proc/$pid/stat and associate leader and descendant artifacts.',
+        'In the execution environment, those process API values differed from the numeric identities exposed by the mounted procfs, so the constructed path could be absent or refer to the wrong procfs-visible process.',
+        'The fixture failure surfaced as exit 101 with ENOENT while trying to publish or await a descendant identity, even though process creation itself had succeeded.',
+        'The final fixture has each worker and descendant read /proc/self/stat inside its own process, extract the procfs-visible PID and field 22 start time, and publish both values for later observation.',
+      ],
+      detection: [
+        {
+          method: 'procfs-visible self-identity regression',
+          signal: 'Compare the process API PID with the PID parsed by the same process from /proc/self/stat, then require every observed lifecycle identity artifact to be self-published from the procfs view used by the observer.',
+          failureCondition: 'A test constructs /proc/$pid from process::id or Child::id without proving namespace equivalence, or an identity artifact is written by another process using an untranslated PID.',
+        },
+      ],
+      causalChain: [
+        'The test obtains a numeric PID from a process API in the caller or child namespace.',
+        'It assumes the mounted procfs was created for that same PID namespace.',
+        'The test interpolates the API value into /proc/$pid/stat even though procfs exposes a different numeric identity for the process.',
+        'Identity capture fails or attaches evidence to the wrong process before any start-time reuse check can help.',
+      ],
+      rootCause: 'The fixture conflated a process API PID with the numeric identity exported by the mounted procfs and omitted an explicit namespace translation or procfs-native self-identification step.',
+      resolution: [
+        'Have each fixture process read /proc/self/stat itself and parse the PID from the stat identity prefix plus field 22 process start time.',
+        'Publish that pair through the fixture artifact and let the observing test address /proc with the procfs-visible PID from the artifact.',
+        'Validate only the complete artifact shape while waiting for publication; do not compare it with process::id or Child::id unless namespace equivalence has been established independently.',
+      ],
+      prevention: [
+        'Treat PID namespaces and the PID namespace bound to a procfs mount as explicit evidence context in containerized process tests.',
+        'Prefer self-published procfs identity or pidfds over interpolating a PID obtained through a different process API or namespace boundary.',
+        'Keep namespace translation distinct from temporal PID reuse: self-identification selects the right numeric namespace, while start time distinguishes later reuse within that namespace.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds identity publication to fixture-side /proc/self/stat PID and start time without relying on process::id or Child::id namespace equivalence.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['ci', 'containers', 'dae', 'pid-namespace', 'process-identity', 'procfs', 'service'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Fixture-side parsing and publication of /proc/self/stat identity.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Consumer of the self-published procfs-visible PID and start-time pair.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact /proc/self/stat source binding and namespace-assumption nonclaim.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-stdin-pipe-deadline-bypass',
+      title: 'Blocking request write prevents the supervisor from reaching its deadline loop',
+      symptom: 'A worker that never reads standard input can make a one-shot supervision call block while writing a legal large request, before the code that polls the child and enforces wall time can run.',
+      evidence: [
+        'A pipe has finite kernel capacity, while the service request frame may contain up to a 4 MiB payload plus its header.',
+        'The initial Phase 3 lifecycle placed a complete blocking write_all ahead of the child-monitor loop, so a non-reading worker could fill the pipe and retain the supervising thread before its elapsed-time check.',
+        'The regression uses a 1 MiB admitted request and a fixture leader that records its identity but never reads standard input, which is large enough to exercise backpressure rather than relying on a small successful write.',
+        'The final supervisor writes on a dedicated thread, monitors the child concurrently, terminates the owned process group at the configured deadline and returns the typed timeout in under two seconds for a 750 ms policy.',
+      ],
+      detection: [
+        {
+          method: 'non-reading worker stdin-backpressure regression',
+          signal: 'Send a legal request substantially larger than pipe capacity to a fixture that leaves standard input unread and measure supervision from before spawn through timeout cleanup.',
+          failureCondition: 'The request-writing call prevents the deadline monitor from running, the call exceeds its bounded timeout/drain window, or the worker remains alive after the timeout result.',
+        },
+      ],
+      causalChain: [
+        'The supervisor spawns a worker with piped standard input.',
+        'The supervising thread synchronously writes the entire caller frame before it enters the child poll loop.',
+        'A worker that does not read fills the finite pipe and blocks the remaining write.',
+        'Because the same thread is stuck in write_all, it never reaches the wall-deadline check or cleanup path.',
+      ],
+      rootCause: 'Deadline enforcement and a potentially blocking request-pipe write were serialized on one thread, allowing standard-input backpressure to hold the only control path capable of enforcing the deadline.',
+      resolution: [
+        'Copy the already admitted request with a checked fallible reservation before spawn and report a typed allocation failure rather than relying on infallible growth after process creation.',
+        'Move write_all, flush and standard-input closure to a dedicated writer thread while the supervising thread immediately polls the child against the wall policy.',
+        'At timeout, terminate the owned process group and reap the leader so the pipe closes and releases the writer; collect its result under the same fixed two-second drain deadline as both output readers.',
+      ],
+      prevention: [
+        'Treat every pipe read and write as potentially blocking regardless of the nominal message-size cap.',
+        'Start deadline custody before spawn and keep the monitor independent from request and diagnostic I/O progress.',
+        'Exercise frames larger than ordinary pipe capacity against non-reading workers; small echo fixtures cannot qualify this liveness boundary.',
+        'Keep this host-timeout evidence separate from caller cancellation and native-solver correctness claims.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds the asynchronous writer and finite drain to a 1 MiB admitted request whose worker never reads standard input, without claiming cancellation.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['backpressure', 'dae', 'deadline', 'lifecycle', 'pipes', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Fallible pre-spawn request copy, dedicated request writer and concurrent deadline monitor.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Test-only hanging worker mode that intentionally leaves standard input unread.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'One-megabyte admitted-request timeout and bounded cleanup regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact source-order, large-request and non-reading-worker evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
         },
       ],
     }),
@@ -2625,6 +3532,65 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-signed-zero-json-transport-loss',
+      title: 'JSON number transport erases signed-zero floating-point evidence',
+      symptom: 'A framed native-service request can appear to round-trip successfully while a caller-supplied -0.0 has silently become +0.0.',
+      evidence: [
+        'In JavaScript, JSON.stringify(-0) returns the text 0; parsing that text produces positive zero, so the original IEEE-754 sign bit is no longer recoverable.',
+        'Object.is distinguishes -0 from +0 even though ordinary numeric equality does not, and Rust f64::to_bits likewise exposes their distinct representations.',
+        'The Phase 1 canonical request round-trip therefore checks exact floating-point bits rather than accepting JSON numeric equality as transport fidelity.',
+      ],
+      detection: [
+        {
+          method: 'signed-zero canonical wire round-trip',
+          signal: 'Encode and decode a request containing -0.0, then compare every reconstructed f64 bit pattern with the caller input.',
+          failureCondition: 'The wire uses a JSON number for the value, the decoded bits equal positive zero, or a non-canonical byte encoding is accepted.',
+        },
+      ],
+      causalChain: [
+        'A convenient request representation emits floating-point values as JSON numbers.',
+        'JSON serialization canonicalizes negative zero to the number text 0.',
+        'The receiver reconstructs positive zero before validation, hashing or solver admission can observe the original bits.',
+        'Numeric equality lets the lossy round-trip look correct while exact request identity and replay evidence have changed.',
+      ],
+      rootCause: 'The transport treated JSON number equality as an exact representation of IEEE-754 inputs even though JSON has no lossless signed-zero number encoding.',
+      resolution: [
+        'Encode every request f64 from its exact little-endian bytes using canonical standard base64 rather than a JSON number.',
+        'Decode the one canonical base64 representation into exactly eight bytes per declared value and reconstruct each value with f64::from_le_bytes.',
+        'Compare signed-zero and other transport-sensitive values by to_bits across the canonical request round-trip.',
+      ],
+      prevention: [
+        'Define wire identity independently from host-language numeric equality and test every representation-sensitive IEEE-754 value explicitly.',
+        'Reject alternate alphabets, padding forms, lengths or trailing data when a byte encoding is declared canonical.',
+        'Keep request representation tests separate from solver-execution claims; bit-preserving framing does not prove native consumption.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Evidence demonstrates the actual JSON signed-zero loss and binds the Phase 1 canonical f64 little-endian base64 round-trip regression.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'local-api'],
+      tags: ['base64', 'canonical-encoding', 'floating-point', 'json', 'signed-zero', 'transport'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/protocol.rs',
+          note: 'Canonical request f64 byte/base64 representation and exact reconstruction.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_framing_campaign.rs',
+          note: 'Phase 1 canonical request and hostile framing campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Historical denominator, CI boundary, signed-zero incident and non-claim governance.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-sil-result-representation-gap',
       title: 'SIL execution evidence is mutable and compared by JSON key order',
       symptom: 'A software-in-the-loop run can report a false repeatability failure when an adapter reorders equivalent object keys, while incomplete or mutable adapter evidence can enter an unchecksummed result.',
@@ -2692,6 +3658,566 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-solver-event-boundary-side-confusion',
+      revision: 2,
+      title: 'Event-terminal residual reuses the observable right-continuous side',
+      symptom: 'A solver interval ending exactly at a step event can assemble its terminal residual with the post-event source value, while changing the ordinary residual to the pre-event value would break the caller-visible right-continuous convention.',
+      evidence: [
+        'The ordinary DAE residual is intentionally right-continuous: at exact event equality a StepSource uses its `after` value, matching the value callers observe at that time.',
+        'An interval that approaches the same event from the left needs a different terminal equation: every source at that exact event time must still use `before`, while earlier sources use `after` and later sources use `before`.',
+        'Two simultaneous sources share one event-table entry, but a source one representable floating-point value later is a separate entry and must not be swept into the selected left limit by an epsilon or tolerance.',
+        'An invalid event index is rejected with `dae.invalid_event_index` before input inspection and without modifying the caller-owned residual destination.',
+        'During a stop-limited native step, a callback at the selected event needs the indexed left residual, but a finite callback even one representable value beyond that stop is invalid native progress rather than permission to resume the ordinary right-continuous residual.',
+        'Native dense interpolation is restricted to the open completed-step interval: a requested row equal to the current step endpoint is copied directly instead of being sent through `IDAGetDky`, and event equality is deferred until right-side correction.',
+      ],
+      detection: [
+        {
+          method: 'dual-sided exact-event residual regression',
+          signal: 'At one selected event, compare the ordinary residual with the indexed left-limit residual for earlier, simultaneous, one-ULP-later and later StepSource values, then repeat with an invalid index and sentinel destination.',
+          failureCondition: 'The ordinary residual stops being right-continuous, the selected simultaneous group is not entirely left-sided, a distinct nearby event is merged by tolerance, or any rejected call changes the destination.',
+        },
+        {
+          method: 'native selected-event callback boundary regression',
+          signal: 'With one event selected for the terminal step, invoke residual and Jacobian callbacks below, exactly at and one ULP beyond the event, repeat with non-finite callback times, and materialize ordinary and event rows at exact current time.',
+          failureCondition: 'Equality uses the ordinary right side, a finite overshoot is evaluated on either side instead of failing with typed event context, non-finite time bypasses ordinary callback validation, or `IDAGetDky` is called at the current/event endpoint.',
+        },
+      ],
+      causalChain: [
+        'Caller-visible values at an exact scheduled time use the post-event side so time-series output is right-continuous.',
+        'A solver interval ending at that boundary still represents the trajectory approaching from smaller times and therefore needs the pre-event side for its terminal residual.',
+        'Reusing one time-only residual operation for both meanings either applies the post-event forcing too early or changes the established observable value at equality.',
+        'Approximating the left side by subtracting an epsilon then makes classification depend on scale and can cross a distinct nearby event.',
+        'Checking only whether a callback is equal to the event also leaves finite overshoot ambiguous and can silently apply the post-event equation before a governed restart.',
+      ],
+      rootCause: 'One residual entry point was being asked to represent two different sides of a discontinuity: right-continuous observable evaluation and the exact left-limit terminal equation.',
+      resolution: [
+        'Keep `DaeResidualSystem::residual_into` right-continuous at event equality so ordinary residual and caller-visible exact-time semantics continue to use each StepSource `after` value.',
+        'Add `DaeResidualSystem::residual_event_left_limit_into`, keyed by the stable compiled event index, to evaluate the terminal residual at that event time without changing the ordinary operation.',
+        'Select the left-sided group only when a StepSource `at_s` exactly equals the indexed event time: all exact simultaneous sources use `before`, earlier sources use `after`, later and representably distinct nearby sources use `before`; no event-time tolerance or nudged timestamp participates.',
+        'Validate the event index before all input and destination work, return the typed index/count error, then retain the existing exact-length, finite-input and two-pass residual checks so every failure leaves caller storage unchanged.',
+        'Keep the successful indexed event-left path inside the post-lowering zero-allocation callback contract and verify its Jacobian against finite differences at event equality.',
+        'In the native `@2` callback state, route finite times below the selected event through the ordinary residual, exact equality through the indexed left-limit residual, and any finite overshoot to `ida.callback.event_boundary`; apply the same overshoot guard to Jacobian callbacks and let non-finite times reach the ordinary typed validation.',
+        'Make `IDAGetDky` admissible only when `previous_time < requested_time < current_time`; publish exact current-step rows from the captured endpoint and exact event rows from the corrected state.',
+      ],
+      prevention: [
+        'Name discontinuity-side operations explicitly; never silently change the side convention of a general residual or output API to satisfy a terminal-step need.',
+        'Address scheduled discontinuities through the compiled event table and exact equality rather than `t - epsilon`, an absolute tolerance or a relative tolerance.',
+        'Keep simultaneous, adjacent-representable, earlier/later, invalid-index and no-partial-write cases together whenever event lowering changes.',
+        'Keep dense interpolation bounds open at both endpoints and account direct step/event rows separately so equality cannot silently move back onto the left interpolant.',
+        'Preserve the first revision as core-only evidence: native restart remains a separate executable path, and only the opt-in `@2` dense and KLU backends consume this side contract; no product or deployment qualification follows.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-core/tests/dae_contract.rs',
+          assertion: 'Executable contract cases preserve the ordinary right side, select the exact simultaneous left-limit group without merging a one-ULP-later event, and reject invalid indices, lengths and non-finite inputs atomically.',
+        },
+        {
+          path: 'rust-core/tests/dae_allocation.rs',
+          assertion: 'Allocator instrumentation includes the successful indexed event-left residual in the post-lowering zero-allocation callback set.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The event-side record remains independently searchable and preserves exact indexed classification, right-continuous ordinary evaluation, invalid-index atomicity, strict native callback overshoot rejection, no endpoint interpolation and the product-claim boundary.',
+        },
+      ],
+      affectedSurfaces: ['ci'],
+      tags: ['atomicity', 'continuity', 'dae', 'events', 'residual', 'solver'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/dae.rs',
+          note: 'Separate right-continuous and exact indexed event-left residual paths with typed, atomic validation.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_contract.rs',
+          note: 'Ordinary-side, exact/simultaneous/near-event, invalid-input destination-preservation and event-left Jacobian regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_allocation.rs',
+          note: 'Post-lowering zero-allocation regression for the successful event-left residual path.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Pinned selected-event callback state with strict below/equality/overshoot routing for residual and Jacobian callbacks.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded exact, below, one-ULP-overshoot and non-finite selected-event callback regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-consistent-restart-gap',
+      title: 'Scheduled DAE events cross native history without a consistent restart',
+      symptom: 'A native IDA solve can cross a StepSource discontinuity with pre-event integration history, publish an interpolated left state at equality, or restart from a requested row instead of the exact event endpoint.',
+      evidence: [
+        'The residual contract deliberately has two meanings at an event: the terminal integration interval needs the indexed left-limit equation, while caller-visible equality needs the corrected right-continuous state.',
+        'Allowing IDA to step across that change without an exact stop and reinitialization leaves its multistep history based on equations that no longer apply.',
+        'The exact stop endpoint must remain the state supplied to `IDAReInit`; dense-output materialization and correction are separate transitions with their own state-custody invariant.',
+        'A requested row exactly at the event must come directly from the post-`IDACalcIC` consistent state; interpolating it from the left segment would expose the wrong side and misstate interpolation evidence.',
+      ],
+      detection: [
+        {
+          method: 'left-stop/restart/right-output trajectory regression',
+          signal: 'Solve a graph-scheduled forcing change with requested rows before, exactly at and after the event while checking the published event/restart statistics.',
+          failureCondition: 'The pre-event row is not left-sided, equality is not the corrected right state, the after-event trajectory is wrong, or differential state changes across correction.',
+        },
+      ],
+      causalChain: [
+        'A compiled StepSource changes the residual equation at an exact finite time.',
+        'A multistep solver retains history and derivative information from the interval approaching that boundary.',
+        'Without a governed stop, reinitialization and consistent-initial-condition correction, the old history becomes the starting state for the new equation.',
+        'The resulting equality row and post-event trajectory can be finite and plausible while representing the wrong side of the discontinuity.',
+      ],
+      rootCause: 'The native adapter had no explicit state-machine seam that ended the left equation at a compiled event, rebuilt consistent right-side algebraic/derivative state and published equality without left interpolation.',
+      resolution: [
+        'Add `IdaEventPolicy::Restart { max_restarts }` while retaining `Reject` as the default fail-closed behavior; only events from `DaeResidualSystem::events()` in the exact interval `initial_time < event <= final_requested_time` are active.',
+        'For each active event, select its indexed left residual, set `IDASetStopTime`, advance with `IDA_ONE_STEP`, accept intermediate `IDA_SUCCESS`, and require `IDA_TSTOP_RETURN` at the exact event bits before restarting.',
+        'Clear the stop and left marker, call `IDAReInit`, run bounded `IDACalcIC(IDA_YA_YDP_INIT, target)` and `IDAGetConsistentIC`, and require bit-exact continuity for every differential y component.',
+        'Publish an event-equality request directly from the corrected state, never through `IDAGetDky`; keep interpolated, step-endpoint and event-equality row counters distinct and require their sum to equal the requested row count.',
+        'Coordinate the behavior change through `battery-design/dae-residual@2`, dense backend/result `@2` and KLU backend/result `@2`; historical `@1` records remain evidence of the earlier event-rejecting contracts.',
+      ],
+      prevention: [
+        'Model every discontinuity as an explicit stop/reinitialize/correct transition rather than as an ordinary output time or a small integration step.',
+        'Keep before/equality/after rows, final-time equality, differential continuity and direct-row accounting in the same executable campaign.',
+        'Keep `Reject` as the compatibility default and do not infer browser, product, safety or deployment qualification from the source-only native reference path.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The native event-restart record remains searchable and bound to exact stop, reinitialization, consistent correction, right-side equality and coordinated @2 identities.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['continuity', 'dae', 'events', 'ida', 'restart', 'sundials'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Opt-in event policy, bounded event schedule, typed failure context and coordinated native @2 public contracts.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Exact stop, reinitialization, correction, continuity and equality-publication state machine shared by dense and KLU sessions.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded left/equality/right trajectory, final-event and row-accounting regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for the event restart seam and its contract boundaries.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-endpoint-capture-work-gap',
+      title: 'Endpoint custody adds dimension work to every internal step',
+      symptom: 'A state-custody fix can keep restart values correct while adding two full-dimension vector copies or scans to every successful native integration step, far beyond the declared request work evidence.',
+      evidence: [
+        'The first endpoint-preservation fix captured y and yp after every successful `IDA_ONE_STEP` even though most steps neither end at an event nor materialize an exact step-endpoint row.',
+        'At the sparse ceilings of 10,000 variables and 10,000,000 internal steps, two full-vector operations per step permit roughly 200,000,000,000 additional element operations outside the original counter model.',
+        'Interior requested rows use bounded dense interpolation and do not require persistent endpoint custody; only `IDA_TSTOP_RETURN` and a request exactly equal to current step time consume the captured state.',
+        'A correct trajectory alone cannot expose the regression because unconditional copying changes work, not numerical output.',
+      ],
+      detection: [
+        {
+          method: 'endpoint-capture count invariant',
+          signal: 'Solve through many internal steps with event and exact-step output boundaries, then compare the published endpoint capture count with event restarts plus direct step-endpoint rows.',
+          failureCondition: 'A capture occurs for an ordinary step without a direct endpoint consumer, the count differs from restarts plus step-endpoint rows, or capture work is justified only by the much larger internal-step ceiling.',
+        },
+      ],
+      causalChain: [
+        'Restart correctness requires retaining y and yp at an event before later dense-output calls mutate session vectors.',
+        'The initial fix generalizes that requirement into unconditional post-step endpoint capture.',
+        'Each successful step therefore performs work proportional to DAE dimension even when no boundary consumer exists.',
+        'Multiplying the maximum dimension by the global step ceiling creates an unreported work surface many orders larger than the result or event schedule.',
+      ],
+      rootCause: 'Endpoint capture was placed in the generic successful-step path instead of being gated by the two operations that actually consume authoritative endpoint state.',
+      resolution: [
+        'Determine whether the accepted step returned `IDA_TSTOP_RETURN` or contains a requested row exactly equal to current time before copying endpoint state.',
+        'Capture y and yp only for those event or direct-step-output boundaries; keep strict interior rows on `IDAGetDky` without an endpoint copy.',
+        'Publish `endpoint_state_captures()` with checked increment and require the exact invariant `endpoint_state_captures = event_restarts + step_endpoint_output_rows` for successful requests.',
+        'This changes endpoint-copy work from proportional to `2 * dimension * internal_steps` to `2 * dimension * (event_restarts + step_endpoint_output_rows)`, whose two count terms already have explicit request ceilings.',
+      ],
+      prevention: [
+        'Review the computational placement of every correctness fix separately from its numerical outcome and memory allocation behavior.',
+        'For vector-wide work inside a solve loop, publish or derive a deterministic count and test it at a semantic boundary rather than relying on elapsed time.',
+        'Keep many-step/no-endpoint and event/direct-endpoint cases together so unconditional O(dimension*steps) work cannot return unnoticed.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The endpoint-capture work record remains searchable and preserves the 200-billion-element worst case, semantic capture gate and exact published count invariant.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['accounting', 'complexity', 'dae', 'events', 'ida', 'work-bound'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Semantically gated endpoint capture and checked capture-count publication in the shared native solve loop.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Public read-only endpoint_state_captures solve statistic.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded event trajectory asserts exact capture accounting independently of internal-step count.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for bounded endpoint-capture work.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-endpoint-state-custody',
+      title: 'Dense output replaces the exact event endpoint before restart',
+      symptom: 'A requested row shortly before an event can silently become the state supplied to `IDAReInit`, shifting the restarted trajectory away from the exact TSTOP endpoint.',
+      evidence: [
+        '`IDAGetDky` writes interpolated y or yp into the N_Vector supplied as its destination; it is not a read-only query on the session vectors.',
+        'After `IDA_TSTOP_RETURN`, the adapter still has to publish requested rows strictly before the event from the final left interval.',
+        'Using the live session y and yp as dense-output destinations overwrites the exact event endpoint before reinitialization.',
+        'The defect is exposed only when a pre-event requested row falls inside the final stop step; coarser grids can appear correct because no interpolation occurs between TSTOP and restart.',
+      ],
+      detection: [
+        {
+          method: 'terminal-step endpoint custody regression',
+          signal: 'Choose a pre-event output inside the final TSTOP step, then request equality and a post-event row and compare all three against the analytical piecewise trajectory.',
+          failureCondition: 'The left row is wrong, `IDAReInit` receives the interpolated row rather than the stop endpoint, equality correction starts from the wrong differential state, or the post-event trajectory shifts.',
+        },
+      ],
+      causalChain: [
+        'IDA reaches the exact event and stores the terminal left y and yp in its session vectors.',
+        'The result loop drains an earlier requested row through `IDAGetDky` into those same vectors.',
+        'The dense-output write replaces the event endpoint with an interpolated state.',
+        '`IDAReInit` then starts the right-side correction from a valid but temporally earlier state, so the failure need not trigger a native error.',
+      ],
+      rootCause: 'The adapter gave solver-owned endpoint vectors two incompatible custody roles: authoritative restart state and mutable destinations for pre-event dense-output materialization.',
+      resolution: [
+        'At `IDA_TSTOP_RETURN`, copy both event y and event yp into dedicated request-owned scratch before any requested row is materialized.',
+        'Allow strictly pre-event `IDAGetDky` calls to use the session vectors, then restore both saved endpoint vectors before `IDAReInit`.',
+        'Keep event equality out of dense interpolation and publish it only after right-side consistent correction.',
+        'Verify differential continuity against the saved event y, not against whatever vector contents remain after output materialization.',
+      ],
+      prevention: [
+        'Treat every native getter with an output vector as a write operation and document who owns authoritative state before and after the call.',
+        'Separate solver endpoint custody from result-row scratch conceptually even when bounded implementation storage is reused.',
+        'Keep a requested row inside the terminal stop step in restart regressions; endpoint-only grids do not exercise this aliasing sequence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The endpoint-custody record remains searchable and preserves the IDAGetDky mutation, saved y/yp, restore-before-ReInit and terminal-step regression requirements.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['aliasing', 'dae', 'dense-output', 'events', 'ida', 'state-custody'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Dedicated event y/yp custody across pre-event interpolation and restart.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded pre-event-in-terminal-step, equality and post-event analytical trajectory regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for native endpoint ownership across dense output.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-failure-context-loss',
+      title: 'Event-active native failures lose event and phase evidence',
+      symptom: 'A restarted solve can return a valid low-level callback, counter, interpolation or KLU error without identifying which compiled event and restart phase failed.',
+      evidence: [
+        'The event solve loop originally used ordinary `?` propagation at multiple getter, counter, progress, interpolation and accounting sites inside an active left segment.',
+        'The same low-level error may be correct both inside and outside event handling, but an active restart additionally needs stable event index, exact event time and lifecycle phase to be actionable.',
+        'KLU setup/solve failure has nested last-linear-flag evidence that must survive event wrapping even when the flag getter itself fails.',
+        'A request ending exactly at an event can fail while collecting final statistics after event position has advanced, so current-loop state alone no longer identifies the terminal event.',
+        'Blind wrapping at every helper can create repeated `EventRestartFailure` layers and make the public evidence shape depend on which helper noticed the error first.',
+      ],
+      detection: [
+        {
+          method: 'exact nested event-failure shape regression',
+          signal: 'Inject non-finite y/yp at TSTOP, a terminal final-stat getter failure and an active-event KLU solve plus last-flag-getter failure, then compare the complete error tree and teardown order.',
+          failureCondition: 'The outer error omits event index/time/phase, contains more than one event wrapper, changes the underlying callback/native/KLU evidence, continues into restart correction, or leaks native resources.',
+        },
+      ],
+      causalChain: [
+        'One event transition calls many generic helpers that correctly return typed low-level `IdaError` values.',
+        'Direct propagation exits the event state machine before attaching the active compiled-event identity and phase.',
+        'Callers receive the immediate failure but cannot determine which restart boundary owned it.',
+        'Adding wrappers piecemeal can then double-wrap already contextual errors or lose a terminal event after the event cursor advances.',
+      ],
+      rootCause: 'Event context was implicit mutable loop state rather than one centralized, exactly-once error-mapping boundary spanning every active phase and terminal evidence read.',
+      resolution: [
+        'Route generic callback, native, KLU and phase failures from the active left segment through one `with_event_context` boundary that adds `EventRestartFailure { event_index, event_time_s, phase, source }` and leaves an already contextual error unchanged.',
+        'Keep self-identifying `EventDifferentialDiscontinuity` and `ReinitCounterInvariant` failures as direct typed errors rather than adding a redundant event wrapper.',
+        'Use explicit `IdaEventPhase` values for stop registration, left solve, stop clearing, reinitialization, consistent correction, equality publication and final evidence so the outer failure is stable.',
+        'Retain the last completed event through terminal result/statistic collection, allowing a final getter failure after a terminal event to carry exactly one `FinalizeEvidence` context layer.',
+        'Preserve the inner error without translation: callback `DaeError`, exact native stage/flag and KLU available/unavailable last-linear-flag evidence remain inspectable through the standard error source chain.',
+        'On endpoint validation failure, stop before `IDAReInit`, `IDACalcIC` or `IDAGetConsistentIC` and preserve balanced native-resource teardown order.',
+      ],
+      prevention: [
+        'Define one ownership boundary for contextual wrapping and make helpers return unwrapped domain errors unless they own a distinct nested phase.',
+        'Test full error equality, not only the top-level code or display string, for every multi-stage native state machine.',
+        'Keep dense callback, terminal-finalization and KLU nested-evidence injections together whenever event control flow changes.',
+        'Retain completed-operation context until all result evidence that semantically belongs to that operation has been collected.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The event failure-context record remains searchable and preserves exactly one event wrapper, phase-specific evidence, unchanged nested native/KLU causes and fail-fast teardown.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['dae', 'diagnostics', 'error-context', 'events', 'ida', 'klu'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Central exactly-once event context mapper, explicit lifecycle phases and retained terminal-event evidence context.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Typed EventRestartFailure source chain, IdaEventPhase and preserved callback/native/KLU error variants.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded TSTOP endpoint, terminal final-getter and active-event KLU nested-evidence failure regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for exact event failure provenance.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-final-horizon-custody',
+      title: 'Inactive post-final event contaminates the requested horizon',
+      symptom: 'A Restart-policy solve with no active event can still evaluate a StepSource just beyond the requested final time and use that post-final equation when materializing the final row.',
+      evidence: [
+        '`IDA_ONE_STEP` may advance beyond its `tout`; the ordinary event-free adapter intentionally used `IDAGetDky` to recover an earlier requested final row from that completed step.',
+        'Filtering restart events to `initial_time < event <= final_requested_time` controls which events restart the solver but does not by itself prevent native trial callbacks after the final horizon.',
+        'A compiled event exactly one ULP after final is inactive for restart accounting yet changes the right-continuous StepSource value seen by an overshooting callback.',
+        'The final interpolant can therefore be finite and deterministic but already influenced by behavior the request explicitly placed outside its horizon.',
+        'The same exposure returns on the final segment after an earlier active event restart unless the terminal boundary is reinstalled.',
+      ],
+      detection: [
+        {
+          method: 'one-ULP post-horizon event isolation regression',
+          signal: 'Solve a dense graph with a StepSource one representable value after final both before and after an earlier active restart, then repeat the no-active-restart case with KLU while recording stop, interpolation and restart calls.',
+          failureCondition: 'The final row reflects post-final forcing, terminal native time overshoots final, `IDAGetDky` materializes final, a terminal-only stop increments event restarts, or the boundary is lost after reinitialization.',
+        },
+      ],
+      causalChain: [
+        'Public validation classifies the next graph event as inactive because it is later than the requested final time.',
+        'The final IDA_ONE_STEP call treats final as `tout` but may take an accepted step whose internal callback time is later.',
+        'The inactive StepSource switches during that trial and changes the equation used to form the step history/interpolant.',
+        'Dense output at final then carries post-horizon influence even though no restart was counted and every requested time passed validation.',
+      ],
+      rootCause: 'Restart admission bounded the event list but did not give the final requested time custody over native step and callback execution after the last active event.',
+      resolution: [
+        'Under `IdaEventPolicy::Restart`, install `IDASetStopTime(final_requested_time)` whenever no active event remains, including the final segment after an earlier restart.',
+        'Represent the terminal boundary separately from an event-left boundary: residual and Jacobian callbacks use ordinary right-continuous semantics through exact final equality, while any finite callback time beyond final fails with `ida.callback.horizon_boundary` before writes or sparse work.',
+        'Require exact-time `IDA_TSTOP_RETURN` at the terminal stop, capture the endpoint and publish the final requested row directly as a step endpoint instead of calling `IDAGetDky`.',
+        'Do not call `IDAReInit`, `IDACalcIC` or `IDAGetConsistentIC` for a terminal-only stop and do not increment event restart or event-equality counters.',
+        'Apply the same terminal-stop state machine to dense and KLU sessions; executable cases cover dense isolation before and after a real active restart plus KLU isolation with no active restart.',
+      ],
+      prevention: [
+        'Distinguish filtering scheduled transitions from constraining the numerical solver horizon; both gates are required.',
+        'Treat a final requested time as a hard callback boundary whenever later graph behavior can change the residual.',
+        'Keep inactive-near-final events, exact terminal native time, no-Dky final publication and zero terminal-only restarts in dense and sparse regression matrices.',
+        'Do not infer service, browser, package or product integration from this source-only native horizon guard.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The final-horizon custody record remains searchable and preserves terminal stopping, ordinary equality, overshoot rejection, direct final publication and dense/KLU post-final isolation.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['custody', 'dae', 'events', 'horizon', 'ida', 'time-boundary'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Separate terminal callback boundary and final-segment stop shared by dense and KLU sessions.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Typed callback horizon-boundary error and stable native stage evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded ordinary-equality/overshoot callback, dense before/after-restart and KLU one-ULP post-final isolation regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for final-horizon custody and non-product scope.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-reinit-counter-reset',
+      title: 'IDA reinitialization resets counters inside a global solve budget',
+      symptom: 'After one or more event restarts, published work statistics and the global step limit can describe only the last IDA segment even though earlier segments and event correction already consumed native work.',
+      evidence: [
+        '`IDAReInit` resets IDA and linear-solver statistics, so subtracting one initial baseline from the final native counters loses all work completed before each restart.',
+        'A per-segment `IDASetMaxNumSteps` allowance is not a request-global cap unless Rust separately accounts every successful `IDA_ONE_STEP` across all segments.',
+        'Event `IDACalcIC` work occurs after reinitialization and must remain in the segment statistics even though it does not authorize an extra integration step.',
+        'KLU Jacobian evaluation and entry-work ceilings are callback-owned request counters and must persist across `IDAReInit` rather than resetting with SUNDIALS statistics.',
+      ],
+      detection: [
+        {
+          method: 'multi-segment counter and exact-cap regression',
+          signal: 'Run a restarted event solve at its exact global step cap and across multiple segments, comparing successful ONE_STEP calls, checked segment deltas, event/direct-row counts and persistent sparse callback work.',
+          failureCondition: 'Any statistic decreases or omits a completed segment, reinitialization leaves a raw counter nonzero, the exact cap blocks correction/equality after the final allowed step, an extra solve step runs, or KLU work restarts at zero.',
+        },
+      ],
+      causalChain: [
+        'One public solve request is divided into multiple native IDA sessions-in-place by scheduled event restarts.',
+        '`IDAReInit` deliberately clears native history and counters for the next segment.',
+        'Reading only the final raw values makes earlier work disappear and can restore a nominal per-call step allowance.',
+        'Resource evidence and request admission then understate actual cumulative work despite every individual native segment appearing valid.',
+      ],
+      rootCause: 'Reset-scoped native counters were treated as request-scoped evidence instead of being snapshotted and accumulated by the Rust owner before every `IDAReInit`.',
+      resolution: [
+        'Snapshot the complete native statistic set at each segment boundary, compute checked nondecreasing deltas, and add them into Rust-owned cumulative totals before reinitialization.',
+        'Immediately after `IDAReInit`, read every governed native and linear-solver counter, require it to be zero after reinitialization, and fail with `ida.events.reinit_counter_invariant` otherwise.',
+        'Carry event correction work in the next segment delta, preserve callback-owned KLU evaluation/entry-work totals across restarts, and use checked addition for every accumulated field.',
+        'Own one request-global successful-step count, set each native maximum from the remaining global allowance, and require cumulative internal steps to equal `one_step_calls` without spending another step for correction or direct equality publication.',
+        'Expose restart and event-equality row counts separately; require interpolated plus step-endpoint plus event-equality rows to equal the requested output count.',
+      ],
+      prevention: [
+        'Document every native counter as call-, segment- or request-scoped before using it in a public resource limit or result.',
+        'Treat reinitialization as a mandatory accounting boundary: snapshot before it, assert reset after it, and never recover cumulative evidence from the final raw counter alone.',
+        'Keep exact-cap, final-event equality, multiple-restart, integer-overflow and persistent KLU-work cases whenever event sequencing or statistics change.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The event counter-reset record remains searchable and preserves checked per-segment aggregation, zero-after-ReInit assertions, one global step cap, direct-row accounting and persistent KLU work.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['accounting', 'budget', 'dae', 'events', 'ida', 'restart'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Counter snapshots, checked segment accumulation, reset invariants, global ONE_STEP budget and callback-owned KLU work state.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Published cumulative solver statistics, event restart/equality counters and typed reinitialization invariant failure.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded exact-global-cap, final-event equality, segment accounting and reinitialization regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for reset-scoped versus request-scoped work evidence.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-segment-spacing-gap',
+      title: 'Ordered event times can form unusable native IDA segments',
+      symptom: 'An exact increasing event schedule can pass generic ordering checks but fail inside IDA because a left segment or post-event consistent-correction target is too close, nonrepresentable or non-finite.',
+      evidence: [
+        'The compiled event table preserves distinct finite times exactly, including adjacent representable values, but numerical ordering alone does not guarantee a usable IDA target span.',
+        'Every active event creates a left `IDASolve` target and every restart creates an `IDACalcIC` target even when neither time appears in the caller output grid.',
+        'When the last active event equals the final requested output, correction still needs a strictly later target; mirroring the preceding segment can overflow or round back to the event.',
+        'Letting any invalid segment reach allocation or FFI turns a deterministic request-shape error into a late native failure with weaker event context.',
+      ],
+      detection: [
+        {
+          method: 'event-segment floating-boundary preflight regression',
+          signal: 'Validate active events at underflow, reciprocal, roundoff and representable-progress boundaries, two nearby distinct events, an event equal to final output and a mirrored target that overflows.',
+          failureCondition: 'An unusable segment allocates native resources, a usable exact boundary is rejected, distinct events are merged, the final-event correction target is not later, or the error omits event index/time and a stable code.',
+        },
+      ],
+      causalChain: [
+        'Graph lowering supplies a sorted exact event sequence and the output grid supplies one final horizon.',
+        'Restart execution derives additional native solve and correction spans between those boundaries.',
+        'IEEE-754 underflow, reciprocal overflow, roundoff distance or nonrepresentable addition can make a positive comparison unusable to pinned IDA 7.8.0.',
+        'Without full preflight, allocation and native execution begin before the adapter discovers that the schedule cannot progress or calculate consistent conditions.',
+      ],
+      rootCause: 'Validation covered the caller output grid but not every derived event-to-event left segment and post-event correction target actually passed to IDA.',
+      resolution: [
+        'Before native allocation, filter active events only by exact `initial_time < event <= final_requested_time`, enforce the caller restart ceiling, and validate every previous-boundary-to-event span with the pinned IDA target admissibility gates.',
+        'For post-event `IDACalcIC`, use the next active event as target, otherwise the later final output, and when event equals final derive `event + (event - previous_boundary)` as a mirrored horizon.',
+        'Require each derived target distance, 0.001-scaled step, reciprocal and forward addition to be finite and representable under the same IDA 7.8.0 preflight used for initial targets.',
+        'Reject failures before allocation as `ida.events.segment_too_close` or `ida.events.correction_target_invalid`, preserving the stable compiled event index and exact event time.',
+        'Do not use an epsilon or tolerance to merge nearby events; simultaneous numeric equals share the compiled event, while every distinct representable time remains a separate restart.',
+      ],
+      prevention: [
+        'Validate the complete derived native operation schedule, not only values supplied directly in the public output grid.',
+        'Keep event-at-final and next-event correction policies explicit so a refactor cannot accidentally pass an equal `tout1` to `IDACalcIC`.',
+        'Pair every floating-point rejection with the first accepted boundary and assert pre-allocation failure plus exact event evidence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The event-spacing record remains searchable and preserves complete pre-allocation segment/correction validation, mirrored final-event targeting, exact distinct-event semantics and typed event evidence.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['dae', 'events', 'floating-point', 'ida', 'preflight', 'time-grid'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Event policy validation over every active left segment and derived consistent-correction target.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Execution consumes the prevalidated next-event, final-time or mirrored correction target.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded event-span, correction-target, nearby-event and pre-allocation boundary regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for the complete derived native event schedule.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-solver-evidence-acceptance-drift',
       title: 'Solver evidence summary silently weakens the planned acceptance gate',
       symptom: 'A native solver iteration is documented as complete even though its original acceptance plan required tolerance-convergence and independently identified cross-solver evidence that the test campaign does not yet contain.',
@@ -2748,6 +4274,81 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'documentation',
           locator: 'docs/EQUATION_SOLVER.md',
           note: 'Stable Task 2H acceptance wording, exact evidence provenance and source-only product boundary.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-initial-time-contract-drift',
+      title: 'Native request time drifts from the lowered DAE initial state',
+      symptom: 'IDA can be initialized at a caller-selected time using y and yp that were calculated by the residual system for a different time and possibly a different side of a scheduled source event.',
+      evidence: [
+        '`DaeResidualSystem::lower` calculates and stores consistent initial y and yp at one exact finite `initialization_time_s` under `battery-design/dae-residual@2`.',
+        'The native settings separately carry `initial_time_s`; before the fix, that value could reach `IDAInit` even though the borrowed vectors belonged to the system initialization time.',
+        'A mismatch can produce finite solver output while silently seeding the wrong derivative or event side, so later native-time checks cannot reconstruct the lost contract relationship.',
+        'IEEE-754 negative and positive zero compare numerically equal and must remain compatible even though the core accessor preserves the original sign bit.',
+      ],
+      detection: [
+        {
+          method: 'lowered-system/request time binding regression',
+          signal: 'Initialize dense and KLU settings with one genuinely different finite time and with the opposite signed zero, observing allocation counters and the typed result.',
+          failureCondition: 'A real mismatch reaches native allocation, the error omits both exact times, or numerically equal negative/positive zero is rejected as drift.',
+        },
+      ],
+      causalChain: [
+        'Lowering evaluates graph initial values and derivatives at the system initialization time.',
+        'The native adapter accepts a second initial-time field while borrowing those already-computed vectors.',
+        'If the two times differ, `IDAInit` labels one state as belonging to another time without recalculating it.',
+        'The solver starts from an internally inconsistent temporal contract and may choose the wrong side of time-dependent graph behavior.',
+      ],
+      rootCause: 'The native request validated each initial time independently but did not bind its `IDAInit` time to the exact time at which the residual system produced the borrowed initial y and yp.',
+      resolution: [
+        'Store the exact finite lowering time in `DaeResidualSystem` and expose it through `initialization_time_s` as part of `battery-design/dae-residual@2`.',
+        'In both dense and KLU request validation, compare settings time numerically with the system time before result allocation, callback construction or any native resource allocation.',
+        'Reject a genuine mismatch with `ida.initial_time.system_mismatch` carrying both system and requested times, while accepting `-0.0` and `+0.0` as the same numerical instant.',
+        'Coordinate the changed assumption through dense and KLU backend/result `@2` identities rather than silently redefining the historical `@1` contracts.',
+      ],
+      prevention: [
+        'Bind every precomputed initial state to its evaluation time at the API boundary; do not allow downstream solver settings to relabel borrowed state.',
+        'Run temporal consistency checks before allocations or FFI so the failure remains deterministic and side-effect free.',
+        'Keep a true nonzero mismatch and signed-zero equivalence together whenever lowering or native initialization changes.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-core/tests/dae_contract.rs',
+          assertion: 'The lowered system accessor preserves its exact finite initialization time, including the negative-zero sign bit.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The initial-time binding record remains searchable and preserves @2 ownership, pre-allocation mismatch rejection, exact evidence and signed-zero numerical equality.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['contract', 'dae', 'floating-point', 'ida', 'initial-conditions', 'time'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/dae.rs',
+          note: 'Stored exact finite residual-system initialization time under the DAE residual @2 contract.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Dense and KLU pre-allocation time binding with typed mismatch evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_contract.rs',
+          note: 'Exact nonzero and signed-zero initialization-time accessor regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded mismatch rejection, allocation-audit and signed-zero compatibility regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for residual-system/native-request time ownership.',
         },
       ],
     }),
@@ -2963,7 +4564,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
     }),
     record({
       id: 'rc-test-multiplier-denominator-drift',
-      revision: 2,
+      revision: 3,
       title: 'Test-count delta is mistaken for a promised coverage multiplier',
       symptom: 'A delivery reports that testing doubled because 91 top-level tests were added after a convenient checkpoint, even though the promised two-times comparison was against Action 1 and no stable denominator or identical counting population was recorded.',
       evidence: [
@@ -2974,6 +4575,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'The 6094b3b checkpoint had 824 tests; the 91-test checkpoint delta was substantial but still only 91/50, while the corrected Action 2 tree must reach at least 858 total declarations for an increase of at least 100 over 4da8c03.',
         'For DAE Iteration 3, merged Iteration 2 SHA 9f4a43421de34efd067d38a070a0f2c4b9a859dc contains exactly 81 unique Cargo test function names across native.rs, feature_off.rs, backend_identity.rs and solve_reference.rs in a 67+1+2+11 population.',
         'Sorting those 81 names and applying the case-sensitive (csc|jacobian|matrix|sparse|linear_solver|resource|construction|drop|backend) filter produces the exact frozen 21-name sparse-readiness denominator; 48 new manifest-listed KLU cases therefore clear the 42-case floor at 2.29 times the proxy.',
+        'PR 79 CI run 31233721450 exposed a different form of denominator drift: an Iteration 3 evidence test expected the current source to contain only its six historical KLU internal seams, so six later event/restart seams changed the live total to 12 and failed an otherwise preserved historical claim.',
       ],
       detection: [
         {
@@ -3001,6 +4603,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Label the comparison repository-global, state the 50-test denominator beside the multiplier, and require the current Action 2 tree to reach at least 858 declarations for a numerator increase of at least 100.',
         'For DAE Iteration 3 pin merged Iteration 2 SHA 9f4a43421de34efd067d38a070a0f2c4b9a859dc and the exact four-file Cargo test population: 67 native.rs, one feature_off.rs, two backend_identity.rs and 11 solve_reference.rs names.',
         'Freeze the sorted 81-name population, exact case-sensitive (csc|jacobian|matrix|sparse|linear_solver|resource|construction|drop|backend) filter and resulting 21 matching names in tests/dae-iteration3-evidence.test.mjs; compare only the 48 manifest-listed KLU cases against that denominator, yielding floor 42 and ratio 2.29.',
+        'Verify historical retention by the frozen case names themselves; report later KLU-gated internal seams as a separate current population instead of requiring the live feature-gated count to remain equal to the historical six.',
       ],
       prevention: [
         'Turn qualitative test multipliers into a predeclared measurement note before coding: both boundary commits, denominator, exact command and whether declarations or runtime results are counted.',
@@ -3016,7 +4619,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         },
         {
           path: 'tests/root-cause-library.test.mjs',
-          assertion: 'The revision-2 denominator-drift record remains searchable and preserves both the repository-global Action 2 correction and the frozen DAE Iteration 3 focused comparison.',
+          assertion: 'The revision-3 denominator-drift record remains searchable and preserves the repository-global correction, frozen DAE comparison and historical-name versus live-count distinction.',
         },
       ],
       affectedSurfaces: ['ci', 'documentation'],
@@ -3045,7 +4648,12 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         {
           kind: 'test',
           locator: 'tests/dae-iteration3-evidence.test.mjs',
-          note: 'Self-contained exact baseline population, case-sensitive proxy filter, 21 matching names and 48-case numerator accounting.',
+          note: 'Self-contained exact baseline population, case-sensitive proxy filter, 21 matching names, 48-case numerator and name-based historical retention accounting.',
+        },
+        {
+          kind: 'incident',
+          locator: 'GitHub Actions run 31233721450 job 93042358098',
+          note: 'PR 79 exact-head Node gate where six later KLU event seams invalidated a live-count assertion for an otherwise frozen Iteration 3 population.',
         },
         {
           kind: 'test',

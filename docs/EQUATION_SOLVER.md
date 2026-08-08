@@ -31,16 +31,357 @@ its equations predict.
 - a versioned numeric transport for browser-authored approved graphs;
 - an opaque WebAssembly run handle that returns solver metadata and stable
   `[time, block values...]` trace rows without introducing a second solver;
-- the dependency-free `battery-design/dae-residual@1` lowering contract:
+- the dependency-free current `battery-design/dae-residual@2` lowering contract:
   `DaeResidualSystem::lower` publishes deterministic differential/algebraic
   variable and output mappings, the numeric ID vector, consistent initial
-  values, exact event times, a deterministic CSC Jacobian pattern and exact
-  caller-owned buffer requirements. After lowering, its successful
-  caller-buffer callbacks allocate no heap memory; lowering and initialization
-  construction may allocate, and the contract does not select or contain a
-  DAE solver.
+  values bound to an exact finite initialization time, exact event times, a
+  deterministic CSC Jacobian pattern and exact caller-owned buffer
+  requirements. It keeps ordinary residual evaluation right-continuous and
+  provides a separately indexed exact event-left residual for a native
+  terminal step. After lowering, its successful caller-buffer callbacks
+  allocate no heap memory; lowering and initialization construction may
+  allocate, and the contract does not select or contain a DAE solver.
 
-### Iteration 2 native reference boundary
+### Current Iteration 4 event-restart contract boundary
+
+The source-only Linux native reference now consumes
+`battery-design/dae-residual@2` through the coordinated current identities
+`battery-design/native-ida-dense@2`,
+`battery-design/native-ida-dense-result@2`,
+`battery-design/native-ida-klu@2` and
+`battery-design/native-ida-klu-result@2`. The older `@1` identities and their
+Iteration 1/2/3 evidence remain historical contracts; the event behavior below
+is not retroactively attributed to them.
+
+`IdaEventPolicy::Reject` is the default and preserves fail-closed rejection of
+scheduled events. A caller must explicitly choose
+`IdaEventPolicy::Restart { max_restarts }`; the request ceiling may not exceed
+10,000 and must cover every compiled event in the exact active interval
+`initial_time < event <= final_requested_time`. The backend does not accept a
+caller-supplied event list, merge nearby values by tolerance or invent event
+times outside `DaeResidualSystem::events()`.
+
+For each active event, IDA is stopped exactly at the compiled time and advances
+the left segment only with `IDA_ONE_STEP`; intermediate success may continue,
+but terminal arrival must be the exact-time `IDA_TSTOP_RETURN`. Callback time
+below the selected event uses the ordinary residual; exact equality uses the
+indexed left-limit residual. A finite callback overshoot fails closed with
+event/callback evidence, and the Jacobian callback applies the same boundary
+guard. Requested rows
+strictly inside a completed step use `IDAGetDky`; an exact step endpoint is
+copied directly and an event-equality row is withheld until right-side
+consistent correction. This keeps `IDAGetDky` out of both equality cases and
+prevents an interpolated left row from being presented as the right state.
+
+Active-event filtering does not by itself constrain IDA trial callbacks. When
+no active event remains, Restart policy therefore installs a separate terminal
+stop at `final_requested_time`, including on the final segment after an earlier
+restart. This terminal boundary keeps ordinary right-continuous residual and
+Jacobian semantics through equality, but a finite callback beyond final fails
+as `ida.callback.horizon_boundary`. Exact terminal arrival must be
+`IDA_TSTOP_RETURN`; the final row is copied directly from that step endpoint,
+without `IDAGetDky`, reinitialization, consistent correction or an event-
+restart increment. Dense and KLU regressions place an inactive StepSource one
+ULP after final so post-horizon forcing cannot contaminate the requested row.
+
+At a stop, the adapter preserves the exact endpoint y and yp before draining
+pre-event output, clears the stop and event-left marker, restores the endpoint,
+and calls `IDAReInit`. It then bounds event correction with at most 5 IC steps,
+4 IC Jacobians, 10 IC nonlinear iterations and 100 backtracks, calls
+`IDACalcIC(IDA_YA_YDP_INIT, target)` and `IDAGetConsistentIC`, and requires
+bit-exact continuity of every differential y component. The correction target
+is the next active event, otherwise the later final output, or—when the event
+equals the final output—a finite representable horizon mirroring the preceding
+segment. Every left segment and correction target passes the pinned IDA 7.8.0
+floating-point span gates before native allocation.
+
+`IDAReInit` resets native statistics. The Rust owner therefore snapshots and
+checked-adds every segment, requires all governed raw counters to be zero after
+reinitialization, retains callback-owned KLU Jacobian work across restarts and
+applies one cumulative successful-`IDA_ONE_STEP` ceiling to the complete
+request. Interpolated, exact step-endpoint and corrected event-equality output
+rows are counted separately and must sum to the requested row count. The
+settings initial time must numerically equal the residual system's stored
+initialization time before allocation; `-0.0` and `+0.0` are the same instant.
+Generic callback, native, KLU and phase failures owned by an event carry exactly
+one `EventRestartFailure` layer with compiled event index, exact time and
+`IdaEventPhase`; the unchanged inner callback, native stage/flag or KLU
+last-linear-flag evidence remains its source. Self-identifying
+`EventDifferentialDiscontinuity` and `ReinitCounterInvariant` failures retain
+their direct typed identity instead of gaining a redundant wrapper.
+Endpoint y/yp capture is gated to an event stop or a direct step-endpoint row,
+not every internal step; `endpoint_state_captures()` must equal
+`event_restarts() + step_endpoint_output_rows()`.
+If the request ends at an event, `last_order()`,
+`last_accepted_step_current_order()`, `last_step_s()` and
+`last_accepted_step_next_step_s()` retain the last accepted integration-step
+evidence captured before `IDAReInit`; `actual_initial_step_s()` retains the
+first integration segment's actual initial step, and `terminal_state_time_s()`
+reports the post-correction terminal event time.
+
+This is an opt-in event-restart capability of the tested source-only native
+Linux dense and KLU references. It is not compiled into the browser
+WebAssembly module, exposed by a service or desktop integration, copied into
+an npm/installer/release artifact, qualified for arbitrary DAEs, or certified
+for product or safety decisions. KLU factor-fill isolation and the Iteration 4
+native service process and solver bridge remain separate work.
+
+At this source checkpoint, the warning-denied dense matrix contains 85
+embedded unit cases and the KLU matrix contains 97. The 12-case difference is
+the complete current KLU-gated internal set: the six historical Iteration 3
+callback/diagnostic seams plus six new event/restart seams. These embedded
+cases are reported separately from the historical 48 manifest-listed KLU
+campaign. That historical campaign and its frozen 81-name Iteration 3
+population remain unchanged.
+
+The Iteration 4 event/restart campaign uses a new, scope-specific denominator.
+At merged Iteration 3 SHA
+`032638ba3ee2b7d6cd2ec730b529a63a96ca3ffb`, all Cargo test functions in the
+three residual sources, the native implementation and the six dense/KLU
+integration sources form a frozen population of 166 unique names. Applying the
+exact case-sensitive filter
+`(event|restart|reinit|stop_time|consistent|initial_condition|right_continu|correction)`
+produces the 16-name denominator. The newline-terminated sorted population and
+match-list SHA-256 receipts are respectively
+`a9382670c4667d1316f2fd5177c8cf522c697eaf70eab9fb16c7d29e5dddd894` and
+`6911df8109acfc06f2a8004d8f52b8468926229fc4f80f2f55bb758ffc501bbc`;
+the complete names are frozen in
+`tests/dae-iteration4-event-evidence.test.mjs` so the evidence does not require
+Git history at runtime.
+
+The current source contains one explicit 18-case dense event/restart manifest
+campaign and one explicit 18-case KLU event/restart manifest campaign. The
+dense campaign alone remains partial multiplier evidence:
+`18 / 16 = 1.125`, not a two-times claim. Together the two backend-specific
+campaigns form the scope-matched combined 36-case numerator and yield
+`36 / 16 = 2.25 times` on this frozen test-function-count proxy. They are 18
+mirrored scenario pairs executed through two solver backends, not 36 unique
+behaviors and not evidence that the global test suite doubled. The exact KLU
+roster is frozen beside the baseline and has newline-terminated sorted SHA-256
+`eae4c45f238f748df95e49a0dc19645d588b2ac86c46f6c5eda0dfb08af8b175`.
+
+The KLU target advances the current KLU-feature execution matrix from the
+dense-only checkpoint of 172 cases in nine Cargo result blocks to the current
+190 cases in ten blocks. The historical 154-case, eight-block incident remains
+separate evidence. Neither manifest target moves the 16-name denominator, the
+historical 48-case KLU campaign, or the frozen 81-name Iteration 3 population.
+
+### Iteration 4 native service Phases 1–3: framing, admission and supervision
+
+The source-only `rust-dae-service/` crate now defines the first bounded framing
+and strict-admission layers plus one-shot Linux worker supervision for a future
+native solver service. Phase 1 owns the codec boundary. Phase 2 preflights
+caller-controlled allocation shape before core decode, then lowers the bounded
+graph and derives a native-free plan. Phase 3 admits that request before spawn
+and supervises one trusted worker program through bounded standard-I/O pipes.
+It does create a child process, but this repository supplies only a test
+fixture, not a native worker executable. These phases do not open a listener,
+call the dense or KLU backend, return a native solve result, connect the desktop
+application, or place an executable in a browser, desktop, npm, installer or
+release artifact. Their isolated Rust 1.77.2 CI job runs nine framing, nine
+admission and nine supervision cases as exactly three result blocks and 27
+tests per profile: 27 in debug and the same 27 in release, with warnings
+denied. Repeating the same cases across build profiles does not turn the
+campaign numerator into 54 unique cases.
+
+The test fixture is not a Cargo binary or product artifact. The supervision
+campaign compiles it directly with the active `rustc`, edition 2021 and
+warnings denied. Compatibility review caught its initial newer `unsafe extern`
+syntax before hosted execution: pinned Rust 1.77 requires the plain
+`extern "C"` block used now. This is proactive MSRV evidence, not a claim that a
+hosted CI run failed.
+
+The canonical request representation does not serialize floating-point values
+as JSON numbers. JavaScript `JSON.stringify(-0)` produces `0`, erasing the sign
+bit before a receiver can validate or replay the request. Phase 1 instead
+encodes each floating-point value from its exact little-endian bytes using
+canonical standard base64 and reconstructs it from those bytes, so `-0.0`
+retains its exact `f64` bits. This is representation fidelity, not evidence that
+a native solver has consumed the request.
+
+Phase 2 rejects invalid UTF-8, malformed or trailing JSON, duplicate keys,
+unknown fields, missing fields and mismatched contract identity atomically. Its
+request-byte ceiling admits the exact limit far enough to decode it and rejects
+the next byte before request construction or payload allocation. Dense
+dimension, KLU dimension, known CSC nonzero/storage work, output-row and total
+result-value ceilings remain independent. Their custody is not identical:
+request-declared counts and graph allocation shape are checked before core
+decode, result cardinality is derived from the compiled graph, and KLU nonzero
+and known-CSC byte accounting is checked only after DAE lowering has constructed
+the pattern. Those post-lowering KLU checks bound later native admission, not
+pre-lowering allocation. The reachable service KLU ceilings are 30,000
+nonzeros and 720 KiB of known CSC storage, with independent exact-boundary and
+over-bound cases. They are deliberately below the native adapter maxima of
+1,000,000 nonzeros and 64 MiB; compile-time comparisons prevent the service
+settings from exceeding those backend ceilings. Admission uses checked
+arithmetic instead of trusting caller totals. In particular, every Sum block
+is limited to 4,096 inputs and the graph is limited to 100,000 aggregate input
+slots before core decode; the bounded graph is only then decoded and lowered so
+the remaining plan counts can be derived. Without the early shape check, a
+caller-controlled input count could drive allocation during core graph decoding
+and compilation before the native backend's work ceilings apply. This is a
+service-admission fix: `rust-core/` was not changed by this phase.
+
+Before decoding either floating-point block, admission checked-multiplies its
+declared count by eight bytes, derives the one canonical standard-base64 length
+as `4 * ceil((count * 8) / 3)`, and requires the supplied string to have exactly
+that length. This order matters: `F64BlockWire::decode_values` reserves decoded
+storage from the string length, so a declared count of one paired with a
+near-frame-limit string must fail before that reservation rather than allocate
+megabytes and discover the count mismatch afterward. This ordering belongs to
+the Phase 2 `admit_request_frame` boundary; the older Phase 1 codec helper alone
+is not a substitute for admission and gains no standalone resource-safety
+claim.
+
+Admission also treats consistent-initial evaluation as pre-native work. It
+caps caller-supplied algebraic iterations at 100 before DAE lowering. If any
+algebraic loop exists, the total number of algebraic variables is capped at 256:
+core lowering evaluates consistent initial values and that cyclic evaluation
+uses a dense Newton Jacobian, so an eventual KLU selection does not make the
+earlier allocation sparse. Admission separately caps the unused built-in
+implicit-iteration setting at 100 as fixed policy; Phase 2 does not run the
+core backward-Euler solver, so that setting is not part of the cyclic
+consistent-initial root cause. The acyclic KLU dimension ceiling remains
+10,000, and the 256-variable cycle boundary must not be read as reducing it.
+These known pre-native ceilings do not bound input-dependent KLU symbolic or
+numeric factor fill, total process memory, CPU time or resident lifetime.
+
+The closed request schema also refuses caller attempts to supply wall-time,
+CPU, memory or other service-policy overrides. Phase 2 admission alone still
+does not create a process, invoke a native backend, or materialize an
+output/result payload.
+
+Phase 3 keeps worker choice and process policy outside that request. A trusted
+`WorkerPrograms` configuration must provide absolute executable and working
+directory paths for dense and KLU; the admitted backend selects exactly one of
+them. Each `OneShotSupervisor` instance admits first, permits one active call,
+and returns `Busy` for an overlapping call on that instance without queuing or
+spawning another worker. Separate instances are not a global concurrency gate.
+The supervisor clears the child environment and adds only the fixed
+protocol/backend identity,
+`LANG=C` and `LC_ALL=C`; standard input, output and error are all pipes. This
+does not prove that arbitrary inherited file descriptors are closed or that a
+worker cannot use sockets.
+
+The supervisor makes one fallibly reserved copy of the admitted frame before
+wall-time custody and spawn, then a dedicated writer writes that frame once,
+flushes it and closes standard input while the supervisor monitors time
+concurrently. This ordering matters because a synchronous large write to a
+worker that never reads standard input can fill the pipe before the deadline
+loop begins. The campaign sends a 1 MiB admitted frame to that non-reader under
+a 750 ms policy and requires bounded timeout cleanup. Standard output and
+standard error are also drained concurrently. Output is capped at one
+eight-byte frame header plus the existing 4 MiB payload ceiling and must decode
+as exactly one complete response frame; truncated, extra and second frames fail
+closed. Standard error is separate diagnostics: the first 64 KiB is retained
+and excess bytes set a truncation flag. A nonzero exit code or signal is a typed
+worker failure and cannot be mistaken for a response.
+
+The configured worker wall interval is capped at 25 seconds. Trusted supervisor
+construction may choose a shorter nonzero interval; the request controls
+neither that interval nor the one shared fixed two-second receive deadline
+across the three I/O channels. The fallible request copy deliberately precedes
+wall custody; the timer starts immediately before `Command::spawn`, so spawn and
+all subsequent pipe and thread setup count toward the interval. Monitoring
+initiates cleanup when it observes that the configured interval has elapsed.
+This is not an absolute OS-level call-return guarantee: synchronous
+`Command::spawn`, post-spawn setup and cleanup's `Child::wait` can themselves be
+delayed or block in the kernel. The executable fixture proves only that its
+tested 750 ms owned-group timeout path returns in under two seconds.
+
+On Linux the child starts a distinct process group. Deadline, post-spawn
+setup/poll failure and leader-exit cleanup signal that group and reap the direct
+child before the supervisor waits for pipe EOF. That ordering fixes the
+demonstrated same-process-group fixture where an exited leader leaves a
+descendant holding the output pipes open and otherwise turns a reader join into
+an unbounded wait. The timeout path explicitly observes bounded return,
+direct-leader reaping and descendant termination. The normal leader-exit path
+observes a bounded valid response and descendant termination, while the source
+binding confirms the group signal precedes `Child::wait`.
+
+The original process-group signal is not sufficient direct-child control: a
+leader can use `setpgid` to join another existing group in the same session
+before cleanup, so a group-only signal can miss that still-live owned child and
+a following blocking wait can hang. The campaign's `escape-group-hang` fixture
+joins its parent's group, proves the group changed, then hangs; the 400 ms
+policy returns the typed timeout in under two seconds and the leader's
+PID-plus-start-time identity is reaped. Cleanup retains the `Child` handle,
+signals the original group for same-group descendants, independently calls
+`Child::kill` for the direct leader and then calls `Child::wait`, retaining the
+first cleanup error.
+
+After cleanup the supervisor unconditionally attempts the writer, standard
+output and standard error receives under one shared absolute deadline before
+returning a retained cleanup error. An earlier channel error therefore does not
+skip the later receive attempts or replace the cleanup cause. This is still not
+universal descendant containment: a descendant moved or created outside the
+original group can survive the group signal and retain pipe ends. The receive
+deadline then bounds only the supervisor's collective channel waiting; its
+detached Rust reader or writer thread can remain blocked, and repeated calls can
+accumulate escaped processes and threads. Phase 3 therefore does not establish
+aggregate lifecycle-resource containment. It also does not implement caller
+cancellation or a latest-request-wins policy.
+
+Normal leader exit is observed with Linux `waitid(WNOWAIT)` before reaping. The
+supervisor checks elapsed time both before that observation and immediately
+after an exited result: observation or preemption can cross the boundary, and
+timeout wins at equality before normal-exit cleanup. The worker's process-group
+ID begins as its leader PID; reaping first would release that number for reuse,
+so a later negative-PGID cleanup signal could target an unrelated concurrently
+spawned group. Phase 3 instead observes the exited leader without reaping,
+signals the still-owned group, and only then calls `Child::wait`. This fixes the
+source-identified PID/PGID reuse cleanup race; it does not turn numeric PIDs into
+durable identity for evidence, which is why the campaign separately records
+PID plus Linux process start time. Each fixture
+process self-publishes that pair from `/proc/self/stat`; it does not assume that
+Rust `process::id` or `Child::id` uses the same numeric PID namespace as the
+mounted procfs. Self-publication selects the procfs-visible namespace, while
+the start time separately detects later reuse of a number in that namespace.
+
+Before exec, the Linux worker policy fixes address-space `RLIMIT_AS` at 768
+MiB, CPU `RLIMIT_CPU` at 20 seconds, core-file `RLIMIT_CORE` at zero and open
+file `RLIMIT_NOFILE` at 16, then sets `PR_SET_NO_NEW_PRIVS`. The post-fork
+`pre_exec` path has compile-time `rlim_t::MAX` fit assertions for all four fixed
+values, uses direct scalar casts, performs only the fixed `setrlimit` and `prctl`
+policy operations, reads errno directly and constructs failures with
+`io::Error::from_raw_os_error`. An earlier
+conversion-error branch used allocation/boxing-capable `io::Error::new` in that
+post-fork path; review caught the hazard without reproducing a deadlock. The
+bounded source assertion excludes `io::Error::new`, formatting and
+`last_os_error` from the policy helpers. This removes that specific post-fork
+allocation path; it is not a general claim that arbitrary Rust code is safe
+between fork and exec.
+
+These are specific resource limits and privilege hardening, not a process
+sandbox. In particular, they are not an aggregate process-group CPU or memory
+proof, a filesystem or network namespace, a system-call filter, arbitrary
+descriptor closure, KLU factor-fill evidence, or a native numerical-solve
+result.
+
+The service campaign uses a separate process/protocol test-function-count
+proxy. At the post-KLU tree
+`789bfc8f560d4e090466f98a29c27d9e20ba3b31`, the 35 test names in
+`tests/api.test.mjs`, `tests/packaged-tree.test.mjs`,
+`tests/runner-security.test.mjs` and `tests/simulation-worker.test.mjs` form the
+frozen population. The exact case-sensitive word-boundary filter
+`\b(runner|worker|protocol|server|staging|package|bootstrap|ports?|fallback|malformed|unbounded|cancels?|isolated)\b`
+produces 17 matches. The newline-terminated sorted population and match-list
+SHA-256 receipts are respectively
+`d2746feb185d4b9819ea94c9314bb0a6e6d0138ef63930d2c128b37a4ca6dc9f`
+and
+`59d29f9629e3c8a14331206411f177b94970f01e3c33f0a625f7a493e1fbcbf0`;
+the complete lists are frozen in `tests/dae-service-evidence.test.mjs`.
+
+The current framing, admission and supervision targets contain 27 cases and
+remain partial campaign evidence only: `27 / 17 = 1.59`, not a two-times
+claim. The standing five-target plan contains 46 cases
+(`9 + 9 + 9 + 9 + 10`), which would be `46 / 17 = 2.71` on this frozen
+test-function-count proxy only after all five targets exist and pass. The
+remaining 19 planned cases, request-to-native-solver mapping, native solve,
+caller cancellation, broader teardown and product integration are not
+implemented by Phases 1–3.
+
+### Historical Iteration 2 native reference boundary (`@1`)
 
 `rust-dae-native/` now implements a bounded native Linux reference backend in
 source under `battery-design/native-ida-dense@1`. It is not part of the
@@ -109,7 +450,7 @@ possession. `tests/sundials-source-lock.test.mjs`,
 `tools/test-native-dae-build.mjs` preserve the source, build, derived-install
 and real-link regression boundaries.
 
-### Iteration 3 native sparse reference boundary
+### Historical Iteration 3 native sparse reference boundary (`@1`)
 
 `rust-dae-native/` also contains a bounded, source-only Linux sparse reference
 under `battery-design/native-ida-klu@1`. It is available only with the explicit
@@ -275,24 +616,32 @@ The campaign is split into independently reviewable gates:
    real numerical solves, failure evidence and scale-specific tests. The
    10,000-variable evidence is lowering/admission evidence, not a
    10,000-variable native convergence claim.
-4. **Native execution integration:** add governed event restart plus a bounded
-   native service protocol and desktop integration without routing untrusted
-   requests directly into the solver process.
+4. **Native execution integration (event restart plus service framing and
+   strict admission complete; runtime pending):** the coordinated `@2`
+   contracts add the governed opt-in event restart described above, while the
+   source-only service layers define a bounded canonical request representation
+   and preflight caller-controlled allocation shape before core decode, then
+   lower the bounded graph and derive the remaining native-free plan. Process
+   isolation, native request mapping, solver invocation, cancellation,
+   teardown and desktop integration still must be added without routing
+   untrusted requests directly into a solver.
 5. **Package and release acceptance:** expose only backend/method combinations
    that passed native conformance, package the accepted binaries, prove their
    exact artifact lineage in CI and preserve the built-in fallback.
 
-Iterations 2 and 3 are implemented and tested only as source-only native Linux
-references; neither is product-packaged or released. Iterations 4 and 5 remain
-unimplemented and unshipped. `rust-core/` itself remains dependency-free and
-does not compile or link SUNDIALS, IDA, SuiteSparse or KLU. The completed
-iterations do not provide index reduction, qualify general implicit DAEs,
-expose a native service or desktop integration, or change the current
-WebAssembly ABI. Neither native reference may appear in product capability
-metadata until the later integration, package and release gates exist. A
-SUNDIALS WebAssembly build is an optional later qualification track, not an
-implied outcome of native acceptance: Emscripten uses a distinct platform ABI,
-while the current standalone WebAssembly solver remains intact.
+Iterations 2 and 3, the event-restart slice of Iteration 4 and the Phase 1/2
+service framing/admission source are not product-packaged or released. The
+service process/runtime, solver bridge and desktop integration, plus all of
+Iteration 5, remain unimplemented and unshipped. `rust-core/` itself remains
+dependency-free and does not compile or link SUNDIALS, IDA, SuiteSparse or KLU.
+The completed work does not provide index reduction, qualify general implicit
+DAEs, expose a native service or desktop integration, or change the current
+WebAssembly ABI.
+Neither native reference may appear in product capability metadata until the
+later integration, package and release gates exist. A SUNDIALS WebAssembly
+build is an optional later qualification track, not an implied outcome of
+native acceptance: Emscripten uses a distinct platform ABI, while the current
+standalone WebAssembly solver remains intact.
 
 Task 2A adds `native-backends/sundials/source-lock.json`, checked-in license
 notices and an offline byte verifier. The lock identifies the official

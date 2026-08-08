@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 47);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 70);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -70,6 +70,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-calibration-trace-alignment-loss',
     'rc-calibration-work-undercount',
     'rc-capability-contract-mismatch',
+    'rc-ci-native-test-count-drift',
     'rc-cli-typo-default-fallback',
     'rc-dae-csc-quadratic-lowering',
     'rc-dae-lowering-contract-gap',
@@ -96,10 +97,32 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-resource-self-checksum-trust',
     'rc-rust-msrv-float-pattern-lint-gap',
     'rc-schema-envelope-permissive',
+    'rc-service-admission-cyclic-algebraic-preflight',
+    'rc-service-admission-f64-block-allocation-order',
+    'rc-service-admission-input-slot-preallocation',
+    'rc-service-supervisor-deadline-observation-race',
+    'rc-service-supervisor-descendant-pipe-liveness',
+    'rc-service-supervisor-direct-leader-group-escape',
+    'rc-service-supervisor-fixture-msrv-syntax-drift',
+    'rc-service-supervisor-pgid-reuse-cleanup-race',
+    'rc-service-supervisor-pid-reuse-liveness-evidence',
+    'rc-service-supervisor-pre-exec-error-allocation',
+    'rc-service-supervisor-procfs-pid-namespace-evidence',
+    'rc-service-supervisor-stdin-pipe-deadline-bypass',
     'rc-shared-test-mutex-poison-cascade',
     'rc-signed-bound-evidence-miss',
+    'rc-signed-zero-json-transport-loss',
     'rc-sil-result-representation-gap',
+    'rc-solver-event-boundary-side-confusion',
+    'rc-solver-event-consistent-restart-gap',
+    'rc-solver-event-endpoint-capture-work-gap',
+    'rc-solver-event-endpoint-state-custody',
+    'rc-solver-event-failure-context-loss',
+    'rc-solver-event-final-horizon-custody',
+    'rc-solver-event-reinit-counter-reset',
+    'rc-solver-event-segment-spacing-gap',
     'rc-solver-evidence-acceptance-drift',
+    'rc-solver-initial-time-contract-drift',
     'rc-solver-sparse-build-provenance-gap',
     'rc-solver-sparse-jacobian-pattern-erasure',
     'rc-source-revision-self-claim',
@@ -190,6 +213,109 @@ test('DAE lowering memory separates a residual contract from solver qualificatio
   );
 });
 
+test('event-side memory separates right-continuous observation from an exact left terminal residual', () => {
+  const record = getRootCauseRecord('rc-solver-event-boundary-side-confusion');
+  assert.equal(record?.status, 'resolved');
+  assert.equal(record.revision, 2);
+  assert.match(record.evidence.join(' '), /ordinary DAE residual[\s\S]*right-continuous[\s\S]*after[\s\S]*simultaneous[\s\S]*one representable floating-point value later[\s\S]*separate[\s\S]*epsilon or tolerance/i);
+  assert.match(record.rootCause, /two different sides[\s\S]*right-continuous observable evaluation[\s\S]*exact left-limit terminal equation/i);
+  assert.match(record.resolution.join(' '), /residual_into[\s\S]*right-continuous[\s\S]*residual_event_left_limit_into[\s\S]*stable compiled event index[\s\S]*exactly equals[\s\S]*no event-time tolerance[\s\S]*event index before all input and destination work[\s\S]*unchanged[\s\S]*zero-allocation[\s\S]*finite differences[\s\S]*native `@2`[\s\S]*finite times below[\s\S]*exact equality[\s\S]*ida\.callback\.event_boundary[\s\S]*Jacobian[\s\S]*IDAGetDky[\s\S]*previous_time < requested_time < current_time/i);
+  assert.match(record.prevention.join(' '), /never silently change[\s\S]*compiled event table[\s\S]*exact equality[\s\S]*t - epsilon[\s\S]*open at both endpoints[\s\S]*native restart[\s\S]*separate executable path/i);
+  assert.deepEqual(
+    record.regressionTests.map(({ path }) => path),
+    [
+      'rust-core/tests/dae_contract.rs',
+      'rust-core/tests/dae_allocation.rs',
+      'tests/root-cause-library.test.mjs',
+    ],
+  );
+  const source = readFileSync(resolve(ROOT, 'rust-core/src/dae.rs'), 'utf8');
+  assert.match(source, /residual_event_left_limit_into[\s\S]*InvalidEventIndex[\s\S]*LeftLimitAtEvent[\s\S]*at_s == event_time_s/);
+  const nativeSource = readFileSync(resolve(ROOT, 'rust-dae-native/src/native.rs'), 'utf8');
+  assert.match(nativeSource, /selected_event_at[\s\S]*time_s > event_time_s[\s\S]*CallbackEventBoundary[\s\S]*time_s == event_time_s/);
+  assert.match(nativeSource, /require_interpolation_bounds[\s\S]*requested_time_s <= previous_time_s[\s\S]*requested_time_s >= current_time_s/);
+  assert.equal(
+    searchRootCauses('event terminal residual right continuous left limit simultaneous one ULP invalid index atomic', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('native @2 event memories separate restart, capture, custody, context, horizon, counters, spacing and initial time', () => {
+  const ids = [
+    'rc-solver-event-consistent-restart-gap',
+    'rc-solver-event-endpoint-capture-work-gap',
+    'rc-solver-event-endpoint-state-custody',
+    'rc-solver-event-failure-context-loss',
+    'rc-solver-event-final-horizon-custody',
+    'rc-solver-event-reinit-counter-reset',
+    'rc-solver-event-segment-spacing-gap',
+    'rc-solver-initial-time-contract-drift',
+  ];
+  assert.deepEqual(ids.map((id) => getRootCauseRecord(id)?.status), [
+    'resolved', 'resolved', 'resolved', 'resolved', 'resolved', 'resolved', 'resolved',
+    'resolved',
+  ]);
+
+  const restart = getRootCauseRecord('rc-solver-event-consistent-restart-gap');
+  assert.match(restart.rootCause, /explicit state-machine seam[\s\S]*compiled event[\s\S]*consistent right-side[\s\S]*without left interpolation/i);
+  assert.match(restart.resolution.join(' '), /IdaEventPolicy::Restart[\s\S]*Reject[\s\S]*DaeResidualSystem::events[\s\S]*IDASetStopTime[\s\S]*IDA_ONE_STEP[\s\S]*IDA_TSTOP_RETURN[\s\S]*IDAReInit[\s\S]*IDACalcIC[\s\S]*IDAGetConsistentIC[\s\S]*bit-exact continuity[\s\S]*event-equality[\s\S]*battery-design\/dae-residual@2[\s\S]*dense backend\/result `@2`[\s\S]*KLU backend\/result `@2`/i);
+
+  const captureWork = getRootCauseRecord('rc-solver-event-endpoint-capture-work-gap');
+  assert.match(`${captureWork.symptom} ${captureWork.evidence.join(' ')}`, /two full-dimension[\s\S]*every successful native integration step[\s\S]*10,000 variables[\s\S]*10,000,000 internal steps[\s\S]*200,000,000,000[\s\S]*correct trajectory[\s\S]*work/i);
+  assert.match(captureWork.resolution.join(' '), /IDA_TSTOP_RETURN[\s\S]*requested row exactly equal to current time[\s\S]*Capture y and yp only[\s\S]*endpoint_state_captures[\s\S]*event_restarts \+ step_endpoint_output_rows[\s\S]*2 \* dimension \* internal_steps/i);
+
+  const custody = getRootCauseRecord('rc-solver-event-endpoint-state-custody');
+  assert.match(custody.rootCause, /endpoint vectors[\s\S]*authoritative restart state[\s\S]*mutable destinations[\s\S]*dense-output/i);
+  assert.match(custody.resolution.join(' '), /IDA_TSTOP_RETURN[\s\S]*event y[\s\S]*event yp[\s\S]*pre-event[\s\S]*IDAGetDky[\s\S]*restore[\s\S]*IDAReInit[\s\S]*differential continuity/i);
+
+  const context = getRootCauseRecord('rc-solver-event-failure-context-loss');
+  assert.match(context.rootCause, /implicit mutable loop state[\s\S]*centralized[\s\S]*exactly-once error-mapping boundary[\s\S]*terminal evidence read/i);
+  assert.match(context.resolution.join(' '), /generic callback[\s\S]*KLU[\s\S]*with_event_context[\s\S]*EventRestartFailure[\s\S]*already contextual error unchanged[\s\S]*EventDifferentialDiscontinuity[\s\S]*ReinitCounterInvariant[\s\S]*direct typed errors[\s\S]*IdaEventPhase[\s\S]*FinalizeEvidence[\s\S]*callback `DaeError`[\s\S]*KLU[\s\S]*last-linear-flag[\s\S]*before `IDAReInit`[\s\S]*balanced native-resource teardown/i);
+
+  const horizon = getRootCauseRecord('rc-solver-event-final-horizon-custody');
+  assert.match(horizon.rootCause, /Restart admission[\s\S]*event list[\s\S]*final requested time custody[\s\S]*native step and callback execution/i);
+  assert.match(horizon.resolution.join(' '), /IdaEventPolicy::Restart[\s\S]*IDASetStopTime\(final_requested_time\)[\s\S]*terminal boundary separately[\s\S]*ordinary right-continuous[\s\S]*ida\.callback\.horizon_boundary[\s\S]*IDA_TSTOP_RETURN[\s\S]*step endpoint[\s\S]*instead of calling `IDAGetDky`[\s\S]*Do not call `IDAReInit`[\s\S]*dense and KLU/i);
+
+  const counters = getRootCauseRecord('rc-solver-event-reinit-counter-reset');
+  assert.match(counters.rootCause, /Reset-scoped native counters[\s\S]*request-scoped evidence[\s\S]*before every `IDAReInit`/i);
+  assert.match(counters.resolution.join(' '), /Snapshot[\s\S]*segment boundary[\s\S]*checked nondecreasing deltas[\s\S]*zero after reinitialization[\s\S]*KLU evaluation\/entry-work[\s\S]*one request-global[\s\S]*one_step_calls[\s\S]*interpolated plus step-endpoint plus event-equality/i);
+
+  const spacing = getRootCauseRecord('rc-solver-event-segment-spacing-gap');
+  assert.match(spacing.rootCause, /caller output grid[\s\S]*derived event-to-event left segment[\s\S]*post-event correction target/i);
+  assert.match(spacing.resolution.join(' '), /initial_time < event <= final_requested_time[\s\S]*previous-boundary-to-event[\s\S]*next active event[\s\S]*event \+ \(event - previous_boundary\)[\s\S]*0\.001-scaled step[\s\S]*ida\.events\.segment_too_close[\s\S]*ida\.events\.correction_target_invalid[\s\S]*separate restart/i);
+
+  const initialTime = getRootCauseRecord('rc-solver-initial-time-contract-drift');
+  assert.match(initialTime.rootCause, /native request[\s\S]*IDAInit[\s\S]*residual system[\s\S]*initial y and yp/i);
+  assert.match(initialTime.resolution.join(' '), /initialization_time_s[\s\S]*battery-design\/dae-residual@2[\s\S]*dense and KLU[\s\S]*before result allocation[\s\S]*ida\.initial_time\.system_mismatch[\s\S]*-0\.0[\s\S]*\+0\.0[\s\S]*`@2` identities[\s\S]*historical `@1`/i);
+
+  const nativeSource = readFileSync(resolve(ROOT, 'rust-dae-native/src/native.rs'), 'utf8');
+  assert.match(nativeSource, /event_marker_selects_exact_left_residual_and_rejects_one_ulp_overshoot[\s\S]*event_marker_bounds_dense_jacobian_below_exact_and_one_ulp_above[\s\S]*terminal_horizon_uses_ordinary_callbacks_through_equality_and_rejects_overshoot[\s\S]*sparse_event_marker_bounds_work_and_writes_at_exact_and_overshoot_times/);
+  assert.match(nativeSource, /interpolation_only_multistep_run_performs_zero_endpoint_custody_copies[\s\S]*counter_delta_checked_add_covers_all_fields_and_rejects_overflow/);
+  assert.match(nativeSource, /restart_policy_solves_left_segment_corrects_equality_and_continues[\s\S]*final_event_equality_uses_saved_last_step_evidence_after_reinit[\s\S]*terminal_event_final_getter_failure_keeps_one_finalize_context_layer[\s\S]*event_restart_caps_and_initial_time_mismatch_fail_before_allocation[\s\S]*post_event_ic_validates_all_state_and_enforces_bit_exact_differential_continuity[\s\S]*tstop_endpoint_custody_rejects_nonfinite_y_and_yp_before_restart[\s\S]*signed_zero_event_and_output_share_one_numeric_restart_equality[\s\S]*active_event_filter_is_exactly_initial_exclusive_and_final_inclusive[\s\S]*terminal_stop_blocks_inactive_post_horizon_events_before_and_after_a_restart[\s\S]*event_segment_and_correction_targets_are_preflighted_before_allocation[\s\S]*two_event_restart_aggregates_counters_and_preserves_one_global_step_cap[\s\S]*reinit_counter_reset_is_checked_before_event_correction/);
+  assert.match(nativeSource, /klu_restart_solves_multiple_segments_without_dense_fallback[\s\S]*klu_terminal_stop_blocks_an_inactive_event_one_ulp_after_final[\s\S]*active_event_klu_failure_preserves_one_context_and_last_flag_evidence[\s\S]*klu_callback_budget_persists_across_event_reinit_and_right_side_calc_ic[\s\S]*klu_validation_applies_initial_time_and_event_preflight_before_allocation/);
+  assert.match(nativeSource, /endpoint_state_captures[\s\S]*event_restarts[\s\S]*step_endpoint_output_rows/);
+  const nativeContract = readFileSync(resolve(ROOT, 'rust-dae-native/src/lib.rs'), 'utf8');
+  assert.match(nativeContract, /native-ida-dense@2[\s\S]*native-ida-dense-result@2[\s\S]*native-ida-klu@2[\s\S]*native-ida-klu-result@2[\s\S]*IdaEventPolicy[\s\S]*Restart[\s\S]*MAX_EVENT_RESTARTS/);
+  const documentation = readFileSync(resolve(ROOT, 'docs/EQUATION_SOLVER.md'), 'utf8');
+  assert.match(documentation, /Current Iteration 4 event-restart contract boundary[\s\S]*dae-residual@2[\s\S]*native-ida-dense@2[\s\S]*native-ida-klu@2[\s\S]*IdaEventPolicy::Reject/i);
+  assert.match(documentation, /terminal[\s\S]*stop at `final_requested_time`[\s\S]*ida\.callback\.horizon_boundary[\s\S]*IDA_TSTOP_RETURN[\s\S]*one[\s\S]*ULP after final/i);
+  assert.match(documentation, /IDAReInit` resets native statistics[\s\S]*source-only native[\s\S]*Linux[\s\S]*not compiled into the browser[\s\S]*WebAssembly/i);
+  assert.match(documentation, /Historical Iteration 2 native reference boundary \(`@1`\)[\s\S]*native-ida-dense@1[\s\S]*Historical Iteration 3 native sparse reference boundary \(`@1`\)[\s\S]*native-ida-klu@1/i);
+
+  for (const [query, expected] of [
+    ['native IDA stop restart consistent right equality', restart.id],
+    ['endpoint capture 200 billion dimension steps work', captureWork.id],
+    ['IDAGetDky clobber saved event endpoint custody', custody.id],
+    ['event failure exact context KLU last flag phase', context.id],
+    ['inactive event one ULP post final horizon contamination', horizon.id],
+    ['IDAReInit reset segment cumulative counters', counters.id],
+    ['event mirrored correction target segment spacing', spacing.id],
+    ['residual system request initialization time signed zero', initialTime.id],
+  ]) {
+    assert.equal(searchRootCauses(query, { limit: 1 })[0]?.id, expected, query);
+  }
+});
+
 test('DAE CSC memory preserves linear construction before sparse qualification', () => {
   const record = getRootCauseRecord('rc-dae-csc-quadratic-lowering');
   assert.equal(record?.status, 'resolved');
@@ -262,6 +388,26 @@ test('nested Node runner memory preserves independent exact-count reporting', ()
   );
 });
 
+test('native CI count memory keeps live execution separate from frozen campaigns', () => {
+  const record = getRootCauseRecord('rc-ci-native-test-count-drift');
+  assert.equal(record?.status, 'resolved');
+  assert.equal(record.revision, 3);
+  assert.match(record.evidence.join(' '), /73 unit cases[\s\S]*130 total[\s\S]*18 dense event\/restart unit cases[\s\S]*six KLU-gated[\s\S]*97 cases[\s\S]*154[\s\S]*18-case dense event\/restart manifest target[\s\S]*172-case[\s\S]*nine-block[\s\S]*historical 154-case[\s\S]*eight-block incident[\s\S]*complementary 18-case KLU event\/restart manifest target[\s\S]*second 18-case result block[\s\S]*current 190-case[\s\S]*ten-block/i);
+  assert.match(record.rootCause, /test inventory[\s\S]*CI accounting[\s\S]*separate literals[\s\S]*atomic review invariant/i);
+  assert.match(record.resolution.join(' '), /debug and release[\s\S]*73-case[\s\S]*130-case[\s\S]*97-case[\s\S]*154-case[\s\S]*eight result blocks[\s\S]*historical 48-case[\s\S]*81-case[\s\S]*separate current evidence[\s\S]*18-case dense event\/restart manifest[\s\S]*154 cases in eight blocks[\s\S]*172 cases in nine blocks[\s\S]*original incident evidence[\s\S]*complementary 18-case KLU manifest[\s\S]*multiplicity from one to two[\s\S]*172 cases in nine blocks[\s\S]*190 cases in ten blocks[\s\S]*historical checkpoint/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-iteration4-event-evidence.test.mjs');
+  const workflow = readFileSync(resolve(ROOT, '.github/workflows/ci.yml'), 'utf8');
+  assert.equal((workflow.match(/Exercise exactly 190 native dense and KLU cases/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/'97 1'/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/'18 2'/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/-eq 190/gu) ?? []).length, 2);
+  assert.equal((workflow.match(/-eq 10$/gmu) ?? []).length, 2);
+  assert.equal(
+    searchRootCauses('native KLU CI stale unit aggregate result blocks test count drift', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
 test('regression-path memory preserves cross-platform repository containment', () => {
   const record = getRootCauseRecord('rc-regression-path-containment-gap');
   assert.equal(record?.status, 'resolved');
@@ -317,12 +463,15 @@ test('native IDA memories keep seven causes separate, resolved and exactly searc
   assert.match(mutex.resolution.join(' '), /absolute and relative tolerances[\s\S]*poison-recovering test_lock[\s\S]*reset each test.s instrumentation state/i);
 
   const msrv = getRootCauseRecord('rc-rust-msrv-float-pattern-lint-gap');
-  assert.match(msrv.evidence.join(' '), /PR 75[\s\S]*illegal-floating-point-literal-pattern[\s\S]*Rust 1\.77\.2[\s\S]*Rust 1\.87\.0/i);
+  assert.equal(msrv.revision, 2);
+  assert.match(msrv.evidence.join(' '), /PR 75[\s\S]*illegal-floating-point-literal-pattern[\s\S]*Rust 1\.77\.2[\s\S]*Rust 1\.87\.0[\s\S]*PR 79[\s\S]*event_time_s: 0\.5[\s\S]*dense and KLU/i);
   assert.match(msrv.rootCause, /floating-point patterns[\s\S]*exact warning-denied minimum-supported Rust toolchain/i);
-  assert.match(msrv.resolution.join(' '), /full IdaError structural equality[\s\S]*Rust 1\.77\.2[\s\S]*RUSTFLAGS=-Dwarnings/i);
+  assert.match(msrv.resolution.join(' '), /full IdaError structural equality[\s\S]*bind the floating-point field as a variable[\s\S]*matches! guard[\s\S]*Rust 1\.77\.2[\s\S]*RUSTFLAGS=-Dwarnings/i);
   const nativeSource = readFileSync(resolve(ROOT, 'rust-dae-native/src/native.rs'), 'utf8');
   assert.match(nativeSource, /interpolation_guard_rejects_replaying_the_previous_step_endpoint[\s\S]*assert_eq![\s\S]*IdaError::InterpolationIntervalMiss/);
   assert.doesNotMatch(nativeSource, /matches!\([\s\S]{0,240}interval_start_s:\s*0\.5[\s\S]{0,120}interval_end_s:\s*0\.75/);
+  assert.match(nativeSource, /post_event_ic_validates_all_state[\s\S]*event_time_s,[\s\S]*if event_time_s == 0\.5/);
+  assert.match(nativeSource, /tstop_endpoint_custody_rejects_nonfinite[\s\S]*event_time_s,[\s\S]*if event_time_s == 0\.5/);
   const ci = readFileSync(resolve(ROOT, '.github/workflows/ci.yml'), 'utf8');
   assert.match(ci, /sundials-native-build:[\s\S]*RUSTFLAGS:\s*-Dwarnings[\s\S]*toolchain:\s*1\.77\.2/);
 
@@ -396,6 +545,194 @@ test('loop-contract memory preserves the mutation, identity and trust-boundary f
   );
 });
 
+test('service admission memory preserves the pre-native cyclic algebraic dense-work fix', () => {
+  const record = getRootCauseRecord('rc-service-admission-cyclic-algebraic-preflight');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /DaeResidualSystem::lower[\s\S]*consistent initial y and yp[\s\S]*vec!\[vec!\[0\.0; n\]; n\][\s\S]*dense n-squared[\s\S]*Algebraic iterations directly bound[\s\S]*implicit setting[\s\S]*not executed by Phase 2/i);
+  assert.match(record.rootCause, /eventual sparse-backend limits[\s\S]*dense cyclic-algebraic initialization[\s\S]*algebraic iteration work[\s\S]*pre-native DAE lowering/i);
+  assert.match(record.resolution.join(' '), /When any algebraic loop exists,[\s\S]*256 total algebraic variables before DAE lowering[\s\S]*algebraic_max_iterations[\s\S]*100 before lowering[\s\S]*implicit_max_iterations[\s\S]*does not execute the built-in backward-Euler path[\s\S]*10,000-variable KLU ceiling for acyclic graphs[\s\S]*do not bound KLU symbolic\/numeric factor fill/i);
+  assert.match(record.prevention.join(' '), /preprocessing and initialization algorithm[\s\S]*actual dense or sparse implementation[\s\S]*topology-changing[\s\S]*factor-fill,[\s\S]*CPU,[\s\S]*memory[\s\S]*lifetime nonclaims/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service cyclic algebraic dense Newton consistent initial KLU preflight', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service admission memory preserves float count validation before decode allocation', () => {
+  const record = getRootCauseRecord('rc-service-admission-f64-block-allocation-order');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /F64BlockWire::decode_values[\s\S]*decode_base64[\s\S]*count by eight[\s\S]*\(data\.len\(\) \/ 4\) \* 3 bytes[\s\S]*before invoking the allocating float decoder[\s\S]*decode_request_frame[\s\S]*unless they enter through admit_request_frame/i);
+  assert.match(record.rootCause, /service admission design[\s\S]*relationship between two caller-controlled size fields[\s\S]*after the larger field[\s\S]*decoded-byte allocation/i);
+  assert.match(record.resolution.join(' '), /Checked-multiply[\s\S]*count by eight[\s\S]*canonical standard-base64 length[\s\S]*In admit_request_frame[\s\S]*before calling F64BlockWire::decode_values[\s\S]*does not change the standalone Phase 1 codec helper[\s\S]*process memory containment/i);
+  assert.match(record.detection.map(({ method, signal, failureCondition }) => `${method} ${signal} ${failureCondition}`).join(' '), /error-precedence and source-order[\s\S]*near-frame-limit[\s\S]*typed encoded-length mismatch[\s\S]*ahead of decode_values[\s\S]*source orders decode_values first/i);
+  assert.match(record.prevention.join(' '), /exact checked size relation before decoded-byte reservation or copy[\s\S]*tiny-count\/large-data[\s\S]*typed error precedence[\s\S]*admission source-order evidence[\s\S]*Route untrusted service requests through admit_request_frame/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service float block tiny count huge base64 decode allocation order', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service admission memory preserves the caller-controlled input-slot preallocation fix', () => {
+  const record = getRootCauseRecord('rc-service-admission-input-slot-preallocation');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /vec!\[None; block\.kind\.input_count\(\)\][\s\S]*Sum input count[\s\S]*4,096[\s\S]*100,000[\s\S]*before core graph decode/i);
+  assert.match(record.rootCause, /solver dimensions[\s\S]*caller-controlled block arity[\s\S]*checked graph-wide sum[\s\S]*core decoder[\s\S]*allocates/i);
+  assert.match(record.resolution.join(' '), /before core graph decode[\s\S]*4,096-input[\s\S]*Checked-add[\s\S]*100,000 slots[\s\S]*does not modify rust-core[\s\S]*process-level resource containment/i);
+  assert.match(record.prevention.join(' '), /length, capacity or work-loop bound[\s\S]*before the first dependent allocation[\s\S]*exact-limit,[\s\S]*plus-one[\s\S]*checked-overflow/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('native service Sum fan-in aggregate input slots preallocation core decode', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves wall custody and deadline precedence', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-deadline-observation-race');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /timer after spawn,[\s\S]*request copying[\s\S]*pipe\/thread setup[\s\S]*fallible admitted-request copy before custody[\s\S]*Instant immediately before Command::spawn[\s\S]*spawn and post-spawn setup are charged[\s\S]*checked started\.elapsed only at the top[\s\S]*non-reaping waitid observer[\s\S]*Scheduler preemption or waitid latency[\s\S]*Ok\(true\) exit observation[\s\S]*classifying[\s\S]*Exited[\s\S]*rechecks started\.elapsed immediately after WNOWAIT[\s\S]*at or beyond the boundary/i);
+  assert.match(record.rootCause, /sampled at incomplete lifecycle boundaries[\s\S]*custody began after startup work[\s\S]*earlier time sample[\s\S]*preemptible system call/i);
+  assert.match(record.resolution.join(' '), /admitted-request copy[\s\S]*before custody[\s\S]*Instant immediately before Command::spawn[\s\S]*later setup step consume the configured interval[\s\S]*initial elapsed-time check before WNOWAIT[\s\S]*compare elapsed time[\s\S]*again before normal-exit group cleanup or Child::wait[\s\S]*At or beyond the deadline,[\s\S]*timeout cleanup[\s\S]*leader remains unreaped[\s\S]*still-before-deadline observation/i);
+  assert.match(record.prevention.join(' '), /host-only preparation precedes custody[\s\S]*before the first spawn or post-spawn operation[\s\S]*Revalidate deadlines after every blocking or preemptible operation[\s\S]*equality semantics[\s\S]*greater than or equal[\s\S]*source-order evidence[\s\S]*scheduler-preemption timing hook[\s\S]*distinct from process-group identity ownership and I\/O backpressure/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service deadline crossed after waitid exit observation preemption timeout precedence', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves the descendant-held pipe liveness fix', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-descendant-pipe-liveness');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /direct-child exit and pipe-reader completion[\s\S]*different ownership boundaries[\s\S]*EOF-driven reader[\s\S]*same-process-group descendant[\s\S]*hanging leader[\s\S]*leader that emits a valid response[\s\S]*timeout path proves bounded return,[\s\S]*explicit direct-leader reaping[\s\S]*normal leader-exit path[\s\S]*bounded valid response[\s\S]*source-order binding confirms Child::wait[\s\S]*unconditionally attempts writer, stdout and stderr receives[\s\S]*one shared absolute deadline[\s\S]*retained cleanup error/i);
+  assert.match(record.rootCause, /direct-child exit[\s\S]*complete worker lifetime[\s\S]*EOF-driven capture threads[\s\S]*descendant retaining an inherited pipe write end/i);
+  assert.match(record.resolution.join(' '), /distinct process group[\s\S]*wall deadline,[\s\S]*post-spawn failure[\s\S]*direct-leader exit[\s\S]*signal the whole owned process group[\s\S]*reap the direct child[\s\S]*shared fixed two-second receive deadline[\s\S]*attempt all three receives[\s\S]*retained cleanup error[\s\S]*descendant moved or created outside the original group or session[\s\S]*not claim universal descendant containment or a process sandbox[\s\S]*bound on channel waiting only[\s\S]*detached I\/O threads blocked[\s\S]*accumulate escaped processes and threads/i);
+  assert.match(record.prevention.join(' '), /lifecycle graph[\s\S]*Terminate the owned process group before an EOF-dependent drain[\s\S]*separate finite drain deadline[\s\S]*real pipe-holding descendant[\s\S]*escape,[\s\S]*cancellation[\s\S]*sandbox nonclaims/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service descendant holds stdout stderr pipe leader exit process group drain', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves direct-leader control across setpgid', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-direct-leader-group-escape');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /process_group\(0\)[\s\S]*blocking wait[\s\S]*setpgid[\s\S]*another existing group in the same session[\s\S]*kill\(-original_pgid, SIGKILL\)[\s\S]*escape-group-hang[\s\S]*joins its parent existing group[\s\S]*400 ms policy[\s\S]*typed timeout in under two seconds[\s\S]*PID-plus-start-time identity reaped[\s\S]*Child::kill[\s\S]*Child::wait[\s\S]*retains the first group\/direct\/wait error/i);
+  assert.match(record.rootCause, /conflated original process-group membership[\s\S]*durable ownership of the direct Child[\s\S]*group membership can change[\s\S]*retained Child handle/i);
+  assert.match(record.resolution.join(' '), /Child handle and original PGID as separate controls[\s\S]*negative PGID for descendants[\s\S]*Child::kill[\s\S]*moved direct leader[\s\S]*Child::wait[\s\S]*first group-kill,[\s\S]*direct-kill or wait error/i);
+  assert.match(record.prevention.join(' '), /not treat a process group as a durable substitute[\s\S]*real setpgid transition[\s\S]*immutable leader identity[\s\S]*distinct from same-group descendant cleanup,[\s\S]*escaped-descendant noncontainment[\s\S]*stale-PGID reuse ordering/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service direct worker setpgid original group kill Child handle wait timeout', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves the fixture MSRV syntax fix', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-fixture-msrv-syntax-drift');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /unsafe extern syntax[\s\S]*pinned Rust 1\.77\.2[\s\S]*proactively before a hosted CI execution[\s\S]*no hosted failure[\s\S]*edition-2021 plain extern "C"[\s\S]*unsafe[\s\S]*call site[\s\S]*active RUSTC[\s\S]*--edition=2021[\s\S]*-Dwarnings/i);
+  assert.match(record.rootCause, /auxiliary fixture source[\s\S]*same explicit MSRV grammar[\s\S]*Cargo campaign/i);
+  assert.match(record.resolution.join(' '), /Rust-1\.77-compatible plain extern "C"[\s\S]*unsafe blocks at the foreign-function call sites[\s\S]*active RUSTC[\s\S]*--edition=2021[\s\S]*-Dwarnings[\s\S]*test-only[\s\S]*out of Cargo product binaries and release artifacts/i);
+  assert.match(record.prevention.join(' '), /repository MSRV[\s\S]*dynamically compiled fixtures[\s\S]*exact active-rustc command[\s\S]*no-hosted-failure distinction[\s\S]*Avoid interpreting successful fixture compilation as native-worker implementation or shipped-product evidence/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service Rust MSRV unsafe extern fixture active rustc edition 2021 warnings', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves PID/PGID ownership through cleanup', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-pgid-reuse-cleanup-race');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /Child::try_wait[\s\S]*reaped the leader before[\s\S]*negative process-group identifier[\s\S]*process_group\(0\)[\s\S]*PGID equals the leader PID[\s\S]*Adversarial source review[\s\S]*concrete reuse window[\s\S]*Code\(101\)\/ENOENT[\s\S]*consistent with cross-worker interference[\s\S]*lacked PID\/PGID\/start-time or signal telemetry[\s\S]*not causal proof[\s\S]*waitid[\s\S]*WNOWAIT[\s\S]*Child::wait only afterward[\s\S]*retains its first error[\s\S]*writer, stdout and stderr receives[\s\S]*one shared absolute deadline[\s\S]*after all three receive attempts/i);
+  assert.match(record.rootCause, /discarded kernel ownership of the PID\/PGID[\s\S]*reaping the leader[\s\S]*group-directed signal[\s\S]*recyclable numeric identifier/i);
+  assert.match(record.resolution.join(' '), /waitid\(P_PID,[\s\S]*WEXITED \| WNOHANG \| WNOWAIT[\s\S]*leaves the exited child waitable[\s\S]*negative PGID[\s\S]*still belongs to the supervised worker[\s\S]*Child::wait only after[\s\S]*cleanup error independently[\s\S]*all three I\/O result receives[\s\S]*one shared deadline[\s\S]*cleanup error precedence/i);
+  assert.match(record.prevention.join(' '), /PID and PGID reuse[\s\S]*more than one system call[\s\S]*non-reaping exit observation[\s\S]*parallel spawns[\s\S]*identity-publishing descendants[\s\S]*distinct from test-side PID-plus-start-time evidence[\s\S]*universal descendant-containment/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service PGID PID reuse try_wait kill unrelated process group waitid WNOWAIT', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves PID-reuse-safe liveness evidence', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-pid-reuse-liveness-evidence');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /combined debug campaign[\s\S]*passed 26 service cases[\s\S]*raw \/proc\/\$pid existence assertion[\s\S]*reused by an unrelated codex-main process[\s\S]*passed when rerun alone[\s\S]*field 22 start time[\s\S]*absent entry,[\s\S]*changed start time,[\s\S]*Z\/X state/i);
+  assert.match(record.rootCause, /recyclable numeric PID[\s\S]*immutable process identity[\s\S]*kernel start-time discriminator[\s\S]*later PID reuse/i);
+  assert.match(record.resolution.join(' '), /PID plus Linux \/proc\/\$pid\/stat field 22 start time[\s\S]*\/proc is gone[\s\S]*start time differs[\s\S]*direct-child reaping[\s\S]*original identity to be absent[\s\S]*Z\/X terminal state[\s\S]*reused PID/i);
+  assert.match(record.prevention.join(' '), /Never use a numeric PID or \/proc path existence alone[\s\S]*immutable creation discriminator[\s\S]*process start time or a pidfd[\s\S]*concurrently as well as in isolation[\s\S]*distinct from the worker cleanup algorithm/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service worker PID reused proc starttime false liveness cleanup failure', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves allocation-free pre-exec error handling', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-pre-exec-error-allocation');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /set_linux_limit conversion-error branch[\s\S]*io::Error::new[\s\S]*custom static message[\s\S]*Command pre_exec[\s\S]*boxes its custom error payload[\s\S]*allocation-capable[\s\S]*without reproducing a deadlock[\s\S]*rlim_t::MAX[\s\S]*compile time[\s\S]*directly cast[\s\S]*libc::__errno_location[\s\S]*io::Error::from_raw_os_error[\s\S]*excludes io::Error::new,[\s\S]*formatting and last_os_error/i);
+  assert.match(record.rootCause, /pre_exec transitive call path[\s\S]*general Rust custom-error constructor[\s\S]*fixed scalar libc operations[\s\S]*allocation-free raw OS error/i);
+  assert.match(record.resolution.join(' '), /fixed policy constant fits libc::rlim_t[\s\S]*compile-time assertions[\s\S]*direct scalar casts[\s\S]*four fixed setrlimit calls[\s\S]*PR_SET_NO_NEW_PRIVS prctl[\s\S]*libc::__errno_location[\s\S]*io::Error::from_raw_os_error/i);
+  assert.match(record.prevention.join(' '), /every pre_exec closure transitively[\s\S]*helpers can hide allocation,[\s\S]*formatting and locks[\s\S]*validation and fallible preparation before spawn[\s\S]*claim narrow[\s\S]*does not qualify arbitrary Rust code as safe after fork[\s\S]*not[\s\S]*executable deadlock reproduction/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service pre exec fork io Error new allocation rlimit errno raw os error', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves procfs-native process identity', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-procfs-pid-namespace-evidence');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /process::id and Child::id[\s\S]*\/proc\/\$pid\/stat[\s\S]*differed from the numeric identities exposed by the mounted procfs[\s\S]*exit 101 with ENOENT[\s\S]*\/proc\/self\/stat[\s\S]*procfs-visible PID[\s\S]*field 22 start time/i);
+  assert.match(record.rootCause, /process API PID[\s\S]*numeric identity exported by the mounted procfs[\s\S]*namespace translation or procfs-native self-identification/i);
+  assert.match(record.resolution.join(' '), /each fixture process read \/proc\/self\/stat itself[\s\S]*PID from the stat identity prefix[\s\S]*field 22 process start time[\s\S]*procfs-visible PID[\s\S]*do not compare it with process::id or Child::id[\s\S]*namespace equivalence/i);
+  assert.match(record.prevention.join(' '), /PID namespaces[\s\S]*procfs mount[\s\S]*explicit evidence context[\s\S]*self-published procfs identity or pidfds[\s\S]*namespace translation distinct from temporal PID reuse[\s\S]*start time distinguishes later reuse/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service procfs self stat PID namespace process id mismatch container', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves the stdin backpressure deadline fix', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-stdin-pipe-deadline-bypass');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /finite kernel capacity[\s\S]*4 MiB payload[\s\S]*blocking write_all ahead of the child-monitor loop[\s\S]*1 MiB admitted request[\s\S]*never reads standard input[\s\S]*dedicated thread[\s\S]*under two seconds[\s\S]*750 ms policy/i);
+  assert.match(record.rootCause, /Deadline enforcement[\s\S]*blocking request-pipe write[\s\S]*serialized on one thread[\s\S]*backpressure[\s\S]*only control path capable of enforcing the deadline/i);
+  assert.match(record.resolution.join(' '), /checked fallible reservation before spawn[\s\S]*typed allocation failure[\s\S]*dedicated writer thread[\s\S]*immediately polls the child[\s\S]*terminate the owned process group[\s\S]*reap the leader[\s\S]*two-second drain deadline/i);
+  assert.match(record.prevention.join(' '), /every pipe read and write as potentially blocking[\s\S]*deadline custody before spawn[\s\S]*independent from request[\s\S]*frames larger than ordinary pipe capacity[\s\S]*non-reading workers[\s\S]*separate from caller cancellation[\s\S]*native-solver correctness/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service large request stdin pipe backpressure non-reading worker deadline', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('signed-zero transport memory preserves the actual JSON loss and byte-level fix', () => {
+  assert.equal(JSON.stringify(-0), '0');
+  const decodedJsonNumber = JSON.parse(JSON.stringify(-0));
+  assert.ok(Object.is(decodedJsonNumber, 0));
+  assert.ok(!Object.is(decodedJsonNumber, -0));
+
+  const record = getRootCauseRecord('rc-signed-zero-json-transport-loss');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /JSON\.stringify\(-0\)[\s\S]*positive zero[\s\S]*Object\.is[\s\S]*f64::to_bits/i);
+  assert.match(record.rootCause, /JSON number equality[\s\S]*IEEE-754[\s\S]*signed-zero/i);
+  assert.match(record.resolution.join(' '), /little-endian bytes[\s\S]*canonical standard base64[\s\S]*f64::from_le_bytes[\s\S]*to_bits/i);
+  assert.match(record.prevention.join(' '), /host-language numeric equality[\s\S]*alternate alphabets[\s\S]*solver-execution claims/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('native service JSON negative zero base64 float transport bits', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
 test('SIL result memory preserves canonical repeat and plan-bound evidence', () => {
   const record = getRootCauseRecord('rc-sil-result-representation-gap');
   assert.equal(record?.status, 'resolved');
@@ -455,15 +792,17 @@ test('test-multiplier memory pins a reproducible denominator and local evidence'
   const id = 'rc-test-multiplier-denominator-drift';
   const multiplier = getRootCauseRecord(id);
   assert.equal(multiplier?.status, 'resolved');
-  assert.equal(multiplier.revision, 2);
+  assert.equal(multiplier.revision, 3);
   assert.match(multiplier.rootCause, /comparison population[\s\S]*base revision[\s\S]*counting procedure/i);
   assert.match(multiplier.evidence.join(' '), /9f4a43421de34efd067d38a070a0f2c4b9a859dc[\s\S]*81 unique Cargo test function names[\s\S]*67\+1\+2\+11[\s\S]*case-sensitive[\s\S]*21-name[\s\S]*48 new manifest-listed KLU cases[\s\S]*42-case floor[\s\S]*2\.29/i);
+  assert.match(multiplier.evidence.join(' '), /PR 79[\s\S]*six historical KLU internal seams[\s\S]*six later event\/restart seams[\s\S]*live total to 12/i);
   const resolution = multiplier.resolution.join(' ');
   assert.match(resolution, /66f7240 at 708[\s\S]*4da8c03 at 758[\s\S]*increase of 50/i);
   assert.match(resolution, /rg -n "\^test\\\(" tests --glob "\*\.test\.mjs" \| wc -l/);
   assert.match(resolution, /6094b3b at 824 only as an intermediate/i);
   assert.match(resolution, /at least 858 declarations[\s\S]*increase of at least 100/i);
   assert.match(resolution, /9f4a43421de34efd067d38a070a0f2c4b9a859dc[\s\S]*67 native\.rs[\s\S]*one feature_off\.rs[\s\S]*two backend_identity\.rs[\s\S]*11 solve_reference\.rs[\s\S]*sorted 81-name population[\s\S]*\(csc\|jacobian\|matrix\|sparse\|linear_solver\|resource\|construction\|drop\|backend\)[\s\S]*21 matching names[\s\S]*48 manifest-listed KLU cases[\s\S]*floor 42[\s\S]*ratio 2\.29/i);
+  assert.match(resolution, /historical retention by the frozen case names[\s\S]*later KLU-gated internal seams[\s\S]*separate current population[\s\S]*historical six/i);
   assert.match(multiplier.prevention.join(' '), /complete source population[\s\S]*exact matching list[\s\S]*Git history is unavailable at runtime[\s\S]*internal unit seams[\s\S]*separately reported populations/i);
 
   assert.deepEqual(
@@ -561,6 +900,10 @@ test('lexical search deterministically retrieves causes, fixes and containment p
     ['Euler RC dt tau unstable nonfinite heat', 'rc-rc-euler-step-instability'],
     ['adaptive thermal microsteps module node work preflight', 'rc-adaptive-integration-work-undercount'],
     ['negative signed lower bound atBound evidence', 'rc-signed-bound-evidence-miss'],
+    ['service cyclic algebraic dense Newton consistent initial KLU preflight', 'rc-service-admission-cyclic-algebraic-preflight'],
+    ['service float block tiny count huge base64 decode allocation order', 'rc-service-admission-f64-block-allocation-order'],
+    ['native service Sum fan-in aggregate input slots preallocation core decode', 'rc-service-admission-input-slot-preallocation'],
+    ['native service JSON signed zero base64 float bits', 'rc-signed-zero-json-transport-loss'],
     ['SIL repeatability JSON key order mutable evidence checksum', 'rc-sil-result-representation-gap'],
     ['thermal Euler C G exponential decay coolant phase heat conservation', 'rc-thermal-explicit-step-instability'],
     ['holdout purpose relabel same observations raw source run leakage', 'rc-calibration-holdout-relabel-leakage'],

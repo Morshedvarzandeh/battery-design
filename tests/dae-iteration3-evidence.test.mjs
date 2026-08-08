@@ -7,7 +7,10 @@ import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const read = (path) => readFileSync(resolve(ROOT, path), 'utf8');
-const rustTestCount = (source) => (source.match(/^\s*#\[test\]\s*$/gmu) ?? []).length;
+const rustTestNames = (source) => [...source.matchAll(
+  /^\s*#\[test\]\s*\n\s*fn\s+([a-z0-9_]+)\s*\(/gmu,
+)].map((match) => match[1]);
+const rustTestCount = (source) => rustTestNames(source).length;
 
 const KLU_TEST_FILES = Object.freeze({
   'rust-dae-native/tests/klu_feature_off.rs': 4,
@@ -190,13 +193,13 @@ test('Iteration 3 has exactly 48 manifest-listed KLU cases against its frozen 21
   assert.equal((actual / frozenSparseReadinessProxy).toFixed(2), '2.29');
 });
 
-test('six internal KLU seams stay separate and the 81-case dense campaign stays retained', () => {
+test('six historical Iteration 3 seams and the frozen 81 names remain present', () => {
   const native = read('rust-dae-native/src/native.rs');
-  const featureGatedTests = native.match(
-    /^\s*#\[cfg\(feature = "sundials-ida-klu"\)\]\s*\n\s*#\[test\]\s*$/gmu,
-  ) ?? [];
-  assert.equal(featureGatedTests.length, KLU_INTERNAL_SEAMS.length);
+  const featureGatedNames = [...native.matchAll(
+    /^\s*#\[cfg\(feature = "sundials-ida-klu"\)\]\s*\n\s*#\[test\]\s*\n\s*fn\s+([a-z0-9_]+)\s*\(/gmu,
+  )].map((match) => match[1]);
   for (const name of KLU_INTERNAL_SEAMS) {
+    assert.ok(featureGatedNames.includes(name), name);
     assert.match(
       native,
       new RegExp(`#\\[cfg\\(feature = "sundials-ida-klu"\\)\\]\\s*#\\[test\\]\\s*fn ${name}\\(`, 'u'),
@@ -204,15 +207,15 @@ test('six internal KLU seams stay separate and the 81-case dense campaign stays 
     );
   }
 
-  const allUnitTests = rustTestCount(native);
-  const retainedDenseUnitTests = allUnitTests - featureGatedTests.length;
-  const retainedDenseCases = retainedDenseUnitTests
-    + rustTestCount(read('rust-dae-native/tests/backend_identity.rs'))
-    + rustTestCount(read('rust-dae-native/tests/solve_reference.rs'))
-    + rustTestCount(read('rust-dae-native/tests/feature_off.rs'));
-  assert.equal(allUnitTests, 73);
-  assert.equal(retainedDenseUnitTests, 67);
-  assert.equal(retainedDenseCases, 81);
+  const currentHistoricalPopulation = new Set([
+    ...rustTestNames(native),
+    ...rustTestNames(read('rust-dae-native/tests/feature_off.rs')),
+    ...rustTestNames(read('rust-dae-native/tests/backend_identity.rs')),
+    ...rustTestNames(read('rust-dae-native/tests/solve_reference.rs')),
+  ]);
+  for (const name of ITERATION_3_PROXY_POPULATION) {
+    assert.ok(currentHistoricalPopulation.has(name), `retained Iteration 2/3 case: ${name}`);
+  }
 });
 
 test('the governed sparse source/build truth suite executes exactly 80/80 cases', () => {
