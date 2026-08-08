@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 70);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 71);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -91,6 +91,7 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-nullable-alias-projection',
     'rc-object-allowlist-prototype-bypass',
     'rc-packaged-dependency-omission',
+    'rc-pouch-compression-kind-drift',
     'rc-product-surface-claim-drift',
     'rc-rc-euler-step-instability',
     'rc-regression-path-containment-gap',
