@@ -143,7 +143,7 @@ fn lowering_classifies_state_first_without_changing_output_order() {
     let system = lower(&graph);
 
     assert_eq!(system.contract_version(), DAE_RESIDUAL_CONTRACT_VERSION);
-    assert_eq!(system.contract_version(), "battery-design/dae-residual@1");
+    assert_eq!(system.contract_version(), "battery-design/dae-residual@2");
     assert_eq!(system.variables().len(), 3);
     assert_eq!(system.variables()[0].block_id, state);
     assert_eq!(system.variables()[0].kind, DaeVariableKind::Differential);
@@ -603,7 +603,7 @@ fn singular_self_loop_is_neutrally_lowered_without_index_one_claim() {
     graph.connect(loop_block, loop_block, 0).unwrap();
     let graph = graph.compile().unwrap();
     let system = lower(&graph);
-    assert_eq!(system.contract_version(), "battery-design/dae-residual@1");
+    assert_eq!(system.contract_version(), "battery-design/dae-residual@2");
     assert_eq!(system.id_vector(), &[DAE_ALGEBRAIC_ID]);
 
     let mut residual = [8.0];

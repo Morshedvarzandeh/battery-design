@@ -5,11 +5,11 @@ use battery_design_core::equations::{
     Block, BlockId, BlockKind, CompiledGraph, EquationGraph, Quantity, SolverSettings,
 };
 use battery_design_dae_native::{
-    IdaAbsoluteTolerance, IdaError, IdaInitialConditionPolicy, IdaKluBackend, IdaKluSettings,
-    IdaSolveResult, MAX_KLU_DIMENSION, MAX_KLU_JACOBIAN_ENTRY_WORK, MAX_KLU_KNOWN_CSC_BYTES,
-    MAX_KLU_NONZEROS, MAX_KLU_RESULT_VALUES, NATIVE_IDA_KLU_BACKEND_CONTRACT,
-    NATIVE_IDA_KLU_BACKEND_ID, NATIVE_IDA_KLU_RESULT_CONTRACT, PINNED_KLU_VERSION,
-    PINNED_SUITESPARSE_VERSION, PINNED_SUNDIALS_VERSION,
+    IdaAbsoluteTolerance, IdaError, IdaEventPolicy, IdaInitialConditionPolicy, IdaKluBackend,
+    IdaKluSettings, IdaSolveResult, MAX_KLU_DIMENSION, MAX_KLU_JACOBIAN_ENTRY_WORK,
+    MAX_KLU_KNOWN_CSC_BYTES, MAX_KLU_NONZEROS, MAX_KLU_RESULT_VALUES,
+    NATIVE_IDA_KLU_BACKEND_CONTRACT, NATIVE_IDA_KLU_BACKEND_ID, NATIVE_IDA_KLU_RESULT_CONTRACT,
+    PINNED_KLU_VERSION, PINNED_SUITESPARSE_VERSION, PINNED_SUNDIALS_VERSION,
 };
 
 fn core_settings() -> SolverSettings {
@@ -35,6 +35,7 @@ fn klu_settings(output_times_s: Vec<f64>) -> IdaKluSettings {
         max_result_values: MAX_KLU_RESULT_VALUES,
         suppress_algebraic_error: true,
         initial_conditions: IdaInitialConditionPolicy::ContractConsistent,
+        event_policy: IdaEventPolicy::Reject,
     }
 }
 

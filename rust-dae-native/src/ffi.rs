@@ -116,6 +116,12 @@ extern "C" {
         initial_y: NVector,
         initial_yp: NVector,
     ) -> c_int;
+    pub(crate) fn IDAReInit(
+        memory: IdaMemory,
+        initial_time: f64,
+        initial_y: NVector,
+        initial_yp: NVector,
+    ) -> c_int;
     pub(crate) fn IDASetUserData(memory: IdaMemory, user_data: *mut c_void) -> c_int;
     pub(crate) fn IDASStolerances(
         memory: IdaMemory,
@@ -131,6 +137,12 @@ extern "C" {
     pub(crate) fn IDASetSuppressAlg(memory: IdaMemory, suppress: c_int) -> c_int;
     pub(crate) fn IDASetMaxOrd(memory: IdaMemory, maximum_order: c_int) -> c_int;
     pub(crate) fn IDASetMaxNumSteps(memory: IdaMemory, maximum_steps: c_long) -> c_int;
+    pub(crate) fn IDASetMaxNumStepsIC(memory: IdaMemory, maximum_steps: c_int) -> c_int;
+    pub(crate) fn IDASetMaxNumJacsIC(memory: IdaMemory, maximum_jacobians: c_int) -> c_int;
+    pub(crate) fn IDASetMaxNumItersIC(memory: IdaMemory, maximum_iterations: c_int) -> c_int;
+    pub(crate) fn IDASetMaxBacksIC(memory: IdaMemory, maximum_backtracks: c_int) -> c_int;
+    pub(crate) fn IDASetStopTime(memory: IdaMemory, stop_time: f64) -> c_int;
+    pub(crate) fn IDAClearStopTime(memory: IdaMemory) -> c_int;
     pub(crate) fn IDASetLinearSolver(
         memory: IdaMemory,
         linear_solver: SUNLinearSolver,

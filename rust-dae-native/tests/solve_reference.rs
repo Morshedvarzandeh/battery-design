@@ -6,8 +6,8 @@ use battery_design_core::equations::{
     SolverSettings,
 };
 use battery_design_dae_native::{
-    IdaAbsoluteTolerance, IdaDenseBackend, IdaInitialConditionPolicy, IdaSettings, IdaSolveResult,
-    MAX_DENSE_DIMENSION, NATIVE_IDA_BACKEND_CONTRACT, NATIVE_IDA_BACKEND_ID,
+    IdaAbsoluteTolerance, IdaDenseBackend, IdaEventPolicy, IdaInitialConditionPolicy, IdaSettings,
+    IdaSolveResult, MAX_DENSE_DIMENSION, NATIVE_IDA_BACKEND_CONTRACT, NATIVE_IDA_BACKEND_ID,
     NATIVE_IDA_RESULT_CONTRACT, PINNED_SUNDIALS_VERSION,
 };
 
@@ -29,6 +29,7 @@ fn ida_settings(output_times_s: Vec<f64>) -> IdaSettings {
         max_dense_dimension: MAX_DENSE_DIMENSION,
         suppress_algebraic_error: true,
         initial_conditions: IdaInitialConditionPolicy::ContractConsistent,
+        event_policy: IdaEventPolicy::Reject,
     }
 }
 

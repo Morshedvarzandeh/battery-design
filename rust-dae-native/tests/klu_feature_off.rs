@@ -19,7 +19,7 @@ fn klu_construction_fails_closed_without_its_feature() {
 #[test]
 fn klu_identity_cannot_be_confused_with_dense_identity() {
     assert_ne!(NATIVE_IDA_KLU_BACKEND_ID, NATIVE_IDA_BACKEND_ID);
-    assert!(NATIVE_IDA_KLU_BACKEND_CONTRACT.ends_with("@1"));
+    assert!(NATIVE_IDA_KLU_BACKEND_CONTRACT.ends_with("@2"));
     assert!(NATIVE_IDA_KLU_BACKEND_CONTRACT.contains("klu"));
 }
 

@@ -5,8 +5,8 @@ use battery_design_core::equations::{
     Block, BlockKind, CompiledGraph, EquationGraph, Quantity, SolverSettings,
 };
 use battery_design_dae_native::{
-    IdaAbsoluteTolerance, IdaError, IdaInitialConditionPolicy, IdaKluBackend, IdaKluSettings,
-    MAX_KLU_DIMENSION, MAX_KLU_JACOBIAN_ENTRY_WORK, MAX_KLU_JACOBIAN_EVALUATIONS,
+    IdaAbsoluteTolerance, IdaError, IdaEventPolicy, IdaInitialConditionPolicy, IdaKluBackend,
+    IdaKluSettings, MAX_KLU_DIMENSION, MAX_KLU_JACOBIAN_ENTRY_WORK, MAX_KLU_JACOBIAN_EVALUATIONS,
     MAX_KLU_KNOWN_CSC_BYTES, MAX_KLU_NONZEROS, MAX_KLU_RESULT_VALUES, NATIVE_IDA_BACKEND_CONTRACT,
     NATIVE_IDA_BACKEND_ID, NATIVE_IDA_KLU_BACKEND_CONTRACT, NATIVE_IDA_KLU_BACKEND_ID,
     PINNED_KLU_VERSION, PINNED_SUITESPARSE_VERSION, PINNED_SUNDIALS_VERSION,
@@ -89,6 +89,7 @@ fn settings() -> IdaKluSettings {
         max_result_values: MAX_KLU_RESULT_VALUES,
         suppress_algebraic_error: true,
         initial_conditions: IdaInitialConditionPolicy::ContractConsistent,
+        event_policy: IdaEventPolicy::Reject,
     }
 }
 

@@ -13,7 +13,7 @@ use std::fmt;
 
 /// Version of the native DAE lowering contract. This is intentionally
 /// independent from graph transport and from any future backend version.
-pub const DAE_RESIDUAL_CONTRACT_VERSION: &str = "battery-design/dae-residual@1";
+pub const DAE_RESIDUAL_CONTRACT_VERSION: &str = "battery-design/dae-residual@2";
 
 /// Numeric identifiers used by IDA-style backends.
 pub const DAE_DIFFERENTIAL_ID: f64 = 1.0;
