@@ -2187,6 +2187,62 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-pouch-compression-kind-drift',
+      title: 'Pouch compression audit rejects its catalog default',
+      symptom: 'A pouch design fitted with the default compression foam reports that the selected spacer does not provide compression.',
+      evidence: [
+        'DEFAULTS_BY_FORM selects compression-foam-pad as the pouch form default and the catalog declares its kind as compression-foam.',
+        'The mechanical audit accepted only the unrepresented kind strings foam and plate, so the real default always reached the warning branch.',
+      ],
+      detection: [
+        {
+          method: 'resolved-design classification regression',
+          signal: 'Run a multi-cell pouch design through ordinary component resolution, then replace the compression foam with a barrier-only spacer.',
+          failureCondition: 'The catalog compression foam is warned as non-compressive or the barrier-only negative control loses its single warning.',
+        },
+      ],
+      causalChain: [
+        'The component catalog publishes compression capability indirectly through a kind string.',
+        'The mechanical consumer maintains a separate hard-coded allowlist of compression kind strings.',
+        'The catalog adopted compression-foam while the consumer retained only foam and plate.',
+        'Default pouch resolution therefore selected a valid component that its downstream audit always rejected.',
+      ],
+      rootCause: 'A consumer-owned kind allowlist drifted from the canonical component catalog, and no end-to-end regression exercised the resolved pouch default against the mechanical audit.',
+      resolution: [
+        'Recognize the canonical compression-foam kind while preserving foam and plate for existing duck-typed callers.',
+        'Exercise the ordinary API resolution path and retain a barrier-only negative control so the fix cannot suppress every pouch warning.',
+      ],
+      prevention: [
+        'Pair every form-specific default component with an end-to-end audit classification test.',
+        'When component behavior grows beyond one consumer, replace inferred kind-string capability with a validated explicit field in a separate schema change.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/api.test.mjs',
+          assertion: 'The resolved pouch default produces no compression warning, while an aerogel barrier produces exactly one warning.',
+        },
+      ],
+      affectedSurfaces: ['browser', 'cli', 'local-api', 'mcp'],
+      tags: ['catalog', 'classification', 'components', 'mechanical', 'pouch'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'js/components.js',
+          note: 'Canonical pouch default and compression-foam catalog kind.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'js/engineering.js',
+          note: 'Mechanical pouch-compression classification gate.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/api.test.mjs',
+          note: 'Resolved-default and barrier-only negative-control regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-product-surface-claim-drift',
       title: 'Product surface copy drifts from executable capability and metric contracts',
       symptom: 'Customer output assigns calibration behavior to a surface that does not implement it or labels a mixed-unit calibration objective as though it were voltage RMSE.',
