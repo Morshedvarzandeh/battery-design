@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 48);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 56);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -100,7 +100,15 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-signed-bound-evidence-miss',
     'rc-sil-result-representation-gap',
     'rc-solver-event-boundary-side-confusion',
+    'rc-solver-event-consistent-restart-gap',
+    'rc-solver-event-endpoint-capture-work-gap',
+    'rc-solver-event-endpoint-state-custody',
+    'rc-solver-event-failure-context-loss',
+    'rc-solver-event-final-horizon-custody',
+    'rc-solver-event-reinit-counter-reset',
+    'rc-solver-event-segment-spacing-gap',
     'rc-solver-evidence-acceptance-drift',
+    'rc-solver-initial-time-contract-drift',
     'rc-solver-sparse-build-provenance-gap',
     'rc-solver-sparse-jacobian-pattern-erasure',
     'rc-source-revision-self-claim',
@@ -194,10 +202,11 @@ test('DAE lowering memory separates a residual contract from solver qualificatio
 test('event-side memory separates right-continuous observation from an exact left terminal residual', () => {
   const record = getRootCauseRecord('rc-solver-event-boundary-side-confusion');
   assert.equal(record?.status, 'resolved');
+  assert.equal(record.revision, 2);
   assert.match(record.evidence.join(' '), /ordinary DAE residual[\s\S]*right-continuous[\s\S]*after[\s\S]*simultaneous[\s\S]*one representable floating-point value later[\s\S]*separate[\s\S]*epsilon or tolerance/i);
   assert.match(record.rootCause, /two different sides[\s\S]*right-continuous observable evaluation[\s\S]*exact left-limit terminal equation/i);
-  assert.match(record.resolution.join(' '), /residual_into[\s\S]*right-continuous[\s\S]*residual_event_left_limit_into[\s\S]*stable compiled event index[\s\S]*exactly equals[\s\S]*no event-time tolerance[\s\S]*event index before all input and destination work[\s\S]*unchanged[\s\S]*zero-allocation[\s\S]*finite differences/i);
-  assert.match(record.prevention.join(' '), /never silently change[\s\S]*compiled event table[\s\S]*exact equality[\s\S]*t - epsilon[\s\S]*native restart[\s\S]*separate executable paths/i);
+  assert.match(record.resolution.join(' '), /residual_into[\s\S]*right-continuous[\s\S]*residual_event_left_limit_into[\s\S]*stable compiled event index[\s\S]*exactly equals[\s\S]*no event-time tolerance[\s\S]*event index before all input and destination work[\s\S]*unchanged[\s\S]*zero-allocation[\s\S]*finite differences[\s\S]*native `@2`[\s\S]*finite times below[\s\S]*exact equality[\s\S]*ida\.callback\.event_boundary[\s\S]*Jacobian[\s\S]*IDAGetDky[\s\S]*previous_time < requested_time < current_time/i);
+  assert.match(record.prevention.join(' '), /never silently change[\s\S]*compiled event table[\s\S]*exact equality[\s\S]*t - epsilon[\s\S]*open at both endpoints[\s\S]*native restart[\s\S]*separate executable path/i);
   assert.deepEqual(
     record.regressionTests.map(({ path }) => path),
     [
@@ -208,10 +217,89 @@ test('event-side memory separates right-continuous observation from an exact lef
   );
   const source = readFileSync(resolve(ROOT, 'rust-core/src/dae.rs'), 'utf8');
   assert.match(source, /residual_event_left_limit_into[\s\S]*InvalidEventIndex[\s\S]*LeftLimitAtEvent[\s\S]*at_s == event_time_s/);
+  const nativeSource = readFileSync(resolve(ROOT, 'rust-dae-native/src/native.rs'), 'utf8');
+  assert.match(nativeSource, /selected_event_at[\s\S]*time_s > event_time_s[\s\S]*CallbackEventBoundary[\s\S]*time_s == event_time_s/);
+  assert.match(nativeSource, /require_interpolation_bounds[\s\S]*requested_time_s <= previous_time_s[\s\S]*requested_time_s >= current_time_s/);
   assert.equal(
     searchRootCauses('event terminal residual right continuous left limit simultaneous one ULP invalid index atomic', { limit: 1 })[0]?.id,
     record.id,
   );
+});
+
+test('native @2 event memories separate restart, capture, custody, context, horizon, counters, spacing and initial time', () => {
+  const ids = [
+    'rc-solver-event-consistent-restart-gap',
+    'rc-solver-event-endpoint-capture-work-gap',
+    'rc-solver-event-endpoint-state-custody',
+    'rc-solver-event-failure-context-loss',
+    'rc-solver-event-final-horizon-custody',
+    'rc-solver-event-reinit-counter-reset',
+    'rc-solver-event-segment-spacing-gap',
+    'rc-solver-initial-time-contract-drift',
+  ];
+  assert.deepEqual(ids.map((id) => getRootCauseRecord(id)?.status), [
+    'resolved', 'resolved', 'resolved', 'resolved', 'resolved', 'resolved', 'resolved',
+    'resolved',
+  ]);
+
+  const restart = getRootCauseRecord('rc-solver-event-consistent-restart-gap');
+  assert.match(restart.rootCause, /explicit state-machine seam[\s\S]*compiled event[\s\S]*consistent right-side[\s\S]*without left interpolation/i);
+  assert.match(restart.resolution.join(' '), /IdaEventPolicy::Restart[\s\S]*Reject[\s\S]*DaeResidualSystem::events[\s\S]*IDASetStopTime[\s\S]*IDA_ONE_STEP[\s\S]*IDA_TSTOP_RETURN[\s\S]*IDAReInit[\s\S]*IDACalcIC[\s\S]*IDAGetConsistentIC[\s\S]*bit-exact continuity[\s\S]*event-equality[\s\S]*battery-design\/dae-residual@2[\s\S]*dense backend\/result `@2`[\s\S]*KLU backend\/result `@2`/i);
+
+  const captureWork = getRootCauseRecord('rc-solver-event-endpoint-capture-work-gap');
+  assert.match(`${captureWork.symptom} ${captureWork.evidence.join(' ')}`, /two full-dimension[\s\S]*every successful native integration step[\s\S]*10,000 variables[\s\S]*10,000,000 internal steps[\s\S]*200,000,000,000[\s\S]*correct trajectory[\s\S]*work/i);
+  assert.match(captureWork.resolution.join(' '), /IDA_TSTOP_RETURN[\s\S]*requested row exactly equal to current time[\s\S]*Capture y and yp only[\s\S]*endpoint_state_captures[\s\S]*event_restarts \+ step_endpoint_output_rows[\s\S]*2 \* dimension \* internal_steps/i);
+
+  const custody = getRootCauseRecord('rc-solver-event-endpoint-state-custody');
+  assert.match(custody.rootCause, /endpoint vectors[\s\S]*authoritative restart state[\s\S]*mutable destinations[\s\S]*dense-output/i);
+  assert.match(custody.resolution.join(' '), /IDA_TSTOP_RETURN[\s\S]*event y[\s\S]*event yp[\s\S]*pre-event[\s\S]*IDAGetDky[\s\S]*restore[\s\S]*IDAReInit[\s\S]*differential continuity/i);
+
+  const context = getRootCauseRecord('rc-solver-event-failure-context-loss');
+  assert.match(context.rootCause, /implicit mutable loop state[\s\S]*centralized[\s\S]*exactly-once error-mapping boundary[\s\S]*terminal evidence read/i);
+  assert.match(context.resolution.join(' '), /generic callback[\s\S]*KLU[\s\S]*with_event_context[\s\S]*EventRestartFailure[\s\S]*already contextual error unchanged[\s\S]*EventDifferentialDiscontinuity[\s\S]*ReinitCounterInvariant[\s\S]*direct typed errors[\s\S]*IdaEventPhase[\s\S]*FinalizeEvidence[\s\S]*callback `DaeError`[\s\S]*KLU[\s\S]*last-linear-flag[\s\S]*before `IDAReInit`[\s\S]*balanced native-resource teardown/i);
+
+  const horizon = getRootCauseRecord('rc-solver-event-final-horizon-custody');
+  assert.match(horizon.rootCause, /Restart admission[\s\S]*event list[\s\S]*final requested time custody[\s\S]*native step and callback execution/i);
+  assert.match(horizon.resolution.join(' '), /IdaEventPolicy::Restart[\s\S]*IDASetStopTime\(final_requested_time\)[\s\S]*terminal boundary separately[\s\S]*ordinary right-continuous[\s\S]*ida\.callback\.horizon_boundary[\s\S]*IDA_TSTOP_RETURN[\s\S]*step endpoint[\s\S]*instead of calling `IDAGetDky`[\s\S]*Do not call `IDAReInit`[\s\S]*dense and KLU/i);
+
+  const counters = getRootCauseRecord('rc-solver-event-reinit-counter-reset');
+  assert.match(counters.rootCause, /Reset-scoped native counters[\s\S]*request-scoped evidence[\s\S]*before every `IDAReInit`/i);
+  assert.match(counters.resolution.join(' '), /Snapshot[\s\S]*segment boundary[\s\S]*checked nondecreasing deltas[\s\S]*zero after reinitialization[\s\S]*KLU evaluation\/entry-work[\s\S]*one request-global[\s\S]*one_step_calls[\s\S]*interpolated plus step-endpoint plus event-equality/i);
+
+  const spacing = getRootCauseRecord('rc-solver-event-segment-spacing-gap');
+  assert.match(spacing.rootCause, /caller output grid[\s\S]*derived event-to-event left segment[\s\S]*post-event correction target/i);
+  assert.match(spacing.resolution.join(' '), /initial_time < event <= final_requested_time[\s\S]*previous-boundary-to-event[\s\S]*next active event[\s\S]*event \+ \(event - previous_boundary\)[\s\S]*0\.001-scaled step[\s\S]*ida\.events\.segment_too_close[\s\S]*ida\.events\.correction_target_invalid[\s\S]*separate restart/i);
+
+  const initialTime = getRootCauseRecord('rc-solver-initial-time-contract-drift');
+  assert.match(initialTime.rootCause, /native request[\s\S]*IDAInit[\s\S]*residual system[\s\S]*initial y and yp/i);
+  assert.match(initialTime.resolution.join(' '), /initialization_time_s[\s\S]*battery-design\/dae-residual@2[\s\S]*dense and KLU[\s\S]*before result allocation[\s\S]*ida\.initial_time\.system_mismatch[\s\S]*-0\.0[\s\S]*\+0\.0[\s\S]*`@2` identities[\s\S]*historical `@1`/i);
+
+  const nativeSource = readFileSync(resolve(ROOT, 'rust-dae-native/src/native.rs'), 'utf8');
+  assert.match(nativeSource, /event_marker_selects_exact_left_residual_and_rejects_one_ulp_overshoot[\s\S]*event_marker_bounds_dense_jacobian_below_exact_and_one_ulp_above[\s\S]*terminal_horizon_uses_ordinary_callbacks_through_equality_and_rejects_overshoot[\s\S]*sparse_event_marker_bounds_work_and_writes_at_exact_and_overshoot_times/);
+  assert.match(nativeSource, /interpolation_only_multistep_run_performs_zero_endpoint_custody_copies[\s\S]*counter_delta_checked_add_covers_all_fields_and_rejects_overflow/);
+  assert.match(nativeSource, /restart_policy_solves_left_segment_corrects_equality_and_continues[\s\S]*final_event_equality_uses_saved_last_step_evidence_after_reinit[\s\S]*terminal_event_final_getter_failure_keeps_one_finalize_context_layer[\s\S]*event_restart_caps_and_initial_time_mismatch_fail_before_allocation[\s\S]*post_event_ic_validates_all_state_and_enforces_bit_exact_differential_continuity[\s\S]*tstop_endpoint_custody_rejects_nonfinite_y_and_yp_before_restart[\s\S]*signed_zero_event_and_output_share_one_numeric_restart_equality[\s\S]*active_event_filter_is_exactly_initial_exclusive_and_final_inclusive[\s\S]*terminal_stop_blocks_inactive_post_horizon_events_before_and_after_a_restart[\s\S]*event_segment_and_correction_targets_are_preflighted_before_allocation[\s\S]*two_event_restart_aggregates_counters_and_preserves_one_global_step_cap[\s\S]*reinit_counter_reset_is_checked_before_event_correction/);
+  assert.match(nativeSource, /klu_restart_solves_multiple_segments_without_dense_fallback[\s\S]*klu_terminal_stop_blocks_an_inactive_event_one_ulp_after_final[\s\S]*active_event_klu_failure_preserves_one_context_and_last_flag_evidence[\s\S]*klu_callback_budget_persists_across_event_reinit_and_right_side_calc_ic[\s\S]*klu_validation_applies_initial_time_and_event_preflight_before_allocation/);
+  assert.match(nativeSource, /endpoint_state_captures[\s\S]*event_restarts[\s\S]*step_endpoint_output_rows/);
+  const nativeContract = readFileSync(resolve(ROOT, 'rust-dae-native/src/lib.rs'), 'utf8');
+  assert.match(nativeContract, /native-ida-dense@2[\s\S]*native-ida-dense-result@2[\s\S]*native-ida-klu@2[\s\S]*native-ida-klu-result@2[\s\S]*IdaEventPolicy[\s\S]*Restart[\s\S]*MAX_EVENT_RESTARTS/);
+  const documentation = readFileSync(resolve(ROOT, 'docs/EQUATION_SOLVER.md'), 'utf8');
+  assert.match(documentation, /Current Iteration 4 event-restart contract boundary[\s\S]*dae-residual@2[\s\S]*native-ida-dense@2[\s\S]*native-ida-klu@2[\s\S]*IdaEventPolicy::Reject/i);
+  assert.match(documentation, /terminal[\s\S]*stop at `final_requested_time`[\s\S]*ida\.callback\.horizon_boundary[\s\S]*IDA_TSTOP_RETURN[\s\S]*one[\s\S]*ULP after final/i);
+  assert.match(documentation, /IDAReInit` resets native statistics[\s\S]*source-only native[\s\S]*Linux[\s\S]*not compiled into the browser[\s\S]*WebAssembly/i);
+  assert.match(documentation, /Historical Iteration 2 native reference boundary \(`@1`\)[\s\S]*native-ida-dense@1[\s\S]*Historical Iteration 3 native sparse reference boundary \(`@1`\)[\s\S]*native-ida-klu@1/i);
+
+  for (const [query, expected] of [
+    ['native IDA stop restart consistent right equality', restart.id],
+    ['endpoint capture 200 billion dimension steps work', captureWork.id],
+    ['IDAGetDky clobber saved event endpoint custody', custody.id],
+    ['event failure exact context KLU last flag phase', context.id],
+    ['inactive event one ULP post final horizon contamination', horizon.id],
+    ['IDAReInit reset segment cumulative counters', counters.id],
+    ['event mirrored correction target segment spacing', spacing.id],
+    ['residual system request initialization time signed zero', initialTime.id],
+  ]) {
+    assert.equal(searchRootCauses(query, { limit: 1 })[0]?.id, expected, query);
+  }
 });
 
 test('DAE CSC memory preserves linear construction before sparse qualification', () => {

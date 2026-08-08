@@ -31,16 +31,102 @@ its equations predict.
 - a versioned numeric transport for browser-authored approved graphs;
 - an opaque WebAssembly run handle that returns solver metadata and stable
   `[time, block values...]` trace rows without introducing a second solver;
-- the dependency-free `battery-design/dae-residual@1` lowering contract:
+- the dependency-free current `battery-design/dae-residual@2` lowering contract:
   `DaeResidualSystem::lower` publishes deterministic differential/algebraic
   variable and output mappings, the numeric ID vector, consistent initial
-  values, exact event times, a deterministic CSC Jacobian pattern and exact
-  caller-owned buffer requirements. After lowering, its successful
-  caller-buffer callbacks allocate no heap memory; lowering and initialization
-  construction may allocate, and the contract does not select or contain a
-  DAE solver.
+  values bound to an exact finite initialization time, exact event times, a
+  deterministic CSC Jacobian pattern and exact caller-owned buffer
+  requirements. It keeps ordinary residual evaluation right-continuous and
+  provides a separately indexed exact event-left residual for a native
+  terminal step. After lowering, its successful caller-buffer callbacks
+  allocate no heap memory; lowering and initialization construction may
+  allocate, and the contract does not select or contain a DAE solver.
 
-### Iteration 2 native reference boundary
+### Current Iteration 4 event-restart contract boundary
+
+The source-only Linux native reference now consumes
+`battery-design/dae-residual@2` through the coordinated current identities
+`battery-design/native-ida-dense@2`,
+`battery-design/native-ida-dense-result@2`,
+`battery-design/native-ida-klu@2` and
+`battery-design/native-ida-klu-result@2`. The older `@1` identities and their
+Iteration 1/2/3 evidence remain historical contracts; the event behavior below
+is not retroactively attributed to them.
+
+`IdaEventPolicy::Reject` is the default and preserves fail-closed rejection of
+scheduled events. A caller must explicitly choose
+`IdaEventPolicy::Restart { max_restarts }`; the request ceiling may not exceed
+10,000 and must cover every compiled event in the exact active interval
+`initial_time < event <= final_requested_time`. The backend does not accept a
+caller-supplied event list, merge nearby values by tolerance or invent event
+times outside `DaeResidualSystem::events()`.
+
+For each active event, IDA is stopped exactly at the compiled time and advances
+the left segment only with `IDA_ONE_STEP`; intermediate success may continue,
+but terminal arrival must be the exact-time `IDA_TSTOP_RETURN`. Callback time
+below the selected event uses the ordinary residual; exact equality uses the
+indexed left-limit residual. A finite callback overshoot fails closed with
+event/callback evidence, and the Jacobian callback applies the same boundary
+guard. Requested rows
+strictly inside a completed step use `IDAGetDky`; an exact step endpoint is
+copied directly and an event-equality row is withheld until right-side
+consistent correction. This keeps `IDAGetDky` out of both equality cases and
+prevents an interpolated left row from being presented as the right state.
+
+Active-event filtering does not by itself constrain IDA trial callbacks. When
+no active event remains, Restart policy therefore installs a separate terminal
+stop at `final_requested_time`, including on the final segment after an earlier
+restart. This terminal boundary keeps ordinary right-continuous residual and
+Jacobian semantics through equality, but a finite callback beyond final fails
+as `ida.callback.horizon_boundary`. Exact terminal arrival must be
+`IDA_TSTOP_RETURN`; the final row is copied directly from that step endpoint,
+without `IDAGetDky`, reinitialization, consistent correction or an event-
+restart increment. Dense and KLU regressions place an inactive StepSource one
+ULP after final so post-horizon forcing cannot contaminate the requested row.
+
+At a stop, the adapter preserves the exact endpoint y and yp before draining
+pre-event output, clears the stop and event-left marker, restores the endpoint,
+and calls `IDAReInit`. It then bounds event correction with at most 5 IC steps,
+4 IC Jacobians, 10 IC nonlinear iterations and 100 backtracks, calls
+`IDACalcIC(IDA_YA_YDP_INIT, target)` and `IDAGetConsistentIC`, and requires
+bit-exact continuity of every differential y component. The correction target
+is the next active event, otherwise the later final output, or—when the event
+equals the final output—a finite representable horizon mirroring the preceding
+segment. Every left segment and correction target passes the pinned IDA 7.8.0
+floating-point span gates before native allocation.
+
+`IDAReInit` resets native statistics. The Rust owner therefore snapshots and
+checked-adds every segment, requires all governed raw counters to be zero after
+reinitialization, retains callback-owned KLU Jacobian work across restarts and
+applies one cumulative successful-`IDA_ONE_STEP` ceiling to the complete
+request. Interpolated, exact step-endpoint and corrected event-equality output
+rows are counted separately and must sum to the requested row count. The
+settings initial time must numerically equal the residual system's stored
+initialization time before allocation; `-0.0` and `+0.0` are the same instant.
+Generic callback, native, KLU and phase failures owned by an event carry exactly
+one `EventRestartFailure` layer with compiled event index, exact time and
+`IdaEventPhase`; the unchanged inner callback, native stage/flag or KLU
+last-linear-flag evidence remains its source. Self-identifying
+`EventDifferentialDiscontinuity` and `ReinitCounterInvariant` failures retain
+their direct typed identity instead of gaining a redundant wrapper.
+Endpoint y/yp capture is gated to an event stop or a direct step-endpoint row,
+not every internal step; `endpoint_state_captures()` must equal
+`event_restarts() + step_endpoint_output_rows()`.
+If the request ends at an event, `last_order()`,
+`last_accepted_step_current_order()`, `last_step_s()` and
+`last_accepted_step_next_step_s()` retain the last accepted integration-step
+evidence captured before `IDAReInit`; `actual_initial_step_s()` retains the
+first integration segment's actual initial step, and `terminal_state_time_s()`
+reports the post-correction terminal event time.
+
+This is an opt-in event-restart capability of the tested source-only native
+Linux dense and KLU references. It is not compiled into the browser
+WebAssembly module, exposed by a service or desktop integration, copied into
+an npm/installer/release artifact, qualified for arbitrary DAEs, or certified
+for product or safety decisions. KLU factor-fill isolation and the Iteration 4
+native service boundary remain separate work.
+
+### Historical Iteration 2 native reference boundary (`@1`)
 
 `rust-dae-native/` now implements a bounded native Linux reference backend in
 source under `battery-design/native-ida-dense@1`. It is not part of the
@@ -109,7 +195,7 @@ possession. `tests/sundials-source-lock.test.mjs`,
 `tools/test-native-dae-build.mjs` preserve the source, build, derived-install
 and real-link regression boundaries.
 
-### Iteration 3 native sparse reference boundary
+### Historical Iteration 3 native sparse reference boundary (`@1`)
 
 `rust-dae-native/` also contains a bounded, source-only Linux sparse reference
 under `battery-design/native-ida-klu@1`. It is available only with the explicit
@@ -275,24 +361,27 @@ The campaign is split into independently reviewable gates:
    real numerical solves, failure evidence and scale-specific tests. The
    10,000-variable evidence is lowering/admission evidence, not a
    10,000-variable native convergence claim.
-4. **Native execution integration:** add governed event restart plus a bounded
-   native service protocol and desktop integration without routing untrusted
-   requests directly into the solver process.
+4. **Native execution integration (event restart complete; service pending):**
+   the coordinated `@2` contracts add the governed opt-in event restart
+   described above. A bounded native service protocol and desktop integration
+   still must be added without routing untrusted requests directly into the
+   solver process.
 5. **Package and release acceptance:** expose only backend/method combinations
    that passed native conformance, package the accepted binaries, prove their
    exact artifact lineage in CI and preserve the built-in fallback.
 
-Iterations 2 and 3 are implemented and tested only as source-only native Linux
-references; neither is product-packaged or released. Iterations 4 and 5 remain
-unimplemented and unshipped. `rust-core/` itself remains dependency-free and
-does not compile or link SUNDIALS, IDA, SuiteSparse or KLU. The completed
-iterations do not provide index reduction, qualify general implicit DAEs,
-expose a native service or desktop integration, or change the current
-WebAssembly ABI. Neither native reference may appear in product capability
-metadata until the later integration, package and release gates exist. A
-SUNDIALS WebAssembly build is an optional later qualification track, not an
-implied outcome of native acceptance: Emscripten uses a distinct platform ABI,
-while the current standalone WebAssembly solver remains intact.
+Iterations 2 and 3 and the event-restart slice of Iteration 4 are implemented
+and tested only as source-only native Linux references; none is
+product-packaged or released. The Iteration 4 service/desktop slice and all of
+Iteration 5 remain unimplemented and unshipped. `rust-core/` itself remains
+dependency-free and does not compile or link SUNDIALS, IDA, SuiteSparse or
+KLU. The completed work does not provide index reduction, qualify general
+implicit DAEs, expose a native service or desktop integration, or change the
+current WebAssembly ABI. Neither native reference may appear in product
+capability metadata until the later integration, package and release gates
+exist. A SUNDIALS WebAssembly build is an optional later qualification track,
+not an implied outcome of native acceptance: Emscripten uses a distinct
+platform ABI, while the current standalone WebAssembly solver remains intact.
 
 Task 2A adds `native-backends/sundials/source-lock.json`, checked-in license
 notices and an offline byte verifier. The lock identifies the official

@@ -2693,6 +2693,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
     }),
     record({
       id: 'rc-solver-event-boundary-side-confusion',
+      revision: 2,
       title: 'Event-terminal residual reuses the observable right-continuous side',
       symptom: 'A solver interval ending exactly at a step event can assemble its terminal residual with the post-event source value, while changing the ordinary residual to the pre-event value would break the caller-visible right-continuous convention.',
       evidence: [
@@ -2700,6 +2701,8 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'An interval that approaches the same event from the left needs a different terminal equation: every source at that exact event time must still use `before`, while earlier sources use `after` and later sources use `before`.',
         'Two simultaneous sources share one event-table entry, but a source one representable floating-point value later is a separate entry and must not be swept into the selected left limit by an epsilon or tolerance.',
         'An invalid event index is rejected with `dae.invalid_event_index` before input inspection and without modifying the caller-owned residual destination.',
+        'During a stop-limited native step, a callback at the selected event needs the indexed left residual, but a finite callback even one representable value beyond that stop is invalid native progress rather than permission to resume the ordinary right-continuous residual.',
+        'Native dense interpolation is restricted to the open completed-step interval: a requested row equal to the current step endpoint is copied directly instead of being sent through `IDAGetDky`, and event equality is deferred until right-side correction.',
       ],
       detection: [
         {
@@ -2707,12 +2710,18 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           signal: 'At one selected event, compare the ordinary residual with the indexed left-limit residual for earlier, simultaneous, one-ULP-later and later StepSource values, then repeat with an invalid index and sentinel destination.',
           failureCondition: 'The ordinary residual stops being right-continuous, the selected simultaneous group is not entirely left-sided, a distinct nearby event is merged by tolerance, or any rejected call changes the destination.',
         },
+        {
+          method: 'native selected-event callback boundary regression',
+          signal: 'With one event selected for the terminal step, invoke residual and Jacobian callbacks below, exactly at and one ULP beyond the event, repeat with non-finite callback times, and materialize ordinary and event rows at exact current time.',
+          failureCondition: 'Equality uses the ordinary right side, a finite overshoot is evaluated on either side instead of failing with typed event context, non-finite time bypasses ordinary callback validation, or `IDAGetDky` is called at the current/event endpoint.',
+        },
       ],
       causalChain: [
         'Caller-visible values at an exact scheduled time use the post-event side so time-series output is right-continuous.',
         'A solver interval ending at that boundary still represents the trajectory approaching from smaller times and therefore needs the pre-event side for its terminal residual.',
         'Reusing one time-only residual operation for both meanings either applies the post-event forcing too early or changes the established observable value at equality.',
         'Approximating the left side by subtracting an epsilon then makes classification depend on scale and can cross a distinct nearby event.',
+        'Checking only whether a callback is equal to the event also leaves finite overshoot ambiguous and can silently apply the post-event equation before a governed restart.',
       ],
       rootCause: 'One residual entry point was being asked to represent two different sides of a discontinuity: right-continuous observable evaluation and the exact left-limit terminal equation.',
       resolution: [
@@ -2721,12 +2730,15 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         'Select the left-sided group only when a StepSource `at_s` exactly equals the indexed event time: all exact simultaneous sources use `before`, earlier sources use `after`, later and representably distinct nearby sources use `before`; no event-time tolerance or nudged timestamp participates.',
         'Validate the event index before all input and destination work, return the typed index/count error, then retain the existing exact-length, finite-input and two-pass residual checks so every failure leaves caller storage unchanged.',
         'Keep the successful indexed event-left path inside the post-lowering zero-allocation callback contract and verify its Jacobian against finite differences at event equality.',
+        'In the native `@2` callback state, route finite times below the selected event through the ordinary residual, exact equality through the indexed left-limit residual, and any finite overshoot to `ida.callback.event_boundary`; apply the same overshoot guard to Jacobian callbacks and let non-finite times reach the ordinary typed validation.',
+        'Make `IDAGetDky` admissible only when `previous_time < requested_time < current_time`; publish exact current-step rows from the captured endpoint and exact event rows from the corrected state.',
       ],
       prevention: [
         'Name discontinuity-side operations explicitly; never silently change the side convention of a general residual or output API to satisfy a terminal-step need.',
         'Address scheduled discontinuities through the compiled event table and exact equality rather than `t - epsilon`, an absolute tolerance or a relative tolerance.',
         'Keep simultaneous, adjacent-representable, earlier/later, invalid-index and no-partial-write cases together whenever event lowering changes.',
-        'Treat this as a core residual-contract capability only; do not infer native restart or product-backend behavior until those separate executable paths consume and qualify it.',
+        'Keep dense interpolation bounds open at both endpoints and account direct step/event rows separately so equality cannot silently move back onto the left interpolant.',
+        'Preserve the first revision as core-only evidence: native restart remains a separate executable path, and only the opt-in `@2` dense and KLU backends consume this side contract; no product or deployment qualification follows.',
       ],
       regressionTests: [
         {
@@ -2739,7 +2751,7 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
         },
         {
           path: 'tests/root-cause-library.test.mjs',
-          assertion: 'The event-side record remains independently searchable and preserves exact indexed classification, right-continuous ordinary evaluation, invalid-index atomicity and the non-native claim boundary.',
+          assertion: 'The event-side record remains independently searchable and preserves exact indexed classification, right-continuous ordinary evaluation, invalid-index atomicity, strict native callback overshoot rejection, no endpoint interpolation and the product-claim boundary.',
         },
       ],
       affectedSurfaces: ['ci'],
@@ -2759,6 +2771,483 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'test',
           locator: 'rust-core/tests/dae_allocation.rs',
           note: 'Post-lowering zero-allocation regression for the successful event-left residual path.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Pinned selected-event callback state with strict below/equality/overshoot routing for residual and Jacobian callbacks.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded exact, below, one-ULP-overshoot and non-finite selected-event callback regressions.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-consistent-restart-gap',
+      title: 'Scheduled DAE events cross native history without a consistent restart',
+      symptom: 'A native IDA solve can cross a StepSource discontinuity with pre-event integration history, publish an interpolated left state at equality, or restart from a requested row instead of the exact event endpoint.',
+      evidence: [
+        'The residual contract deliberately has two meanings at an event: the terminal integration interval needs the indexed left-limit equation, while caller-visible equality needs the corrected right-continuous state.',
+        'Allowing IDA to step across that change without an exact stop and reinitialization leaves its multistep history based on equations that no longer apply.',
+        'The exact stop endpoint must remain the state supplied to `IDAReInit`; dense-output materialization and correction are separate transitions with their own state-custody invariant.',
+        'A requested row exactly at the event must come directly from the post-`IDACalcIC` consistent state; interpolating it from the left segment would expose the wrong side and misstate interpolation evidence.',
+      ],
+      detection: [
+        {
+          method: 'left-stop/restart/right-output trajectory regression',
+          signal: 'Solve a graph-scheduled forcing change with requested rows before, exactly at and after the event while checking the published event/restart statistics.',
+          failureCondition: 'The pre-event row is not left-sided, equality is not the corrected right state, the after-event trajectory is wrong, or differential state changes across correction.',
+        },
+      ],
+      causalChain: [
+        'A compiled StepSource changes the residual equation at an exact finite time.',
+        'A multistep solver retains history and derivative information from the interval approaching that boundary.',
+        'Without a governed stop, reinitialization and consistent-initial-condition correction, the old history becomes the starting state for the new equation.',
+        'The resulting equality row and post-event trajectory can be finite and plausible while representing the wrong side of the discontinuity.',
+      ],
+      rootCause: 'The native adapter had no explicit state-machine seam that ended the left equation at a compiled event, rebuilt consistent right-side algebraic/derivative state and published equality without left interpolation.',
+      resolution: [
+        'Add `IdaEventPolicy::Restart { max_restarts }` while retaining `Reject` as the default fail-closed behavior; only events from `DaeResidualSystem::events()` in the exact interval `initial_time < event <= final_requested_time` are active.',
+        'For each active event, select its indexed left residual, set `IDASetStopTime`, advance with `IDA_ONE_STEP`, accept intermediate `IDA_SUCCESS`, and require `IDA_TSTOP_RETURN` at the exact event bits before restarting.',
+        'Clear the stop and left marker, call `IDAReInit`, run bounded `IDACalcIC(IDA_YA_YDP_INIT, target)` and `IDAGetConsistentIC`, and require bit-exact continuity for every differential y component.',
+        'Publish an event-equality request directly from the corrected state, never through `IDAGetDky`; keep interpolated, step-endpoint and event-equality row counters distinct and require their sum to equal the requested row count.',
+        'Coordinate the behavior change through `battery-design/dae-residual@2`, dense backend/result `@2` and KLU backend/result `@2`; historical `@1` records remain evidence of the earlier event-rejecting contracts.',
+      ],
+      prevention: [
+        'Model every discontinuity as an explicit stop/reinitialize/correct transition rather than as an ordinary output time or a small integration step.',
+        'Keep before/equality/after rows, final-time equality, differential continuity and direct-row accounting in the same executable campaign.',
+        'Keep `Reject` as the compatibility default and do not infer browser, product, safety or deployment qualification from the source-only native reference path.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The native event-restart record remains searchable and bound to exact stop, reinitialization, consistent correction, right-side equality and coordinated @2 identities.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['continuity', 'dae', 'events', 'ida', 'restart', 'sundials'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Opt-in event policy, bounded event schedule, typed failure context and coordinated native @2 public contracts.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Exact stop, reinitialization, correction, continuity and equality-publication state machine shared by dense and KLU sessions.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded left/equality/right trajectory, final-event and row-accounting regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for the event restart seam and its contract boundaries.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-endpoint-capture-work-gap',
+      title: 'Endpoint custody adds dimension work to every internal step',
+      symptom: 'A state-custody fix can keep restart values correct while adding two full-dimension vector copies or scans to every successful native integration step, far beyond the declared request work evidence.',
+      evidence: [
+        'The first endpoint-preservation fix captured y and yp after every successful `IDA_ONE_STEP` even though most steps neither end at an event nor materialize an exact step-endpoint row.',
+        'At the sparse ceilings of 10,000 variables and 10,000,000 internal steps, two full-vector operations per step permit roughly 200,000,000,000 additional element operations outside the original counter model.',
+        'Interior requested rows use bounded dense interpolation and do not require persistent endpoint custody; only `IDA_TSTOP_RETURN` and a request exactly equal to current step time consume the captured state.',
+        'A correct trajectory alone cannot expose the regression because unconditional copying changes work, not numerical output.',
+      ],
+      detection: [
+        {
+          method: 'endpoint-capture count invariant',
+          signal: 'Solve through many internal steps with event and exact-step output boundaries, then compare the published endpoint capture count with event restarts plus direct step-endpoint rows.',
+          failureCondition: 'A capture occurs for an ordinary step without a direct endpoint consumer, the count differs from restarts plus step-endpoint rows, or capture work is justified only by the much larger internal-step ceiling.',
+        },
+      ],
+      causalChain: [
+        'Restart correctness requires retaining y and yp at an event before later dense-output calls mutate session vectors.',
+        'The initial fix generalizes that requirement into unconditional post-step endpoint capture.',
+        'Each successful step therefore performs work proportional to DAE dimension even when no boundary consumer exists.',
+        'Multiplying the maximum dimension by the global step ceiling creates an unreported work surface many orders larger than the result or event schedule.',
+      ],
+      rootCause: 'Endpoint capture was placed in the generic successful-step path instead of being gated by the two operations that actually consume authoritative endpoint state.',
+      resolution: [
+        'Determine whether the accepted step returned `IDA_TSTOP_RETURN` or contains a requested row exactly equal to current time before copying endpoint state.',
+        'Capture y and yp only for those event or direct-step-output boundaries; keep strict interior rows on `IDAGetDky` without an endpoint copy.',
+        'Publish `endpoint_state_captures()` with checked increment and require the exact invariant `endpoint_state_captures = event_restarts + step_endpoint_output_rows` for successful requests.',
+        'This changes endpoint-copy work from proportional to `2 * dimension * internal_steps` to `2 * dimension * (event_restarts + step_endpoint_output_rows)`, whose two count terms already have explicit request ceilings.',
+      ],
+      prevention: [
+        'Review the computational placement of every correctness fix separately from its numerical outcome and memory allocation behavior.',
+        'For vector-wide work inside a solve loop, publish or derive a deterministic count and test it at a semantic boundary rather than relying on elapsed time.',
+        'Keep many-step/no-endpoint and event/direct-endpoint cases together so unconditional O(dimension*steps) work cannot return unnoticed.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The endpoint-capture work record remains searchable and preserves the 200-billion-element worst case, semantic capture gate and exact published count invariant.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['accounting', 'complexity', 'dae', 'events', 'ida', 'work-bound'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Semantically gated endpoint capture and checked capture-count publication in the shared native solve loop.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Public read-only endpoint_state_captures solve statistic.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded event trajectory asserts exact capture accounting independently of internal-step count.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for bounded endpoint-capture work.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-endpoint-state-custody',
+      title: 'Dense output replaces the exact event endpoint before restart',
+      symptom: 'A requested row shortly before an event can silently become the state supplied to `IDAReInit`, shifting the restarted trajectory away from the exact TSTOP endpoint.',
+      evidence: [
+        '`IDAGetDky` writes interpolated y or yp into the N_Vector supplied as its destination; it is not a read-only query on the session vectors.',
+        'After `IDA_TSTOP_RETURN`, the adapter still has to publish requested rows strictly before the event from the final left interval.',
+        'Using the live session y and yp as dense-output destinations overwrites the exact event endpoint before reinitialization.',
+        'The defect is exposed only when a pre-event requested row falls inside the final stop step; coarser grids can appear correct because no interpolation occurs between TSTOP and restart.',
+      ],
+      detection: [
+        {
+          method: 'terminal-step endpoint custody regression',
+          signal: 'Choose a pre-event output inside the final TSTOP step, then request equality and a post-event row and compare all three against the analytical piecewise trajectory.',
+          failureCondition: 'The left row is wrong, `IDAReInit` receives the interpolated row rather than the stop endpoint, equality correction starts from the wrong differential state, or the post-event trajectory shifts.',
+        },
+      ],
+      causalChain: [
+        'IDA reaches the exact event and stores the terminal left y and yp in its session vectors.',
+        'The result loop drains an earlier requested row through `IDAGetDky` into those same vectors.',
+        'The dense-output write replaces the event endpoint with an interpolated state.',
+        '`IDAReInit` then starts the right-side correction from a valid but temporally earlier state, so the failure need not trigger a native error.',
+      ],
+      rootCause: 'The adapter gave solver-owned endpoint vectors two incompatible custody roles: authoritative restart state and mutable destinations for pre-event dense-output materialization.',
+      resolution: [
+        'At `IDA_TSTOP_RETURN`, copy both event y and event yp into dedicated request-owned scratch before any requested row is materialized.',
+        'Allow strictly pre-event `IDAGetDky` calls to use the session vectors, then restore both saved endpoint vectors before `IDAReInit`.',
+        'Keep event equality out of dense interpolation and publish it only after right-side consistent correction.',
+        'Verify differential continuity against the saved event y, not against whatever vector contents remain after output materialization.',
+      ],
+      prevention: [
+        'Treat every native getter with an output vector as a write operation and document who owns authoritative state before and after the call.',
+        'Separate solver endpoint custody from result-row scratch conceptually even when bounded implementation storage is reused.',
+        'Keep a requested row inside the terminal stop step in restart regressions; endpoint-only grids do not exercise this aliasing sequence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The endpoint-custody record remains searchable and preserves the IDAGetDky mutation, saved y/yp, restore-before-ReInit and terminal-step regression requirements.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['aliasing', 'dae', 'dense-output', 'events', 'ida', 'state-custody'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Dedicated event y/yp custody across pre-event interpolation and restart.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded pre-event-in-terminal-step, equality and post-event analytical trajectory regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for native endpoint ownership across dense output.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-failure-context-loss',
+      title: 'Event-active native failures lose event and phase evidence',
+      symptom: 'A restarted solve can return a valid low-level callback, counter, interpolation or KLU error without identifying which compiled event and restart phase failed.',
+      evidence: [
+        'The event solve loop originally used ordinary `?` propagation at multiple getter, counter, progress, interpolation and accounting sites inside an active left segment.',
+        'The same low-level error may be correct both inside and outside event handling, but an active restart additionally needs stable event index, exact event time and lifecycle phase to be actionable.',
+        'KLU setup/solve failure has nested last-linear-flag evidence that must survive event wrapping even when the flag getter itself fails.',
+        'A request ending exactly at an event can fail while collecting final statistics after event position has advanced, so current-loop state alone no longer identifies the terminal event.',
+        'Blind wrapping at every helper can create repeated `EventRestartFailure` layers and make the public evidence shape depend on which helper noticed the error first.',
+      ],
+      detection: [
+        {
+          method: 'exact nested event-failure shape regression',
+          signal: 'Inject non-finite y/yp at TSTOP, a terminal final-stat getter failure and an active-event KLU solve plus last-flag-getter failure, then compare the complete error tree and teardown order.',
+          failureCondition: 'The outer error omits event index/time/phase, contains more than one event wrapper, changes the underlying callback/native/KLU evidence, continues into restart correction, or leaks native resources.',
+        },
+      ],
+      causalChain: [
+        'One event transition calls many generic helpers that correctly return typed low-level `IdaError` values.',
+        'Direct propagation exits the event state machine before attaching the active compiled-event identity and phase.',
+        'Callers receive the immediate failure but cannot determine which restart boundary owned it.',
+        'Adding wrappers piecemeal can then double-wrap already contextual errors or lose a terminal event after the event cursor advances.',
+      ],
+      rootCause: 'Event context was implicit mutable loop state rather than one centralized, exactly-once error-mapping boundary spanning every active phase and terminal evidence read.',
+      resolution: [
+        'Route generic callback, native, KLU and phase failures from the active left segment through one `with_event_context` boundary that adds `EventRestartFailure { event_index, event_time_s, phase, source }` and leaves an already contextual error unchanged.',
+        'Keep self-identifying `EventDifferentialDiscontinuity` and `ReinitCounterInvariant` failures as direct typed errors rather than adding a redundant event wrapper.',
+        'Use explicit `IdaEventPhase` values for stop registration, left solve, stop clearing, reinitialization, consistent correction, equality publication and final evidence so the outer failure is stable.',
+        'Retain the last completed event through terminal result/statistic collection, allowing a final getter failure after a terminal event to carry exactly one `FinalizeEvidence` context layer.',
+        'Preserve the inner error without translation: callback `DaeError`, exact native stage/flag and KLU available/unavailable last-linear-flag evidence remain inspectable through the standard error source chain.',
+        'On endpoint validation failure, stop before `IDAReInit`, `IDACalcIC` or `IDAGetConsistentIC` and preserve balanced native-resource teardown order.',
+      ],
+      prevention: [
+        'Define one ownership boundary for contextual wrapping and make helpers return unwrapped domain errors unless they own a distinct nested phase.',
+        'Test full error equality, not only the top-level code or display string, for every multi-stage native state machine.',
+        'Keep dense callback, terminal-finalization and KLU nested-evidence injections together whenever event control flow changes.',
+        'Retain completed-operation context until all result evidence that semantically belongs to that operation has been collected.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The event failure-context record remains searchable and preserves exactly one event wrapper, phase-specific evidence, unchanged nested native/KLU causes and fail-fast teardown.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['dae', 'diagnostics', 'error-context', 'events', 'ida', 'klu'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Central exactly-once event context mapper, explicit lifecycle phases and retained terminal-event evidence context.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Typed EventRestartFailure source chain, IdaEventPhase and preserved callback/native/KLU error variants.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded TSTOP endpoint, terminal final-getter and active-event KLU nested-evidence failure regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for exact event failure provenance.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-final-horizon-custody',
+      title: 'Inactive post-final event contaminates the requested horizon',
+      symptom: 'A Restart-policy solve with no active event can still evaluate a StepSource just beyond the requested final time and use that post-final equation when materializing the final row.',
+      evidence: [
+        '`IDA_ONE_STEP` may advance beyond its `tout`; the ordinary event-free adapter intentionally used `IDAGetDky` to recover an earlier requested final row from that completed step.',
+        'Filtering restart events to `initial_time < event <= final_requested_time` controls which events restart the solver but does not by itself prevent native trial callbacks after the final horizon.',
+        'A compiled event exactly one ULP after final is inactive for restart accounting yet changes the right-continuous StepSource value seen by an overshooting callback.',
+        'The final interpolant can therefore be finite and deterministic but already influenced by behavior the request explicitly placed outside its horizon.',
+        'The same exposure returns on the final segment after an earlier active event restart unless the terminal boundary is reinstalled.',
+      ],
+      detection: [
+        {
+          method: 'one-ULP post-horizon event isolation regression',
+          signal: 'Solve a dense graph with a StepSource one representable value after final both before and after an earlier active restart, then repeat the no-active-restart case with KLU while recording stop, interpolation and restart calls.',
+          failureCondition: 'The final row reflects post-final forcing, terminal native time overshoots final, `IDAGetDky` materializes final, a terminal-only stop increments event restarts, or the boundary is lost after reinitialization.',
+        },
+      ],
+      causalChain: [
+        'Public validation classifies the next graph event as inactive because it is later than the requested final time.',
+        'The final IDA_ONE_STEP call treats final as `tout` but may take an accepted step whose internal callback time is later.',
+        'The inactive StepSource switches during that trial and changes the equation used to form the step history/interpolant.',
+        'Dense output at final then carries post-horizon influence even though no restart was counted and every requested time passed validation.',
+      ],
+      rootCause: 'Restart admission bounded the event list but did not give the final requested time custody over native step and callback execution after the last active event.',
+      resolution: [
+        'Under `IdaEventPolicy::Restart`, install `IDASetStopTime(final_requested_time)` whenever no active event remains, including the final segment after an earlier restart.',
+        'Represent the terminal boundary separately from an event-left boundary: residual and Jacobian callbacks use ordinary right-continuous semantics through exact final equality, while any finite callback time beyond final fails with `ida.callback.horizon_boundary` before writes or sparse work.',
+        'Require exact-time `IDA_TSTOP_RETURN` at the terminal stop, capture the endpoint and publish the final requested row directly as a step endpoint instead of calling `IDAGetDky`.',
+        'Do not call `IDAReInit`, `IDACalcIC` or `IDAGetConsistentIC` for a terminal-only stop and do not increment event restart or event-equality counters.',
+        'Apply the same terminal-stop state machine to dense and KLU sessions; executable cases cover dense isolation before and after a real active restart plus KLU isolation with no active restart.',
+      ],
+      prevention: [
+        'Distinguish filtering scheduled transitions from constraining the numerical solver horizon; both gates are required.',
+        'Treat a final requested time as a hard callback boundary whenever later graph behavior can change the residual.',
+        'Keep inactive-near-final events, exact terminal native time, no-Dky final publication and zero terminal-only restarts in dense and sparse regression matrices.',
+        'Do not infer service, browser, package or product integration from this source-only native horizon guard.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The final-horizon custody record remains searchable and preserves terminal stopping, ordinary equality, overshoot rejection, direct final publication and dense/KLU post-final isolation.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['custody', 'dae', 'events', 'horizon', 'ida', 'time-boundary'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Separate terminal callback boundary and final-segment stop shared by dense and KLU sessions.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Typed callback horizon-boundary error and stable native stage evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded ordinary-equality/overshoot callback, dense before/after-restart and KLU one-ULP post-final isolation regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for final-horizon custody and non-product scope.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-reinit-counter-reset',
+      title: 'IDA reinitialization resets counters inside a global solve budget',
+      symptom: 'After one or more event restarts, published work statistics and the global step limit can describe only the last IDA segment even though earlier segments and event correction already consumed native work.',
+      evidence: [
+        '`IDAReInit` resets IDA and linear-solver statistics, so subtracting one initial baseline from the final native counters loses all work completed before each restart.',
+        'A per-segment `IDASetMaxNumSteps` allowance is not a request-global cap unless Rust separately accounts every successful `IDA_ONE_STEP` across all segments.',
+        'Event `IDACalcIC` work occurs after reinitialization and must remain in the segment statistics even though it does not authorize an extra integration step.',
+        'KLU Jacobian evaluation and entry-work ceilings are callback-owned request counters and must persist across `IDAReInit` rather than resetting with SUNDIALS statistics.',
+      ],
+      detection: [
+        {
+          method: 'multi-segment counter and exact-cap regression',
+          signal: 'Run a restarted event solve at its exact global step cap and across multiple segments, comparing successful ONE_STEP calls, checked segment deltas, event/direct-row counts and persistent sparse callback work.',
+          failureCondition: 'Any statistic decreases or omits a completed segment, reinitialization leaves a raw counter nonzero, the exact cap blocks correction/equality after the final allowed step, an extra solve step runs, or KLU work restarts at zero.',
+        },
+      ],
+      causalChain: [
+        'One public solve request is divided into multiple native IDA sessions-in-place by scheduled event restarts.',
+        '`IDAReInit` deliberately clears native history and counters for the next segment.',
+        'Reading only the final raw values makes earlier work disappear and can restore a nominal per-call step allowance.',
+        'Resource evidence and request admission then understate actual cumulative work despite every individual native segment appearing valid.',
+      ],
+      rootCause: 'Reset-scoped native counters were treated as request-scoped evidence instead of being snapshotted and accumulated by the Rust owner before every `IDAReInit`.',
+      resolution: [
+        'Snapshot the complete native statistic set at each segment boundary, compute checked nondecreasing deltas, and add them into Rust-owned cumulative totals before reinitialization.',
+        'Immediately after `IDAReInit`, read every governed native and linear-solver counter, require it to be zero after reinitialization, and fail with `ida.events.reinit_counter_invariant` otherwise.',
+        'Carry event correction work in the next segment delta, preserve callback-owned KLU evaluation/entry-work totals across restarts, and use checked addition for every accumulated field.',
+        'Own one request-global successful-step count, set each native maximum from the remaining global allowance, and require cumulative internal steps to equal `one_step_calls` without spending another step for correction or direct equality publication.',
+        'Expose restart and event-equality row counts separately; require interpolated plus step-endpoint plus event-equality rows to equal the requested output count.',
+      ],
+      prevention: [
+        'Document every native counter as call-, segment- or request-scoped before using it in a public resource limit or result.',
+        'Treat reinitialization as a mandatory accounting boundary: snapshot before it, assert reset after it, and never recover cumulative evidence from the final raw counter alone.',
+        'Keep exact-cap, final-event equality, multiple-restart, integer-overflow and persistent KLU-work cases whenever event sequencing or statistics change.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The event counter-reset record remains searchable and preserves checked per-segment aggregation, zero-after-ReInit assertions, one global step cap, direct-row accounting and persistent KLU work.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['accounting', 'budget', 'dae', 'events', 'ida', 'restart'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Counter snapshots, checked segment accumulation, reset invariants, global ONE_STEP budget and callback-owned KLU work state.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Published cumulative solver statistics, event restart/equality counters and typed reinitialization invariant failure.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded exact-global-cap, final-event equality, segment accounting and reinitialization regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for reset-scoped versus request-scoped work evidence.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-event-segment-spacing-gap',
+      title: 'Ordered event times can form unusable native IDA segments',
+      symptom: 'An exact increasing event schedule can pass generic ordering checks but fail inside IDA because a left segment or post-event consistent-correction target is too close, nonrepresentable or non-finite.',
+      evidence: [
+        'The compiled event table preserves distinct finite times exactly, including adjacent representable values, but numerical ordering alone does not guarantee a usable IDA target span.',
+        'Every active event creates a left `IDASolve` target and every restart creates an `IDACalcIC` target even when neither time appears in the caller output grid.',
+        'When the last active event equals the final requested output, correction still needs a strictly later target; mirroring the preceding segment can overflow or round back to the event.',
+        'Letting any invalid segment reach allocation or FFI turns a deterministic request-shape error into a late native failure with weaker event context.',
+      ],
+      detection: [
+        {
+          method: 'event-segment floating-boundary preflight regression',
+          signal: 'Validate active events at underflow, reciprocal, roundoff and representable-progress boundaries, two nearby distinct events, an event equal to final output and a mirrored target that overflows.',
+          failureCondition: 'An unusable segment allocates native resources, a usable exact boundary is rejected, distinct events are merged, the final-event correction target is not later, or the error omits event index/time and a stable code.',
+        },
+      ],
+      causalChain: [
+        'Graph lowering supplies a sorted exact event sequence and the output grid supplies one final horizon.',
+        'Restart execution derives additional native solve and correction spans between those boundaries.',
+        'IEEE-754 underflow, reciprocal overflow, roundoff distance or nonrepresentable addition can make a positive comparison unusable to pinned IDA 7.8.0.',
+        'Without full preflight, allocation and native execution begin before the adapter discovers that the schedule cannot progress or calculate consistent conditions.',
+      ],
+      rootCause: 'Validation covered the caller output grid but not every derived event-to-event left segment and post-event correction target actually passed to IDA.',
+      resolution: [
+        'Before native allocation, filter active events only by exact `initial_time < event <= final_requested_time`, enforce the caller restart ceiling, and validate every previous-boundary-to-event span with the pinned IDA target admissibility gates.',
+        'For post-event `IDACalcIC`, use the next active event as target, otherwise the later final output, and when event equals final derive `event + (event - previous_boundary)` as a mirrored horizon.',
+        'Require each derived target distance, 0.001-scaled step, reciprocal and forward addition to be finite and representable under the same IDA 7.8.0 preflight used for initial targets.',
+        'Reject failures before allocation as `ida.events.segment_too_close` or `ida.events.correction_target_invalid`, preserving the stable compiled event index and exact event time.',
+        'Do not use an epsilon or tolerance to merge nearby events; simultaneous numeric equals share the compiled event, while every distinct representable time remains a separate restart.',
+      ],
+      prevention: [
+        'Validate the complete derived native operation schedule, not only values supplied directly in the public output grid.',
+        'Keep event-at-final and next-event correction policies explicit so a refactor cannot accidentally pass an equal `tout1` to `IDACalcIC`.',
+        'Pair every floating-point rejection with the first accepted boundary and assert pre-allocation failure plus exact event evidence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The event-spacing record remains searchable and preserves complete pre-allocation segment/correction validation, mirrored final-event targeting, exact distinct-event semantics and typed event evidence.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['dae', 'events', 'floating-point', 'ida', 'preflight', 'time-grid'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Event policy validation over every active left segment and derived consistent-correction target.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Execution consumes the prevalidated next-event, final-time or mirrored correction target.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded event-span, correction-target, nearby-event and pre-allocation boundary regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for the complete derived native event schedule.',
         },
       ],
     }),
@@ -2819,6 +3308,81 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
           kind: 'documentation',
           locator: 'docs/EQUATION_SOLVER.md',
           note: 'Stable Task 2H acceptance wording, exact evidence provenance and source-only product boundary.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-solver-initial-time-contract-drift',
+      title: 'Native request time drifts from the lowered DAE initial state',
+      symptom: 'IDA can be initialized at a caller-selected time using y and yp that were calculated by the residual system for a different time and possibly a different side of a scheduled source event.',
+      evidence: [
+        '`DaeResidualSystem::lower` calculates and stores consistent initial y and yp at one exact finite `initialization_time_s` under `battery-design/dae-residual@2`.',
+        'The native settings separately carry `initial_time_s`; before the fix, that value could reach `IDAInit` even though the borrowed vectors belonged to the system initialization time.',
+        'A mismatch can produce finite solver output while silently seeding the wrong derivative or event side, so later native-time checks cannot reconstruct the lost contract relationship.',
+        'IEEE-754 negative and positive zero compare numerically equal and must remain compatible even though the core accessor preserves the original sign bit.',
+      ],
+      detection: [
+        {
+          method: 'lowered-system/request time binding regression',
+          signal: 'Initialize dense and KLU settings with one genuinely different finite time and with the opposite signed zero, observing allocation counters and the typed result.',
+          failureCondition: 'A real mismatch reaches native allocation, the error omits both exact times, or numerically equal negative/positive zero is rejected as drift.',
+        },
+      ],
+      causalChain: [
+        'Lowering evaluates graph initial values and derivatives at the system initialization time.',
+        'The native adapter accepts a second initial-time field while borrowing those already-computed vectors.',
+        'If the two times differ, `IDAInit` labels one state as belonging to another time without recalculating it.',
+        'The solver starts from an internally inconsistent temporal contract and may choose the wrong side of time-dependent graph behavior.',
+      ],
+      rootCause: 'The native request validated each initial time independently but did not bind its `IDAInit` time to the exact time at which the residual system produced the borrowed initial y and yp.',
+      resolution: [
+        'Store the exact finite lowering time in `DaeResidualSystem` and expose it through `initialization_time_s` as part of `battery-design/dae-residual@2`.',
+        'In both dense and KLU request validation, compare settings time numerically with the system time before result allocation, callback construction or any native resource allocation.',
+        'Reject a genuine mismatch with `ida.initial_time.system_mismatch` carrying both system and requested times, while accepting `-0.0` and `+0.0` as the same numerical instant.',
+        'Coordinate the changed assumption through dense and KLU backend/result `@2` identities rather than silently redefining the historical `@1` contracts.',
+      ],
+      prevention: [
+        'Bind every precomputed initial state to its evaluation time at the API boundary; do not allow downstream solver settings to relabel borrowed state.',
+        'Run temporal consistency checks before allocations or FFI so the failure remains deterministic and side-effect free.',
+        'Keep a true nonzero mismatch and signed-zero equivalence together whenever lowering or native initialization changes.',
+      ],
+      regressionTests: [
+        {
+          path: 'rust-core/tests/dae_contract.rs',
+          assertion: 'The lowered system accessor preserves its exact finite initialization time, including the negative-zero sign bit.',
+        },
+        {
+          path: 'tests/root-cause-library.test.mjs',
+          assertion: 'The initial-time binding record remains searchable and preserves @2 ownership, pre-allocation mismatch rejection, exact evidence and signed-zero numerical equality.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['contract', 'dae', 'floating-point', 'ida', 'initial-conditions', 'time'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/dae.rs',
+          note: 'Stored exact finite residual-system initialization time under the DAE residual @2 contract.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-native/src/lib.rs',
+          note: 'Dense and KLU pre-allocation time binding with typed mismatch evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-core/tests/dae_contract.rs',
+          note: 'Exact nonzero and signed-zero initialization-time accessor regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-native/src/native.rs',
+          note: 'Embedded mismatch rejection, allocation-audit and signed-zero compatibility regressions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Governed memory assertions for residual-system/native-request time ownership.',
         },
       ],
     }),
