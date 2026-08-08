@@ -2801,6 +2801,626 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-service-supervisor-deadline-observation-race',
+      title: 'Incomplete wall-time custody can accept work after the configured deadline',
+      symptom: 'A worker can consume uncharged startup/setup time or be accepted as a normal exit after the configured wall interval when custody begins late or exit arbitration reuses a stale elapsed-time sample.',
+      evidence: [
+        'The earlier lifecycle started its wall timer after spawn, request copying and pipe/thread setup, so those operations were excluded from the configured worker interval.',
+        'The final source completes the fallible admitted-request copy before custody, starts Instant immediately before Command::spawn, and reaches the monitor only after pipe and thread setup so spawn and post-spawn setup are charged to the interval.',
+        'The first WNOWAIT repair checked started.elapsed only at the top of the monitor loop and then called the non-reaping waitid observer.',
+        'Scheduler preemption or waitid latency can carry execution across the wall boundary between that first check and an Ok(true) exit observation.',
+        'The original Ok(true) branch proceeded directly to group cleanup and Child::wait, classifying the outcome as Exited even when the wall interval had expired before that arbitration.',
+        'The final source rechecks started.elapsed immediately after WNOWAIT reports the leader exited while the leader remains unreaped, and chooses timeout cleanup at or beyond the boundary.',
+      ],
+      detection: [
+        {
+          method: 'post-observation deadline-precedence review',
+          signal: 'Bind the fallible pre-custody request copy, Instant immediately before spawn, post-spawn setup, the pre-observation elapsed check, non-reaping exit observation and second elapsed check before normal-exit group signal and reap.',
+          failureCondition: 'Spawn or post-spawn setup is outside custody, a success path follows a blocking or preemptible exit observation without rechecking the wall clock, or equality at the deadline is accepted as normal exit.',
+        },
+      ],
+      causalChain: [
+        'Starting custody after spawn and setup omits worker-controlled or OS-delayed startup time from the configured interval.',
+        'The monitor confirms that elapsed time is still below the configured wall interval.',
+        'Execution is delayed before or during the non-reaping leader-exit observation.',
+        'The leader exits and the observation returns true after the wall boundary.',
+        'Without a second clock comparison, the supervisor gives exit success precedence over the already-expired timeout policy.',
+      ],
+      rootCause: 'Wall policy was sampled at incomplete lifecycle boundaries: custody began after startup work, and the normal-exit branch treated an earlier time sample as valid after a preemptible system call.',
+      resolution: [
+        'Complete the admitted-request copy with checked fallible allocation before custody, then start Instant immediately before Command::spawn so spawn and every later setup step consume the configured interval.',
+        'Keep the initial elapsed-time check before WNOWAIT so already-expired work enters timeout cleanup directly.',
+        'When WNOWAIT reports an exited leader, compare elapsed time with the wall interval again before normal-exit group cleanup or Child::wait.',
+        'At or beyond the deadline, take the timeout cleanup path while the leader remains unreaped; only a still-before-deadline observation may proceed to group signal, reap and exit classification.',
+      ],
+      prevention: [
+        'Define exactly which host-only preparation precedes custody and start the worker deadline before the first spawn or post-spawn operation.',
+        'Revalidate deadlines after every blocking or preemptible operation whose result competes with timeout outcome precedence.',
+        'Specify equality semantics explicitly; Phase 3 uses elapsed greater than or equal to the wall interval as timeout.',
+        'Preserve source-order evidence around boundary arbitration even when an exact scheduler-preemption timing hook would make the test harness distort production code.',
+        'Keep wall-policy arbitration distinct from process-group identity ownership and I/O backpressure causes.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds elapsed-time checks both before WNOWAIT and immediately after an exited observation, ahead of group signal and Child::wait.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['concurrency', 'dae', 'deadline', 'lifecycle', 'service', 'time-of-check'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Wall-deadline arbitration before and after non-reaping exit observation.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Fixed wall-policy boundary and bounded timeout lifecycle case.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact post-WNOWAIT time-check source ordering.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-descendant-pipe-liveness',
+      title: 'Descendant-held capture pipes outlive the supervised worker leader',
+      symptom: 'A nominally bounded one-shot worker call can reap its direct child and then wait indefinitely for standard-output or standard-error EOF because a descendant still owns an inherited pipe write end.',
+      evidence: [
+        'The Phase 3 lifecycle review found that direct-child exit and pipe-reader completion have different ownership boundaries: reaping the leader does not close write ends inherited by a descendant.',
+        'An EOF-driven reader cannot finish while any process retains the corresponding write end, so joining or waiting for that reader after leader exit can bypass the nominal worker wall deadline.',
+        'The regression fixture starts a same-process-group descendant that inherits standard output and error, then exercises both a hanging leader at the wall deadline and a leader that emits a valid response and exits first.',
+        'The timeout path proves bounded return, explicit direct-leader reaping and observed descendant termination; the normal leader-exit path proves a bounded valid response and observed descendant termination, while the source-order binding confirms Child::wait after the group signal.',
+        'After cleanup, the final source unconditionally attempts writer, stdout and stderr receives under one shared absolute deadline before returning any retained cleanup error.',
+      ],
+      detection: [
+        {
+          method: 'descendant-held pipe liveness regression',
+          signal: 'Have a worker leader spawn a same-process-group sleeper that inherits both capture pipes, record both immutable PID-plus-start-time process identities, and cover deadline cleanup plus normal leader exit.',
+          failureCondition: 'Supervision waits past its bounded deadline, returns before reaping the leader, leaves the recorded descendant running, or cannot accept the leader response because the descendant retains a pipe write end.',
+        },
+      ],
+      causalChain: [
+        'The supervisor gives the direct worker piped standard output and error.',
+        'The worker spawns a descendant without closing those inherited write ends.',
+        'The direct worker exits and is reaped, but the descendant keeps each pipe live.',
+        'A supervisor that now waits for EOF-driven readers has transferred liveness to an unowned descendant and can exceed its wall policy indefinitely.',
+      ],
+      rootCause: 'The initial supervision lifecycle treated direct-child exit as the complete worker lifetime while its EOF-driven capture threads were actually coupled to every descendant retaining an inherited pipe write end.',
+      resolution: [
+        'Start the Linux worker in a distinct process group and retain its process-group identifier as part of the one-shot lifecycle.',
+        'On the wall deadline, post-spawn failure and direct-leader exit, signal the whole owned process group before waiting for pipe completion, and explicitly reap the direct child.',
+        'Use one shared fixed two-second receive deadline across the writer and both readers, attempt all three receives, and only then return a retained cleanup error so a missed EOF or early channel error cannot skip later bounded drains.',
+        'Keep the guarantee scoped to the tested same-process-group lifecycle: a descendant moved or created outside the original group or session can escape this signal, so Phase 3 does not claim universal descendant containment or a process sandbox.',
+        'Treat that receive deadline as a bound on channel waiting only: an escaped pipe holder can leave detached I/O threads blocked, and repeated calls can accumulate escaped processes and threads.',
+      ],
+      prevention: [
+        'Model child processes, descendants and every inherited pipe endpoint as one lifecycle graph rather than equating leader exit with resource completion.',
+        'Terminate the owned process group before an EOF-dependent drain and retain a separate finite drain deadline even when group signaling succeeds.',
+        'Test both timeout and successful-leader-exit paths with a real pipe-holding descendant, and preserve explicit escape, cancellation and sandbox nonclaims.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds process-group cleanup and the finite drain deadline to the same-process-group descendant fixture while preserving escape and sandbox nonclaims.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['dae', 'lifecycle', 'pipes', 'process-group', 'resource-bounds', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'One-shot Linux process-group ownership, group termination, direct-child reaping and finite capture-drain deadline.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Test-only worker modes whose same-process-group descendants inherit and hold the capture pipes.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Deadline and leader-exit regressions that observe bounded return and descendant termination.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact lifecycle source/test binding plus process-containment nonclaims.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-direct-leader-group-escape',
+      title: 'Group-only cleanup loses the owned worker after a process-group change',
+      symptom: 'A timed-out direct worker can remain alive and make cleanup block in Child::wait after it joins another existing process group, because a signal sent only to the original negative PGID no longer addresses that leader.',
+      evidence: [
+        'Lifecycle review found that the initial cleanup treated the process_group(0) identifier as durable direct-child control and followed the original-group signal with a blocking wait.',
+        'A direct leader can use setpgid to join another existing group in the same session, so kill(-original_pgid, SIGKILL) can miss the still-live owned child even though the Child handle remains valid.',
+        'The frozen deadline case now runs escape-group-hang: the fixture records its original group, joins its parent existing group, proves the group changed, hangs, and under a 400 ms policy returns the typed timeout in under two seconds with its PID-plus-start-time identity reaped.',
+        'Final cleanup first signals the original group for same-group descendants, independently calls Child::kill on the owned direct worker, calls Child::wait, and retains the first group/direct/wait error.',
+      ],
+      detection: [
+        {
+          method: 'direct-leader process-group escape regression',
+          signal: 'Have the direct fixture join a different existing same-session group with setpgid, record both group identifiers and immutable process identity, then require bounded typed timeout and direct-child reaping.',
+          failureCondition: 'The fixture group does not change, group-only cleanup misses the leader and blocks, timeout is not typed and bounded, or the original direct-worker identity remains after return.',
+        },
+      ],
+      causalChain: [
+        'The supervisor starts the worker in a new process group and remembers that original PGID.',
+        'The direct worker joins another existing process group with setpgid before cleanup.',
+        'A negative-PGID signal addresses the original group but no longer addresses the direct worker.',
+        'A following blocking Child::wait has no remaining action that terminates the still-live owned leader and can hang indefinitely.',
+      ],
+      rootCause: 'Cleanup conflated original process-group membership with durable ownership of the direct Child, even though group membership can change while the retained Child handle still identifies the process that must be killed and reaped.',
+      resolution: [
+        'Retain the Child handle and original PGID as separate controls with separate purposes.',
+        'Signal the original negative PGID for descendants that remain there, then independently call Child::kill so a moved direct leader is addressed by its owned process handle.',
+        'Always call Child::wait to reap the direct worker and retain the first group-kill, direct-kill or wait error for later precedence.',
+      ],
+      prevention: [
+        'Do not treat a process group as a durable substitute for the direct child handle.',
+        'Exercise cleanup after a real setpgid transition and verify both group transition and immutable leader identity rather than only successful signaling.',
+        'Keep this direct-leader fallback distinct from same-group descendant cleanup, escaped-descendant noncontainment and stale-PGID reuse ordering.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds group-first plus Child::kill/Child::wait source ordering to the executable 400 ms setpgid escape and identity-reap subcase.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['cleanup', 'dae', 'lifecycle', 'process-group', 'service', 'setpgid'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Original-group signal plus independent direct Child kill, wait and first-error retention.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Test-only escape-group-hang mode that joins the parent existing process group and publishes the transition.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Frozen deadline case proving changed PGID, bounded typed timeout and direct-leader identity reaping.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact source/fixture/campaign binding and descendant-scope nonclaims.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-fixture-msrv-syntax-drift',
+      title: 'Test-fixture FFI syntax exceeds the pinned Rust toolchain',
+      symptom: 'A source-only supervision campaign can fail before lifecycle assertions run when its directly compiled fixture uses newer Rust FFI syntax that the repository-pinned compiler cannot parse.',
+      evidence: [
+        'The first test-only worker fixture used unsafe extern syntax that is newer than the pinned Rust 1.77.2 toolchain used by the isolated service job.',
+        'Compatibility review caught the mismatch proactively before a hosted CI execution; no hosted failure is claimed.',
+        'The fixture now uses an edition-2021 plain extern "C" block, with unsafe kept at each FFI call site rather than on the block syntax.',
+        'The campaign resolves the active RUSTC and directly compiles the fixture with --edition=2021 and -Dwarnings, so the same compiler running the Cargo campaign validates the auxiliary source.',
+      ],
+      detection: [
+        {
+          method: 'active-toolchain auxiliary-source compilation',
+          signal: 'Compile every test-only executable source with the active pinned rustc, explicit edition and warnings denied before executing the fixture.',
+          failureCondition: 'An auxiliary fixture is accepted only by a newer developer compiler, bypasses the pinned compiler, uses unsafe extern under the Rust 1.77 contract, or is not compiled with warnings denied.',
+        },
+      ],
+      causalChain: [
+        'The repository pins Rust 1.77.2 for the isolated service campaign.',
+        'A test-only executable is compiled outside Cargo target discovery and can silently follow the author machine compiler syntax.',
+        'The fixture uses newer unsafe extern grammar even though its surrounding campaign is edition 2021 and MSRV-bound.',
+        'The pinned compiler rejects the fixture before any supervision behavior can be exercised.',
+      ],
+      rootCause: 'The auxiliary fixture source was not initially authored against the same explicit MSRV grammar as the Cargo campaign that compiles and launches it.',
+      resolution: [
+        'Use the Rust-1.77-compatible plain extern "C" declaration and retain explicit unsafe blocks at the foreign-function call sites.',
+        'Compile the fixture with the active RUSTC, --edition=2021 and -Dwarnings from inside the campaign rather than relying on a prebuilt or host-default binary.',
+        'Keep the fixture test-only and out of Cargo product binaries and release artifacts.',
+      ],
+      prevention: [
+        'Apply the repository MSRV to dynamically compiled fixtures, build scripts and code generators as well as ordinary crate targets.',
+        'Bind syntax evidence to the exact active-rustc command and preserve the no-hosted-failure distinction when review catches drift proactively.',
+        'Avoid interpreting successful fixture compilation as native-worker implementation or shipped-product evidence.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence requires plain extern "C", excludes unsafe extern and binds direct fixture compilation to active rustc edition 2021 with warnings denied.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['ci', 'dae', 'ffi', 'fixture', 'msrv', 'rust', 'service'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Rust-1.77-compatible test-only FFI declaration and call-site unsafe blocks.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Active-rustc edition-2021 warnings-denied fixture compilation.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact fixture syntax, compiler invocation and hosted-failure nonclaim.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-pgid-reuse-cleanup-race',
+      title: 'Reaping a worker leader releases its process-group identifier before cleanup',
+      symptom: 'Normal-exit cleanup can send SIGKILL to an unrelated concurrently spawned process group after the worker leader is reaped and its numeric PID/PGID is immediately reused.',
+      evidence: [
+        'The initial normal-exit loop used Child::try_wait, which both observed and reaped the leader before calling kill on the negative process-group identifier.',
+        'The Linux worker starts with process_group(0), so its initial PGID equals the leader PID and that numeric identifier can be reused after the leader is reaped.',
+        'Adversarial source review found a concrete reuse window between the reap and stale negative-PGID signal. A concurrent campaign produced Code(101)/ENOENT symptoms consistent with cross-worker interference, but that run lacked PID/PGID/start-time or signal telemetry and the same symptom was later independently explained by the procfs namespace mismatch, so it is not causal proof that the stale signal killed another group.',
+        'The repaired source uses waitid with P_PID, WEXITED, WNOHANG and WNOWAIT to observe the exact leader exit without reaping, signals the still-owned group, and calls Child::wait only afterward.',
+        'The final cleanup flow retains its first error, attempts writer, stdout and stderr receives under one shared absolute deadline, and returns the cleanup error only after all three receive attempts.',
+      ],
+      detection: [
+        {
+          method: 'parallel process-group identity-reuse stress',
+          signal: 'Run many one-shot worker exits concurrently while descendants publish identity artifacts, and inspect whether normal-exit cleanup can affect any group other than the unreaped leader-owned PGID.',
+          failureCondition: 'The leader is reaped before its negative-PGID signal, an unrelated fixture loses its descendant or exits from cleanup interference, or exit observation consumes the child before group cleanup.',
+        },
+      ],
+      causalChain: [
+        'The supervisor creates a distinct process group whose numeric PGID equals the worker leader PID.',
+        'Normal-exit polling calls a reaping API before group cleanup.',
+        'Reaping releases the numeric identifier and a concurrent spawn may reuse it as a new PID and PGID.',
+        'The delayed negative-PGID SIGKILL now addresses the unrelated new process group rather than the original worker descendants.',
+      ],
+      rootCause: 'The cleanup sequence discarded kernel ownership of the PID/PGID by reaping the leader before issuing a group-directed signal that still relied on that recyclable numeric identifier.',
+      resolution: [
+        'Observe Linux leader exit with waitid(P_PID, ..., WEXITED | WNOHANG | WNOWAIT), which leaves the exited child waitable and keeps its PID unavailable for reuse.',
+        'While the leader remains unreaped, signal the negative PGID so the numeric group identifier still belongs to the supervised worker lifecycle.',
+        'Call Child::wait only after the group signal attempt, then preserve any cleanup error independently from the worker exit status and bounded pipe drains.',
+        'Attempt all three I/O result receives under one shared deadline before giving the retained cleanup error precedence.',
+      ],
+      prevention: [
+        'Treat PID and PGID reuse as part of the concurrency model whenever cleanup spans more than one system call.',
+        'Use non-reaping exit observation when later cleanup operations still address the child by a recyclable numeric identifier.',
+        'Stress lifecycle ordering with parallel spawns and identity-publishing descendants, not only sequential single-worker fixtures.',
+        'Keep group-ownership sequencing distinct from test-side PID-plus-start-time evidence and from universal descendant-containment claims.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds waitid WNOWAIT observation, group signaling and final Child::wait in identity-preserving source order.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['concurrency', 'dae', 'lifecycle', 'pgid', 'pid-reuse', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Non-reaping Linux leader observation followed by group signaling and direct-child wait.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Identity-publishing worker and descendant behavior used by concurrent process lifecycle stress.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Parallel-by-default supervision cases and leader/descendant lifecycle assertions.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact waitid flags and cleanup-order evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-pid-reuse-liveness-evidence',
+      title: 'PID-only liveness evidence misattributes a reused process identifier',
+      symptom: 'A worker-reaping regression can report that the supervised leader is still present even though it was reaped, because an unrelated process acquired the same numeric PID before the test inspected /proc.',
+      evidence: [
+        'An independent combined debug campaign passed 26 service cases but failed the supervision deadline case after its raw /proc/$pid existence assertion found the recorded leader PID still present.',
+        'Inspection showed that the reaped worker PID had already been reused by an unrelated codex-main process; the test had observed a different process rather than a surviving worker.',
+        'The exact deadline case passed when rerun alone, consistent with a timing-dependent evidence identity flaw rather than deterministic worker cleanup failure.',
+        'The repaired fixture records both numeric PID and Linux /proc/$pid/stat field 22 start time, and the test treats an absent entry, a changed start time, or Z/X state according to the original process identity instead of the PID alone.',
+      ],
+      detection: [
+        {
+          method: 'PID-reuse process-identity regression',
+          signal: 'Capture PID plus /proc start time in the observed process itself, then compare both fields while checking leader reaping and descendant termination under concurrently spawning tests.',
+          failureCondition: 'Liveness is inferred from a bare /proc/$pid path, a changed start time is treated as the original process, or a zombie/dead original descendant is reported as running.',
+        },
+      ],
+      causalChain: [
+        'The fixture writes only its numeric PID to the test artifact.',
+        'The supervised worker exits and its parent reaps it, releasing that number for kernel reuse.',
+        'Another concurrently created process receives the same PID before the assertion reads /proc.',
+        'A path-existence or PID-only state check attributes the unrelated process to the worker and creates a false cleanup failure.',
+      ],
+      rootCause: 'The regression treated a recyclable numeric PID as immutable process identity and omitted the kernel start-time discriminator needed to distinguish the original worker from later PID reuse.',
+      resolution: [
+        'Have the fixture record each process as PID plus Linux /proc/$pid/stat field 22 start time while that exact process is known to exist.',
+        'When observing the process later, return absent if /proc is gone or its start time differs; for direct-child reaping require the original identity to be absent.',
+        'For descendants owned only through process-group signaling, accept the same identity only in Z/X terminal state and reject it while running; do not mistake a reused PID for either outcome.',
+      ],
+      prevention: [
+        'Never use a numeric PID or /proc path existence alone as durable process identity in lifecycle tests or monitoring.',
+        'Bind observations to an immutable creation discriminator such as Linux process start time or a pidfd where the platform and interface permit it.',
+        'Run process-lifecycle campaigns concurrently as well as in isolation so rapid PID reuse and evidence races remain visible.',
+        'Keep evidence-identity failures distinct from the worker cleanup algorithm they are intended to measure.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds leader and descendant observations to PID-plus-start-time identity and terminal-state semantics rather than bare /proc path existence.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['ci', 'dae', 'lifecycle', 'pid-reuse', 'process-identity', 'service'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Fixture-side capture of PID plus Linux proc-stat start time before the identity can disappear or be reused.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Identity-aware leader reaping and descendant terminal-state observation.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact source binding for proc-stat field 22, changed-start-time and Z/X handling.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-pre-exec-error-allocation',
+      title: 'Formatting-capable error construction runs in the post-fork pre-exec child',
+      symptom: 'A rare resource-limit conversion failure can allocate or acquire allocator-related state after fork and before exec, where a multithreaded parent may have left those locks in an unusable inherited state.',
+      evidence: [
+        'The earlier set_linux_limit conversion-error branch used io::Error::new with a custom static message from inside the Command pre_exec call path.',
+        'io::Error::new boxes its custom error payload, so the branch was allocation-capable in the post-fork child; review identified the hazard without reproducing a deadlock.',
+        'All four fixed values—768 MiB, 20 seconds, zero and 16—are now checked against libc::rlim_t::MAX at compile time and directly cast before the fixed setrlimit calls, removing the runtime conversion-error branch.',
+        'The bounded policy helpers use fixed scalar setrlimit/prctl operations, read errno through libc::__errno_location and construct failures with io::Error::from_raw_os_error; exact evidence excludes io::Error::new, formatting and last_os_error from that slice.',
+      ],
+      detection: [
+        {
+          method: 'bounded post-fork source audit',
+          signal: 'Slice apply_linux_worker_policy, set_linux_limit and linux_errno_error through the pre_exec transitive path; require compile-time fit checks, direct casts, fixed libc calls and raw-OS-error construction while rejecting formatting, io::Error::new and last_os_error.',
+          failureCondition: 'Any reachable conversion, formatting, heap-backed custom error, lock-taking helper or unbounded Rust operation remains between fork and exec, or fixed values are cast without a compile-time fit proof.',
+        },
+      ],
+      causalChain: [
+        'Command::spawn forks a multithreaded parent and invokes the configured pre_exec closure in the child before exec.',
+        'Only the calling thread survives fork, while allocator or library locks held by other threads may remain locked in the child.',
+        'A rare rlim_t conversion failure enters io::Error::new and boxes a custom error payload.',
+        'That allocation can depend on inherited allocator state and hang or fail before exec, preventing the parent from obtaining a normal worker result.',
+      ],
+      rootCause: 'The pre_exec transitive call path used a general Rust custom-error constructor instead of limiting the post-fork child to fixed scalar libc operations and allocation-free raw OS error representation.',
+      resolution: [
+        'Prove each fixed policy constant fits libc::rlim_t with compile-time assertions and use direct scalar casts in the policy call path.',
+        'Restrict the runtime policy operations to the four fixed setrlimit calls and PR_SET_NO_NEW_PRIVS prctl call.',
+        'Read errno immediately through libc::__errno_location and use io::Error::from_raw_os_error for typed propagation without the custom-error boxing path.',
+      ],
+      prevention: [
+        'Audit every pre_exec closure transitively rather than reviewing only the closure body; helpers can hide allocation, formatting and locks.',
+        'Move validation and fallible preparation before spawn whenever values are not fixed compile-time policy constants.',
+        'Keep the claim narrow: this fixes the identified custom-error allocation path and does not qualify arbitrary Rust code as safe after fork or establish a process sandbox.',
+        'Do not describe the source review as an executable deadlock reproduction; the fixed-resource campaign exercises the successful post-exec values and no_new_privs state.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence bounds the policy-helper slice, requires compile-time rlim_t fits plus __errno_location/from_raw_os_error, and excludes io::Error::new, formatting and last_os_error.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['allocation', 'dae', 'fork', 'linux', 'pre-exec', 'resource-limits', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Compile-time rlim_t fit proofs and bounded libc/raw-errno pre-exec helpers.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Successful post-exec observation of all fixed limits and no_new_privs; not an error-branch deadlock reproduction.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact bounded policy-source assertions and prohibited-constructor regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-procfs-pid-namespace-evidence',
+      title: 'Process API PID and mounted procfs use different numeric namespaces',
+      symptom: 'A lifecycle fixture cannot publish or inspect the intended worker identity through /proc when it constructs the proc path from process::id or Child::id in an environment whose mounted procfs represents a different PID namespace.',
+      evidence: [
+        'The first identity repair used Rust process::id and Child::id values to open /proc/$pid/stat and associate leader and descendant artifacts.',
+        'In the execution environment, those process API values differed from the numeric identities exposed by the mounted procfs, so the constructed path could be absent or refer to the wrong procfs-visible process.',
+        'The fixture failure surfaced as exit 101 with ENOENT while trying to publish or await a descendant identity, even though process creation itself had succeeded.',
+        'The final fixture has each worker and descendant read /proc/self/stat inside its own process, extract the procfs-visible PID and field 22 start time, and publish both values for later observation.',
+      ],
+      detection: [
+        {
+          method: 'procfs-visible self-identity regression',
+          signal: 'Compare the process API PID with the PID parsed by the same process from /proc/self/stat, then require every observed lifecycle identity artifact to be self-published from the procfs view used by the observer.',
+          failureCondition: 'A test constructs /proc/$pid from process::id or Child::id without proving namespace equivalence, or an identity artifact is written by another process using an untranslated PID.',
+        },
+      ],
+      causalChain: [
+        'The test obtains a numeric PID from a process API in the caller or child namespace.',
+        'It assumes the mounted procfs was created for that same PID namespace.',
+        'The test interpolates the API value into /proc/$pid/stat even though procfs exposes a different numeric identity for the process.',
+        'Identity capture fails or attaches evidence to the wrong process before any start-time reuse check can help.',
+      ],
+      rootCause: 'The fixture conflated a process API PID with the numeric identity exported by the mounted procfs and omitted an explicit namespace translation or procfs-native self-identification step.',
+      resolution: [
+        'Have each fixture process read /proc/self/stat itself and parse the PID from the stat identity prefix plus field 22 process start time.',
+        'Publish that pair through the fixture artifact and let the observing test address /proc with the procfs-visible PID from the artifact.',
+        'Validate only the complete artifact shape while waiting for publication; do not compare it with process::id or Child::id unless namespace equivalence has been established independently.',
+      ],
+      prevention: [
+        'Treat PID namespaces and the PID namespace bound to a procfs mount as explicit evidence context in containerized process tests.',
+        'Prefer self-published procfs identity or pidfds over interpolating a PID obtained through a different process API or namespace boundary.',
+        'Keep namespace translation distinct from temporal PID reuse: self-identification selects the right numeric namespace, while start time distinguishes later reuse within that namespace.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds identity publication to fixture-side /proc/self/stat PID and start time without relying on process::id or Child::id namespace equivalence.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['ci', 'containers', 'dae', 'pid-namespace', 'process-identity', 'procfs', 'service'],
+      references: [
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Fixture-side parsing and publication of /proc/self/stat identity.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'Consumer of the self-published procfs-visible PID and start-time pair.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact /proc/self/stat source binding and namespace-assumption nonclaim.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-supervisor-stdin-pipe-deadline-bypass',
+      title: 'Blocking request write prevents the supervisor from reaching its deadline loop',
+      symptom: 'A worker that never reads standard input can make a one-shot supervision call block while writing a legal large request, before the code that polls the child and enforces wall time can run.',
+      evidence: [
+        'A pipe has finite kernel capacity, while the service request frame may contain up to a 4 MiB payload plus its header.',
+        'The initial Phase 3 lifecycle placed a complete blocking write_all ahead of the child-monitor loop, so a non-reading worker could fill the pipe and retain the supervising thread before its elapsed-time check.',
+        'The regression uses a 1 MiB admitted request and a fixture leader that records its identity but never reads standard input, which is large enough to exercise backpressure rather than relying on a small successful write.',
+        'The final supervisor writes on a dedicated thread, monitors the child concurrently, terminates the owned process group at the configured deadline and returns the typed timeout in under two seconds for a 750 ms policy.',
+      ],
+      detection: [
+        {
+          method: 'non-reading worker stdin-backpressure regression',
+          signal: 'Send a legal request substantially larger than pipe capacity to a fixture that leaves standard input unread and measure supervision from before spawn through timeout cleanup.',
+          failureCondition: 'The request-writing call prevents the deadline monitor from running, the call exceeds its bounded timeout/drain window, or the worker remains alive after the timeout result.',
+        },
+      ],
+      causalChain: [
+        'The supervisor spawns a worker with piped standard input.',
+        'The supervising thread synchronously writes the entire caller frame before it enters the child poll loop.',
+        'A worker that does not read fills the finite pipe and blocks the remaining write.',
+        'Because the same thread is stuck in write_all, it never reaches the wall-deadline check or cleanup path.',
+      ],
+      rootCause: 'Deadline enforcement and a potentially blocking request-pipe write were serialized on one thread, allowing standard-input backpressure to hold the only control path capable of enforcing the deadline.',
+      resolution: [
+        'Copy the already admitted request with a checked fallible reservation before spawn and report a typed allocation failure rather than relying on infallible growth after process creation.',
+        'Move write_all, flush and standard-input closure to a dedicated writer thread while the supervising thread immediately polls the child against the wall policy.',
+        'At timeout, terminate the owned process group and reap the leader so the pipe closes and releases the writer; collect its result under the same fixed two-second drain deadline as both output readers.',
+      ],
+      prevention: [
+        'Treat every pipe read and write as potentially blocking regardless of the nominal message-size cap.',
+        'Start deadline custody before spawn and keep the monitor independent from request and diagnostic I/O progress.',
+        'Exercise frames larger than ordinary pipe capacity against non-reading workers; small echo fixtures cannot qualify this liveness boundary.',
+        'Keep this host-timeout evidence separate from caller cancellation and native-solver correctness claims.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 3 evidence binds the asynchronous writer and finite drain to a 1 MiB admitted request whose worker never reads standard input, without claiming cancellation.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['backpressure', 'dae', 'deadline', 'lifecycle', 'pipes', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/supervision.rs',
+          note: 'Fallible pre-spawn request copy, dedicated request writer and concurrent deadline monitor.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/fixtures/one_shot_worker.rs',
+          note: 'Test-only hanging worker mode that intentionally leaves standard input unread.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_supervision_campaign.rs',
+          note: 'One-megabyte admitted-request timeout and bounded cleanup regression.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact source-order, large-request and non-reading-worker evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-shared-test-mutex-poison-cascade',
       title: 'Exact float assertion poisons a shared native test mutex',
       symptom: 'One harmless floating-point comparison failure turns most of the native solver campaign red with mutex-poison errors that hide the original numerical assertion.',

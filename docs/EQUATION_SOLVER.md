@@ -166,20 +166,30 @@ dense-only checkpoint of 172 cases in nine Cargo result blocks to the current
 separate evidence. Neither manifest target moves the 16-name denominator, the
 historical 48-case KLU campaign, or the frozen 81-name Iteration 3 population.
 
-### Iteration 4 native service Phases 1 and 2: framing and strict admission
+### Iteration 4 native service Phases 1–3: framing, admission and supervision
 
 The source-only `rust-dae-service/` crate now defines the first bounded framing
-and strict-admission layers for a future native solver service. Phase 1 owns
-the codec boundary. Phase 2 preflights caller-controlled allocation shape
-before core decode, then lowers the bounded graph and derives a native-free
-plan. Neither phase is a service runtime: they do not open a
-listener, spawn or supervise a solver process, call the dense or KLU backend,
-return a native solve result, connect the desktop application, or place an
-executable in a browser, desktop, npm, installer or release artifact. Their
-isolated Rust 1.77.2 CI job runs the nine framing cases and nine admission cases
-as exactly two result blocks and 18 tests per profile: 18 in debug and the same
-18 in release, with warnings denied. Repeating the same cases across build
-profiles does not turn the campaign numerator into 36 unique cases.
+and strict-admission layers plus one-shot Linux worker supervision for a future
+native solver service. Phase 1 owns the codec boundary. Phase 2 preflights
+caller-controlled allocation shape before core decode, then lowers the bounded
+graph and derives a native-free plan. Phase 3 admits that request before spawn
+and supervises one trusted worker program through bounded standard-I/O pipes.
+It does create a child process, but this repository supplies only a test
+fixture, not a native worker executable. These phases do not open a listener,
+call the dense or KLU backend, return a native solve result, connect the desktop
+application, or place an executable in a browser, desktop, npm, installer or
+release artifact. Their isolated Rust 1.77.2 CI job runs nine framing, nine
+admission and nine supervision cases as exactly three result blocks and 27
+tests per profile: 27 in debug and the same 27 in release, with warnings
+denied. Repeating the same cases across build profiles does not turn the
+campaign numerator into 54 unique cases.
+
+The test fixture is not a Cargo binary or product artifact. The supervision
+campaign compiles it directly with the active `rustc`, edition 2021 and
+warnings denied. Compatibility review caught its initial newer `unsafe extern`
+syntax before hosted execution: pinned Rust 1.77 requires the plain
+`extern "C"` block used now. This is proactive MSRV evidence, not a claim that a
+hosted CI run failed.
 
 The canonical request representation does not serialize floating-point values
 as JSON numbers. JavaScript `JSON.stringify(-0)` produces `0`, erasing the sign
@@ -237,9 +247,116 @@ These known pre-native ceilings do not bound input-dependent KLU symbolic or
 numeric factor fill, total process memory, CPU time or resident lifetime.
 
 The closed request schema also refuses caller attempts to supply wall-time,
-CPU, memory or other service-policy overrides. The accepted plan still does
-not create a process, invoke a native backend, or materialize an output/result
-payload; the numerical, process and lifecycle boundaries remain future work.
+CPU, memory or other service-policy overrides. Phase 2 admission alone still
+does not create a process, invoke a native backend, or materialize an
+output/result payload.
+
+Phase 3 keeps worker choice and process policy outside that request. A trusted
+`WorkerPrograms` configuration must provide absolute executable and working
+directory paths for dense and KLU; the admitted backend selects exactly one of
+them. Each `OneShotSupervisor` instance admits first, permits one active call,
+and returns `Busy` for an overlapping call on that instance without queuing or
+spawning another worker. Separate instances are not a global concurrency gate.
+The supervisor clears the child environment and adds only the fixed
+protocol/backend identity,
+`LANG=C` and `LC_ALL=C`; standard input, output and error are all pipes. This
+does not prove that arbitrary inherited file descriptors are closed or that a
+worker cannot use sockets.
+
+The supervisor makes one fallibly reserved copy of the admitted frame before
+wall-time custody and spawn, then a dedicated writer writes that frame once,
+flushes it and closes standard input while the supervisor monitors time
+concurrently. This ordering matters because a synchronous large write to a
+worker that never reads standard input can fill the pipe before the deadline
+loop begins. The campaign sends a 1 MiB admitted frame to that non-reader under
+a 750 ms policy and requires bounded timeout cleanup. Standard output and
+standard error are also drained concurrently. Output is capped at one
+eight-byte frame header plus the existing 4 MiB payload ceiling and must decode
+as exactly one complete response frame; truncated, extra and second frames fail
+closed. Standard error is separate diagnostics: the first 64 KiB is retained
+and excess bytes set a truncation flag. A nonzero exit code or signal is a typed
+worker failure and cannot be mistaken for a response.
+
+The configured worker wall interval is capped at 25 seconds. Trusted supervisor
+construction may choose a shorter nonzero interval; the request controls
+neither that interval nor the one shared fixed two-second receive deadline
+across the three I/O channels. The fallible request copy deliberately precedes
+wall custody; the timer starts immediately before `Command::spawn`, so spawn and
+all subsequent pipe and thread setup count toward the interval. Monitoring
+initiates cleanup when it observes that the configured interval has elapsed.
+This is not an absolute OS-level call-return guarantee: synchronous
+`Command::spawn`, post-spawn setup and cleanup's `Child::wait` can themselves be
+delayed or block in the kernel. The executable fixture proves only that its
+tested 750 ms owned-group timeout path returns in under two seconds.
+
+On Linux the child starts a distinct process group. Deadline, post-spawn
+setup/poll failure and leader-exit cleanup signal that group and reap the direct
+child before the supervisor waits for pipe EOF. That ordering fixes the
+demonstrated same-process-group fixture where an exited leader leaves a
+descendant holding the output pipes open and otherwise turns a reader join into
+an unbounded wait. The timeout path explicitly observes bounded return,
+direct-leader reaping and descendant termination. The normal leader-exit path
+observes a bounded valid response and descendant termination, while the source
+binding confirms the group signal precedes `Child::wait`.
+
+The original process-group signal is not sufficient direct-child control: a
+leader can use `setpgid` to join another existing group in the same session
+before cleanup, so a group-only signal can miss that still-live owned child and
+a following blocking wait can hang. The campaign's `escape-group-hang` fixture
+joins its parent's group, proves the group changed, then hangs; the 400 ms
+policy returns the typed timeout in under two seconds and the leader's
+PID-plus-start-time identity is reaped. Cleanup retains the `Child` handle,
+signals the original group for same-group descendants, independently calls
+`Child::kill` for the direct leader and then calls `Child::wait`, retaining the
+first cleanup error.
+
+After cleanup the supervisor unconditionally attempts the writer, standard
+output and standard error receives under one shared absolute deadline before
+returning a retained cleanup error. An earlier channel error therefore does not
+skip the later receive attempts or replace the cleanup cause. This is still not
+universal descendant containment: a descendant moved or created outside the
+original group can survive the group signal and retain pipe ends. The receive
+deadline then bounds only the supervisor's collective channel waiting; its
+detached Rust reader or writer thread can remain blocked, and repeated calls can
+accumulate escaped processes and threads. Phase 3 therefore does not establish
+aggregate lifecycle-resource containment. It also does not implement caller
+cancellation or a latest-request-wins policy.
+
+Normal leader exit is observed with Linux `waitid(WNOWAIT)` before reaping. The
+supervisor checks elapsed time both before that observation and immediately
+after an exited result: observation or preemption can cross the boundary, and
+timeout wins at equality before normal-exit cleanup. The worker's process-group
+ID begins as its leader PID; reaping first would release that number for reuse,
+so a later negative-PGID cleanup signal could target an unrelated concurrently
+spawned group. Phase 3 instead observes the exited leader without reaping,
+signals the still-owned group, and only then calls `Child::wait`. This fixes the
+source-identified PID/PGID reuse cleanup race; it does not turn numeric PIDs into
+durable identity for evidence, which is why the campaign separately records
+PID plus Linux process start time. Each fixture
+process self-publishes that pair from `/proc/self/stat`; it does not assume that
+Rust `process::id` or `Child::id` uses the same numeric PID namespace as the
+mounted procfs. Self-publication selects the procfs-visible namespace, while
+the start time separately detects later reuse of a number in that namespace.
+
+Before exec, the Linux worker policy fixes address-space `RLIMIT_AS` at 768
+MiB, CPU `RLIMIT_CPU` at 20 seconds, core-file `RLIMIT_CORE` at zero and open
+file `RLIMIT_NOFILE` at 16, then sets `PR_SET_NO_NEW_PRIVS`. The post-fork
+`pre_exec` path has compile-time `rlim_t::MAX` fit assertions for all four fixed
+values, uses direct scalar casts, performs only the fixed `setrlimit` and `prctl`
+policy operations, reads errno directly and constructs failures with
+`io::Error::from_raw_os_error`. An earlier
+conversion-error branch used allocation/boxing-capable `io::Error::new` in that
+post-fork path; review caught the hazard without reproducing a deadlock. The
+bounded source assertion excludes `io::Error::new`, formatting and
+`last_os_error` from the policy helpers. This removes that specific post-fork
+allocation path; it is not a general claim that arbitrary Rust code is safe
+between fork and exec.
+
+These are specific resource limits and privilege hardening, not a process
+sandbox. In particular, they are not an aggregate process-group CPU or memory
+proof, a filesystem or network namespace, a system-call filter, arbitrary
+descriptor closure, KLU factor-fill evidence, or a native numerical-solve
+result.
 
 The service campaign uses a separate process/protocol test-function-count
 proxy. At the post-KLU tree
@@ -255,13 +372,14 @@ and
 `59d29f9629e3c8a14331206411f177b94970f01e3c33f0a625f7a493e1fbcbf0`;
 the complete lists are frozen in `tests/dae-service-evidence.test.mjs`.
 
-The current framing and admission targets contain 18 cases and remain partial
-campaign evidence only: `18 / 17 = 1.06`, not a two-times claim. The standing
-five-target plan contains 46 cases (`9 + 9 + 9 + 9 + 10`), which would be
-`46 / 17 = 2.71` on this frozen test-function-count proxy only after all five
-targets exist and pass. The remaining 28 planned cases, the service process,
-IPC lifecycle, request-to-solver mapping, native solve, cancellation, teardown
-and product integration are not implemented by Phases 1 or 2.
+The current framing, admission and supervision targets contain 27 cases and
+remain partial campaign evidence only: `27 / 17 = 1.59`, not a two-times
+claim. The standing five-target plan contains 46 cases
+(`9 + 9 + 9 + 9 + 10`), which would be `46 / 17 = 2.71` on this frozen
+test-function-count proxy only after all five targets exist and pass. The
+remaining 19 planned cases, request-to-native-solver mapping, native solve,
+caller cancellation, broader teardown and product integration are not
+implemented by Phases 1–3.
 
 ### Historical Iteration 2 native reference boundary (`@1`)
 

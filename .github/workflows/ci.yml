@@ -28,11 +28,11 @@ jobs:
       - run: node --test tests/*.test.mjs
       - run: node tools/validate-vs-market.mjs
 
-  # Isolated source-only framing and admission gate. It does not launch a
-  # service process, call a native solver, or place an executable in any
-  # product artifact.
+  # Isolated source-only framing, admission and one-shot supervision gate. Its
+  # supervision cases launch only a test fixture: they do not call a native
+  # solver or place a worker executable in any product artifact.
   dae-service-protocol:
-    name: DAE service protocol framing and admission
+    name: DAE service framing, admission and supervision
     runs-on: ubuntu-22.04
     timeout-minutes: 10
     permissions:
@@ -52,26 +52,28 @@ jobs:
         run: |
           rustc --version --verbose
           cargo --version
-      - name: Exercise exactly 18 service framing and admission cases in debug
+      - name: Exercise exactly 27 service framing, admission and supervision cases in debug
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/dae-service-protocol-debug.log"
           cargo test --locked --manifest-path rust-dae-service/Cargo.toml \
             --test service_framing_campaign \
-            --test service_admission_campaign 2>&1 | tee "$log"
-          test "$(grep -Ec '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$log")" -eq 2
-          test "$(grep -Ec '^test result:' "$log")" -eq 2
-          test "$(awk '/^test result: ok\./ { total += $4 } END { print total + 0 }' "$log")" -eq 18
-      - name: Exercise exactly 18 service framing and admission cases in release
+            --test service_admission_campaign \
+            --test service_supervision_campaign 2>&1 | tee "$log"
+          test "$(grep -Ec '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$log")" -eq 3
+          test "$(grep -Ec '^test result:' "$log")" -eq 3
+          test "$(awk '/^test result: ok\./ { total += $4 } END { print total + 0 }' "$log")" -eq 27
+      - name: Exercise exactly 27 service framing, admission and supervision cases in release
         run: |
           set -euo pipefail
           log="$RUNNER_TEMP/dae-service-protocol-release.log"
           cargo test --locked --release --manifest-path rust-dae-service/Cargo.toml \
             --test service_framing_campaign \
-            --test service_admission_campaign 2>&1 | tee "$log"
-          test "$(grep -Ec '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$log")" -eq 2
-          test "$(grep -Ec '^test result:' "$log")" -eq 2
-          test "$(awk '/^test result: ok\./ { total += $4 } END { print total + 0 }' "$log")" -eq 18
+            --test service_admission_campaign \
+            --test service_supervision_campaign 2>&1 | tee "$log"
+          test "$(grep -Ec '^test result: ok\. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;' "$log")" -eq 3
+          test "$(grep -Ec '^test result:' "$log")" -eq 3
+          test "$(awk '/^test result: ok\./ { total += $4 } END { print total + 0 }' "$log")" -eq 27
 
   # This is an independent native reference gate. It neither feeds the
   # browser/desktop packages nor advertises a shipped DAE capability.

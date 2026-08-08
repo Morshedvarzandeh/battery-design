@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 61);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 70);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -100,6 +100,15 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-service-admission-cyclic-algebraic-preflight',
     'rc-service-admission-f64-block-allocation-order',
     'rc-service-admission-input-slot-preallocation',
+    'rc-service-supervisor-deadline-observation-race',
+    'rc-service-supervisor-descendant-pipe-liveness',
+    'rc-service-supervisor-direct-leader-group-escape',
+    'rc-service-supervisor-fixture-msrv-syntax-drift',
+    'rc-service-supervisor-pgid-reuse-cleanup-race',
+    'rc-service-supervisor-pid-reuse-liveness-evidence',
+    'rc-service-supervisor-pre-exec-error-allocation',
+    'rc-service-supervisor-procfs-pid-namespace-evidence',
+    'rc-service-supervisor-stdin-pipe-deadline-bypass',
     'rc-shared-test-mutex-poison-cascade',
     'rc-signed-bound-evidence-miss',
     'rc-signed-zero-json-transport-loss',
@@ -575,6 +584,132 @@ test('service admission memory preserves the caller-controlled input-slot preall
   assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
   assert.equal(
     searchRootCauses('native service Sum fan-in aggregate input slots preallocation core decode', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves wall custody and deadline precedence', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-deadline-observation-race');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /timer after spawn,[\s\S]*request copying[\s\S]*pipe\/thread setup[\s\S]*fallible admitted-request copy before custody[\s\S]*Instant immediately before Command::spawn[\s\S]*spawn and post-spawn setup are charged[\s\S]*checked started\.elapsed only at the top[\s\S]*non-reaping waitid observer[\s\S]*Scheduler preemption or waitid latency[\s\S]*Ok\(true\) exit observation[\s\S]*classifying[\s\S]*Exited[\s\S]*rechecks started\.elapsed immediately after WNOWAIT[\s\S]*at or beyond the boundary/i);
+  assert.match(record.rootCause, /sampled at incomplete lifecycle boundaries[\s\S]*custody began after startup work[\s\S]*earlier time sample[\s\S]*preemptible system call/i);
+  assert.match(record.resolution.join(' '), /admitted-request copy[\s\S]*before custody[\s\S]*Instant immediately before Command::spawn[\s\S]*later setup step consume the configured interval[\s\S]*initial elapsed-time check before WNOWAIT[\s\S]*compare elapsed time[\s\S]*again before normal-exit group cleanup or Child::wait[\s\S]*At or beyond the deadline,[\s\S]*timeout cleanup[\s\S]*leader remains unreaped[\s\S]*still-before-deadline observation/i);
+  assert.match(record.prevention.join(' '), /host-only preparation precedes custody[\s\S]*before the first spawn or post-spawn operation[\s\S]*Revalidate deadlines after every blocking or preemptible operation[\s\S]*equality semantics[\s\S]*greater than or equal[\s\S]*source-order evidence[\s\S]*scheduler-preemption timing hook[\s\S]*distinct from process-group identity ownership and I\/O backpressure/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service deadline crossed after waitid exit observation preemption timeout precedence', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves the descendant-held pipe liveness fix', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-descendant-pipe-liveness');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /direct-child exit and pipe-reader completion[\s\S]*different ownership boundaries[\s\S]*EOF-driven reader[\s\S]*same-process-group descendant[\s\S]*hanging leader[\s\S]*leader that emits a valid response[\s\S]*timeout path proves bounded return,[\s\S]*explicit direct-leader reaping[\s\S]*normal leader-exit path[\s\S]*bounded valid response[\s\S]*source-order binding confirms Child::wait[\s\S]*unconditionally attempts writer, stdout and stderr receives[\s\S]*one shared absolute deadline[\s\S]*retained cleanup error/i);
+  assert.match(record.rootCause, /direct-child exit[\s\S]*complete worker lifetime[\s\S]*EOF-driven capture threads[\s\S]*descendant retaining an inherited pipe write end/i);
+  assert.match(record.resolution.join(' '), /distinct process group[\s\S]*wall deadline,[\s\S]*post-spawn failure[\s\S]*direct-leader exit[\s\S]*signal the whole owned process group[\s\S]*reap the direct child[\s\S]*shared fixed two-second receive deadline[\s\S]*attempt all three receives[\s\S]*retained cleanup error[\s\S]*descendant moved or created outside the original group or session[\s\S]*not claim universal descendant containment or a process sandbox[\s\S]*bound on channel waiting only[\s\S]*detached I\/O threads blocked[\s\S]*accumulate escaped processes and threads/i);
+  assert.match(record.prevention.join(' '), /lifecycle graph[\s\S]*Terminate the owned process group before an EOF-dependent drain[\s\S]*separate finite drain deadline[\s\S]*real pipe-holding descendant[\s\S]*escape,[\s\S]*cancellation[\s\S]*sandbox nonclaims/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service descendant holds stdout stderr pipe leader exit process group drain', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves direct-leader control across setpgid', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-direct-leader-group-escape');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /process_group\(0\)[\s\S]*blocking wait[\s\S]*setpgid[\s\S]*another existing group in the same session[\s\S]*kill\(-original_pgid, SIGKILL\)[\s\S]*escape-group-hang[\s\S]*joins its parent existing group[\s\S]*400 ms policy[\s\S]*typed timeout in under two seconds[\s\S]*PID-plus-start-time identity reaped[\s\S]*Child::kill[\s\S]*Child::wait[\s\S]*retains the first group\/direct\/wait error/i);
+  assert.match(record.rootCause, /conflated original process-group membership[\s\S]*durable ownership of the direct Child[\s\S]*group membership can change[\s\S]*retained Child handle/i);
+  assert.match(record.resolution.join(' '), /Child handle and original PGID as separate controls[\s\S]*negative PGID for descendants[\s\S]*Child::kill[\s\S]*moved direct leader[\s\S]*Child::wait[\s\S]*first group-kill,[\s\S]*direct-kill or wait error/i);
+  assert.match(record.prevention.join(' '), /not treat a process group as a durable substitute[\s\S]*real setpgid transition[\s\S]*immutable leader identity[\s\S]*distinct from same-group descendant cleanup,[\s\S]*escaped-descendant noncontainment[\s\S]*stale-PGID reuse ordering/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service direct worker setpgid original group kill Child handle wait timeout', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves the fixture MSRV syntax fix', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-fixture-msrv-syntax-drift');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /unsafe extern syntax[\s\S]*pinned Rust 1\.77\.2[\s\S]*proactively before a hosted CI execution[\s\S]*no hosted failure[\s\S]*edition-2021 plain extern "C"[\s\S]*unsafe[\s\S]*call site[\s\S]*active RUSTC[\s\S]*--edition=2021[\s\S]*-Dwarnings/i);
+  assert.match(record.rootCause, /auxiliary fixture source[\s\S]*same explicit MSRV grammar[\s\S]*Cargo campaign/i);
+  assert.match(record.resolution.join(' '), /Rust-1\.77-compatible plain extern "C"[\s\S]*unsafe blocks at the foreign-function call sites[\s\S]*active RUSTC[\s\S]*--edition=2021[\s\S]*-Dwarnings[\s\S]*test-only[\s\S]*out of Cargo product binaries and release artifacts/i);
+  assert.match(record.prevention.join(' '), /repository MSRV[\s\S]*dynamically compiled fixtures[\s\S]*exact active-rustc command[\s\S]*no-hosted-failure distinction[\s\S]*Avoid interpreting successful fixture compilation as native-worker implementation or shipped-product evidence/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service Rust MSRV unsafe extern fixture active rustc edition 2021 warnings', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves PID/PGID ownership through cleanup', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-pgid-reuse-cleanup-race');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /Child::try_wait[\s\S]*reaped the leader before[\s\S]*negative process-group identifier[\s\S]*process_group\(0\)[\s\S]*PGID equals the leader PID[\s\S]*Adversarial source review[\s\S]*concrete reuse window[\s\S]*Code\(101\)\/ENOENT[\s\S]*consistent with cross-worker interference[\s\S]*lacked PID\/PGID\/start-time or signal telemetry[\s\S]*not causal proof[\s\S]*waitid[\s\S]*WNOWAIT[\s\S]*Child::wait only afterward[\s\S]*retains its first error[\s\S]*writer, stdout and stderr receives[\s\S]*one shared absolute deadline[\s\S]*after all three receive attempts/i);
+  assert.match(record.rootCause, /discarded kernel ownership of the PID\/PGID[\s\S]*reaping the leader[\s\S]*group-directed signal[\s\S]*recyclable numeric identifier/i);
+  assert.match(record.resolution.join(' '), /waitid\(P_PID,[\s\S]*WEXITED \| WNOHANG \| WNOWAIT[\s\S]*leaves the exited child waitable[\s\S]*negative PGID[\s\S]*still belongs to the supervised worker[\s\S]*Child::wait only after[\s\S]*cleanup error independently[\s\S]*all three I\/O result receives[\s\S]*one shared deadline[\s\S]*cleanup error precedence/i);
+  assert.match(record.prevention.join(' '), /PID and PGID reuse[\s\S]*more than one system call[\s\S]*non-reaping exit observation[\s\S]*parallel spawns[\s\S]*identity-publishing descendants[\s\S]*distinct from test-side PID-plus-start-time evidence[\s\S]*universal descendant-containment/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service PGID PID reuse try_wait kill unrelated process group waitid WNOWAIT', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves PID-reuse-safe liveness evidence', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-pid-reuse-liveness-evidence');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /combined debug campaign[\s\S]*passed 26 service cases[\s\S]*raw \/proc\/\$pid existence assertion[\s\S]*reused by an unrelated codex-main process[\s\S]*passed when rerun alone[\s\S]*field 22 start time[\s\S]*absent entry,[\s\S]*changed start time,[\s\S]*Z\/X state/i);
+  assert.match(record.rootCause, /recyclable numeric PID[\s\S]*immutable process identity[\s\S]*kernel start-time discriminator[\s\S]*later PID reuse/i);
+  assert.match(record.resolution.join(' '), /PID plus Linux \/proc\/\$pid\/stat field 22 start time[\s\S]*\/proc is gone[\s\S]*start time differs[\s\S]*direct-child reaping[\s\S]*original identity to be absent[\s\S]*Z\/X terminal state[\s\S]*reused PID/i);
+  assert.match(record.prevention.join(' '), /Never use a numeric PID or \/proc path existence alone[\s\S]*immutable creation discriminator[\s\S]*process start time or a pidfd[\s\S]*concurrently as well as in isolation[\s\S]*distinct from the worker cleanup algorithm/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service worker PID reused proc starttime false liveness cleanup failure', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves allocation-free pre-exec error handling', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-pre-exec-error-allocation');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /set_linux_limit conversion-error branch[\s\S]*io::Error::new[\s\S]*custom static message[\s\S]*Command pre_exec[\s\S]*boxes its custom error payload[\s\S]*allocation-capable[\s\S]*without reproducing a deadlock[\s\S]*rlim_t::MAX[\s\S]*compile time[\s\S]*directly cast[\s\S]*libc::__errno_location[\s\S]*io::Error::from_raw_os_error[\s\S]*excludes io::Error::new,[\s\S]*formatting and last_os_error/i);
+  assert.match(record.rootCause, /pre_exec transitive call path[\s\S]*general Rust custom-error constructor[\s\S]*fixed scalar libc operations[\s\S]*allocation-free raw OS error/i);
+  assert.match(record.resolution.join(' '), /fixed policy constant fits libc::rlim_t[\s\S]*compile-time assertions[\s\S]*direct scalar casts[\s\S]*four fixed setrlimit calls[\s\S]*PR_SET_NO_NEW_PRIVS prctl[\s\S]*libc::__errno_location[\s\S]*io::Error::from_raw_os_error/i);
+  assert.match(record.prevention.join(' '), /every pre_exec closure transitively[\s\S]*helpers can hide allocation,[\s\S]*formatting and locks[\s\S]*validation and fallible preparation before spawn[\s\S]*claim narrow[\s\S]*does not qualify arbitrary Rust code as safe after fork[\s\S]*not[\s\S]*executable deadlock reproduction/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service pre exec fork io Error new allocation rlimit errno raw os error', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves procfs-native process identity', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-procfs-pid-namespace-evidence');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /process::id and Child::id[\s\S]*\/proc\/\$pid\/stat[\s\S]*differed from the numeric identities exposed by the mounted procfs[\s\S]*exit 101 with ENOENT[\s\S]*\/proc\/self\/stat[\s\S]*procfs-visible PID[\s\S]*field 22 start time/i);
+  assert.match(record.rootCause, /process API PID[\s\S]*numeric identity exported by the mounted procfs[\s\S]*namespace translation or procfs-native self-identification/i);
+  assert.match(record.resolution.join(' '), /each fixture process read \/proc\/self\/stat itself[\s\S]*PID from the stat identity prefix[\s\S]*field 22 process start time[\s\S]*procfs-visible PID[\s\S]*do not compare it with process::id or Child::id[\s\S]*namespace equivalence/i);
+  assert.match(record.prevention.join(' '), /PID namespaces[\s\S]*procfs mount[\s\S]*explicit evidence context[\s\S]*self-published procfs identity or pidfds[\s\S]*namespace translation distinct from temporal PID reuse[\s\S]*start time distinguishes later reuse/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service procfs self stat PID namespace process id mismatch container', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service supervision memory preserves the stdin backpressure deadline fix', () => {
+  const record = getRootCauseRecord('rc-service-supervisor-stdin-pipe-deadline-bypass');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /finite kernel capacity[\s\S]*4 MiB payload[\s\S]*blocking write_all ahead of the child-monitor loop[\s\S]*1 MiB admitted request[\s\S]*never reads standard input[\s\S]*dedicated thread[\s\S]*under two seconds[\s\S]*750 ms policy/i);
+  assert.match(record.rootCause, /Deadline enforcement[\s\S]*blocking request-pipe write[\s\S]*serialized on one thread[\s\S]*backpressure[\s\S]*only control path capable of enforcing the deadline/i);
+  assert.match(record.resolution.join(' '), /checked fallible reservation before spawn[\s\S]*typed allocation failure[\s\S]*dedicated writer thread[\s\S]*immediately polls the child[\s\S]*terminate the owned process group[\s\S]*reap the leader[\s\S]*two-second drain deadline/i);
+  assert.match(record.prevention.join(' '), /every pipe read and write as potentially blocking[\s\S]*deadline custody before spawn[\s\S]*independent from request[\s\S]*frames larger than ordinary pipe capacity[\s\S]*non-reading workers[\s\S]*separate from caller cancellation[\s\S]*native-solver correctness/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service large request stdin pipe backpressure non-reading worker deadline', { limit: 1 })[0]?.id,
     record.id,
   );
 });
