@@ -595,7 +595,9 @@ function mechanicalFindings(ctx, q) {
 
   // 2. Pouch compression.
   if (cell.form === 'pouch') {
-    const compressive = !!spacer && (spacer.kind === 'foam' || spacer.kind === 'plate');
+    const compressive = !!spacer && (
+      spacer.kind === 'compression-foam' || spacer.kind === 'foam' || spacer.kind === 'plate'
+    );
     if (!compressive) {
       out.push(finding(
         'pouch-compression', 'warn', 'Pouch stack lacks compression',
