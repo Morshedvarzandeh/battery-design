@@ -8,6 +8,25 @@ Describe the user-visible or engineering outcome and the scope of this change.
 - [ ] `node tools/validate.mjs` passes.
 - [ ] Product claims match the surfaces and artifacts actually tested.
 
+## Contribution rights and provenance
+
+- [ ] I created this contribution or have authority from its rightsholder and,
+  where relevant, my employer or client to submit it.
+- [ ] I identified all third-party code, data, media, models, standards,
+  datasheets and generated material and preserved their required licenses and
+  notices.
+- [ ] Unless a separate signed agreement applies, submission does not transfer
+  ownership. To the extent I or an identified rightsholder controls the
+  necessary rights, I am authorized to license this contribution, excluding
+  disclosed third-party material, to the public project under
+  AGPL-3.0-or-later.
+- [ ] I understand that no CLA is active yet and that this declaration is not a
+  copyright assignment or a separate proprietary/dual-license grant.
+- [ ] Maintainer: if this is an external copyrightable contribution and no CLA
+  applies, it is either unmerged or recorded as public-license-only in the
+  rights baseline (or successor exact-path bill of materials) and excluded from
+  a future proprietary baseline.
+
 ## Root-cause memory
 
 Select exactly one defect outcome:
