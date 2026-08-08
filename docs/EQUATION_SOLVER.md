@@ -166,15 +166,20 @@ dense-only checkpoint of 172 cases in nine Cargo result blocks to the current
 separate evidence. Neither manifest target moves the 16-name denominator, the
 historical 48-case KLU campaign, or the frozen 81-name Iteration 3 population.
 
-### Iteration 4 native service Phase 1: framing only
+### Iteration 4 native service Phases 1 and 2: framing and strict admission
 
 The source-only `rust-dae-service/` crate now defines the first bounded framing
-and canonical-request layer for a future native solver service. Phase 1 is a
-codec boundary, not a service runtime: it does not open a listener, spawn or
-supervise a solver process, call the dense or KLU backend, return a native solve
-result, connect the desktop application, or place an executable in a browser,
-desktop, npm, installer or release artifact. Its isolated Rust 1.77.2 CI job
-runs exactly nine framing cases with warnings denied in debug and release.
+and strict-admission layers for a future native solver service. Phase 1 owns
+the codec boundary. Phase 2 preflights caller-controlled allocation shape
+before core decode, then lowers the bounded graph and derives a native-free
+plan. Neither phase is a service runtime: they do not open a
+listener, spawn or supervise a solver process, call the dense or KLU backend,
+return a native solve result, connect the desktop application, or place an
+executable in a browser, desktop, npm, installer or release artifact. Their
+isolated Rust 1.77.2 CI job runs the nine framing cases and nine admission cases
+as exactly two result blocks and 18 tests per profile: 18 in debug and the same
+18 in release, with warnings denied. Repeating the same cases across build
+profiles does not turn the campaign numerator into 36 unique cases.
 
 The canonical request representation does not serialize floating-point values
 as JSON numbers. JavaScript `JSON.stringify(-0)` produces `0`, erasing the sign
@@ -184,8 +189,60 @@ canonical standard base64 and reconstructs it from those bytes, so `-0.0`
 retains its exact `f64` bits. This is representation fidelity, not evidence that
 a native solver has consumed the request.
 
-Phase 1 uses a separate process/protocol test-function-count proxy. At the
-post-KLU tree
+Phase 2 rejects invalid UTF-8, malformed or trailing JSON, duplicate keys,
+unknown fields, missing fields and mismatched contract identity atomically. Its
+request-byte ceiling admits the exact limit far enough to decode it and rejects
+the next byte before request construction or payload allocation. Dense
+dimension, KLU dimension, known CSC nonzero/storage work, output-row and total
+result-value ceilings remain independent. Their custody is not identical:
+request-declared counts and graph allocation shape are checked before core
+decode, result cardinality is derived from the compiled graph, and KLU nonzero
+and known-CSC byte accounting is checked only after DAE lowering has constructed
+the pattern. Those post-lowering KLU checks bound later native admission, not
+pre-lowering allocation. The reachable service KLU ceilings are 30,000
+nonzeros and 720 KiB of known CSC storage, with independent exact-boundary and
+over-bound cases. They are deliberately below the native adapter maxima of
+1,000,000 nonzeros and 64 MiB; compile-time comparisons prevent the service
+settings from exceeding those backend ceilings. Admission uses checked
+arithmetic instead of trusting caller totals. In particular, every Sum block
+is limited to 4,096 inputs and the graph is limited to 100,000 aggregate input
+slots before core decode; the bounded graph is only then decoded and lowered so
+the remaining plan counts can be derived. Without the early shape check, a
+caller-controlled input count could drive allocation during core graph decoding
+and compilation before the native backend's work ceilings apply. This is a
+service-admission fix: `rust-core/` was not changed by this phase.
+
+Before decoding either floating-point block, admission checked-multiplies its
+declared count by eight bytes, derives the one canonical standard-base64 length
+as `4 * ceil((count * 8) / 3)`, and requires the supplied string to have exactly
+that length. This order matters: `F64BlockWire::decode_values` reserves decoded
+storage from the string length, so a declared count of one paired with a
+near-frame-limit string must fail before that reservation rather than allocate
+megabytes and discover the count mismatch afterward. This ordering belongs to
+the Phase 2 `admit_request_frame` boundary; the older Phase 1 codec helper alone
+is not a substitute for admission and gains no standalone resource-safety
+claim.
+
+Admission also treats consistent-initial evaluation as pre-native work. It
+caps caller-supplied algebraic iterations at 100 before DAE lowering. If any
+algebraic loop exists, the total number of algebraic variables is capped at 256:
+core lowering evaluates consistent initial values and that cyclic evaluation
+uses a dense Newton Jacobian, so an eventual KLU selection does not make the
+earlier allocation sparse. Admission separately caps the unused built-in
+implicit-iteration setting at 100 as fixed policy; Phase 2 does not run the
+core backward-Euler solver, so that setting is not part of the cyclic
+consistent-initial root cause. The acyclic KLU dimension ceiling remains
+10,000, and the 256-variable cycle boundary must not be read as reducing it.
+These known pre-native ceilings do not bound input-dependent KLU symbolic or
+numeric factor fill, total process memory, CPU time or resident lifetime.
+
+The closed request schema also refuses caller attempts to supply wall-time,
+CPU, memory or other service-policy overrides. The accepted plan still does
+not create a process, invoke a native backend, or materialize an output/result
+payload; the numerical, process and lifecycle boundaries remain future work.
+
+The service campaign uses a separate process/protocol test-function-count
+proxy. At the post-KLU tree
 `789bfc8f560d4e090466f98a29c27d9e20ba3b31`, the 35 test names in
 `tests/api.test.mjs`, `tests/packaged-tree.test.mjs`,
 `tests/runner-security.test.mjs` and `tests/simulation-worker.test.mjs` form the
@@ -198,13 +255,13 @@ and
 `59d29f9629e3c8a14331206411f177b94970f01e3c33f0a625f7a493e1fbcbf0`;
 the complete lists are frozen in `tests/dae-service-evidence.test.mjs`.
 
-The current nine-case framing target is partial campaign evidence only:
-`9 / 17 = 0.53`, not a two-times claim. The standing five-target plan contains
-46 cases (`9 + 9 + 9 + 9 + 10`), which would be `46 / 17 = 2.71` on this frozen
-test-function-count proxy only after all five targets exist and pass. The
-remaining 37 planned cases, the service process, IPC lifecycle,
-request-to-solver mapping, cancellation, teardown and product integration are
-not implemented by Phase 1.
+The current framing and admission targets contain 18 cases and remain partial
+campaign evidence only: `18 / 17 = 1.06`, not a two-times claim. The standing
+five-target plan contains 46 cases (`9 + 9 + 9 + 9 + 10`), which would be
+`46 / 17 = 2.71` on this frozen test-function-count proxy only after all five
+targets exist and pass. The remaining 28 planned cases, the service process,
+IPC lifecycle, request-to-solver mapping, native solve, cancellation, teardown
+and product integration are not implemented by Phases 1 or 2.
 
 ### Historical Iteration 2 native reference boundary (`@1`)
 
@@ -441,23 +498,27 @@ The campaign is split into independently reviewable gates:
    real numerical solves, failure evidence and scale-specific tests. The
    10,000-variable evidence is lowering/admission evidence, not a
    10,000-variable native convergence claim.
-4. **Native execution integration (event restart and service framing Phase 1
-   complete; runtime pending):** the coordinated `@2` contracts add the
-   governed opt-in event restart described above, and the source-only framing
-   layer defines a bounded canonical request representation. Process isolation,
-   native request mapping, cancellation, teardown and desktop integration still
-   must be added without routing untrusted requests directly into a solver.
+4. **Native execution integration (event restart plus service framing and
+   strict admission complete; runtime pending):** the coordinated `@2`
+   contracts add the governed opt-in event restart described above, while the
+   source-only service layers define a bounded canonical request representation
+   and preflight caller-controlled allocation shape before core decode, then
+   lower the bounded graph and derive the remaining native-free plan. Process
+   isolation, native request mapping, solver invocation, cancellation,
+   teardown and desktop integration still must be added without routing
+   untrusted requests directly into a solver.
 5. **Package and release acceptance:** expose only backend/method combinations
    that passed native conformance, package the accepted binaries, prove their
    exact artifact lineage in CI and preserve the built-in fallback.
 
-Iterations 2 and 3, the event-restart slice of Iteration 4 and the Phase 1
-service framing source are not product-packaged or released. The service
-process/runtime, solver bridge and desktop integration, plus all of Iteration 5,
-remain unimplemented and unshipped. `rust-core/` itself remains dependency-free
-and does not compile or link SUNDIALS, IDA, SuiteSparse or KLU. The completed
-work does not provide index reduction, qualify general implicit DAEs, expose a
-native service or desktop integration, or change the current WebAssembly ABI.
+Iterations 2 and 3, the event-restart slice of Iteration 4 and the Phase 1/2
+service framing/admission source are not product-packaged or released. The
+service process/runtime, solver bridge and desktop integration, plus all of
+Iteration 5, remain unimplemented and unshipped. `rust-core/` itself remains
+dependency-free and does not compile or link SUNDIALS, IDA, SuiteSparse or KLU.
+The completed work does not provide index reduction, qualify general implicit
+DAEs, expose a native service or desktop integration, or change the current
+WebAssembly ABI.
 Neither native reference may appear in product capability metadata until the
 later integration, package and release gates exist. A SUNDIALS WebAssembly
 build is an optional later qualification track, not an implied outcome of

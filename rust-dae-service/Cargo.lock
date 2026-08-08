@@ -3,9 +3,22 @@
 version = 3
 
 [[package]]
+name = "battery-design-core"
+version = "0.1.0"
+
+[[package]]
+name = "battery-design-dae-native"
+version = "0.1.0"
+dependencies = [
+ "battery-design-core",
+]
+
+[[package]]
 name = "battery-design-dae-service"
 version = "0.1.0"
 dependencies = [
+ "battery-design-core",
+ "battery-design-dae-native",
  "serde",
  "serde_json",
 ]

@@ -2585,6 +2585,222 @@ export const ROOT_CAUSE_SEED_CATALOG = deepFreeze({
       ],
     }),
     record({
+      id: 'rc-service-admission-cyclic-algebraic-preflight',
+      title: 'Cyclic algebraic initialization allocates dense Newton work before KLU',
+      symptom: 'A request aimed at the sparse KLU backend can pass its 10,000-variable ceiling yet make DAE lowering allocate a caller-sized dense Newton Jacobian while calculating consistent initial values, before any native backend is called.',
+      evidence: [
+        'DaeResidualSystem::lower calls the compiled graph evaluator to calculate consistent initial y and yp before it constructs or invokes a native IDA session.',
+        'When the algebraic graph is cyclic, the evaluator creates vec![vec![0.0; n]; n] and finite-differences every algebraic coordinate during Newton iteration; this is dense n-squared storage and work even if the eventual requested backend is KLU.',
+        'Core SolverSettings validation requires algebraic_max_iterations and implicit_max_iterations to be nonzero but does not impose a service ceiling. Algebraic iterations directly bound this consistent-initial Newton path; the implicit setting belongs to the separate built-in backward-Euler path and is not executed by Phase 2.',
+        'The Phase 2 admission campaign rejects cyclic algebraic dimension 257 and either iteration ceiling 101 before DAE lowering, accepts their exact 256/100 boundaries, and keeps an acyclic 10,000-variable KLU graph admissible.',
+      ],
+      detection: [
+        {
+          method: 'pre-native cyclic-initialization boundary regression',
+          signal: 'Submit exact-limit and plus-one cyclic algebraic graphs and iteration settings alongside an acyclic KLU graph at its separate dimension ceiling, observing whether DAE lowering begins.',
+          failureCondition: 'A 257-variable cyclic algebraic system or an iteration value of 101 reaches DAE lowering, a legal 256/100 boundary is refused, or the acyclic KLU 10,000-variable boundary is incorrectly reduced.',
+        },
+      ],
+      causalChain: [
+        'The request selects the sparse native backend and satisfies its public variable and known-CSC ceilings.',
+        'Service admission treats those later sparse ceilings as though they also bounded graph lowering and consistent-initial evaluation.',
+        'DAE lowering evaluates a cyclic algebraic subsystem with the core dense Newton path before native resource construction.',
+        'The dense n-squared allocation and caller-controlled algebraic iteration work occur before KLU budgets, factorization evidence or process isolation can apply.',
+      ],
+      rootCause: 'The admission boundary conflated eventual sparse-backend limits with the distinct dense cyclic-algebraic initialization and algebraic iteration work performed during pre-native DAE lowering.',
+      resolution: [
+        'When any algebraic loop exists, reject a graph with more than 256 total algebraic variables before DAE lowering.',
+        'Reject caller-supplied algebraic_max_iterations above the fixed service ceiling of 100 before lowering; separately cap implicit_max_iterations at 100 as policy even though Phase 2 does not execute the built-in backward-Euler path.',
+        'Preserve the independent 10,000-variable KLU ceiling for acyclic graphs and state explicitly that these checks do not bound KLU symbolic/numeric factor fill or total process resources.',
+      ],
+      prevention: [
+        'Budget every preprocessing and initialization algorithm by its actual dense or sparse implementation rather than by the backend selected for a later stage.',
+        'Exercise exact-limit, plus-one and topology-changing cases so a cycle cannot inherit an unrelated acyclic sparse claim.',
+        'Keep native factor-fill, CPU, memory and lifetime nonclaims until process isolation measures and enforces them directly.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 2 evidence binds the 256-total-algebraic loop and 100-algebraic-iteration ceilings before DAE lowering, keeps the unused implicit cap distinct, and preserves the acyclic KLU 10,000-variable and factor-fill nonclaims.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['algebraic-cycle', 'dae', 'dense-newton', 'preflight', 'resource-bounds', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/dae.rs',
+          note: 'Unchanged consistent-initial lowering call into the compiled graph evaluator.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/equations.rs',
+          note: 'Unchanged cyclic algebraic dense Newton allocation and caller-controlled iteration loops.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/admission.rs',
+          note: 'Phase 2 topology and fixed-iteration admission checks before DAE lowering.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_admission_campaign.rs',
+          note: 'Exact cyclic, iteration and acyclic KLU boundary campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact admission source binding plus factor-fill and runtime nonclaims.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-admission-f64-block-allocation-order',
+      title: 'Float-block decoder allocates from encoded length before count validation',
+      symptom: 'A request entering the future native-service admission boundary can declare one floating-point value but attach a near-frame-limit base64 string, causing the decoder to reserve roughly three megabytes before it reports that the declared count and payload length disagree.',
+      evidence: [
+        'F64BlockWire::decode_values originally called decode_base64 before multiplying the declared count by eight and comparing the decoded byte length.',
+        'decode_base64 reserves (data.len() / 4) * 3 bytes from the caller string length, so the later count mismatch cannot prevent that allocation.',
+        'A maximum frame-size check and a small declared count are insufficient when admission does not first bind the count to the exact canonical encoded length.',
+        'Phase 2 derives 4 * ceil((count * 8) / 3) with checked arithmetic and rejects a mismatched string length before invoking the allocating float decoder.',
+        'The older public Phase 1 decode_request_frame codec helper is unchanged and still performs its own block decode; callers do not gain the Phase 2 allocation-order guarantee unless they enter through admit_request_frame.',
+      ],
+      detection: [
+        {
+          method: 'encoded-length error-precedence and source-order regression',
+          signal: 'Pair a tiny declared float count with a canonical-shape near-frame-limit base64 string, require the typed encoded-length mismatch, and bind the admission call order ahead of decode_values.',
+          failureCondition: 'The request reaches float decoding instead of the encoded-length error, the source orders decode_values first, checked arithmetic wraps, or a matching exact-length block is refused.',
+        },
+      ],
+      causalChain: [
+        'The external request provides both a declared float count and a base64 data string.',
+        'Validation decodes and reserves storage from the string before deriving the byte length authorized by the count.',
+        'Only after allocation does it compare decoded bytes with count multiplied by eight.',
+        'A hostile mismatch consumes memory even though its final typed result is a validation error.',
+      ],
+      rootCause: 'The service admission design originally checked the relationship between two caller-controlled size fields only after the larger field had already driven decoded-byte allocation.',
+      resolution: [
+        'Checked-multiply the declared count by eight and derive the exact canonical standard-base64 length as four times the ceiling of decoded bytes divided by three.',
+        'In admit_request_frame, require the supplied string length to equal that derived length before calling F64BlockWire::decode_values or any decoded-byte allocator.',
+        'Retain canonical-base64 and finite-value validation after the preallocation length gate; this service-admission ordering fix does not change the standalone Phase 1 codec helper or claim process memory containment.',
+      ],
+      prevention: [
+        'When a wire carries both a count and encoded data, validate their exact checked size relation before decoded-byte reservation or copy.',
+        'Test tiny-count/large-data, exact-boundary, plus-one, multiplication-overflow and noncanonical encodings with typed error precedence and explicit admission source-order evidence.',
+        'Route untrusted service requests through admit_request_frame rather than treating the Phase 1 codec helper as complete admission, and review every validation failure for work already performed before the error.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 2 evidence binds checked count-to-canonical-base64 length validation ahead of float decoding and preserves the distinct process-memory nonclaim.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['allocation', 'base64', 'dae', 'preflight', 'resource-bounds', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/protocol.rs',
+          note: 'Unchanged float block decoder and Phase 1 codec helper; the Phase 2 guarantee depends on calling admission first.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/admission.rs',
+          note: 'Checked declared-count to canonical-base64 length preflight.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_admission_campaign.rs',
+          note: 'Hostile count/data mismatch and exact request-limit admission campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact-source allocation-order and admission-scope evidence.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
+      id: 'rc-service-admission-input-slot-preallocation',
+      title: 'Caller-controlled Sum arity reaches core allocation before backend caps',
+      symptom: 'A source-only native-service request can satisfy its byte and variable ceilings while one Sum block declares enough inputs to trigger a very large core graph allocation before any native solver is called.',
+      evidence: [
+        'The core graph compiler constructs one Vec<Option<BlockId>> with vec![None; block.kind.input_count()] for every block, so a caller-controlled Sum input count is an allocation dimension independent of DAE variable count.',
+        'The numeric graph transport accepts a positive integer Sum input count but does not itself impose a service resource policy on that count.',
+        'Dense/KLU variable, CSC and native-work ceilings apply too late to contain an allocation already requested while decoding and compiling the caller graph.',
+        'The Phase 2 admission campaign exercises the exact 4,096-input per-Sum and 100,000-slot aggregate boundaries and rejects each plus-one request before core graph decode.',
+      ],
+      detection: [
+        {
+          method: 'preallocation graph-shape boundary regression',
+          signal: 'Admit requests at and one above the fixed per-Sum arity and checked aggregate input-slot ceilings while observing whether core graph decoding is entered.',
+          failureCondition: 'A 4,097-input Sum or 100,001 aggregate input slots reaches core graph decode, arithmetic wraps, or either exact legal boundary is rejected by the shape gate.',
+        },
+      ],
+      causalChain: [
+        'The request carries each Sum block input count as a caller-controlled integer.',
+        'Admission checks payload bytes and later solver dimensions but omits this separate allocation dimension.',
+        'Core graph compilation sizes a per-block input-slot vector directly from the declared count.',
+        'An oversized declaration can consume memory or fail allocation before sparse/native work budgets or process isolation can contain it.',
+      ],
+      rootCause: 'The service trust boundary bounded solver dimensions but did not bound caller-controlled block arity and its checked graph-wide sum before invoking a core decoder that allocates from those values.',
+      resolution: [
+        'Scan the decoded request wire before core graph decode and reject any Sum fan-in above the fixed 4,096-input service ceiling.',
+        'Checked-add every block input count and reject an aggregate above 100,000 slots before calling the core graph decoder or lowerer.',
+        'Keep these ceilings fixed in service admission and return typed preallocation evidence; this Phase 2 fix does not modify rust-core or claim process-level resource containment.',
+      ],
+      prevention: [
+        'Inventory every caller-controlled value that becomes a length, capacity or work-loop bound and gate it before the first dependent allocation.',
+        'Test exact-limit, plus-one and checked-overflow cases for both each-item and aggregate multiplicities.',
+        'Keep service admission, core model validity, native backend budgets and process isolation as separate reviewed boundaries.',
+      ],
+      regressionTests: [
+        {
+          path: 'tests/dae-service-evidence.test.mjs',
+          assertion: 'Phase 2 source evidence binds the fixed Sum fan-in and checked total-input-slot caps to rejection before core graph decode and preserves the no-core-change boundary.',
+        },
+      ],
+      affectedSurfaces: ['ci', 'documentation'],
+      tags: ['allocation', 'dae', 'denial-of-service', 'preflight', 'resource-bounds', 'service'],
+      references: [
+        {
+          kind: 'implementation',
+          locator: 'rust-core/src/equations.rs',
+          note: 'Unchanged core graph compilation allocation that makes input-slot arity a separate service admission dimension.',
+        },
+        {
+          kind: 'implementation',
+          locator: 'rust-dae-service/src/admission.rs',
+          note: 'Phase 2 bounded request admission and pre-core graph-shape checks.',
+        },
+        {
+          kind: 'test',
+          locator: 'rust-dae-service/tests/service_admission_campaign.rs',
+          note: 'Exact per-Sum and aggregate input-slot boundary campaign.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/dae-service-evidence.test.mjs',
+          note: 'Exact admission/core source binding and service-runtime nonclaims.',
+        },
+        {
+          kind: 'test',
+          locator: 'tests/root-cause-library.test.mjs',
+          note: 'Exact record-content and deterministic lexical retrieval regression.',
+        },
+      ],
+    }),
+    record({
       id: 'rc-shared-test-mutex-poison-cascade',
       title: 'Exact float assertion poisons a shared native test mutex',
       symptom: 'One harmless floating-point comparison failure turns most of the native solver campaign red with mutex-poison errors that hide the original numerical assertion.',

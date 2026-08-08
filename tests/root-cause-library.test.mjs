@@ -32,7 +32,7 @@ test('versioned seed catalog is closed, valid, immutable and locally referenced'
   assert.equal(ROOT_CAUSE_CATALOG.format, ROOT_CAUSE_CATALOG_FORMAT);
   assert.equal(ROOT_CAUSE_CATALOG.version, ROOT_CAUSE_SCHEMA_VERSION);
   assert.equal(ROOT_CAUSE_RECORD_FORMAT, 'battery-design/root-cause-record@1');
-  assert.equal(ROOT_CAUSE_RECORDS.length, 58);
+  assert.equal(ROOT_CAUSE_RECORDS.length, 61);
   assert.deepEqual(validateRootCauseCatalog(), []);
   assert.equal(ROOT_CAUSE_RECORD_SCHEMA.additionalProperties, false);
   assertDeepFrozen(ROOT_CAUSE_RECORD_SCHEMA);
@@ -97,6 +97,9 @@ test('seed knowledge covers the requested recurring engineering failure classes'
     'rc-resource-self-checksum-trust',
     'rc-rust-msrv-float-pattern-lint-gap',
     'rc-schema-envelope-permissive',
+    'rc-service-admission-cyclic-algebraic-preflight',
+    'rc-service-admission-f64-block-allocation-order',
+    'rc-service-admission-input-slot-preallocation',
     'rc-shared-test-mutex-poison-cascade',
     'rc-signed-bound-evidence-miss',
     'rc-signed-zero-json-transport-loss',
@@ -533,6 +536,49 @@ test('loop-contract memory preserves the mutation, identity and trust-boundary f
   );
 });
 
+test('service admission memory preserves the pre-native cyclic algebraic dense-work fix', () => {
+  const record = getRootCauseRecord('rc-service-admission-cyclic-algebraic-preflight');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /DaeResidualSystem::lower[\s\S]*consistent initial y and yp[\s\S]*vec!\[vec!\[0\.0; n\]; n\][\s\S]*dense n-squared[\s\S]*Algebraic iterations directly bound[\s\S]*implicit setting[\s\S]*not executed by Phase 2/i);
+  assert.match(record.rootCause, /eventual sparse-backend limits[\s\S]*dense cyclic-algebraic initialization[\s\S]*algebraic iteration work[\s\S]*pre-native DAE lowering/i);
+  assert.match(record.resolution.join(' '), /When any algebraic loop exists,[\s\S]*256 total algebraic variables before DAE lowering[\s\S]*algebraic_max_iterations[\s\S]*100 before lowering[\s\S]*implicit_max_iterations[\s\S]*does not execute the built-in backward-Euler path[\s\S]*10,000-variable KLU ceiling for acyclic graphs[\s\S]*do not bound KLU symbolic\/numeric factor fill/i);
+  assert.match(record.prevention.join(' '), /preprocessing and initialization algorithm[\s\S]*actual dense or sparse implementation[\s\S]*topology-changing[\s\S]*factor-fill,[\s\S]*CPU,[\s\S]*memory[\s\S]*lifetime nonclaims/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service cyclic algebraic dense Newton consistent initial KLU preflight', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service admission memory preserves float count validation before decode allocation', () => {
+  const record = getRootCauseRecord('rc-service-admission-f64-block-allocation-order');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /F64BlockWire::decode_values[\s\S]*decode_base64[\s\S]*count by eight[\s\S]*\(data\.len\(\) \/ 4\) \* 3 bytes[\s\S]*before invoking the allocating float decoder[\s\S]*decode_request_frame[\s\S]*unless they enter through admit_request_frame/i);
+  assert.match(record.rootCause, /service admission design[\s\S]*relationship between two caller-controlled size fields[\s\S]*after the larger field[\s\S]*decoded-byte allocation/i);
+  assert.match(record.resolution.join(' '), /Checked-multiply[\s\S]*count by eight[\s\S]*canonical standard-base64 length[\s\S]*In admit_request_frame[\s\S]*before calling F64BlockWire::decode_values[\s\S]*does not change the standalone Phase 1 codec helper[\s\S]*process memory containment/i);
+  assert.match(record.detection.map(({ method, signal, failureCondition }) => `${method} ${signal} ${failureCondition}`).join(' '), /error-precedence and source-order[\s\S]*near-frame-limit[\s\S]*typed encoded-length mismatch[\s\S]*ahead of decode_values[\s\S]*source orders decode_values first/i);
+  assert.match(record.prevention.join(' '), /exact checked size relation before decoded-byte reservation or copy[\s\S]*tiny-count\/large-data[\s\S]*typed error precedence[\s\S]*admission source-order evidence[\s\S]*Route untrusted service requests through admit_request_frame/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('service float block tiny count huge base64 decode allocation order', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
+test('service admission memory preserves the caller-controlled input-slot preallocation fix', () => {
+  const record = getRootCauseRecord('rc-service-admission-input-slot-preallocation');
+  assert.equal(record?.status, 'resolved');
+  assert.match(record.evidence.join(' '), /vec!\[None; block\.kind\.input_count\(\)\][\s\S]*Sum input count[\s\S]*4,096[\s\S]*100,000[\s\S]*before core graph decode/i);
+  assert.match(record.rootCause, /solver dimensions[\s\S]*caller-controlled block arity[\s\S]*checked graph-wide sum[\s\S]*core decoder[\s\S]*allocates/i);
+  assert.match(record.resolution.join(' '), /before core graph decode[\s\S]*4,096-input[\s\S]*Checked-add[\s\S]*100,000 slots[\s\S]*does not modify rust-core[\s\S]*process-level resource containment/i);
+  assert.match(record.prevention.join(' '), /length, capacity or work-loop bound[\s\S]*before the first dependent allocation[\s\S]*exact-limit,[\s\S]*plus-one[\s\S]*checked-overflow/i);
+  assert.equal(record.regressionTests[0].path, 'tests/dae-service-evidence.test.mjs');
+  assert.equal(
+    searchRootCauses('native service Sum fan-in aggregate input slots preallocation core decode', { limit: 1 })[0]?.id,
+    record.id,
+  );
+});
+
 test('signed-zero transport memory preserves the actual JSON loss and byte-level fix', () => {
   assert.equal(JSON.stringify(-0), '0');
   const decodedJsonNumber = JSON.parse(JSON.stringify(-0));
@@ -719,6 +765,9 @@ test('lexical search deterministically retrieves causes, fixes and containment p
     ['Euler RC dt tau unstable nonfinite heat', 'rc-rc-euler-step-instability'],
     ['adaptive thermal microsteps module node work preflight', 'rc-adaptive-integration-work-undercount'],
     ['negative signed lower bound atBound evidence', 'rc-signed-bound-evidence-miss'],
+    ['service cyclic algebraic dense Newton consistent initial KLU preflight', 'rc-service-admission-cyclic-algebraic-preflight'],
+    ['service float block tiny count huge base64 decode allocation order', 'rc-service-admission-f64-block-allocation-order'],
+    ['native service Sum fan-in aggregate input slots preallocation core decode', 'rc-service-admission-input-slot-preallocation'],
     ['native service JSON signed zero base64 float bits', 'rc-signed-zero-json-transport-loss'],
     ['SIL repeatability JSON key order mutable evidence checksum', 'rc-sil-result-representation-gap'],
     ['thermal Euler C G exponential decay coolant phase heat conservation', 'rc-thermal-explicit-step-instability'],

@@ -8,12 +8,18 @@ edition = "2021"
 rust-version = "1.77"
 
 [dependencies]
+battery-design-core = { path = "../rust-core" }
+battery-design-dae-native = { path = "../rust-dae-native", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 [[test]]
 name = "service_framing_campaign"
 path = "tests/service_framing_campaign.rs"
+
+[[test]]
+name = "service_admission_campaign"
+path = "tests/service_admission_campaign.rs"
 
 [profile.release]
 panic = "unwind"
